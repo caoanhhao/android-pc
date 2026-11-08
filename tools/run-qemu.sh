@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Build a bootable Limine ISO (UEFI + BIOS) from the kernel and run it in QEMU.
 #
-#   tools/run-qemu.sh                 build (debug) and boot the kernel
+#   tools/run-qemu.sh                 build (debug) and boot the kernel with
+#                                     out/ktest-initramfs.cpio (if built)
 #   tools/run-qemu.sh --test          build and run the in-kernel test suite
+#   tools/run-qemu.sh --ktest [FILTER...]
+#                                     build the test initramfs, boot it, run
+#                                     ktest-init (all tests, or FILTER prefixes
+#                                     such as b1) and exit 0 iff it reports
+#                                     "END ktest-init ... fail=0"
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Options: --release, --bios (legacy BIOS instead of UEFI), --no-kvm,
 #          --smp N, --mem SIZE, --gdb (wait for gdb on :1234),
-#          --timeout SECS (tests; default 120). Extra args after `--` go to QEMU.
+#          --initrd FILE (boot module, "none" for no initramfs),
+#          --append "WORDS" (kernel cmdline: init=PATH, strace, -- init args),
+#          --timeout SECS (tests; default 120, --ktest 600).
+#          Extra args after `--` go to QEMU.
 #
 # Inside `kernel/`, `cargo run` and `cargo test` use this script as runner.
 # Serial console is on stdio; quit an interactive run with Ctrl-A X.
@@ -16,7 +25,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel"
 
-mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout=120 elf=""
+mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
+initrd="" append="" ktest_filters=()
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,12 +39,18 @@ while [[ $# -gt 0 ]]; do
         --mem) mem="$2"; shift ;;
         --gdb) gdb=1 ;;
         --timeout) timeout="$2"; shift ;;
+        --initrd) initrd="$2"; shift ;;
+        --append) append="$2"; shift ;;
+        --ktest)
+            mode=ktest
+            while [[ $# -gt 1 && $2 != -* ]]; do ktest_filters+=("$2"); shift; done ;;
         --) shift; qemu_extra=("$@"); break ;;
         -*) echo "run-qemu.sh: unknown option $1" >&2; exit 2 ;;
         *) elf="$1" ;;
     esac
     shift
 done
+[[ -z $timeout ]] && { timeout=120; [[ $mode == ktest ]] && timeout=600; }
 
 # rust-toolchain.toml must win over a toolchain forced from the environment.
 cargo_() { (cd "$KERNEL_DIR" && env -u RUSTUP_TOOLCHAIN cargo "$@"); }
@@ -47,6 +63,11 @@ if [[ $mode == test-build ]]; then
     # cargo calls back into this script (runner) with the test kernel ELF.
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
+fi
+if [[ $mode == ktest ]]; then
+    "$ROOT/tools/mkinitramfs.sh" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
+    [[ ${#ktest_filters[@]} -gt 0 ]] && append="$append -- ${ktest_filters[*]}"
 fi
 if [[ -z $elf ]]; then
     cargo_ build --profile "$profile"
@@ -94,6 +115,16 @@ iso_root="$work/iso_root"
 rm -rf "$iso_root"
 mkdir -p "$iso_root/boot/limine" "$iso_root/EFI/BOOT"
 cp "$elf" "$iso_root/boot/kernel"
+# The test kernel never needs an initramfs; normal boots default to the
+# test initramfs when it has been built (tools/mkinitramfs.sh).
+if [[ -z $initrd && $mode == run && -f $ROOT/out/ktest-initramfs.cpio ]]; then
+    initrd="$ROOT/out/ktest-initramfs.cpio"
+fi
+module_conf=""
+if [[ -n $initrd && $initrd != none && $mode != test ]]; then
+    cp "$initrd" "$iso_root/boot/initramfs.cpio"
+    module_conf="    module_path: boot():/boot/initramfs.cpio"
+fi
 cat > "$iso_root/boot/limine/limine.conf" <<CONF
 timeout: 0
 verbose: no
@@ -101,6 +132,8 @@ verbose: no
 /android-pc
     protocol: limine
     path: boot():/boot/kernel
+    cmdline: ${append# }
+$module_conf
 CONF
 cp "$LIMINE_DIR"/limine-bios.sys "$LIMINE_DIR"/limine-bios-cd.bin "$LIMINE_DIR"/limine-uefi-cd.bin \
     "$iso_root/boot/limine/"
@@ -129,7 +162,22 @@ if [[ $firmware == uefi ]]; then
 fi
 [[ $gdb == 1 ]] && args+=(-s -S)
 
-if [[ $mode == test ]]; then
+if [[ $mode == ktest ]]; then
+    # Serial to stdout and a log; the verdict is ktest-init's END line.
+    log="$work/ktest.log"
+    args+=(-display none -serial stdio)
+    set +e
+    timeout --foreground "$timeout" qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}" </dev/null | tee "$log"
+    code=${PIPESTATUS[0]}
+    set -e
+    if grep -aqE '^END ktest-init pass=[0-9]+ fail=0' "$log"; then
+        echo "run-qemu.sh: ktest-init passed ($(grep -a '^END ktest-init' "$log" | tr -d '\r'))"
+        exit 0
+    fi
+    [[ $code == 124 ]] && echo "run-qemu.sh: timed out after ${timeout}s" >&2
+    echo "run-qemu.sh: ktest-init FAILED (log: $log)" >&2
+    exit 1
+elif [[ $mode == test ]]; then
     args+=(-display none -serial stdio)
     set +e
     timeout --foreground "$timeout" qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"

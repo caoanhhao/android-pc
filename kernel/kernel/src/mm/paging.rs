@@ -6,8 +6,9 @@
 //! - the kernel image with per-section permissions (W^X);
 //! - MMIO windows added later with `map_mmio` (uncached).
 //!
-//! The upper half (PML4 entries 256..512) will be shared by every process
-//! address space in phase B3.
+//! The upper half (PML4 entries 256..512) is shared by every process
+//! address space: all 256 upper PML4 entries are allocated at boot, so
+//! kernel mappings added later show up in every address space.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use limine::memmap::{
@@ -166,6 +167,15 @@ pub fn init(memmap: &[&Entry]) {
         };
     }
 
+    // Pre-allocate every kernel-half PDPT (user address spaces copy these
+    // 256 entries once, at creation).
+    for entry in pt.level_4_table_mut().iter_mut().skip(256) {
+        if entry.is_unused() {
+            let f = frame::alloc_zeroed().expect("no frame for a kernel PDPT");
+            entry.set_frame(f, F::PRESENT | F::WRITABLE);
+        }
+    }
+
     KERNEL_PML4.store(pml4_frame.start_address().as_u64(), Ordering::Release);
     unsafe { activate_kernel_tables() };
     *KERNEL_TABLES.lock() = Some(pt);
@@ -195,6 +205,11 @@ pub unsafe fn activate_kernel_tables() {
     }
 }
 
+/// Physical address of the kernel PML4 (template for user address spaces).
+pub fn kernel_pml4() -> PhysAddr {
+    PhysAddr::new(KERNEL_PML4.load(Ordering::Acquire))
+}
+
 fn with_tables<R>(f: impl FnOnce(&mut OffsetPageTable<'static>) -> R) -> R {
     f(KERNEL_TABLES
         .lock()
@@ -222,7 +237,6 @@ pub fn map_mmio(phys: u64, size: u64) -> VirtAddr {
 }
 
 /// Map one 4 KiB page in the kernel half (page tables shared by all CPUs).
-#[allow(dead_code)]
 pub fn map_page(virt: VirtAddr, frame: PhysFrame, flags: F) {
     let page = Page::<Size4KiB>::containing_address(virt);
     with_tables(|pt| unsafe {
@@ -233,8 +247,7 @@ pub fn map_page(virt: VirtAddr, frame: PhysFrame, flags: F) {
 }
 
 /// Unmap one 4 KiB page and return the frame it pointed to. Only flushes the
-/// local TLB; TLB shootdown IPIs come with the scheduler.
-#[allow(dead_code)]
+/// local TLB: callers never reuse the virtual address (see `kstack`).
 pub fn unmap_page(virt: VirtAddr) -> PhysFrame {
     let page = Page::<Size4KiB>::containing_address(virt);
     with_tables(|pt| {

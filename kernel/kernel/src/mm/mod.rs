@@ -1,12 +1,14 @@
-//! Memory management: physical frames, kernel page tables, kernel heap.
+//! Memory management: physical frames, kernel page tables, kernel heap,
+//! kernel stacks and user address spaces.
 //!
-//! Planned (phase B3): per-process address spaces (VMAs, mmap/munmap/
-//! mprotect/brk, demand paging, COW for fork, file-backed and shared
-//! mappings, memfd).
+//! Planned (phase B3): COW for fork, file-backed and shared mappings,
+//! memfd, mremap/madvise, stack growth.
 
 pub mod frame;
 pub mod heap;
+pub mod kstack;
 pub mod paging;
+pub mod user;
 
 use crate::boot;
 

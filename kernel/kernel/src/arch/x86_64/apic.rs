@@ -21,6 +21,8 @@ const REG_VERSION: u32 = 0x30;
 const REG_TPR: u32 = 0x80;
 const REG_EOI: u32 = 0xb0;
 const REG_SVR: u32 = 0xf0;
+const REG_ICR_LOW: u32 = 0x300;
+const REG_ICR_HIGH: u32 = 0x310;
 const REG_LVT_TIMER: u32 = 0x320;
 const REG_LVT_LINT0: u32 = 0x350;
 const REG_LVT_ERROR: u32 = 0x370;
@@ -79,15 +81,20 @@ pub fn init_bsp() {
         if x2apic { "x2APIC" } else { "xAPIC (MMIO)" }
     );
 
-    // Count LAPIC timer decrements during 10 ms of PIT time.
+    // Count LAPIC timer decrements (and TSC cycles) during 10 ms of PIT time.
     write(REG_TIMER_DIVIDE, TIMER_DIVIDE_BY_16);
     write(REG_LVT_TIMER, LVT_MASKED);
-    let elapsed = pit::measure(
+    let mut tsc_start = 0;
+    let (elapsed, tsc_end) = pit::measure(
         10,
-        || write(REG_TIMER_INITIAL, u32::MAX),
-        || u32::MAX - read(REG_TIMER_CURRENT),
+        || {
+            write(REG_TIMER_INITIAL, u32::MAX);
+            tsc_start = crate::time::rdtsc();
+        },
+        || (u32::MAX - read(REG_TIMER_CURRENT), crate::time::rdtsc()),
     );
     write(REG_TIMER_INITIAL, 0);
+    crate::time::set_tsc_hz((tsc_end - tsc_start) * 100);
     let per_tick = (elapsed as u64 * 100 / HZ) as u32;
     TIMER_COUNT.store(per_tick, Ordering::Relaxed);
     log::info!(
@@ -128,4 +135,23 @@ pub fn id() -> u32 {
 
 pub fn eoi() {
     write(REG_EOI, 0);
+}
+
+const ICR_ASSERT: u32 = 1 << 14;
+const ICR_PENDING: u32 = 1 << 12;
+
+/// Send a fixed-delivery IPI with `vector` to the CPU with `lapic_id`.
+pub fn send_ipi(lapic_id: u32, vector: u8) {
+    if is_x2apic() {
+        let icr = ((lapic_id as u64) << 32) | ICR_ASSERT as u64 | vector as u64;
+        unsafe { Msr::new(X2APIC_MSR_BASE + REG_ICR_LOW / 16).write(icr) };
+    } else {
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            while read(REG_ICR_LOW) & ICR_PENDING != 0 {
+                core::hint::spin_loop();
+            }
+            write(REG_ICR_HIGH, lapic_id << 24);
+            write(REG_ICR_LOW, ICR_ASSERT | vector as u32);
+        });
+    }
 }

@@ -2,11 +2,15 @@
 
 pub mod apic;
 pub mod cpu;
+pub mod entry;
+pub mod fpu;
 pub mod gdt;
 pub mod idt;
 pub mod pic;
 pub mod pit;
 pub mod smp;
+pub mod tlb;
+pub mod trap;
 
 use x86_64::instructions::{hlt, interrupts};
 
@@ -15,6 +19,7 @@ use x86_64::instructions::{hlt, interrupts};
 pub fn init_bsp_early() {
     cpu::init_bsp();
     idt::load();
+    cpu::init_user_support();
 }
 
 /// BSP setup that needs the heap and page tables: interrupt controllers and
@@ -23,6 +28,30 @@ pub fn init_bsp_late() {
     pic::disable();
     apic::init_bsp();
     interrupts::enable();
+}
+
+/// Power the machine off (QEMU/ACPI PM1a on q35 and PIIX4), falling back
+/// to the `isa-debug-exit` device, then halting.
+pub fn power_off() -> ! {
+    use x86_64::instructions::port::Port;
+    interrupts::disable();
+    unsafe {
+        Port::<u16>::new(0x604).write(0x2000);
+        Port::<u16>::new(0xb004).write(0x2000);
+        Port::<u32>::new(0xf4).write(0x10);
+    }
+    halt_forever()
+}
+
+/// Reset the machine through the keyboard controller / port 0xcf9.
+pub fn reboot() -> ! {
+    use x86_64::instructions::port::Port;
+    interrupts::disable();
+    unsafe {
+        Port::<u8>::new(0xcf9).write(0x06);
+        Port::<u8>::new(0x64).write(0xfe);
+    }
+    halt_forever()
 }
 
 /// Index of the executing CPU (0 = BSP), or 0 before per-CPU data exists.
@@ -37,13 +66,6 @@ pub fn interrupts_disable() {
 /// Enable interrupts and halt until the next one arrives.
 pub fn wait_for_interrupt() {
     interrupts::enable_and_hlt();
-}
-
-/// Idle forever, servicing interrupts.
-pub fn idle_loop() -> ! {
-    loop {
-        interrupts::enable_and_hlt();
-    }
 }
 
 /// Stop this CPU for good (interrupts off). NMIs can still wake it, hence the loop.

@@ -8,8 +8,8 @@ use limine::BaseRevision;
 use limine::memmap;
 use limine::mp::MpRespData;
 use limine::request::{
-    BootloaderInfoRequest, ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest,
-    MemmapRequest, MpRequest, RsdpRequest, StackSizeRequest,
+    BootloaderInfoRequest, DateAtBootRequest, ExecutableAddressRequest, ExecutableCmdlineRequest,
+    HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest, StackSizeRequest,
 };
 
 /// Lowest base revision whose semantics this kernel relies on (HHDM covers
@@ -55,6 +55,14 @@ static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 #[unsafe(link_section = ".requests")]
 static RSDP: RsdpRequest = RsdpRequest::new();
 
+#[used]
+#[unsafe(link_section = ".requests")]
+static MODULES: ModulesRequest = ModulesRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static DATE_AT_BOOT: DateAtBootRequest = DateAtBootRequest::new();
+
 /// Ask Limine to enable x2APIC when the CPU supports it.
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -89,6 +97,25 @@ pub fn init() {
         && !cmdline.cmdline().is_empty() {
             log::info!("cmdline: {}", cmdline.cmdline());
         }
+}
+
+/// Kernel command line ("" if none).
+pub fn cmdline() -> &'static str {
+    CMDLINE.response().map_or("", |c| c.cmdline())
+}
+
+/// Contents of the first boot module (the initramfs), if any. It lives in
+/// "executable and modules" memory, which is never reused.
+pub fn initramfs() -> Option<&'static [u8]> {
+    let modules = MODULES.response()?.modules();
+    let m = modules.first()?;
+    log::info!("module {} ({} KiB)", m.path(), m.data().len() / 1024);
+    Some(m.data())
+}
+
+/// Wall-clock time at boot (seconds since the epoch), if the firmware knew.
+pub fn boot_time() -> Option<i64> {
+    DATE_AT_BOOT.response().map(|d| d.timestamp)
 }
 
 pub fn hhdm_offset() -> u64 {
