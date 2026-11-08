@@ -537,6 +537,7 @@ fn mmap_file(f: &Arc<OpenFile>, addr: u64, len: u64, p: u32, shared: bool, fixed
         S_IFCHR if (dev_major(meta.rdev), dev_minor(meta.rdev)) == (1, 5) => {
             return current().mm().mmap(addr, len, p, shared, fixed, noreplace);
         }
+        S_IFCHR => return f.ops.mmap(f, addr, len, p, fixed, noreplace, off),
         _ => return Err(ENODEV),
     };
     let pgoff = off / crate::mm::PAGE_SIZE;

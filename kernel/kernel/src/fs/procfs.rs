@@ -1,6 +1,7 @@
 //! procfs (minimal): /proc/self, /proc/<pid>/{stat,status,cmdline,comm,
 //! maps,mounts,fd/,fdinfo/,exe,cwd,root}, /proc/{meminfo,cpuinfo,uptime,mounts,
-//! filesystems,cmdline,version,loadavg,stat,net/unix}.
+//! filesystems,cmdline,version,loadavg,stat,net/unix,
+//! sys/kernel/random/{boot_id,uuid}}.
 //!
 //! Inodes are made on demand and never cached in dentries; file contents
 //! are generated when the file is opened.
@@ -33,6 +34,13 @@ enum Node {
     FdInfo(u32, i32),
     NetDir,
     NetUnix,
+    /// /proc/sys, /proc/sys/kernel, /proc/sys/kernel/random.
+    SysDir,
+    SysKernelDir,
+    SysRandomDir,
+    /// Random UUID fixed at boot (libbinder needs it), and a fresh one per open.
+    BootId,
+    Uuid,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,19 +119,26 @@ fn ino_of(node: Node) -> u64 {
         Node::FdInfo(p, fd) => (2 << 48) | (p as u64) << 16 | fd as u64,
         Node::NetDir => 4,
         Node::NetUnix => 5,
+        Node::SysDir => 6,
+        Node::SysKernelDir => 7,
+        Node::SysRandomDir => 8,
+        Node::BootId => 9,
+        Node::Uuid => 10,
     }
 }
 
 fn mode_of(node: Node) -> u32 {
     match node {
-        Node::Root | Node::PidDir(_) | Node::NetDir => S_IFDIR | 0o555,
+        Node::Root | Node::PidDir(_) | Node::NetDir | Node::SysDir | Node::SysKernelDir | Node::SysRandomDir => {
+            S_IFDIR | 0o555
+        }
         Node::FdDir(_) => S_IFDIR | 0o500,
         Node::FdInfoDir(_) => S_IFDIR | 0o555,
         Node::FdInfo(..) => S_IFREG | 0o444,
         Node::SelfLink | Node::ThreadSelfLink => S_IFLNK | 0o777,
         Node::FdLink(..) => S_IFLNK | 0o700,
         Node::PidFile(_, PidFile::Exe | PidFile::Cwd | PidFile::Root) => S_IFLNK | 0o777,
-        Node::Global(_) | Node::PidFile(..) | Node::NetUnix => S_IFREG | 0o444,
+        Node::Global(_) | Node::PidFile(..) | Node::NetUnix | Node::BootId | Node::Uuid => S_IFREG | 0o444,
     }
 }
 
@@ -158,6 +173,7 @@ impl Inode for ProcInode {
                 b"self" => Node::SelfLink,
                 b"thread-self" => Node::ThreadSelfLink,
                 b"net" => Node::NetDir,
+                b"sys" => Node::SysDir,
                 _ => {
                     if let Some((_, g)) = GLOBALS.iter().find(|(n, _)| *n == name) {
                         Node::Global(*g)
@@ -190,7 +206,11 @@ impl Inode for ProcInode {
                 Node::FdInfo(pid, fd)
             }
             Node::NetDir if name == b"unix" => Node::NetUnix,
-            Node::NetDir => return Err(ENOENT),
+            Node::SysDir if name == b"kernel" => Node::SysKernelDir,
+            Node::SysKernelDir if name == b"random" => Node::SysRandomDir,
+            Node::SysRandomDir if name == b"boot_id" => Node::BootId,
+            Node::SysRandomDir if name == b"uuid" => Node::Uuid,
+            Node::NetDir | Node::SysDir | Node::SysKernelDir | Node::SysRandomDir => return Err(ENOENT),
             _ => return Err(ENOTDIR),
         };
         Ok(make(node))
@@ -204,6 +224,7 @@ impl Inode for ProcInode {
                 v.push(ent(b"self", Node::SelfLink));
                 v.push(ent(b"thread-self", Node::ThreadSelfLink));
                 v.push(ent(b"net", Node::NetDir));
+                v.push(ent(b"sys", Node::SysDir));
                 for (n, g) in GLOBALS {
                     v.push(ent(n, Node::Global(g)));
                 }
@@ -231,6 +252,12 @@ impl Inode for ProcInode {
                 }
             }
             Node::NetDir => v.push(ent(b"unix", Node::NetUnix)),
+            Node::SysDir => v.push(ent(b"kernel", Node::SysKernelDir)),
+            Node::SysKernelDir => v.push(ent(b"random", Node::SysRandomDir)),
+            Node::SysRandomDir => {
+                v.push(ent(b"boot_id", Node::BootId));
+                v.push(ent(b"uuid", Node::Uuid));
+            }
             _ => return Err(ENOTDIR),
         }
         Ok(v)
@@ -261,6 +288,11 @@ impl Inode for ProcInode {
             Node::PidFile(pid, f) => pid_file(pid, f)?,
             Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
             Node::NetUnix => crate::net::unix::proc_net_unix(),
+            Node::BootId => {
+                static BOOT_ID: Once<String> = Once::new();
+                BOOT_ID.call_once(random_uuid).clone()
+            }
+            Node::Uuid => random_uuid(),
             _ => return Ok(None),
         };
         Ok(Some(Box::new(SeqFile { data: data.into_bytes() })))
@@ -280,6 +312,23 @@ impl Inode for ProcInode {
 
 /// /proc/<pid>/fdinfo/<fd>: position, flags (with O_CLOEXEC), inode, then
 /// what the file type adds (epoll items, eventfd count, timerfd state...).
+/// A random (version 4) UUID line, as /proc/sys/kernel/random/uuid.
+fn random_uuid() -> String {
+    let mut b = [0u8; 16];
+    crate::random::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let mut s = String::new();
+    for (i, x) in b.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            s.push('-');
+        }
+        let _ = write!(s, "{x:02x}");
+    }
+    s.push('\n');
+    s
+}
+
 fn fdinfo(pid: u32, fd: i32) -> KResult<String> {
     let files = process(pid)?.files();
     let f = files.get(fd).map_err(|_| ENOENT)?;
@@ -292,7 +341,7 @@ fn fdinfo(pid: u32, fd: i32) -> KResult<String> {
     Ok(s)
 }
 
-pub const FILESYSTEMS: [&str; 6] = ["rootfs", "tmpfs", "ramfs", "devtmpfs", "proc", "sysfs"];
+pub const FILESYSTEMS: [&str; 7] = ["rootfs", "tmpfs", "ramfs", "devtmpfs", "proc", "sysfs", "binder"];
 
 fn global(g: Global) -> String {
     let mut s = String::new();

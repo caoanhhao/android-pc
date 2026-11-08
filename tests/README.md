@@ -49,6 +49,7 @@ file này).
 | B4 | `b4_signalfd` | `signalfd4`, `signalfd_siginfo`, đổi mask, SIGCHLD qua epoll |
 | B4 | `b4_poll` | `select/pselect6`, mask tạm của `ppoll` (EINTR, khôi phục mask), FIFO (luật open, O_NONBLOCK/ENXIO, POLLHUP), epoll EPERM/ELOOP, tên `anon_inode:[...]` trong /proc/self/fd và fdinfo |
 | B4 | `b4_unix` | AF_UNIX stream/dgram/seqpacket, socketpair, bind/listen/connect/accept4 (đường dẫn & abstract), `SO_PEERCRED`, **SCM_RIGHTS**, `SCM_CREDENTIALS`, MSG_PEEK/TRUNC/CTRUNC, shutdown |
+| C1 | `c1_binder` | binder (chỉ chạy trên kernel Rust, trên host thì SKIP): mount binderfs, `BINDER_CTL_ADD`, mmap chỉ đọc, context riêng cho từng device, context manager qua handle 0 (`BR_TRANSACTION_SEC_CTX`), gọi sync/oneway (đúng thứ tự), `sender_pid`, truyền binder object giữa 3 process và trả về chủ, gọi lồng nhau, truyền fd hai chiều, scatter-gather + fd array, `BR_SPAWN_LOOPER` và nhiều looper thread, death notification khi process con thoát, `BR_DEAD_REPLY`/`BR_FAILED_REPLY`, extended error |
 
 `ktest-init` không phải test mà là runner (xem dưới).
 
@@ -74,9 +75,11 @@ END <test> pass=<số PASS> fail=<số FAIL>
   chính kiểm tra rồi in `PASS/FAIL`. Nếu process con panic, nó in một dòng
   `FAIL ... panic` (không có `END`) và thoát 101.
 - **Mã thoát**: `0` nếu không có case nào FAIL, `1` nếu có, `101` nếu panic.
+- Test chỉ có `SKIP` (không có `PASS`) được coi là đạt khi mã thoát 0 (ví dụ
+  `c1_binder` trên host, vì binder chỉ có trên kernel Rust).
 
 Một test **đạt** khi: mã thoát 0, có đúng một `BEGIN`/`END`, không có dòng
-`FAIL`, số `PASS` > 0 và khớp với `pass=` trong `END`. `run-host.sh` kiểm tra
+`FAIL`, số `PASS` > 0 (hoặc chỉ có `SKIP`) và khớp với `pass=` trong `END`. `run-host.sh` kiểm tra
 đúng các điều kiện này (và coi mọi dòng lạ là lỗi).
 
 Ví dụ:

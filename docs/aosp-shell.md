@@ -155,3 +155,39 @@ TIOCOUTQ.
 - UART input is polled at 100 Hz (up to 64 bytes per tick). This is fine
   for typing and for scripted input, since QEMU applies back-pressure.
 - The kernel prints its log lines on the same serial port as the shell.
+
+## Binder: AOSP servicemanager (C1 stretch goal)
+
+`tools/mkaosp-initramfs.sh --binder` builds `out/aosp-binder-initramfs.cpio`:
+the same shell plus `/system/bin/servicemanager` and `/system/bin/service`
+with their library closure (libbinder, libvintf, libselinux, libbase,
+libperfetto_c, ...) and the bootstrap linker (`/system/bin/bootstrap/linker64`,
+servicemanager's PT_INTERP). Its /init also does what init.rc does for
+binder: `mount -t binder binder /dev/binderfs -o stats=global`, symlinks
+`/dev/{binder,hwbinder,vndbinder}` into it and chmods them 0666.
+
+```
+tools/mkaosp-initramfs.sh --binder
+tools/limited-build.sh tools/run-qemu.sh --initrd out/aosp-binder-initramfs.cpio
+# in the shell:
+ls -l /dev/binder /dev/binderfs
+servicemanager &
+```
+
+How far it gets (2026-11-08): binderfs and the symlinks look as on a
+device; unmodified servicemanager runs, prints "Starting sm instance on
+/dev/binder", and its binder setup succeeds (open, BINDER_VERSION,
+BINDER_SET_MAX_THREADS, BINDER_ENABLE_ONEWAY_SPAM_DETECTION, the 1 MiB
+read-only mmap). libbinder also needs `/proc/sys/kernel/random/boot_id`
+(`Bad boot_id` is fatal), which procfs now provides. It then aborts in
+`Access::Access()` with `Check failed: selinux_status_open(true) >= 0`:
+there is no selinuxfs, and the fallback is an AF_NETLINK socket.
+`service list` therefore has no service manager to talk to (libbinder
+keeps waiting for it). Getting further needs the SELinux stub planned for
+C3: a selinuxfs with the `status` page (mmap) and `access`/`enforce`
+files, `/proc/<pid>/attr/current` for getcon(), and the service_contexts
+files; servicemanager also sets the `servicemanager.ready` property, which
+needs init's property service (an error, not fatal). The binder protocol
+paths servicemanager relies on (context manager with security contexts,
+handle 0 lookups, BINDER_GET_NODE_INFO_FOR_REF, death notifications,
+epoll on the binder fd) are covered by `tests/src/bin/c1_binder.rs`.

@@ -38,6 +38,7 @@ pub const ENOSYS: Errno = Errno(38);
 pub const ENOTEMPTY: Errno = Errno(39);
 pub const ELOOP: Errno = Errno(40);
 pub const EOVERFLOW: Errno = Errno(75);
+pub const EPROTO: Errno = Errno(71);
 pub const ELIBBAD: Errno = Errno(80);
 pub const ENOTSOCK: Errno = Errno(88);
 pub const EMSGSIZE: Errno = Errno(90);

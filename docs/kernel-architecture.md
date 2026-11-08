@@ -1,4 +1,4 @@
-# Kernel architecture (phase B5 state: AOSP shell)
+# Kernel architecture (phase C1 state: binder)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -75,7 +75,8 @@ kernel/
                        (event bits, wait queues, poll loop), epoll, eventfd,
                        timerfd, signalfd; mod.rs: cpio unpacking, open,
                        mountable file system types
-      drivers/         serial (COM1); later virtio, binder, dma-buf, ...
+      drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
+                       protocol, mod); later virtio, dma-buf, ...
 ```
 
 Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
@@ -163,7 +164,10 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
     address space -> shmem -> frame allocator; an object never calls into
     an address space under its own lock. At process exit the mappings are
     dropped before the parent is notified (Linux's exit_mm), unless a vfork
-    parent shares the address space.
+    parent shares the address space: `AddressSpace::users` counts the live
+    tasks using it (Linux's mm_users; exited tasks not yet freed still hold
+    `Arc`s), and the last one to exit (or exec away) unmaps everything,
+    closing mapped files such as a binder buffer's.
   - **madvise** DONTNEED/FREE unmap the pages of the range (backed VMAs
     refault from their object), REMOVE punches a hole in the object;
     **mremap** shrinks, grows in place when the following range is free, or
@@ -347,7 +351,8 @@ One global mount namespace. The pieces:
     below. /dev/kmsg writes go to the kernel log.
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
     mounts,fd/,fdinfo/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
-    `filesystems`, `cmdline`, `version`, `loadavg`, `stat`, `net/unix`. Contents are
+    `filesystems`, `cmdline`, `version`, `loadavg`, `stat`, `net/unix`,
+    `sys/kernel/random/{boot_id,uuid}` (libbinder aborts without boot_id). Contents are
     generated at open. `maps` shows `s`/`p`, file offset, device and inode,
     and names file mappings by path (`/dev/zero (deleted)` for anonymous
     shared memory). `maps`/`VmSize` are only filled in for the calling
@@ -445,6 +450,80 @@ One global mount namespace. The pieces:
   through in-flight fds are not collected.
 - `/proc/net/unix` is generated from a table of all live sockets.
 
+## Binder (`drivers/binder/`)
+
+ABI-compatible with Linux binder, protocol 8, 64-bit (the user-visible
+behaviour is listed in [syscalls.md](syscalls.md#binder-c1)). The upstream
+C and Rust drivers were semantic references; the code is new.
+
+- **Files**: `abi.rs` (ioctl/BC/BR numbers, object types, struct offsets;
+  structures are parsed as little-endian byte arrays), `state.rs` (the
+  object model and its rules), `protocol.rs` (BINDER_WRITE_READ: commands,
+  transactions, object translation, the read loop), `mod.rs` (device
+  registry, file operations, ioctls, mmap, binderfs, `binder-control`).
+- **Devices and binderfs**: a device = a context (by minor) with its own
+  context manager node. `DEVICES` names the minors (binder, hwbinder,
+  vndbinder, then BINDER_CTL_ADD additions). binderfs is a tmpfs root
+  holding char nodes 244:minor, so chmod/unlink work as on any tmpfs;
+  `dev::open_chr` routes major 244 to `binder::open`, which creates a
+  binder process (or the control file for minor 1023).
+- **One table, one lock**: every process, thread, node, ref, death
+  notification and transaction lives in `state::State` behind one spin
+  lock, referring to each other by id. A queued work item whose object is
+  gone is skipped when dequeued. Two rules keep it deadlock-free: no user
+  memory is touched under the lock (commands, transaction data and
+  scatter-gather buffers are copied in before taking it; the read loop
+  builds the BR stream in a kernel buffer copied out afterwards), so the
+  address-space lock is never taken inside it; and open files are never
+  dropped under it (the last close of a binder file takes it again):
+  they go to the guard's "grave" and are dropped, or closed for fd-array
+  descriptors, after unlocking.
+- **Processes and threads**: `Proc` per open (pid, context, threads by
+  tid, nodes by user pointer, refs by descriptor, todo list, wait queue,
+  buffer mapping, thread-pool counters). `Thread` per calling task, made on
+  first use: looper state, todo list, transaction stack top, extended
+  error. Threads sleep on their own key; queuing process work wakes one
+  idle looper (which then stops counting as idle, so the next item wakes
+  another) and the process's wait queue (poll/epoll).
+- **Buffers**: mmap creates a shmem object (at most 4 MiB used) mapped
+  shared and never writable, so the PTEs keep pointing at the object's
+  frames; transactions are written into it with `Shmem::write`. A best-fit
+  allocator (`Mapping`) hands out ranges; each `Buffer` records the
+  references it holds (`Held`), the files still to install and the fd-array
+  descriptors to close, and is freed by BC_FREE_BUFFER or with the process.
+  The VMA keeps the binder file open, like on Linux.
+- **Transactions**: `prepare` copies and validates (offsets, object types
+  and sizes, PTR parents, FDA bounds) without the lock; `transact` picks
+  the target (handle 0 = context manager; a synchronous call made while
+  serving one goes to the thread of the target process already waiting in
+  the chain, else to the process todo; a reply to the caller's thread),
+  allocates, translates objects (taking refs with the counting rules
+  below), writes the buffer and queues it. Oneway calls to one node are
+  serialised: the next waits in `Node::async_todo` until the buffer of the
+  current one is freed. Synchronous calls are pushed on both threads'
+  stacks (the receiver's when it reads the call), replies pop them.
+  Files are installed in the receiver at read time (it is the current
+  process then), as O_CLOEXEC descriptors written into the buffer.
+- **Reference counting** follows Linux: a node counts internal strong refs
+  (refs of other processes), local strong/weak refs (kernel-held: in-flight
+  buffers and unacknowledged BR_ACQUIRE/BR_INCREFS) and the set of
+  processes holding a ref; what the owner has been told (`has_strong`,
+  `has_weak`) changes through BR_INCREFS/ACQUIRE/RELEASE/DECREFS, queued
+  on the sending thread when an object is first sent, on the owner's todo
+  otherwise. A node is freed when nothing references it; a ref when both
+  its counts are zero.
+- **Release** (last close): calls the process's threads were serving get
+  BR_DEAD_REPLY (`send_failed_reply` walks to a live caller), threads are
+  detached from calls they made, its nodes become dead (death
+  notifications are queued to every holder that asked; pending oneway
+  calls are dropped), its refs and queued work are dropped (undelivered
+  synchronous calls fail with BR_DEAD_REPLY) and all its buffers are freed.
+  The context manager slot is cleared.
+- **Death notifications**: a `Death` per ref that asked, with the Linux
+  state machine (DEAD_BINDER -> BC_DEAD_BINDER_DONE, CLEAR before or after
+  delivery -> BR_CLEAR_DEATH_NOTIFICATION_DONE, on the clearing thread if it
+  is a looper). They are process work, so only loopers receive them.
+
 ## Console tty (`fs/tty.rs`)
 
 A subset of Linux's N_TTY line discipline on COM1. There is no IOAPIC
@@ -469,7 +548,7 @@ IXON flow control, devpts.
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (24): int3
+fails the run; the script times out after 120 s. Current tests (25): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
@@ -488,7 +567,7 @@ mapping, AF_UNIX address parsing and socket queues (stream coalescing
 and peeking, message boundaries, hang-up on release), VFS
 (cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
 tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
-umount).
+umount), the binder buffer allocator (best fit, coalescing).
 
 User-space conformance tests (`tests/`, see `tests/README.md`) run in the
 guest with `tools/run-qemu.sh --ktest [FILTER]`. Phase B2 state: all B1
@@ -509,6 +588,19 @@ Phase B5 (AOSP shell, [aosp-shell.md](aosp-shell.md)):
 `tools/run-qemu.sh --aosp-sh-test` boots unmodified AOSP mksh and toybox
 (dynamically linked against bionic) and passes 15/15 checks, with 1, 4 and
 8 CPUs, debug and release; ktest and `--test` still pass.
+Phase C1 (binder): c1_binder 54/54 (binderfs and BINDER_CTL_ADD, mmap
+rules, separate contexts, a context manager child reached through handle
+0 with BR_TRANSACTION_SEC_CTX, sync and ordered oneway calls, sender pid,
+a server's object passed through the context manager to the client, the
+client's object called back while it waits (nested call) and returned to
+it as a binder, fds both ways, scatter-gather buffers with an fd array,
+BR_SPAWN_LOOPER and two calls served by two looper threads, death
+notification on the server's exit, BR_DEAD_REPLY, BR_FAILED_REPLY after
+releasing a handle, extended errors), with 1, 2, 4 and 8 CPUs and release;
+it is skipped on the Linux host. One in-kernel test covers the buffer
+allocator (25 tests). The whole suite, `--test` and `--aosp-sh-test` pass.
+AOSP's servicemanager starts on the kernel and gets through its binder
+setup, then stops at SELinux (see [aosp-shell.md](aosp-shell.md)).
 
 ## Known gaps / next steps
 
@@ -519,6 +611,10 @@ Phase B5 (AOSP shell, [aosp-shell.md](aosp-shell.md)):
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
   everything stays in RAM), mlock, a page cache for disk file systems (C2)
   behind the same `Inode::shmem` hook.
+- Binder: freezer, oneway spam reports, priority inheritance, SELinux
+  contexts, binder_logs; one global lock (fine for now, a per-process
+  split later). servicemanager needs an SELinux stub (selinuxfs status
+  page and access checks, /proc/<pid>/attr/current) in C3.
 - Sockets: AF_INET/INET6, AF_NETLINK (C3), in-flight fd garbage
   collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
 - ELF: map segments from the file's page cache (MAP_PRIVATE) instead of

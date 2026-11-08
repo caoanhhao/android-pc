@@ -277,6 +277,8 @@ pub fn exit_thread(status: i32) -> ! {
         }
     }
 
+    // The last user of the address space drops its mappings below.
+    let mm_last = t.mm().users.fetch_sub(1, Ordering::SeqCst) == 1;
     let mut table = TABLE.lock();
     table.tasks.remove(&t.tid);
     let node = table.node(pid);
@@ -324,14 +326,14 @@ pub fn exit_thread(status: i32) -> ! {
 
     if let Some((parent, final_status, auto_reap)) = notify_parent {
         t.process.files().close_all();
-        // Like Linux's exit_mm, drop the mappings before the parent hears
-        // of the exit (it may check for them, e.g. F_SEAL_WRITE). Not when
-        // another task (a vfork parent) shares the address space.
-        let mm = t.mm();
-        if Arc::strong_count(&mm) == 2 {
-            mm.unmap_all();
+        // Like Linux's exit_mm, drop the mappings (and the files they map:
+        // a binder mapping keeps its binder process alive) before the
+        // parent hears of the exit (it may check for them, e.g.
+        // F_SEAL_WRITE). Not when another task (a vfork parent) shares the
+        // address space.
+        if mm_last {
+            t.mm().unmap_all();
         }
-        drop(mm);
         release_vfork(&t.process);
         if pid == 1 {
             log::info!("init exited with status {:#x}; powering off", final_status);
@@ -471,6 +473,11 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     }
 
     let old = t.set_mm(image.mm);
+    if old.users.load(Ordering::SeqCst) == 0 {
+        // Exited threads may still hold the old space for a moment; its
+        // mapped files (binder!) must go now, as with Linux's mmput.
+        old.unmap_all();
+    }
     drop(old);
     release_vfork(&t.process);
     t.process.sig.lock().reset_for_exec();
