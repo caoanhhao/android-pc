@@ -36,6 +36,7 @@ pub const ENAMETOOLONG: Errno = Errno(36);
 pub const ENOSYS: Errno = Errno(38);
 pub const ENOTEMPTY: Errno = Errno(39);
 pub const ELOOP: Errno = Errno(40);
+pub const EOVERFLOW: Errno = Errno(75);
 pub const EOPNOTSUPP: Errno = Errno(95);
 pub const ETIMEDOUT: Errno = Errno(110);
 /// Internal: restart the syscall if the signal handler has SA_RESTART

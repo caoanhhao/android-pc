@@ -277,6 +277,14 @@ pub fn exit_thread(status: i32) -> ! {
 
     if let Some((parent, final_status, auto_reap)) = notify_parent {
         t.process.files().close_all();
+        // Like Linux's exit_mm, drop the mappings before the parent hears
+        // of the exit (it may check for them, e.g. F_SEAL_WRITE). Not when
+        // another task (a vfork parent) shares the address space.
+        let mm = t.mm();
+        if Arc::strong_count(&mm) == 2 {
+            mm.unmap_all();
+        }
+        drop(mm);
         release_vfork(&t.process);
         if pid == 1 {
             log::info!("init exited with status {:#x}; powering off", final_status);

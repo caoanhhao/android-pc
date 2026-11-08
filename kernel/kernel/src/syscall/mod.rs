@@ -15,7 +15,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::arch::TrapFrame;
 use crate::errno::*;
-use crate::mm::user::{PROT_EXEC, PROT_READ, PROT_WRITE};
+use alloc::sync::Arc;
+
+use crate::fs::file::{O_APPEND, OpenFile};
+use crate::mm::shmem::WRITE_SEALS;
+use crate::mm::user::{Backing, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::process::{TABLE, current, futex, lifecycle, signal};
 
 pub static TRACE: AtomicBool = AtomicBool::new(false);
@@ -46,6 +50,8 @@ pub mod nr {
     pub const PIPE: u64 = 22;
     pub const SCHED_YIELD: u64 = 24;
     pub const MREMAP: u64 = 25;
+    pub const MSYNC: u64 = 26;
+    pub const MINCORE: u64 = 27;
     pub const MADVISE: u64 = 28;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
@@ -132,6 +138,7 @@ pub mod nr {
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const GET_ROBUST_LIST: u64 = 274;
     pub const UTIMENSAT: u64 = 280;
+    pub const FALLOCATE: u64 = 285;
     pub const DUP3: u64 = 292;
     pub const PIPE2: u64 = 293;
     pub const PREADV: u64 = 295;
@@ -139,6 +146,7 @@ pub mod nr {
     pub const SYNCFS: u64 = 306;
     pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
+    pub const MEMFD_CREATE: u64 = 319;
     pub const STATX: u64 = 332;
     pub const CLOSE_RANGE: u64 = 436;
     pub const FACCESSAT2: u64 = 439;
@@ -193,6 +201,8 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::MUNMAP => current().mm().munmap(a0, a1).map(|_| 0),
         nr::BRK => Ok(current().mm().brk(a0)),
         nr::MREMAP => current().mm().mremap(a0, a1, a2, a3 as u32, a4),
+        nr::MSYNC => current().mm().msync(a0, a1, a2 as u32).map(|_| 0),
+        nr::MINCORE => sys_mincore(a0, a1, a2),
         nr::RT_SIGACTION => signal::sys_rt_sigaction(a0 as u32, a1, a2, a3),
         nr::RT_SIGPROCMASK => signal::sys_rt_sigprocmask(a0 as u32, a1, a2, a3),
         nr::RT_SIGRETURN => signal::sigreturn(frame),
@@ -299,6 +309,8 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::FACCESSAT => fs::sys_faccessat(i0, a1, a2 as u32, 0),
         nr::FACCESSAT2 => fs::sys_faccessat(i0, a1, a2 as u32, a3 as u32),
         nr::UTIMENSAT => fs::sys_utimensat(i0, a1, a2, a3 as u32),
+        nr::FALLOCATE => fs::sys_fallocate(i0, a1 as u32, a2 as i64, a3 as i64),
+        nr::MEMFD_CREATE => fs::sys_memfd_create(a0, a1 as u32),
         nr::PREADV => fs::sys_preadv(i0, a1, a2, a3 as i64),
         nr::PWRITEV => fs::sys_pwritev(i0, a1, a2, a3 as i64),
         nr::RENAMEAT2 => fs::sys_renameat2(i0, a1, a2 as i32, a3, a4 as u32),
@@ -355,18 +367,57 @@ fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i32, off: u64) -> KR
     if flags & (MAP_SHARED | MAP_PRIVATE) == 0 || !off.is_multiple_of(crate::mm::PAGE_SIZE) {
         return Err(EINVAL);
     }
+    let (shared, fixed, noreplace) =
+        (flags & MAP_SHARED != 0, flags & MAP_FIXED != 0, flags & MAP_FIXED_NOREPLACE != 0);
     if flags & MAP_ANONYMOUS == 0 {
-        current().process.files().get(fd)?;
-        return Err(ENODEV); // file mappings: phase B3
+        let f = current().process.files().get(fd)?;
+        return mmap_file(&f, addr, len, p, shared, fixed, noreplace, off);
     }
-    current().mm().mmap(
-        addr,
-        len,
-        p,
-        flags & MAP_SHARED != 0,
-        flags & MAP_FIXED != 0,
-        flags & MAP_FIXED_NOREPLACE != 0,
-    )
+    current().mm().mmap(addr, len, p, shared, fixed, noreplace)
+}
+
+/// mmap of an open file: tmpfs/memfd files map their shmem object,
+/// /dev/zero gives anonymous memory.
+#[allow(clippy::too_many_arguments)]
+fn mmap_file(f: &Arc<OpenFile>, addr: u64, len: u64, p: u32, shared: bool, fixed: bool, noreplace: bool, off: u64) -> KResult<u64> {
+    use crate::fs::vfs::{S_IFCHR, S_IFMT, S_IFREG, dev_major, dev_minor};
+    if f.is_path_only() {
+        return Err(EBADF);
+    }
+    if !f.readable() {
+        return Err(EACCES);
+    }
+    let meta = f.inode.meta();
+    let obj = match meta.mode() & S_IFMT {
+        S_IFREG => f.inode.shmem().ok_or(ENODEV)?,
+        S_IFCHR if (dev_major(meta.rdev), dev_minor(meta.rdev)) == (1, 5) => {
+            return current().mm().mmap(addr, len, p, shared, fixed, noreplace);
+        }
+        _ => return Err(ENODEV),
+    };
+    let pgoff = off / crate::mm::PAGE_SIZE;
+    if pgoff.checked_add(len.div_ceil(crate::mm::PAGE_SIZE)).is_none_or(|e| e > i64::MAX as u64 / crate::mm::PAGE_SIZE) {
+        return Err(EOVERFLOW);
+    }
+    let writable = f.writable() && f.flags() & O_APPEND == 0;
+    let sealed = obj.seals() & WRITE_SEALS != 0;
+    if shared && p & PROT_WRITE != 0 {
+        if !writable {
+            return Err(EACCES);
+        }
+        if sealed {
+            return Err(EPERM);
+        }
+    }
+    let backing = Backing { obj, pgoff, file: Some(f.clone()) };
+    current().mm().mmap_object(addr, len, p, shared, writable && !sealed, backing, fixed, noreplace)
+}
+
+fn sys_mincore(addr: u64, len: u64, vec: u64) -> KResult<u64> {
+    let mm = current().mm();
+    let v = mm.mincore(addr, len)?;
+    mm.copy_out(vec, &v)?;
+    Ok(0)
 }
 
 fn sys_mprotect(addr: u64, len: u64, prot: u64) -> KResult<u64> {

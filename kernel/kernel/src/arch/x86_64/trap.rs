@@ -26,6 +26,7 @@ const FPE_FLTINV: i32 = 7;
 const SEGV_MAPERR: i32 = 1;
 const SEGV_ACCERR: i32 = 2;
 const BUS_ADRALN: i32 = 1;
+const BUS_ADRERR: i32 = 2;
 const TRAP_TRACE: i32 = 2;
 
 const PF_PRESENT: u64 = 1 << 0;
@@ -87,9 +88,13 @@ fn user_exception(frame: &mut TrapFrame) {
             let write = frame.error_code & PF_WRITE != 0;
             let exec = frame.error_code & PF_INSN != 0;
             // Not present: demand paging; present: copy-on-write.
-            if crate::process::current().mm().handle_fault(cr2, write, exec)
-            {
-                return;
+            match crate::process::current().mm().handle_fault(cr2, write, exec) {
+                Ok(()) => return,
+                Err(crate::mm::user::FaultError::Bus) => {
+                    signal::force_fault(fault(signal::SIGBUS, BUS_ADRERR, cr2));
+                    return;
+                }
+                Err(crate::mm::user::FaultError::Segv) => {}
             }
             let code = if frame.error_code & PF_PRESENT != 0 {
                 SEGV_ACCERR

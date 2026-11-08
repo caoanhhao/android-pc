@@ -114,7 +114,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   its lock is held, so interrupt handlers may allocate. Does not grow yet.
 - **User address spaces** (`mm/user.rs`): a PML4 whose entries 256..511 are
   copied from the kernel PML4 (shared kernel PDPTs). VMAs (start, end, prot,
-  shared) in a BTreeMap. ELF segments are copied in at exec; anonymous memory
+  shared, maywrite, optional backing = shmem object + page offset + the
+  open file) in a BTreeMap. ELF segments are copied in at exec; anonymous memory
   (stack, brk heap, mmap) is zero-filled on first touch, from the page-fault
   handler or from kernel user-copies. PROT_NONE pages keep their frame in a
   not-present PTE marked BIT_9.
@@ -127,14 +128,38 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
     released after a TLB shootdown. `mprotect` and ELF segment merging keep
     still-shared pages read-only. Frames return to the allocator only when
     the last address space drops them (munmap, exit, exec).
-  - **MAP_SHARED anonymous** (stop-gap until B3b's shmem object): fork
-    populates every page of a shared VMA and maps the same frames writable
-    in both processes. Pages are not shared with mappings created later, and
-    madvise(DONTNEED) leaves shared pages alone.
-  - **madvise** DONTNEED/FREE unmap the private pages of the range;
+  - **Shmem objects / page cache** (`mm/shmem.rs`): a sparse
+    `BTreeMap<page index, frame>` + size + memfd seals. Every tmpfs regular
+    file (memfd included) keeps its data in one, and every MAP_SHARED
+    anonymous mapping gets one at mmap time. The object holds one frame
+    reference per page, each PTE another. `read`/`write` copy through the
+    direct map, so they and every MAP_SHARED mapping see the same frames.
+    Files from the initramfs keep pointing into the boot module until a page
+    is first touched. No size cap (sparse, up to 2^63-1); `write` and
+    `fallocate` return ENOSPC rather than use the last 16 MiB of RAM.
+  - **File and shared mappings**: a fault in a backed VMA asks the object
+    for page `pgoff + (va - start) / 4096` (EFAULT past EOF -> SIGBUS
+    BUS_ADRERR; EFAULT for kernel copies). MAP_SHARED maps it writable per
+    prot; MAP_PRIVATE maps it read-only, which the COW rule above turns into
+    a copy on write (the object's reference keeps the count above 1), or
+    copies at once for a write fault. fork copies the PTEs (shared ones stay
+    writable). Each object keeps weak references to the address spaces that
+    map it: truncate unmaps the dropped pages from all of them (private
+    copies too, like Linux), a hole punch unmaps only the object's own
+    frames, and F_SEAL_WRITE fails with EBUSY while a shared VMA with
+    `maywrite` (fd open for writing, no write seal) exists. Lock order:
+    address space -> shmem -> frame allocator; an object never calls into
+    an address space under its own lock. At process exit the mappings are
+    dropped before the parent is notified (Linux's exit_mm), unless a vfork
+    parent shares the address space.
+  - **madvise** DONTNEED/FREE unmap the pages of the range (backed VMAs
+    refault from their object), REMOVE punches a hole in the object;
     **mremap** shrinks, grows in place when the following range is free, or
     moves the PTEs (not the data) to a new range (MAYMOVE, FIXED,
-    DONTUNMAP).
+    DONTUNMAP), keeping a backed VMA's object at the right offset;
+    old_size 0 maps a shared mapping's pages a second time.
+  - **Futex keys**: (object address, byte offset) inside MAP_SHARED backed
+    VMAs unless FUTEX_PRIVATE_FLAG, else (address space, address).
   - **Stack**: the 8 MiB stack VMA is demand-faulted, which covers normal
     growth; MAP_GROWSDOWN and RLIMIT_STACK-driven growth are not done.
   Layout: ELF at its link address (static-PIE at 0x5555_5555_4000), brk after
@@ -284,9 +309,9 @@ One global mount namespace. The pieces:
   `(OpenFile, cloexec)` slots (1024 max); dup shares the description.
 - **File systems**:
   - `tmpfs`: directories as `BTreeMap`s (so getdents order is by name),
-    file data in a heap `Vec` (64 MiB cap per file until the page cache);
-    files from the initramfs keep pointing into the boot module until first
-    written. The root file system ("rootfs") is a tmpfs filled from the
+    file data in a shmem object (`mm/shmem.rs`, see above), which `mmap`
+    maps directly. memfds are unnamed tmpfs inodes on their own device;
+    `/proc/<pid>/fd` and `maps` show them as `/memfd:NAME (deleted)`. The root file system ("rootfs") is a tmpfs filled from the
     cpio archive (files, directories, symlinks, device nodes, owners,
     mtimes). `mount -t tmpfs|ramfs` makes new instances (`mode=` option).
   - devtmpfs (one shared instance): null, zero, full, random, urandom,
@@ -298,7 +323,9 @@ One global mount namespace. The pieces:
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
     mounts,fd/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
     `filesystems`, `cmdline`, `version`, `loadavg`, `stat`. Contents are
-    generated at open. `maps`/`VmSize` are only filled in for the calling
+    generated at open. `maps` shows `s`/`p`, file offset, device and inode,
+    and names file mappings by path (`/dev/zero (deleted)` for anonymous
+    shared memory). `maps`/`VmSize` are only filled in for the calling
     process (reading another task's address space pointer would race with
     its execve). `fd/N` are symlinks whose target is the open file's path
     (`pipe:[ino]` for pipes); they are not "magic" links yet.
@@ -314,7 +341,7 @@ One global mount namespace. The pieces:
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (18): int3
+fails the run; the script times out after 120 s. Current tests (22): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
@@ -323,7 +350,13 @@ refcounts, COW fork (pages shared read-only, copy on write fault and on
 `copy_out`, refcount-1 reuse, shared mapping stays shared, grandchild after
 the middle generation exits, mprotect keeps shared pages read-only, no frame
 leak), madvise DONTNEED and mremap move/shrink/grow/FIXED+DONTUNMAP (no
-frame leak), VFS
+frame leak), shmem objects (initramfs-backed reads, partial-page truncate,
+sparse growth, hole punch, seals, no frame leak), page-cache sharing (two
+address spaces and read/write see the same frames, private COW from the
+cache, equal futex keys, F_SEAL_WRITE EBUSY, truncate -> SIGBUS, fork,
+mremap old_size 0 and growth past the object, DONTNEED keeps shared data,
+mincore/msync, no frame leak), mprotect EACCES on a read-only shared
+mapping, VFS
 (cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
 tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
 umount).
@@ -334,17 +367,19 @@ and B2 tests pass with the same case counts as on the Linux host (b1_hello
 22, b1_time 24, b1_fork_wait 24, b1_execve 7, b1_signals 36, b1_threads 16,
 b1_tls 14, b2_files 92, b2_pipe 27, b2_getdents 13, b2_devproc 26); the
 B3/B4 tests fail cleanly (missing syscalls) without taking the kernel down.
-B2 was checked with 1, 4 and 8 CPUs, debug and release. Phase B3a: b3_fork_cow
-11/11 and b3_mmap 40/40 pass as well (b3_memfd is B3b).
+B2 was checked with 1, 4 and 8 CPUs, debug and release. Phase B3: b3_mmap
+40/40, b3_fork_cow 11/11, b3_memfd 35/35 and b3_shmem 35/35 (same counts as
+the Linux host).
 
 ## Known gaps / next steps
 
 - VFS follow-ups: permission checks and credentials, read-only mounts,
   FIFOs in the file system, devpts, console input, /proc/<pid>/fd magic
-  links, /proc/sys, a real sysfs, statfs block accounting, page cache
-  (B3, also for file mmap and to lift the 64 MiB tmpfs file cap).
-- B3b: file mappings, a shmem object behind MAP_SHARED (replacing the
-  populate-at-fork stop-gap), memfd, page cache, MAP_GROWSDOWN.
+  links (so a memfd cannot be re-opened through /proc/self/fd/N yet),
+  /proc/sys, a real sysfs, statfs block accounting.
+- Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
+  everything stays in RAM), mlock, a page cache for disk file systems (C2)
+  behind the same `Inode::shmem` hook.
 - Dynamic ELF (PT_INTERP: load bionic's linker64 and pass AT_BASE).
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
   time accounting (CPU-time clocks currently report uptime), sleep timers

@@ -42,6 +42,7 @@ file này).
 | B3 | `b3_mmap` | mmap ẩn danh, MAP_FIXED(_NOREPLACE), munmap, mprotect (đọc/ghi/thực thi), mremap, madvise(DONTNEED), 1 GiB lazy, `brk`, stack tự mở rộng |
 | B3 | `b3_fork_cow` | COW sau fork theo cả hai chiều, `.data`, MAP_SHARED ẩn danh, trang read-only, stress 256 trang × 2 thế hệ, 50 lần fork |
 | B3 | `b3_memfd` | `memfd_create`, hai view MAP_SHARED trùng nhau, seal (SHRINK/GROW/WRITE/SEAL), SIGBUS sau EOF, file mmap PRIVATE (COW) / SHARED (ghi xuống file), msync |
+| B3 | `b3_shmem` | tên `/memfd:x (deleted)` trong /proc/self/fd và maps, futex trên bộ nhớ chia sẻ giữa hai process qua hai view khác địa chỉ, mremap file mapping, fallocate (grow/KEEP_SIZE/PUNCH_HOLE), truncate khi đang map (SIGBUS, đuôi trang về 0), F_SEAL_FUTURE_WRITE, MAP_SHARED /dev/zero, mprotect EACCES / msync lỗi |
 | B4 | `b4_epoll` | `poll/ppoll`, epoll LT/ET/ONESHOT, MOD/DEL, EPOLLHUP, timeout, đánh thức từ process khác, epoll lồng nhau |
 | B4 | `b4_eventfd` | `eventfd2` bộ đếm, EFD_SEMAPHORE, NONBLOCK, tràn, epoll |
 | B4 | `b4_timerfd` | `timerfd_create/settime/gettime`, one-shot, periodic, ABSTIME, REALTIME/BOOTTIME |

@@ -240,6 +240,12 @@ pub trait Inode: Send + Sync + Any {
         Err(EINVAL)
     }
 
+    /// The page cache object holding this file's data, for regular files
+    /// that can be mapped (tmpfs, memfd).
+    fn shmem(&self) -> Option<Arc<crate::mm::shmem::Shmem>> {
+        None
+    }
+
     /// File operations for an open of this inode when they are not the
     /// generic ones (pseudo files); `None` = use the VFS default.
     fn open(&self, _flags: u32) -> KResult<Option<alloc::boxed::Box<dyn super::file::FileOps>>> {

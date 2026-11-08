@@ -106,12 +106,12 @@ impl OpenFile {
         self.flags() & O_NONBLOCK != 0
     }
 
-    fn readable(&self) -> bool {
+    pub fn readable(&self) -> bool {
         let f = self.flags();
         f & O_PATH == 0 && f & O_ACCMODE != O_WRONLY
     }
 
-    fn writable(&self) -> bool {
+    pub fn writable(&self) -> bool {
         let f = self.flags();
         f & O_PATH == 0 && f & O_ACCMODE != O_RDONLY
     }

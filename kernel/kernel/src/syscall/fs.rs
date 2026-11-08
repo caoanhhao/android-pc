@@ -11,6 +11,7 @@ use crate::fs::file::*;
 use crate::fs::pipe::{self, PIPE_CAPACITY, PipeReader, PipeWriter};
 use crate::fs::vfs::{self, Inode, PathRef, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 use crate::fs::{self};
+use crate::mm::shmem;
 use crate::process::current;
 
 pub const AT_FDCWD: i32 = -100;
@@ -35,6 +36,14 @@ const F_OFD_SETLKW: u32 = 38;
 const F_DUPFD_CLOEXEC: u32 = 1030;
 const F_SETPIPE_SZ: u32 = 1031;
 const F_GETPIPE_SZ: u32 = 1032;
+const F_ADD_SEALS: u32 = 1033;
+const F_GET_SEALS: u32 = 1034;
+const MFD_CLOEXEC: u32 = 1;
+const MFD_ALLOW_SEALING: u32 = 2;
+const MFD_NOEXEC_SEAL: u32 = 8;
+const MFD_EXEC: u32 = 0x10;
+/// Longest memfd name: NAME_MAX minus "memfd:".
+const MFD_NAME_MAX: usize = 249;
 const FD_CLOEXEC: u64 = 1;
 const F_UNLCK: u16 = 2;
 const FIONCLEX: u32 = 0x5450;
@@ -335,6 +344,15 @@ pub fn sys_fcntl(fd: i32, cmd: u32, arg: u64) -> KResult<u64> {
             Ok(0)
         }
         F_GETPIPE_SZ | F_SETPIPE_SZ => pipe_capacity(&f).ok_or(EBADF),
+        F_ADD_SEALS => {
+            let obj = f.inode.shmem().ok_or(EINVAL)?;
+            if !f.writable() {
+                return Err(EPERM);
+            }
+            obj.add_seals(arg as u32)?;
+            Ok(0)
+        }
+        F_GET_SEALS => Ok(f.inode.shmem().ok_or(EINVAL)?.seals() as u64),
         _ => Err(EINVAL),
     }
 }
@@ -730,6 +748,49 @@ fn truncate_inode(inode: &Arc<dyn Inode>, len: i64) -> KResult<u64> {
     }
     inode.truncate(len as u64)?;
     Ok(0)
+}
+
+pub fn sys_fallocate(fd: i32, mode: u32, off: i64, len: i64) -> KResult<u64> {
+    let f = io_file(fd)?;
+    if off < 0 || len <= 0 {
+        return Err(EINVAL);
+    }
+    if !f.writable() {
+        return Err(EBADF);
+    }
+    match f.inode.meta().file_type() {
+        S_IFREG => {}
+        S_IFDIR => return Err(EISDIR),
+        vfs::S_IFIFO => return Err(ESPIPE),
+        _ => return Err(ENODEV),
+    }
+    f.inode.shmem().ok_or(EOPNOTSUPP)?.fallocate(mode, off as u64, len as u64)?;
+    f.inode.meta().touch_mtime();
+    Ok(0)
+}
+
+/// `memfd_create(2)`: an unnamed tmpfs file, shown as
+/// "/memfd:NAME (deleted)".
+pub fn sys_memfd_create(name: u64, flags: u32) -> KResult<u64> {
+    if flags & !(MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC) != 0
+        || flags & (MFD_NOEXEC_SEAL | MFD_EXEC) == MFD_NOEXEC_SEAL | MFD_EXEC
+    {
+        return Err(EINVAL);
+    }
+    let name = current().mm().read_cstr(name, MFD_NAME_MAX).map_err(|e| if e == EFAULT { e } else { EINVAL })?;
+    if name.len() > MFD_NAME_MAX {
+        return Err(EINVAL);
+    }
+    let (mode, seals) = if flags & MFD_NOEXEC_SEAL != 0 {
+        (0o666, shmem::F_SEAL_EXEC)
+    } else if flags & MFD_ALLOW_SEALING != 0 {
+        (0o777, 0)
+    } else {
+        (0o777, shmem::F_SEAL_SEAL)
+    };
+    let inode = fs::tmpfs::TmpInode::new_memfd(&name, mode, seals);
+    let file = OpenFile::new(inode, None, alloc::boxed::Box::new(RegularFile), O_RDWR);
+    Ok(current().process.files().alloc(file, flags & MFD_CLOEXEC != 0, 0)? as u64)
 }
 
 pub fn sys_umask(mask: u32) -> KResult<u64> {
