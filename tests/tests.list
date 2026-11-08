@@ -1,0 +1,25 @@
+# Test programs in kernel-milestone order. One name per line; read by
+# run-host.sh, tools/mkinitramfs.sh and (compiled in) by ktest-init.
+# B1: processes, ELF, signals, futex, TLS
+b1_hello
+b1_time
+b1_fork_wait
+b1_execve
+b1_signals
+b1_threads
+b1_tls
+# B2: VFS, pipes, getdents, devfs/procfs
+b2_files
+b2_pipe
+b2_getdents
+b2_devproc
+# B3: virtual memory
+b3_mmap
+b3_fork_cow
+b3_memfd
+# B4: I/O multiplexing and IPC
+b4_epoll
+b4_eventfd
+b4_timerfd
+b4_signalfd
+b4_unix
