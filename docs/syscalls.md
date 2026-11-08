@@ -10,16 +10,16 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4a)
+## Implemented (phases B1-B4b)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
-| 0 | read | yes | VFS files, devices, pipes/FIFOs, /proc, eventfd/timerfd/signalfd; regular files read in 64 KiB chunks until done |
-| 1 | write | yes | VFS files (O_APPEND atomic), devices, pipes (EPIPE + SIGPIPE, atomic up to PIPE_BUF) |
+| 0 | read | yes | VFS files, devices, pipes/FIFOs, sockets (= recv 0), /proc, eventfd/timerfd/signalfd; regular files read in 64 KiB chunks until done |
+| 1 | write | yes | VFS files (O_APPEND atomic), devices, pipes (EPIPE + SIGPIPE, atomic up to PIPE_BUF), sockets (= send 0) |
 | 2 | open | yes | = openat(AT_FDCWD) |
 | 3 | close | yes | |
 | 4 | stat | yes | = newfstatat(AT_FDCWD, 0) |
-| 5 | fstat | yes | any fd (pipes S_IFIFO, devices S_IFCHR with rdev); uid/gid/times stored |
+| 5 | fstat | yes | any fd (pipes S_IFIFO, sockets S_IFSOCK, devices S_IFCHR with rdev); uid/gid/times stored |
 | 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
 | 7 | poll | yes | POLLNVAL for bad fds, negative fds ignored, ERR/HUP always reported; timeout in ms (< 0 = forever); EINTR on a signal; EINVAL above 1024 fds |
 | 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
@@ -30,10 +30,10 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes; console: TCGETS/TCSETS*/TIOCGWINSZ/TIOCSWINSZ/TIOCGPGRP/TIOCSPGRP/TIOCSCTTY/TIOCGSID; everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console: TCGETS/TCSETS*/TIOCGWINSZ/TIOCSWINSZ/TIOCGPGRP/TIOCSPGRP/TIOCSCTTY/TIOCGSID; everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
-| 19 | readv | yes | |
+| 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
 | 20 | writev | yes | gathered into one write |
 | 21 | access | yes | = faccessat; root: only X_OK can fail |
 | 22 | pipe | yes | = pipe2(0) |
@@ -47,6 +47,21 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 33 | dup2 | yes | |
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
 | 39 | getpid | yes | thread group id |
+| 41 | socket | yes | AF_UNIX: SOCK_STREAM, SOCK_DGRAM (SOCK_RAW = DGRAM), SOCK_SEQPACKET; SOCK_NONBLOCK, SOCK_CLOEXEC; protocol 0/1 else EPROTONOSUPPORT, other types ESOCKTNOSUPPORT, unknown flags EINVAL; every other family (AF_INET, AF_INET6, AF_NETLINK, ...) EAFNOSUPPORT |
+| 42 | connect | yes | stream/seqpacket: to a listener by path or abstract name (ECONNREFUSED if nothing listens, ENOENT for a missing path, EPROTOTYPE on type mismatch, EISCONN, EINVAL on a listener); queued on the listener at once (no accept needed to send), blocks (EAGAIN with O_NONBLOCK) while the backlog is full. dgram: sets the default destination (EPERM if the target is connected elsewhere), AF_UNSPEC disconnects |
+| 43 | accept | yes | = accept4(0) |
+| 44 | sendto | yes | see "Sockets" below; an address on a connected stream EISCONN, unconnected EOPNOTSUPP |
+| 45 | recvfrom | yes | sender address (namelen 0 for an unnamed sender) |
+| 46 | sendmsg | yes | iovecs gathered; SCM_RIGHTS (up to 253 fds, EBADF for a bad one), SCM_CREDENTIALS (taken as given: everything is root); other cmsgs EINVAL |
+| 47 | recvmsg | yes | SCM_CREDENTIALS (with SO_PASSCRED) then SCM_RIGHTS; MSG_CTRUNC when the control buffer is short (fds that do not fit are closed), MSG_TRUNC for a cut datagram; MSG_CMSG_CLOEXEC |
+| 48 | shutdown | yes | SHUT_RD/WR/RDWR, the peer gets the mirror image (EOF / EPIPE); ENOTSOCK on other files |
+| 49 | bind | yes | path (creates an S_IFSOCK inode, mode 0777 & ~umask; EADDRINUSE if the path exists), abstract name (EADDRINUSE while bound), family-only length = autobind (abstract "\0xxxxx"); EINVAL if already bound |
+| 50 | listen | yes | EINVAL unbound or connected, EOPNOTSUPP on dgram; backlog clamped to 4096; again on a listener updates the backlog |
+| 51 | getsockname | yes | path + NUL, abstract name, or family only |
+| 52 | getpeername | yes | ENOTCONN |
+| 53 | socketpair | yes | AF_UNIX, all three types; SO_PEERCRED of both ends = the caller |
+| 54 | setsockopt | partial | SOL_SOCKET: SO_PASSCRED, SO_SNDBUF/RCVBUF(+FORCE) (stored doubled, min 4608/2304), SO_RCVTIMEO/SNDTIMEO (old and new; EDOM for bad usec), common flags (REUSEADDR, KEEPALIVE, ...) accepted; others ENOPROTOOPT, other levels EOPNOTSUPP |
+| 55 | getsockopt | partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_PROTOCOL, SO_ERROR, SO_SNDBUF/RCVBUF (212992 default), SO_PASSCRED, SO_PEERCRED (pid 0 uid/gid 65534 without peer), SO_ACCEPTCONN, SO_RCVTIMEO/SNDTIMEO, SO_RCVLOWAT/SNDLOWAT (1); SO_PEERSEC ENOPROTOOPT |
 | 56 | clone | yes | fork-style and thread-style (CLONE_VM, THREAD, SIGHAND, FILES, VFORK, PARENT, SETTLS, PARENT_SETTID, CHILD_SETTID, CHILD_CLEARTID); CLONE_PIDFD -> EINVAL; namespaces ignored |
 | 57 | fork | yes | copy-on-write: private pages shared read-only, copied on the first write (or made writable again when no longer shared) |
 | 58 | vfork | yes | shares memory, parent sleeps until the child execs or exits |
@@ -93,7 +108,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 128 | rt_sigtimedwait | yes | EAGAIN on timeout, EINTR on another signal |
 | 130 | rt_sigsuspend | yes | old mask restored after the handler |
 | 131 | sigaltstack | yes | SS_DISABLE, EPERM while on it, ENOMEM below MINSIGSTKSZ |
-| 133 | mknod | yes | regular files, device nodes, FIFOs (open: readers wait for a writer and writers for a reader, O_NONBLOCK reader opens at once, O_NONBLOCK writer without reader ENXIO, O_RDWR never blocks), sockets (open ENXIO) |
+| 133 | mknod | yes | regular files, device nodes, FIFOs (open: readers wait for a writer and writers for a reader, O_NONBLOCK reader opens at once, O_NONBLOCK writer without reader ENXIO, O_RDWR never blocks), sockets (open ENXIO, connect works on a bound one) |
 | 137 | statfs | partial | f_type from the mount (tmpfs/ramfs/proc/sysfs magic); block counts are RAM frames |
 | 138 | fstatfs | partial | pipes report PIPEFS_MAGIC |
 | 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME; others EINVAL |
@@ -140,6 +155,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 285 | fallocate | partial | tmpfs/memfd: mode 0 allocates pages and grows the file, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE (with KEEP_SIZE; partial pages zeroed, whole pages freed and unmapped); other modes EOPNOTSUPP; EBADF read-only fd, EINVAL bad offset/length, ESPIPE pipes, ENODEV other files, EPERM against seals, ENOSPC near the end of RAM |
 | 286 | timerfd_settime | yes | relative or TFD_TIMER_ABSTIME (realtime converted with the boot epoch), interval, old value; zero disarms; TFD_TIMER_CANCEL_ON_SET accepted (the clock is never set); resets the expiration count; EINVAL for a non-timerfd fd |
 | 287 | timerfd_gettime | yes | time left and interval |
+| 288 | accept4 | yes | SOCK_NONBLOCK, SOCK_CLOEXEC (the new socket does not inherit O_NONBLOCK); peer address = the client's (family only when unnamed); EINVAL if not listening, EOPNOTSUPP on dgram |
 | 289 | signalfd4 | yes | SFD_NONBLOCK, SFD_CLOEXEC; fd = -1 creates, else updates the mask of an existing signalfd (EINVAL otherwise); reads 128-byte signalfd_siginfo records of the reader's pending signals in the mask (several per read, EINVAL below 128 bytes); POLLIN while one is pending |
 | 290 | eventfd2 | yes | EFD_SEMAPHORE, EFD_NONBLOCK, EFD_CLOEXEC; 8-byte reads/writes (EINVAL shorter or writing 2^64-1), write blocks/EAGAIN past 2^64-2 |
 | 291 | epoll_create1 | yes | EPOLL_CLOEXEC |
@@ -147,7 +163,9 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 293 | pipe2 | yes | O_CLOEXEC, O_NONBLOCK, O_DIRECT accepted (not packet mode); 64 KiB buffer |
 | 295 | preadv | yes | |
 | 296 | pwritev | yes | |
+| 299 | recvmmsg | partial | recvmsg in a loop, MSG_WAITFORONE; the timeout is ignored |
 | 306 | syncfs | stub | 0 |
+| 307 | sendmmsg | yes | sendmsg in a loop; count sent, the error only if none was |
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
 | 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
@@ -155,6 +173,31 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
 | 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
 | 441 | epoll_pwait2 | yes | epoll_pwait with a timespec timeout |
+
+## Sockets (AF_UNIX)
+
+- Stream: no message boundaries (a read coalesces queued writes, stops
+  after a chunk that carried fds and, with SO_PASSCRED, between different
+  writers); writes are split as buffer room allows (SO_SNDBUF of the
+  sender against the peer's queue) and return a partial count when
+  interrupted or nonblocking. Dgram/seqpacket: one message per read,
+  the rest of a cut message is dropped (MSG_TRUNC returns the real size);
+  EMSGSIZE above SO_SNDBUF. An unconnected receiver queues at most 600
+  datagrams from senders it is not connected to.
+- Flags: MSG_DONTWAIT, MSG_PEEK (fds are duplicated), MSG_WAITALL
+  (stream), MSG_TRUNC, MSG_NOSIGNAL, MSG_CMSG_CLOEXEC; MSG_OOB EOPNOTSUPP.
+- Errors: ENOTCONN (send on an unconnected stream/seqpacket or dgram
+  without destination, recv on an unconnected seqpacket), EINVAL (recv on
+  an unconnected or listening stream), EPIPE + SIGPIPE (unless
+  MSG_NOSIGNAL) after our SHUT_WR or the peer's SHUT_RD/close,
+  ECONNREFUSED (dgram target gone; a connected dgram socket is then
+  disconnected), EPERM (dgram target connected to someone else), EAGAIN
+  for nonblocking calls and SO_RCVTIMEO/SO_SNDTIMEO expiry, ENOTSOCK for
+  socket calls on other files.
+- SCM_RIGHTS files that are never received are closed when the receiving
+  socket goes away; credentials are the sender's pid with uid/gid 0.
+- /proc/net/unix lists every socket (Linux columns; `@name` for abstract
+  names, flag 00010000 for listeners).
 
 ## Readiness: poll, select, epoll
 
@@ -166,6 +209,12 @@ static programs use; **partial** = works for the common case, gaps listed;
   pending for the polling thread; epoll fd POLLIN while an item on its
   ready list has events; console POLLOUT only (no input yet); regular
   files and memory devices are always ready (and not epoll-able).
+  Sockets: POLLIN with queued data, a listener POLLIN with a pending
+  connection; POLLRDHUP | POLLIN after the peer shut down writing,
+  POLLHUP when both directions are shut (peer closed) or for an
+  unconnected stream/seqpacket socket; POLLERR with a pending SO_ERROR
+  (ECONNRESET when the peer closed with unread data); POLLOUT while the
+  peer's queue has room.
 - epoll: level-triggered items are reported as long as they are ready,
   EPOLLET items once per wake-up of the file, EPOLLONESHOT items once
   until re-armed with EPOLL_CTL_MOD; EPOLLERR/EPOLLHUP are always
@@ -174,7 +223,7 @@ static programs use; **partial** = works for the common case, gaps listed;
   the file's last reference is closed (a dup keeps it alive, as on
   Linux). Nested epolls work.
 - /proc/<pid>/fd shows `anon_inode:[eventfd]`, `[eventpoll]`, `[timerfd]`,
-  `[signalfd]`; /proc/<pid>/fdinfo/N has pos/flags/mnt_id/ino plus the
+  `[signalfd]` and `socket:[ino]`; /proc/<pid>/fdinfo/N has pos/flags/mnt_id/ino plus the
   epoll items (`tfd: ... events: ... data: ...`), eventfd count, timerfd
   clock/ticks/it_value/it_interval and signalfd mask.
 
@@ -193,7 +242,9 @@ static programs use; **partial** = works for the common case, gaps listed;
   signals, do nothing (no job control yet).
 - Interrupted syscalls return EINTR, or are restarted with SA_RESTART
   (wait4, blocking futex wait, pipe/FIFO read/write and open, eventfd,
-  timerfd and signalfd reads). poll, select, epoll_wait and their variants
+  timerfd and signalfd reads, socket send/recv/connect/accept without
+  SO_RCVTIMEO/SO_SNDTIMEO; with a timeout set they return EINTR, as on
+  Linux). poll, select, epoll_wait and their variants
   always return EINTR, as on Linux.
 - Real-time signals do not queue (one pending instance each), like the
   standard ones.
@@ -206,8 +257,11 @@ static programs use; **partial** = works for the common case, gaps listed;
 - **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
   without a page cache (procfs, devices other than /dev/zero), mlock family,
   re-opening a memfd through /proc/<pid>/fd/N (not a magic link).
-- **B4b**: sockets (AF_UNIX: stream/dgram/seqpacket, SCM_RIGHTS,
-  SO_PEERCRED). Also pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
-  cancellation, SIGIO/O_ASYNC.
+- **B4 leftovers**: pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
+  cancellation, SIGIO/O_ASYNC. Sockets: AF_INET/AF_INET6 (no network
+  stack), AF_NETLINK (uevents in C3), MSG_OOB, SO_PEEK_OFF,
+  SO_PEERGROUPS, SCM_SECURITY, garbage collection of in-flight fd cycles
+  (a socket sent over itself and never received leaks),
+  /proc/sys/net/unix/max_dgram_qlen (fixed at 600).
 - Later: credentials (setuid family, capabilities), rlimits, sched_*
   affinity/priority, rseq, clone3, io_uring (not used by AOSP).

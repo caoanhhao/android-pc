@@ -1,4 +1,4 @@
-# Kernel architecture (phase B4a state)
+# Kernel architecture (phase B4b state)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -60,7 +60,9 @@ kernel/
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
                        wait4), elf (loader + initial stack), signal, futex
       syscall/         dispatch table (Linux numbers), fs, time, poll (poll/select,
-                       epoll, eventfd, timerfd, signalfd syscalls)
+                       epoll, eventfd, timerfd, signalfd syscalls), net (socket
+                       syscalls, msghdr/cmsg handling, socket options)
+      net/             sockets: constants, credentials; unix (AF_UNIX sockets)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
                        files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
                        dev (character devices), procfs, pipe (+ FIFOs), poll
@@ -332,13 +334,13 @@ One global mount namespace. The pieces:
     the kernel log.
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
     mounts,fd/,fdinfo/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
-    `filesystems`, `cmdline`, `version`, `loadavg`, `stat`. Contents are
+    `filesystems`, `cmdline`, `version`, `loadavg`, `stat`, `net/unix`. Contents are
     generated at open. `maps` shows `s`/`p`, file offset, device and inode,
     and names file mappings by path (`/dev/zero (deleted)` for anonymous
     shared memory). `maps`/`VmSize` are only filled in for the calling
     process (reading another task's address space pointer would race with
     its execve). `fd/N` are symlinks whose target is the open file's path
-    (`pipe:[ino]` for pipes, `anon_inode:[eventfd]`/`[eventpoll]`/
+    (`pipe:[ino]` for pipes, `socket:[ino]` for sockets, `anon_inode:[eventfd]`/`[eventpoll]`/
     `[timerfd]`/`[signalfd]` for event files, which share one 0600
     anonymous inode); they are not "magic" links yet. `fdinfo/N`: pos,
     flags (with O_CLOEXEC), mnt_id (device), ino, then per-type lines.
@@ -391,12 +393,51 @@ One global mount namespace. The pieces:
   expiry wakes the queue. **signalfd**: a mask; reads dequeue the reading
   thread's pending signals in the mask (`signal::dequeue`).
 
+## Sockets (`net/`)
+
+- Only AF_UNIX (`net/unix.rs`); other families get EAFNOSUPPORT. A
+  socket file is an `OpenFile` whose ops are `SocketFile(Arc<UnixSocket>)`
+  and whose inode is a fresh anonymous `S_IFSOCK | 0777` inode (fstat,
+  `socket:[ino]`). Dropping the `SocketFile` (last close) *releases* the
+  socket. Syscalls find the socket by downcasting the ops (ENOTSOCK
+  otherwise); read/write/readv/writev go through the same send/recv.
+- `UnixSocket`: type, wait queue, and under one lock: state
+  (unconnected / listening / connected), bound address, peer
+  (`Arc`, cleared on release so pairs do not leak), peer credentials,
+  pending connections (listener), receive queue of `Message`s (data,
+  `Arc<OpenFile>`s from SCM_RIGHTS, sender credentials and address),
+  shutdown bits, pending error, options (passcred, buffers, timeouts).
+- Sending appends to the *receiver's* queue and sleeps on the receiver's
+  wait queue while it is full; receiving sleeps on its own and afterwards
+  wakes its own queue (blocked senders) and the peer's (POLLOUT). Streams
+  are a queue of chunks with an offset into the first; dgram/seqpacket
+  messages are taken whole. Locks: one socket at a time (a listener's
+  lock is held around the still-private embryo's); name tables are taken
+  under a socket lock, never the reverse; queued files are dropped only
+  after unlocking, since closing one may release another socket.
+- Connecting creates the server-side socket immediately (Linux's
+  embryo), links it with the client, copies credentials (client gets the
+  listener's from listen(), the embryo gets the client's) and queues it
+  on the listener; accept pops it. Releasing a listener releases its
+  embryos (clients see a hang-up).
+- Names: abstract names in a global `BTreeMap` of weak references; path
+  binds create an S_IFSOCK inode through the VFS and register the inode
+  (by address; the socket keeps the inode alive) in a second table that
+  connect/sendto consult after a normal path walk. Autobind picks
+  `\0xxxxx`. Release removes both entries; the path stays in the file
+  system (connect then gives ECONNREFUSED), as on Linux.
+- Release: shuts both directions, gives a connected peer SHUTDOWN_MASK
+  (POLLHUP, EOF, EPIPE) and ECONNRESET if data was left unread, and
+  closes the files of unreceived SCM_RIGHTS messages. Reference cycles
+  through in-flight fds are not collected.
+- `/proc/net/unix` is generated from a table of all live sockets.
+
 ## Tests
 
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (22): int3
+fails the run; the script times out after 120 s. Current tests (24): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
@@ -411,7 +452,8 @@ address spaces and read/write see the same frames, private COW from the
 cache, equal futex keys, F_SEAL_WRITE EBUSY, truncate -> SIGBUS, fork,
 mremap old_size 0 and growth past the object, DONTNEED keeps shared data,
 mincore/msync, no frame leak), mprotect EACCES on a read-only shared
-mapping, VFS
+mapping, AF_UNIX address parsing and socket queues (stream coalescing
+and peeking, message boundaries, hang-up on release), VFS
 (cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
 tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
 umount).
@@ -427,7 +469,10 @@ B2 was checked with 1, 4 and 8 CPUs, debug and release. Phase B3: b3_mmap
 the Linux host). Phase B4a: b4_epoll 43/43, b4_eventfd 19/19, b4_timerfd
 18/18, b4_signalfd 16/16 and b4_poll 32/32 (select/pselect6, ppoll's
 mask, FIFOs, epoll EPERM/ELOOP, anon_inode names and fdinfo), same counts
-as the Linux host, with 1, 4 and 8 CPUs; b4_unix waits for B4b.
+as the Linux host, with 1, 4 and 8 CPUs. Phase B4b: b4_unix 64/64 (socketpair of
+all three types, SCM_RIGHTS across processes, MSG_CTRUNC, path and
+abstract listeners, SO_PEERCRED, SCM_CREDENTIALS, shutdown/EPIPE), same as
+the Linux host, with 1, 4 and 8 CPUs; the whole suite still passes.
 
 ## Known gaps / next steps
 
@@ -438,6 +483,8 @@ as the Linux host, with 1, 4 and 8 CPUs; b4_unix waits for B4b.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
   everything stays in RAM), mlock, a page cache for disk file systems (C2)
   behind the same `Inode::shmem` hook.
+- Sockets: AF_INET/INET6, AF_NETLINK (C3), in-flight fd garbage
+  collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
 - Dynamic ELF (PT_INTERP: load bionic's linker64 and pass AT_BASE).
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
   time accounting (CPU-time clocks currently report uptime), sleep timers

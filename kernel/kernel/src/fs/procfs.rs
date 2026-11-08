@@ -1,6 +1,6 @@
 //! procfs (minimal): /proc/self, /proc/<pid>/{stat,status,cmdline,comm,
 //! maps,mounts,fd/,fdinfo/,exe,cwd,root}, /proc/{meminfo,cpuinfo,uptime,mounts,
-//! filesystems,cmdline,version,loadavg,stat}.
+//! filesystems,cmdline,version,loadavg,stat,net/unix}.
 //!
 //! Inodes are made on demand and never cached in dentries; file contents
 //! are generated when the file is opened.
@@ -31,6 +31,8 @@ enum Node {
     FdLink(u32, i32),
     FdInfoDir(u32),
     FdInfo(u32, i32),
+    NetDir,
+    NetUnix,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -107,19 +109,21 @@ fn ino_of(node: Node) -> u64 {
         Node::FdLink(p, fd) => (1 << 48) | (p as u64) << 16 | fd as u64,
         Node::FdInfoDir(p) => (p as u64) << 16 | 3,
         Node::FdInfo(p, fd) => (2 << 48) | (p as u64) << 16 | fd as u64,
+        Node::NetDir => 4,
+        Node::NetUnix => 5,
     }
 }
 
 fn mode_of(node: Node) -> u32 {
     match node {
-        Node::Root | Node::PidDir(_) => S_IFDIR | 0o555,
+        Node::Root | Node::PidDir(_) | Node::NetDir => S_IFDIR | 0o555,
         Node::FdDir(_) => S_IFDIR | 0o500,
         Node::FdInfoDir(_) => S_IFDIR | 0o555,
         Node::FdInfo(..) => S_IFREG | 0o444,
         Node::SelfLink | Node::ThreadSelfLink => S_IFLNK | 0o777,
         Node::FdLink(..) => S_IFLNK | 0o700,
         Node::PidFile(_, PidFile::Exe | PidFile::Cwd | PidFile::Root) => S_IFLNK | 0o777,
-        Node::Global(_) | Node::PidFile(..) => S_IFREG | 0o444,
+        Node::Global(_) | Node::PidFile(..) | Node::NetUnix => S_IFREG | 0o444,
     }
 }
 
@@ -153,6 +157,7 @@ impl Inode for ProcInode {
             Node::Root => match name {
                 b"self" => Node::SelfLink,
                 b"thread-self" => Node::ThreadSelfLink,
+                b"net" => Node::NetDir,
                 _ => {
                     if let Some((_, g)) = GLOBALS.iter().find(|(n, _)| *n == name) {
                         Node::Global(*g)
@@ -184,6 +189,8 @@ impl Inode for ProcInode {
                 process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
                 Node::FdInfo(pid, fd)
             }
+            Node::NetDir if name == b"unix" => Node::NetUnix,
+            Node::NetDir => return Err(ENOENT),
             _ => return Err(ENOTDIR),
         };
         Ok(make(node))
@@ -196,6 +203,7 @@ impl Inode for ProcInode {
             Node::Root => {
                 v.push(ent(b"self", Node::SelfLink));
                 v.push(ent(b"thread-self", Node::ThreadSelfLink));
+                v.push(ent(b"net", Node::NetDir));
                 for (n, g) in GLOBALS {
                     v.push(ent(n, Node::Global(g)));
                 }
@@ -222,6 +230,7 @@ impl Inode for ProcInode {
                     v.push(ent(format!("{fd}").as_bytes(), Node::FdInfo(pid, fd)));
                 }
             }
+            Node::NetDir => v.push(ent(b"unix", Node::NetUnix)),
             _ => return Err(ENOTDIR),
         }
         Ok(v)
@@ -251,6 +260,7 @@ impl Inode for ProcInode {
             Node::Global(g) => global(g),
             Node::PidFile(pid, f) => pid_file(pid, f)?,
             Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
+            Node::NetUnix => crate::net::unix::proc_net_unix(),
             _ => return Ok(None),
         };
         Ok(Some(Box::new(SeqFile { data: data.into_bytes() })))

@@ -20,6 +20,7 @@ mod errno;
 mod fs;
 mod logger;
 mod mm;
+mod net;
 mod process;
 mod random;
 mod sched;
