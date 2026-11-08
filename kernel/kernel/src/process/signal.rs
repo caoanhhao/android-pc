@@ -242,6 +242,7 @@ pub fn send_process(pid: u32, sig: u32, info: SigInfo) -> KResult<()> {
     for t in &threads {
         sched::wake_task(t);
     }
+    proc.signalfd_wq.wake(crate::fs::poll::POLLIN);
     Ok(())
 }
 
@@ -266,6 +267,7 @@ pub fn send_thread(task: &Arc<Task>, sig: u32, info: SigInfo) {
         }
     }
     sched::wake_task(task);
+    task.process.signalfd_wq.wake(crate::fs::poll::POLLIN);
 }
 
 /// Signal to the calling thread from the kernel (e.g. SIGPIPE).
@@ -315,6 +317,34 @@ fn deliverable(t: &Task) -> u64 {
     let pp = t.process.sig.lock().pending;
     let ts = t.sig.lock();
     (ts.pending | pp) & !(ts.mask & !UNBLOCKABLE)
+}
+
+/// Signals pending for `t` (thread- and process-directed), blocked or not.
+pub fn pending_set(t: &Task) -> u64 {
+    let pp = t.process.sig.lock().pending;
+    t.sig.lock().pending | pp
+}
+
+/// ppoll/pselect6/epoll_pwait: run the call with `mask` installed. The old
+/// mask comes back with [`end_temp_mask`], or, when the call fails with
+/// EINTR, after the handler's frame is built (like rt_sigsuspend).
+pub fn begin_temp_mask(mask: u64) {
+    let t = current();
+    let mut ts = t.sig.lock();
+    let old = ts.mask;
+    ts.saved_mask = Some(old);
+    ts.mask = mask & !UNBLOCKABLE;
+}
+
+pub fn end_temp_mask(interrupted: bool) {
+    if interrupted {
+        return;
+    }
+    let t = current();
+    let mut ts = t.sig.lock();
+    if let Some(m) = ts.saved_mask.take() {
+        ts.mask = m;
+    }
 }
 
 /// A signal is ready for the current thread (interrupts sleeps).

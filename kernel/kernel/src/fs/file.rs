@@ -7,12 +7,14 @@
 //! pipe end, pseudo file).
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
+use super::poll::{DEFAULT_POLLMASK, WaitQueue};
 use super::vfs::{Inode, PathRef, S_IFDIR, S_IFMT, S_IFREG};
 use crate::errno::*;
 
@@ -67,6 +69,28 @@ pub trait FileOps: Send + Sync + Any {
 
     fn ioctl(&self, _file: &OpenFile, _cmd: u32, _arg: u64) -> KResult<u64> {
         Err(ENOTTY)
+    }
+
+    /// Current readiness (POLLIN, POLLOUT, POLLHUP, ...). Files that never
+    /// block are always ready.
+    fn poll(&self, _file: &OpenFile) -> u32 {
+        DEFAULT_POLLMASK
+    }
+
+    /// The queue woken when `poll` may have changed. Files without one
+    /// cannot be added to an epoll set (EPERM, as on Linux).
+    fn wait_queue(&self, _file: &OpenFile) -> Option<Arc<WaitQueue>> {
+        None
+    }
+
+    /// Anonymous-inode files: the "[name]" in `anon_inode:[name]`.
+    fn anon_name(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Type-specific lines of /proc/<pid>/fdinfo/<fd>.
+    fn fdinfo(&self, _file: &OpenFile) -> String {
+        String::new()
     }
 
     fn as_any(&self) -> &dyn Any;
@@ -190,6 +214,10 @@ impl OpenFile {
             return Err(EBADF);
         }
         self.ops.ioctl(self, cmd, arg)
+    }
+
+    pub fn poll(&self) -> u32 {
+        self.ops.poll(self)
     }
 }
 

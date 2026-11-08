@@ -9,6 +9,7 @@
 //! Booting with `strace` on the kernel command line logs every syscall.
 
 pub mod fs;
+pub mod poll;
 pub mod time;
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,6 +34,7 @@ pub mod nr {
     pub const STAT: u64 = 4;
     pub const FSTAT: u64 = 5;
     pub const LSTAT: u64 = 6;
+    pub const POLL: u64 = 7;
     pub const LSEEK: u64 = 8;
     pub const MMAP: u64 = 9;
     pub const MPROTECT: u64 = 10;
@@ -48,6 +50,7 @@ pub mod nr {
     pub const WRITEV: u64 = 20;
     pub const ACCESS: u64 = 21;
     pub const PIPE: u64 = 22;
+    pub const SELECT: u64 = 23;
     pub const SCHED_YIELD: u64 = 24;
     pub const MREMAP: u64 = 25;
     pub const MSYNC: u64 = 26;
@@ -116,12 +119,15 @@ pub mod nr {
     pub const TKILL: u64 = 200;
     pub const TIME: u64 = 201;
     pub const FUTEX: u64 = 202;
+    pub const EPOLL_CREATE: u64 = 213;
     pub const GETDENTS64: u64 = 217;
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
     pub const CLOCK_NANOSLEEP: u64 = 230;
     pub const EXIT_GROUP: u64 = 231;
+    pub const EPOLL_WAIT: u64 = 232;
+    pub const EPOLL_CTL: u64 = 233;
     pub const TGKILL: u64 = 234;
     pub const OPENAT: u64 = 257;
     pub const MKDIRAT: u64 = 258;
@@ -135,10 +141,21 @@ pub mod nr {
     pub const READLINKAT: u64 = 267;
     pub const FCHMODAT: u64 = 268;
     pub const FACCESSAT: u64 = 269;
+    pub const PSELECT6: u64 = 270;
+    pub const PPOLL: u64 = 271;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const GET_ROBUST_LIST: u64 = 274;
     pub const UTIMENSAT: u64 = 280;
+    pub const EPOLL_PWAIT: u64 = 281;
+    pub const SIGNALFD: u64 = 282;
+    pub const TIMERFD_CREATE: u64 = 283;
+    pub const EVENTFD: u64 = 284;
     pub const FALLOCATE: u64 = 285;
+    pub const TIMERFD_SETTIME: u64 = 286;
+    pub const TIMERFD_GETTIME: u64 = 287;
+    pub const SIGNALFD4: u64 = 289;
+    pub const EVENTFD2: u64 = 290;
+    pub const EPOLL_CREATE1: u64 = 291;
     pub const DUP3: u64 = 292;
     pub const PIPE2: u64 = 293;
     pub const PREADV: u64 = 295;
@@ -150,6 +167,7 @@ pub mod nr {
     pub const STATX: u64 = 332;
     pub const CLOSE_RANGE: u64 = 436;
     pub const FACCESSAT2: u64 = 439;
+    pub const EPOLL_PWAIT2: u64 = 441;
 }
 
 fn encode(r: KResult<u64>) -> u64 {
@@ -327,6 +345,23 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::GET_ROBUST_LIST => sys_get_robust_list(i0, a1, a2),
         nr::DUP3 => fs::sys_dup3(i0, i1, a2 as u32, false),
         nr::PIPE2 => fs::sys_pipe2(a0, a1 as u32),
+        nr::POLL => poll::sys_poll(a0, a1, a2 as i32),
+        nr::PPOLL => poll::sys_ppoll(a0, a1, a2, a3, a4),
+        nr::SELECT => poll::sys_select(i0, a1, a2, a3, a4),
+        nr::PSELECT6 => poll::sys_pselect6(i0, a1, a2, a3, a4, a5),
+        nr::EPOLL_CREATE => poll::sys_epoll_create(i0),
+        nr::EPOLL_CREATE1 => poll::sys_epoll_create1(a0 as u32),
+        nr::EPOLL_CTL => poll::sys_epoll_ctl(i0, a1 as u32, a2 as i32, a3),
+        nr::EPOLL_WAIT => poll::sys_epoll_wait(i0, a1, a2 as i32, a3 as i32),
+        nr::EPOLL_PWAIT => poll::sys_epoll_pwait(i0, a1, a2 as i32, a3 as i32, a4, a5),
+        nr::EPOLL_PWAIT2 => poll::sys_epoll_pwait2(i0, a1, a2 as i32, a3, a4, a5),
+        nr::EVENTFD => poll::sys_eventfd2(a0 as u32, 0),
+        nr::EVENTFD2 => poll::sys_eventfd2(a0 as u32, a1 as u32),
+        nr::TIMERFD_CREATE => poll::sys_timerfd_create(a0 as u32, a1 as u32),
+        nr::TIMERFD_SETTIME => poll::sys_timerfd_settime(i0, a1 as u32, a2, a3),
+        nr::TIMERFD_GETTIME => poll::sys_timerfd_gettime(i0, a1),
+        nr::SIGNALFD => poll::sys_signalfd4(i0, a1, a2, 0),
+        nr::SIGNALFD4 => poll::sys_signalfd4(i0, a1, a2, a3 as u32),
         nr::GETRANDOM => sys_getrandom(a0, a1, a2 as u32),
         _ => {
             warn_once(n);

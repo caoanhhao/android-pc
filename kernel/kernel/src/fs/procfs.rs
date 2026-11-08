@@ -1,5 +1,5 @@
 //! procfs (minimal): /proc/self, /proc/<pid>/{stat,status,cmdline,comm,
-//! maps,mounts,fd/,exe,cwd,root}, /proc/{meminfo,cpuinfo,uptime,mounts,
+//! maps,mounts,fd/,fdinfo/,exe,cwd,root}, /proc/{meminfo,cpuinfo,uptime,mounts,
 //! filesystems,cmdline,version,loadavg,stat}.
 //!
 //! Inodes are made on demand and never cached in dentries; file contents
@@ -29,6 +29,8 @@ enum Node {
     PidFile(u32, PidFile),
     FdDir(u32),
     FdLink(u32, i32),
+    FdInfoDir(u32),
+    FdInfo(u32, i32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -103,6 +105,8 @@ fn ino_of(node: Node) -> u64 {
         Node::FdDir(p) => (p as u64) << 16 | 2,
         Node::PidFile(p, f) => (p as u64) << 16 | (16 + f as u64),
         Node::FdLink(p, fd) => (1 << 48) | (p as u64) << 16 | fd as u64,
+        Node::FdInfoDir(p) => (p as u64) << 16 | 3,
+        Node::FdInfo(p, fd) => (2 << 48) | (p as u64) << 16 | fd as u64,
     }
 }
 
@@ -110,6 +114,8 @@ fn mode_of(node: Node) -> u32 {
     match node {
         Node::Root | Node::PidDir(_) => S_IFDIR | 0o555,
         Node::FdDir(_) => S_IFDIR | 0o500,
+        Node::FdInfoDir(_) => S_IFDIR | 0o555,
+        Node::FdInfo(..) => S_IFREG | 0o444,
         Node::SelfLink | Node::ThreadSelfLink => S_IFLNK | 0o777,
         Node::FdLink(..) => S_IFLNK | 0o700,
         Node::PidFile(_, PidFile::Exe | PidFile::Cwd | PidFile::Root) => S_IFLNK | 0o777,
@@ -161,6 +167,8 @@ impl Inode for ProcInode {
                 process(pid)?;
                 if name == b"fd" {
                     Node::FdDir(pid)
+                } else if name == b"fdinfo" {
+                    Node::FdInfoDir(pid)
                 } else {
                     let (_, f) = PID_FILES.iter().find(|(n, _)| *n == name).ok_or(ENOENT)?;
                     Node::PidFile(pid, *f)
@@ -170,6 +178,11 @@ impl Inode for ProcInode {
                 let fd = parse_num(name).ok_or(ENOENT)? as i32;
                 process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
                 Node::FdLink(pid, fd)
+            }
+            Node::FdInfoDir(pid) => {
+                let fd = parse_num(name).ok_or(ENOENT)? as i32;
+                process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
+                Node::FdInfo(pid, fd)
             }
             _ => return Err(ENOTDIR),
         };
@@ -194,6 +207,7 @@ impl Inode for ProcInode {
             Node::PidDir(pid) => {
                 process(pid)?;
                 v.push(ent(b"fd", Node::FdDir(pid)));
+                v.push(ent(b"fdinfo", Node::FdInfoDir(pid)));
                 for (n, f) in PID_FILES {
                     v.push(ent(n, Node::PidFile(pid, f)));
                 }
@@ -201,6 +215,11 @@ impl Inode for ProcInode {
             Node::FdDir(pid) => {
                 for (fd, _) in process(pid)?.files().list() {
                     v.push(ent(format!("{fd}").as_bytes(), Node::FdLink(pid, fd)));
+                }
+            }
+            Node::FdInfoDir(pid) => {
+                for (fd, _) in process(pid)?.files().list() {
+                    v.push(ent(format!("{fd}").as_bytes(), Node::FdInfo(pid, fd)));
                 }
             }
             _ => return Err(ENOTDIR),
@@ -231,6 +250,7 @@ impl Inode for ProcInode {
         let data = match self.node {
             Node::Global(g) => global(g),
             Node::PidFile(pid, f) => pid_file(pid, f)?,
+            Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
             _ => return Ok(None),
         };
         Ok(Some(Box::new(SeqFile { data: data.into_bytes() })))
@@ -247,6 +267,20 @@ impl Inode for ProcInode {
 
 // ---------------------------------------------------------------------------
 // Contents
+
+/// /proc/<pid>/fdinfo/<fd>: position, flags (with O_CLOEXEC), inode, then
+/// what the file type adds (epoll items, eventfd count, timerfd state...).
+fn fdinfo(pid: u32, fd: i32) -> KResult<String> {
+    let files = process(pid)?.files();
+    let f = files.get(fd).map_err(|_| ENOENT)?;
+    let mut flags = f.flags();
+    if files.cloexec(fd).unwrap_or(false) {
+        flags |= super::file::O_CLOEXEC;
+    }
+    let mut s = format!("pos:\t{}\nflags:\t0{:o}\nmnt_id:\t{}\nino:\t{}\n", f.pos(), flags, f.inode.meta().dev, f.inode.meta().ino);
+    s.push_str(&f.ops.fdinfo(&f));
+    Ok(s)
+}
 
 pub const FILESYSTEMS: [&str; 6] = ["rootfs", "tmpfs", "ramfs", "devtmpfs", "proc", "sysfs"];
 

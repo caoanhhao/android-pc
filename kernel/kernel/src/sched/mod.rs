@@ -15,6 +15,8 @@
 //!   queues, futexes and timeouts are all keyed sleeps (good enough for B1;
 //!   per-object wait queues and a timer wheel can replace it later).
 
+pub mod timer;
+
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -265,6 +267,7 @@ pub fn timer_interrupt() {
     if cpu::index_fast() == 0 {
         crate::time::tick();
         expire_sleepers();
+        timer::run_expired();
     }
     if RQ_LEN.load(Ordering::Relaxed) > 0 {
         set_need_resched();

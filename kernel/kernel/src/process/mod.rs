@@ -27,6 +27,7 @@ use x86_64::registers::model_specific::{FsBase, KernelGsBase};
 use crate::arch::x86_64::entry;
 use crate::arch::{FpuState, TrapFrame};
 use crate::fs::file::FdTable;
+use crate::fs::poll::WaitQueue;
 use crate::fs::vfs::PathRef;
 use crate::mm::kstack::KernelStack;
 use crate::mm::user::AddressSpace;
@@ -153,6 +154,8 @@ pub struct Process {
     /// Set when a vfork child execs or exits (releases the parent).
     pub vfork_done: AtomicBool,
     pub comm: Mutex<[u8; 16]>,
+    /// Woken when a signal is queued (signalfd readers and pollers).
+    pub signalfd_wq: Arc<WaitQueue>,
 }
 
 impl Process {
@@ -167,6 +170,7 @@ impl Process {
             exit_signal,
             vfork_done: AtomicBool::new(false),
             comm: Mutex::new([0; 16]),
+            signalfd_wq: WaitQueue::new(),
         })
     }
 

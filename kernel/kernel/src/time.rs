@@ -67,6 +67,11 @@ pub fn monotonic_ns() -> u64 {
     ns.max(last)
 }
 
+/// realtime - monotonic, in ns.
+pub fn boot_epoch_ns() -> i128 {
+    BOOT_EPOCH.load(Ordering::Relaxed) as i128 * NSEC_PER_SEC as i128
+}
+
 pub fn realtime_ns() -> i128 {
     BOOT_EPOCH.load(Ordering::Relaxed) as i128 * NSEC_PER_SEC as i128 + monotonic_ns() as i128
 }

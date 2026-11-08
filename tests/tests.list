@@ -23,4 +23,5 @@ b4_epoll
 b4_eventfd
 b4_timerfd
 b4_signalfd
+b4_poll
 b4_unix
