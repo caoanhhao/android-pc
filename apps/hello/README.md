@@ -32,7 +32,7 @@ nén `commandlinetools-linux-*.zip` vào `~/Android/Sdk/cmdline-tools/latest` r�
 ## Thông số APK
 
 - package `com.androidpc.hello`, minSdk 24, targetSdk 31, ABI duy nhất `x86_64`.
-- `lib/x86_64/libhello.so`: liên kết với bionic (`libc.so`, `liblog` không dùng),
+- `lib/x86_64/libhello.so`: chỉ cần bionic `libc.so` + `libdl.so`,
   page size 16 KiB, không build-id.
 - Build **tái lập**: cùng công cụ + cùng key → APK giống hệt từng byte (timestamp
   zip cố định, không đường dẫn/ build-id trong `.so`). `build.sh` in sha256.
