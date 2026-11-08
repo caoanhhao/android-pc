@@ -439,6 +439,7 @@ pub fn do_signal(frame: &mut TrapFrame) {
         return;
     };
     if sig == SIGKILL {
+        drop(t);
         lifecycle::exit_group_signal(SIGKILL as i32);
     }
     let action = t.process.sig.lock().actions[sig as usize - 1];
@@ -446,12 +447,16 @@ pub fn do_signal(frame: &mut TrapFrame) {
         SIG_IGN => {}
         SIG_DFL => match default_action(sig) {
             DefaultAction::Ignore | DefaultAction::Stop | DefaultAction::Continue => {}
-            DefaultAction::Terminate | DefaultAction::Core => lifecycle::exit_group_signal(sig as i32),
+            DefaultAction::Terminate | DefaultAction::Core => {
+                drop(t);
+                lifecycle::exit_group_signal(sig as i32)
+            }
         },
         _ => {
             restart_syscall(frame, Some(action.flags));
             if setup_frame(&t, frame, sig, &info, &action).is_err() {
                 log::debug!("tid {}: cannot build signal frame, SIGSEGV", t.tid);
+                drop(t);
                 lifecycle::exit_group_signal(SIGSEGV as i32);
             }
         }
@@ -573,6 +578,7 @@ pub fn sigreturn(frame: &mut TrapFrame) -> KResult<u64> {
     let frame_addr = frame.rsp - 8;
     let mut b = [0u8; FRAME_SIZE];
     if mm.copy_in(frame_addr, &mut b).is_err() {
+        drop((mm, t));
         lifecycle::exit_group_signal(SIGSEGV as i32);
     }
     let uc = 8;
@@ -603,6 +609,7 @@ pub fn sigreturn(frame: &mut TrapFrame) -> KResult<u64> {
     if fp_addr != 0 {
         let mut fpu = FpuState::initial();
         if mm.copy_in(fp_addr, &mut fpu.0).is_err() {
+            drop((mm, t));
             lifecycle::exit_group_signal(SIGSEGV as i32);
         }
         fpu.sanitize();

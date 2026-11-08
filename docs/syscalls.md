@@ -10,27 +10,27 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
 | 0 | read | yes | VFS files, devices, pipes/FIFOs, sockets (= recv 0), /proc, eventfd/timerfd/signalfd; regular files read in 64 KiB chunks until done |
 | 1 | write | yes | VFS files (O_APPEND atomic), devices, pipes (EPIPE + SIGPIPE, atomic up to PIPE_BUF), sockets (= send 0) |
-| 2 | open | yes | = openat(AT_FDCWD) |
+| 2 | open | yes | = openat(AT_FDCWD); block device nodes open the device (EROFS for writing a read-only one); writing a regular file on erofs/ext4 or a MS_RDONLY mount gives EROFS |
 | 3 | close | yes | |
 | 4 | stat | yes | = newfstatat(AT_FDCWD, 0) |
 | 5 | fstat | yes | any fd (pipes S_IFIFO, sockets S_IFSOCK, devices S_IFCHR with rdev); uid/gid/times stored |
 | 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
 | 7 | poll | yes | POLLNVAL for bad fds, negative fds ignored, ERR/HUP always reported; timeout in ms (< 0 = forever); EINTR on a signal; EINVAL above 1024 fds |
 | 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
-| 9 | mmap | partial | anonymous memory lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous gets its own shmem object (shared across fork; growing it with mremap gives SIGBUS past the original size). File mappings of tmpfs/memfd files map the page cache: MAP_SHARED writes are seen by read() and every other mapping, MAP_PRIVATE is COW from the cache; pages past EOF raise SIGBUS (the tail of the last page reads zero). EACCES for a write-only fd, or PROT_WRITE + MAP_SHARED on a fd not open for writing (or O_APPEND); EPERM for PROT_WRITE + MAP_SHARED on a write-sealed memfd. /dev/zero: anonymous memory (shared or private). Binder devices: the binder buffer (see Binder below). Other files ENODEV; EBADF for a bad or O_PATH fd |
+| 9 | mmap | partial | anonymous memory lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous gets its own shmem object (shared across fork; growing it with mremap gives SIGBUS past the original size). File mappings of tmpfs/memfd files, and of erofs/ext4 files (a read-only page cache filled from the disk on first touch), map the page cache: MAP_SHARED writes are seen by read() and every other mapping, MAP_PRIVATE is COW from the cache; pages past EOF raise SIGBUS (the tail of the last page reads zero). EACCES for a write-only fd, or PROT_WRITE + MAP_SHARED on a fd not open for writing (or O_APPEND); EPERM for PROT_WRITE + MAP_SHARED on a write-sealed memfd. /dev/zero: anonymous memory (shared or private). Binder devices: the binder buffer (see Binder below). Other files ENODEV; EBADF for a bad or O_PATH fd |
 | 10 | mprotect | yes | splits VMAs, updates PTEs (COW-shared pages stay read-only), TLB shootdown; EACCES when adding PROT_WRITE to a shared mapping of a read-only fd or write-sealed memfd |
 | 11 | munmap | yes | frees pages, TLB shootdown IPI to CPUs using the address space |
 | 12 | brk | yes | lazy heap after the highest PT_LOAD |
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); block devices, loop, device mapper: see Block devices below; everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
@@ -121,8 +121,8 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 131 | sigaltstack | yes | SS_DISABLE, EPERM while on it, ENOMEM below MINSIGSTKSZ |
 | 133 | mknod | yes | regular files, device nodes, FIFOs (open: readers wait for a writer and writers for a reader, O_NONBLOCK reader opens at once, O_NONBLOCK writer without reader ENXIO, O_RDWR never blocks), sockets (open ENXIO, connect works on a bound one) |
 | 135 | personality | yes | stored per process (inherited by fork); 0xffffffff queries |
-| 137 | statfs | partial | f_type from the mount (tmpfs/ramfs/proc/sysfs magic); block counts are RAM frames |
-| 138 | fstatfs | partial | pipes report PIPEFS_MAGIC |
+| 137 | statfs | partial | erofs/ext4: magic, block size and counts, free blocks/inodes from the superblock, ST_RDONLY; others: f_type from the mount (tmpfs/ramfs/proc/sysfs magic), block counts are RAM frames |
+| 138 | fstatfs | partial | as statfs; pipes report PIPEFS_MAGIC |
 | 140 | getpriority | yes | PRIO_PROCESS/PGRP/USER; returns 20 - nice like the raw syscall |
 | 141 | setpriority | partial | nice stored (clamped to -20..19), the scheduler ignores it |
 | 142 | sched_setparam | partial | = sched_setscheduler with the current policy |
@@ -135,10 +135,13 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
 | 160 | setrlimit | yes | = prlimit64(0) |
 | 162 | sync | stub | 0 |
-| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored); MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
-| 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW |
+| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored); erofs, ext4 (also ext2/ext3) from a block device path or "major:minor", always read-only (MS_RDONLY is forced, with a warning when not asked for), ENOTBLK for a source that is not a block device (toybox mount then sets up a loop device), EINVAL for a bad superblock or unsupported features; MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
+| 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW. Lazy: files still open keep the file system (and its device's holder count) alive |
 | 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART |
 | 186 | gettid | yes | |
+| 188 | setxattr | stub | EROFS on erofs/ext4, EOPNOTSUPP elsewhere (nothing stores xattrs yet); also lsetxattr (189), fsetxattr (190), removexattr (197-199) |
+| 191 | getxattr | partial | erofs and ext4 xattrs (all name indexes: user., trusted., security., system.posix_acl_*; ext4 in-inode, xattr block and EA-inode values; erofs inline and shared); size 0 returns the length, ERANGE, ENODATA; empty everywhere else; also lgetxattr (192), fgetxattr (193) |
+| 194 | listxattr | partial | as getxattr; also llistxattr (195), flistxattr (196) |
 | 200 | tkill | yes | |
 | 201 | time | yes | |
 | 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; in a MAP_SHARED mapping (without FUTEX_PRIVATE_FLAG) keyed by (shmem object, offset), so it works across processes and mappings; otherwise by (address space, address); PI futexes ENOSYS |
@@ -327,6 +330,59 @@ are in [kernel-architecture.md](kernel-architecture.md#binder-driversbinder).
   After an error the rest of the write buffer is not processed until the
   error has been read (as on Linux).
 
+## Block devices (C2)
+
+Code: `kernel/kernel/src/block/` (block layer, cache, GPT, loop, dm),
+`drivers/pci.rs`, `drivers/virtio/` (virtio-blk), `fs/erofs.rs`, `fs/lz4.rs`,
+`fs/ext4.rs`. Architecture in [kernel-architecture.md](kernel-architecture.md#block-devices-and-disk-file-systems-c2).
+
+- **Devices**: virtio-blk disks vda, vdb, ... (254:16n, modern virtio-pci,
+  or legacy I/O ports for transitional/legacy-only devices; read-only
+  devices from VIRTIO_BLK_F_RO), GPT partitions vdaN (254:16n+N, past 15
+  on 259:x), loop0..7 (7:N, more on demand), dm-N (253:N). Nodes in
+  devtmpfs under `/dev/block/`, plus `/dev/block/by-name/<GPT name>`
+  symlinks, `/dev/loop-control` (10:237), `/dev/device-mapper` and
+  `/dev/mapper/control` (10:236). sysfs: `/sys/block/<disk>[/<part>]/`
+  with dev, size, ro, removable, range, uevent (MAJOR, MINOR, DEVNAME,
+  DEVTYPE, PARTN, PARTNAME), partition, start, queue/*; loop/ and dm/
+  subdirectories; `/sys/class/block/<name>` and `/sys/dev/block/M:m`
+  symlinks. `/proc/partitions`.
+- **read/write/lseek** on a block device: byte granularity through the
+  device's page cache (write-through), EOF at the end, ENOSPC writing past
+  it, EPERM writing a read-only device, SEEK_END = size.
+- **Block ioctls**: BLKGETSIZE64, BLKGETSIZE, BLKSSZGET, BLKPBSZGET,
+  BLKIOMIN (512), BLKBSZGET (4096), BLKBSZSET (checked only), BLKIOOPT /
+  BLKALIGNOFF / BLKDISCARDZEROES / BLKROTATIONAL (0), BLKROGET, BLKROSET
+  (EACCES clearing it on read-only hardware), BLKFLSBUF (flush + drop the
+  cache), BLKRAGET/BLKRASET, BLKDISCARD / BLKSECDISCARD (range checked,
+  no-op), BLKZEROOUT (writes zeros), BLKRRPART (rescan; EBUSY while a
+  partition is open or mounted), BLKGETDISKSEQ.
+- **Loop** (`/dev/block/loopN`): LOOP_SET_FD, LOOP_CONFIGURE, LOOP_CLR_FD
+  (deferred to the last close/umount with LO_FLAGS_AUTOCLEAR while in use),
+  LOOP_GET_STATUS64 / LOOP_SET_STATUS64 (offset, size limit, file name;
+  READ_ONLY from a read-only fd or LOOP_CONFIGURE, AUTOCLEAR, PARTSCAN),
+  LOOP_SET_CAPACITY, LOOP_SET_BLOCK_SIZE, LOOP_SET_DIRECT_IO (no-op),
+  LOOP_CHANGE_FD; ENXIO when unbound, EBUSY binding twice. The 32-bit
+  LOOP_GET/SET_STATUS are EINVAL. loop-control: LOOP_CTL_GET_FREE (creates
+  a device when all are bound), LOOP_CTL_ADD (EEXIST), LOOP_CTL_REMOVE
+  (EBUSY while bound or open).
+- **Device mapper** (ioctl version 4.48.0): VERSION, REMOVE_ALL,
+  LIST_DEVICES (name list with event_nr and uuid), DEV_CREATE (EBUSY for a
+  taken name or uuid; DM_PERSISTENT_DEV_FLAG), DEV_REMOVE (EBUSY while
+  open or mounted), DEV_RENAME (name, or uuid with DM_UUID_FLAG),
+  DEV_SUSPEND (suspend flag only; resume swaps in the inactive table),
+  DEV_STATUS / DEV_WAIT / DEV_ARM_POLL / DEV_SET_GEOMETRY (status flags:
+  SUSPEND, READONLY, ACTIVE_PRESENT, INACTIVE_PRESENT; QUERY_INACTIVE_TABLE),
+  TABLE_LOAD (targets must be contiguous from sector 0; READONLY flag),
+  TABLE_CLEAR, TABLE_DEPS, TABLE_STATUS (status lines, or the table with
+  DM_STATUS_TABLE_FLAG; linear devices shown as major:minor),
+  LIST_VERSIONS, GET_TARGET_VERSION; DM_BUFFER_FULL_FLAG when the output
+  does not fit, DM_DATA_OUT_FLAG when data is returned; TARGET_MSG EINVAL.
+  Targets: linear, zero, error, and verity accepted as a pass-through to
+  its data device (no hash verification; dm-verity is "disabled"). I/O is
+  not held back while suspended. AOSP's dmctl (libdm, and liblp's
+  `create-from-super` reading the super partition metadata) works.
+
 ## Signals: what is delivered how
 
 - Delivery happens on every return to user mode (syscall exit, interrupt,
@@ -352,8 +408,16 @@ are in [kernel-architecture.md](kernel-architecture.md#binder-driversbinder).
 ## Not implemented yet (selection, by phase)
 
 - **B2 leftovers**: legacy getdents (78), chroot/pivot_root, sendfile,
-  copy_file_range, inotify, xattrs, devpts,
-  permission checks (everything is root), read-only mounts (recorded only).
+  copy_file_range, inotify, storing xattrs (only erofs/ext4 report theirs),
+  devpts, permission checks (everything is root), read-only mounts
+  (recorded only, except on erofs/ext4 which refuse writes).
+- **C2 leftovers (block devices)**: ext4 writes (for /data), f2fs, the
+  ext4 journal replay, erofs big pclusters / ztailpacking / fragments /
+  other compressors, MBR partitions, dm-verity hash checking and the
+  other dm targets AOSP uses on /data (default-key, bow), uevents for new
+  block devices (netlink, C3), O_DIRECT semantics, interrupt-driven
+  virtio (requests are polled), blocking a dm device's I/O while
+  suspended, umount EBUSY while files are open (umount is lazy).
 - **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
   without a page cache (procfs, devices other than /dev/zero),
   re-opening a memfd through /proc/<pid>/fd/N (not a magic link).

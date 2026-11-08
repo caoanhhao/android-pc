@@ -239,24 +239,28 @@ pub fn kill_group(pid: u32, sig: i32) {
     }
 }
 
+// The exit functions never return, so the frames below them are never
+// unwound: callers must drop every `Arc` (task, address space, file) they
+// hold before calling one, or the task and everything it references leak.
+
 /// Terminate the calling process because of signal `sig`.
 pub fn exit_group_signal(sig: i32) -> ! {
-    let t = current();
-    kill_group(t.pid(), sig);
+    let pid = current().pid();
+    kill_group(pid, sig);
     exit_thread(sig & 0x7f)
 }
 
 pub fn sys_exit_group(code: i32) -> ! {
-    let t = current();
+    let pid = current().pid();
     let status = (code & 0xff) << 8;
     {
         let mut table = TABLE.lock();
-        let node = table.node(t.pid());
+        let node = table.node(pid);
         if node.group_exit.is_none() {
             node.group_exit = Some(status);
         }
     }
-    kill_group(t.pid(), signal::SIGKILL as i32);
+    kill_group(pid, signal::SIGKILL as i32);
     exit_thread(status)
 }
 
@@ -468,6 +472,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
             TABLE.lock().procs[&me].threads.len() == 1
         });
         if w != Wake::Ready {
+            drop((others, image, exe, interp, t));
             exit_thread(signal::SIGKILL as i32);
         }
     }

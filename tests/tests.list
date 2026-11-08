@@ -27,3 +27,8 @@ b4_poll
 b4_unix
 # C1: Android binder (Rust kernel only; skipped on the host)
 c1_binder
+# C2: block devices and disk file systems (Rust kernel with the C2 test disk; skipped on the host)
+c2_block
+c2_fs
+c2_loop
+c2_dm

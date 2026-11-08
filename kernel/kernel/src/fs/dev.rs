@@ -15,6 +15,10 @@
 //! | /dev/console    | 5:1         | the serial console                   |
 //! | /dev/ttyS0      | 4:64        | the serial console                   |
 //! | binderfs nodes  | 244:n       | binder devices (`drivers::binder`)   |
+//! | /dev/device-mapper, /dev/mapper/control | 10:236 | dm control (`block::dm`) |
+//! | /dev/loop-control | 10:237    | loop control (`block::loop_dev`)     |
+//!
+//! Block device nodes (/dev/block/*) open `block::open_blk`.
 //!
 //! The console is a tty with serial input and a line discipline (see
 //! `fs::tty`). The memory devices have no poll method (always ready, not
@@ -122,6 +126,7 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (1, 11) => Dev::Kmsg,
         (5, 0) | (5, 1) | (4, _) => Dev::Console,
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
+        (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
         _ => return Err(ENXIO),
     };
     Ok(Box::new(DevFile(d)))

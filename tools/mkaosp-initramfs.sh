@@ -3,12 +3,18 @@
 # initramfs for the Rust kernel, from an existing AOSP build. Nothing is
 # rebuilt.
 #
-#   tools/mkaosp-initramfs.sh [-o OUT] [--product DIR] [--binder]
+#   tools/mkaosp-initramfs.sh [-o OUT] [--product DIR] [--binder] [--disk]
 #
 # --binder adds servicemanager and the `service` command (with their
 # libraries), and /init mounts binderfs at /dev/binderfs with the
 # /dev/{binder,hwbinder,vndbinder} symlinks, as init.rc does. Default
 # output then is out/aosp-binder-initramfs.cpio (see docs/aosp-shell.md).
+#
+# --disk adds dmctl (AOSP's device-mapper tool, libdm/liblp) and md5
+# manifests of every file in the system and vendor images
+# (/aosp-disk/{system,vendor}.md5, paths relative to the image root, made
+# from a host `fsck.erofs --extract`; cached in out/aosp-disk/), for
+# run-qemu.sh --aosp-disk-test. Default output: out/aosp-disk-initramfs.cpio.
 #
 # Source: aosp/out/target/product/vsoc_x86_64_only (override with --product
 # or $AOSP_PRODUCT_OUT). The runtime APEX (linker64, libc, libm, libdl) is
@@ -34,19 +40,22 @@ product="${AOSP_PRODUCT_OUT:-$aosp/out/target/product/vsoc_x86_64_only}"
 host_bin="$aosp/out/host/linux-x86/bin"
 out=""
 binder=0
+disk=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) out="$2"; shift 2 ;;
         --product) product="$2"; shift 2 ;;
         --binder) binder=1; shift ;;
-        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        --disk) disk=1; shift ;;
+        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-[ -n "$out" ] || out="$root/out/aosp$([ $binder -eq 1 ] && echo -binder || true)-initramfs.cpio"
+[ -n "$out" ] || out="$root/out/aosp$([ $binder -eq 1 ] && echo -binder || true)$([ $disk -eq 1 ] && echo -disk || true)-initramfs.cpio"
 sys="$product/system"
 extra=()
 [ $binder -eq 1 ] && extra=(servicemanager service)
+[ $disk -eq 1 ] && extra+=(dmctl)
 for f in "$sys/bin/sh" "$sys/bin/toybox" "$sys/apex/com.android.runtime.apex" "$host_bin/fsck.erofs"; do
     [ -e "$f" ] || { echo "mkaosp-initramfs: missing $f (build AOSP first, see docs/aosp-build.md)" >&2; exit 1; }
 done
@@ -157,6 +166,26 @@ namespace.default.isolated = false
 namespace.default.search.paths = /system/${LIB}
 EOF
 echo "file /linkerconfig/ld.config.txt $stage/ld.config.txt 0644" >>"$spec"
+
+# md5 manifest of an erofs image's files (cached next to the outputs).
+manifest() { # name image
+    local m="$root/out/aosp-disk/$1.md5" x="$root/out/aosp-disk/x-$1"
+    if [ ! -f "$m" ] || [ "$2" -nt "$m" ]; then
+        mkdir -p "$root/out/aosp-disk"
+        rm -rf "$x"
+        "$host_bin/fsck.erofs" --extract="$x" --no-preserve "$2" >/dev/null
+        (cd "$x" && find . -type f -print0 | sort -z | xargs -0 md5sum) >"$m.tmp"
+        rm -rf "$x"
+        mv "$m.tmp" "$m"
+    fi
+    echo "file /aosp-disk/$1.md5 $m 0644" >>"$spec"
+}
+if [ $disk -eq 1 ]; then
+    echo "dir /aosp-disk 0755" >>"$spec"
+    echo "dir /mnt 0755" >>"$spec"
+    manifest system "$product/system.img"
+    manifest vendor "$product/vendor.img"
+fi
 
 cat >"$stage/init" <<'EOF'
 #!/system/bin/sh

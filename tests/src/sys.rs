@@ -46,24 +46,29 @@ pub const ENOENT: i32 = 2;
 pub const ESRCH: i32 = 3;
 pub const EINTR: i32 = 4;
 pub const EIO: i32 = 5;
+pub const ENXIO: i32 = 6;
 pub const EBADF: i32 = 9;
 pub const ECHILD: i32 = 10;
 pub const EAGAIN: i32 = 11;
 pub const ENOMEM: i32 = 12;
 pub const EACCES: i32 = 13;
 pub const EFAULT: i32 = 14;
+pub const ENOTBLK: i32 = 15;
 pub const EBUSY: i32 = 16;
 pub const EEXIST: i32 = 17;
+pub const ENODEV: i32 = 19;
 pub const ENOTDIR: i32 = 20;
 pub const EISDIR: i32 = 21;
 pub const EINVAL: i32 = 22;
 pub const EMFILE: i32 = 24;
 pub const ENOSPC: i32 = 28;
 pub const ESPIPE: i32 = 29;
+pub const EROFS: i32 = 30;
 pub const EPIPE: i32 = 32;
 pub const ERANGE: i32 = 34;
 pub const ENOSYS: i32 = 38;
 pub const ENOTEMPTY: i32 = 39;
+pub const ENODATA: i32 = 61;
 pub const ENOTSOCK: i32 = 88;
 pub const EMSGSIZE: i32 = 90;
 pub const EOPNOTSUPP: i32 = 95;
@@ -463,6 +468,18 @@ pub fn fcntl(fd: i32, cmd: i32, arg: usize) -> isize {
 }
 pub fn pipe2(fds: &mut [i32; 2], flags: i32) -> isize {
     unsafe { syscall!(nr::PIPE2, fds.as_mut_ptr(), flags) }
+}
+pub fn ioctl(fd: i32, cmd: u32, arg: usize) -> isize {
+    unsafe { syscall!(nr::IOCTL, fd, cmd, arg) }
+}
+pub fn mount(src: *const u8, target: *const u8, fstype: *const u8, flags: usize, data: *const u8) -> isize {
+    unsafe { syscall!(nr::MOUNT, src, target, fstype, flags, data) }
+}
+pub fn umount2(target: *const u8, flags: i32) -> isize {
+    unsafe { syscall!(nr::UMOUNT2, target, flags) }
+}
+pub fn readlink(path: *const u8, b: &mut [u8]) -> isize {
+    unsafe { syscall!(nr::READLINKAT, AT_FDCWD, path, b.as_mut_ptr(), b.len()) }
 }
 pub fn getdents64(fd: i32, b: &mut [u8]) -> isize {
     unsafe { syscall!(nr::GETDENTS64, fd, b.as_mut_ptr(), b.len()) }

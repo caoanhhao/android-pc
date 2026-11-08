@@ -50,6 +50,10 @@ file này).
 | B4 | `b4_poll` | `select/pselect6`, mask tạm của `ppoll` (EINTR, khôi phục mask), FIFO (luật open, O_NONBLOCK/ENXIO, POLLHUP), epoll EPERM/ELOOP, tên `anon_inode:[...]` trong /proc/self/fd và fdinfo |
 | B4 | `b4_unix` | AF_UNIX stream/dgram/seqpacket, socketpair, bind/listen/connect/accept4 (đường dẫn & abstract), `SO_PEERCRED`, **SCM_RIGHTS**, `SCM_CREDENTIALS`, MSG_PEEK/TRUNC/CTRUNC, shutdown |
 | C1 | `c1_binder` | binder (chỉ chạy trên kernel Rust, trên host thì SKIP): mount binderfs, `BINDER_CTL_ADD`, mmap chỉ đọc, context riêng cho từng device, context manager qua handle 0 (`BR_TRANSACTION_SEC_CTX`), gọi sync/oneway (đúng thứ tự), `sender_pid`, truyền binder object giữa 3 process và trả về chủ, gọi lồng nhau, truyền fd hai chiều, scatter-gather + fd array, `BR_SPAWN_LOOPER` và nhiều looper thread, death notification khi process con thoát, `BR_DEAD_REPLY`/`BR_FAILED_REPLY`, extended error |
+| C2 | `c2_block` | đĩa test C2 (vda modern, vdb legacy): node `/dev/block`, phân vùng GPT (sysfs `dev/size/start/partition/uevent` có `PARTNAME`, `/sys/class/block`, `/sys/dev/block`, symlink `by-name`, `/proc/partitions`), ioctl `BLKGETSIZE64/BLKGETSIZE/BLKSSZGET/BLKPBSZGET/BLKBSZGET/BLKROGET/BLKROSET/BLKFLSBUF/BLKDISCARD/BLKZEROOUT`, ghi/đọc qua cache ở offset lẻ, EOF/ENOSPC ở cuối thiết bị |
+| C2 | `c2_fs` | mount ro từng image (ext4 4K, ext3 1K + htree + indirect, erofs thường / lz4 compact / lz4 legacy) rồi so cả cây với cây gốc `/c2/tree` (tên, kiểu, mode, kích thước, nội dung, symlink), hard link, xattr `user.*`, `statfs`, mmap, `EROFS`, exec ELF từ image, `st_dev`, umount; lỗi mount `ENOTBLK/EINVAL/ENODEV` |
+| C2 | `c2_loop` | `/dev/loop-control` (GET_FREE/ADD/REMOVE), `LOOP_CONFIGURE` (offset, sizelimit, read-only), `LOOP_GET/SET_STATUS64`, sysfs `loop/`, EBUSY, mount erofs từ loop, `LOOP_CLR_FD`, ghi tới file gốc, `LOOP_SET_CAPACITY`, AUTOCLEAR sau umount |
+| C2 | `c2_dm` | ioctl device-mapper thô như libdm: VERSION, LIST_VERSIONS, GET_TARGET_VERSION, DEV_CREATE/REMOVE/RENAME/SUSPEND/STATUS, TABLE_LOAD/STATUS/DEPS, LIST_DEVICES; target linear/zero/error, bảng nhiều target, verity (cho qua), mount erofs từ dm, EBUSY khi đang mount |
 
 `ktest-init` không phải test mà là runner (xem dưới).
 
@@ -76,7 +80,9 @@ END <test> pass=<số PASS> fail=<số FAIL>
   `FAIL ... panic` (không có `END`) và thoát 101.
 - **Mã thoát**: `0` nếu không có case nào FAIL, `1` nếu có, `101` nếu panic.
 - Test chỉ có `SKIP` (không có `PASS`) được coi là đạt khi mã thoát 0 (ví dụ
-  `c1_binder` trên host, vì binder chỉ có trên kernel Rust).
+  `c1_binder` trên host, vì binder chỉ có trên kernel Rust; các test `c2_*`
+  trên host vì cần đĩa test C2 — `tools/mkc2-images.py`, được
+  `tools/run-qemu.sh --ktest` gắn vào — và quyền root cho loop/dm).
 
 Một test **đạt** khi: mã thoát 0, có đúng một `BEGIN`/`END`, không có dòng
 `FAIL`, số `PASS` > 0 (hoặc chỉ có `SKIP`) và khớp với `pass=` trong `END`. `run-host.sh` kiểm tra

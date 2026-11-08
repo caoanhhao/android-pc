@@ -167,6 +167,22 @@ impl Meta {
     }
 }
 
+/// statfs(2) numbers of a disk file system (others are derived from
+/// free memory).
+pub struct StatFs {
+    pub magic: u64,
+    pub bsize: u64,
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub namelen: u64,
+    pub flags: u64,
+}
+
+pub const ST_RDONLY: u64 = 1;
+
 pub struct DirEntry {
     pub name: Vec<u8>,
     pub ino: u64,
@@ -244,6 +260,22 @@ pub trait Inode: Send + Sync + Any {
     /// that can be mapped (tmpfs, memfd).
     fn shmem(&self) -> Option<Arc<crate::mm::shmem::Shmem>> {
         None
+    }
+
+    /// Extended attributes (full names such as "security.selinux").
+    fn xattrs(&self) -> KResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        Ok(Vec::new())
+    }
+
+    /// statfs numbers, asked of a mount's root inode (disk file systems).
+    fn statfs(&self) -> Option<StatFs> {
+        None
+    }
+
+    /// Inodes of read-only file systems (erofs, ext4 for now): opening a
+    /// regular file for writing fails with EROFS.
+    fn read_only_fs(&self) -> bool {
+        false
     }
 
     /// File operations for an open of this inode when they are not the

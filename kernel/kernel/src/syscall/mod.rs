@@ -166,6 +166,18 @@ pub mod nr {
     pub const UMOUNT2: u64 = 166;
     pub const REBOOT: u64 = 169;
     pub const GETTID: u64 = 186;
+    pub const SETXATTR: u64 = 188;
+    pub const LSETXATTR: u64 = 189;
+    pub const FSETXATTR: u64 = 190;
+    pub const GETXATTR: u64 = 191;
+    pub const LGETXATTR: u64 = 192;
+    pub const FGETXATTR: u64 = 193;
+    pub const LISTXATTR: u64 = 194;
+    pub const LLISTXATTR: u64 = 195;
+    pub const FLISTXATTR: u64 = 196;
+    pub const REMOVEXATTR: u64 = 197;
+    pub const LREMOVEXATTR: u64 = 198;
+    pub const FREMOVEXATTR: u64 = 199;
     pub const TKILL: u64 = 200;
     pub const TIME: u64 = 201;
     pub const FUTEX: u64 = 202;
@@ -356,6 +368,14 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::UMASK => fs::sys_umask(a0 as u32),
         nr::MKNOD => fs::sys_mknodat(fs::AT_FDCWD, a0, a1 as u32, a2),
         nr::STATFS => fs::sys_statfs(a0, a1),
+        nr::GETXATTR | nr::LGETXATTR => fs::sys_getxattr(fs::XattrTarget::Path(a0, n == nr::GETXATTR), a1, a2, a3),
+        nr::FGETXATTR => fs::sys_getxattr(fs::XattrTarget::Fd(i0), a1, a2, a3),
+        nr::LISTXATTR | nr::LLISTXATTR => fs::sys_listxattr(fs::XattrTarget::Path(a0, n == nr::LISTXATTR), a1, a2),
+        nr::FLISTXATTR => fs::sys_listxattr(fs::XattrTarget::Fd(i0), a1, a2),
+        nr::SETXATTR | nr::LSETXATTR | nr::REMOVEXATTR | nr::LREMOVEXATTR => {
+            fs::sys_setxattr(fs::XattrTarget::Path(a0, matches!(n, nr::SETXATTR | nr::REMOVEXATTR)))
+        }
+        nr::FSETXATTR | nr::FREMOVEXATTR => fs::sys_setxattr(fs::XattrTarget::Fd(i0)),
         nr::FSTATFS => fs::sys_fstatfs(i0, a1),
         nr::SYNC => Ok(0),
         nr::SYNCFS => fs::sys_fsync(i0),

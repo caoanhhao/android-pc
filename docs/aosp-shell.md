@@ -191,3 +191,36 @@ needs init's property service (an error, not fatal). The binder protocol
 paths servicemanager relies on (context manager with security contexts,
 handle 0 lookups, BINDER_GET_NODE_INFO_FOR_REF, death notifications,
 epoll on the binder fd) are covered by `tests/src/bin/c1_binder.rs`.
+
+## AOSP images on a disk (C2)
+
+```
+tools/limited-build.sh tools/run-qemu.sh --aosp-disk-test
+```
+
+Boots `out/aosp-disk-initramfs.cpio` (`mkaosp-initramfs.sh --disk`: the
+shell initramfs plus AOSP's `dmctl` and md5 manifests of every file in
+system.img and vendor.img, made from a host `fsck.erofs --extract` and
+cached in `out/aosp-disk/`) with `aosp/out/.../super.img` attached as a
+read-only virtio disk (vda; QEMU opens it with `file.locking=off`, so a
+running Cuttlefish is not disturbed). `aosp-sh-test.py --suite disk` then
+types, in AOSP's mksh:
+
+1. `/sys/block/vda/ro` and `toybox blockdev` (BLKROGET, BLKGETSIZE64 equal
+   to the image size, BLKSSZGET);
+2. `ln -s /dev/block/vda /dev/block/by-name/super` and
+   `dmctl create-from-super system_a ...` / `vendor_a`: liblp reads the
+   dynamic partition metadata from the super device and libdm creates
+   dm-0 / dm-1 with linear tables (as first-stage init does);
+3. `dmctl list devices`, `dmctl table`, `dmctl getpath`, sysfs `dm/name`;
+4. `mount -t erofs -o ro` of both, `/proc/mounts`;
+5. `/mnt/system/system/bin/toybox ls /mnt/system/system` (a dynamically
+   linked binary straight from erofs);
+6. `build.prop` and `vendor/etc/init` contents;
+7. and 8. `toybox md5sum -c` of every file of each image against the host
+   manifest (2349 files in system);
+9. umount and `dmctl delete` (the devices must not be busy any more).
+
+All 9 pass. Other images can be attached with `--disk FILE[,rw|,snapshot]
+[,legacy]`, and `--sh-arg --run --sh-arg "CMD"` runs ad-hoc commands
+instead of a suite.
