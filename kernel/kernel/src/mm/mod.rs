@@ -1,8 +1,8 @@
 //! Memory management: physical frames, kernel page tables, kernel heap,
 //! kernel stacks and user address spaces.
 //!
-//! Planned (phase B3): COW for fork, file-backed and shared mappings,
-//! memfd, mremap/madvise, stack growth.
+//! Planned (phase B3b): file-backed mappings, a shmem object for
+//! MAP_SHARED, memfd, page cache.
 
 pub mod frame;
 pub mod heap;

@@ -4,11 +4,21 @@
 //! memory, entries 256..512 are copied from the kernel PML4 (whose PDPTs
 //! are all pre-allocated, so the kernel half stays in sync).
 //!
-//! Memory is described by VMAs (start, end, protection). B1 keeps it
-//! simple: anonymous pages are allocated zero-filled on first touch (page
-//! fault or kernel access), ELF segments are copied in eagerly, and `fork`
-//! copies every present page (copy-on-write is phase B3). Shared and
-//! file-backed mappings are B3 as well.
+//! Memory is described by VMAs (start, end, protection, shared). Anonymous
+//! pages are allocated zero-filled on first touch (page fault or kernel
+//! access) and ELF segments are copied in eagerly.
+//!
+//! `fork` is copy-on-write: every present private page is shared by parent
+//! and child with its PTE made read-only in both (frames are reference
+//! counted, see `frame`). A write to such a page — by user code (page
+//! fault) or by the kernel (`copy_out`) — copies it, or just makes it
+//! writable again when this address space holds the only reference. The
+//! rule is "PTE read-only while the VMA is writable and private" means
+//! COW; there is no separate PTE bit for it.
+//!
+//! MAP_SHARED anonymous memory is a stop-gap until shmem objects (B3b):
+//! fork populates every page of a shared VMA and maps the same frames,
+//! writable, in both processes. File-backed mappings are B3b as well.
 //!
 //! The kernel never dereferences user pointers: `copy_in`/`copy_out` walk
 //! the page tables under the address-space lock and go through the direct
@@ -44,7 +54,20 @@ pub const PROT_EXEC: u32 = 4;
 pub struct Vma {
     pub end: u64,
     pub prot: u32,
+    /// MAP_SHARED: pages stay shared (never COW) across fork.
+    pub shared: bool,
 }
+
+pub const MADV_NORMAL: u32 = 0;
+pub const MADV_RANDOM: u32 = 1;
+pub const MADV_SEQUENTIAL: u32 = 2;
+pub const MADV_WILLNEED: u32 = 3;
+pub const MADV_DONTNEED: u32 = 4;
+pub const MADV_FREE: u32 = 8;
+
+pub const MREMAP_MAYMOVE: u32 = 1;
+pub const MREMAP_FIXED: u32 = 2;
+pub const MREMAP_DONTUNMAP: u32 = 4;
 
 struct Inner {
     /// start -> VMA, non-overlapping, page aligned.
@@ -83,6 +106,25 @@ fn pte_flags(prot: u32) -> F {
     f
 }
 
+/// PTE flags for a page of `vma` backed by `frame`: a private page that is
+/// still shared with another address space stays read-only (COW).
+fn leaf_flags(vma: &Vma, frame: PhysAddr) -> F {
+    let f = pte_flags(vma.prot);
+    if !vma.shared && frame::refcount(PhysFrame::containing_address(frame)) > 1 {
+        f - F::WRITABLE
+    } else {
+        f
+    }
+}
+
+/// True for a present PTE or one parked by PROT_NONE (both own a frame).
+fn has_frame(e: &PageTableEntry) -> bool {
+    e.flags().contains(F::PRESENT) || e.flags().contains(F::BIT_9)
+}
+
+/// A PROT_NONE page keeps its frame in a not-present PTE marked with BIT_9.
+const PARKED_FLAGS: F = F::USER_ACCESSIBLE.union(F::NO_EXECUTE).union(F::BIT_9);
+
 const TABLE_FLAGS: F = F::PRESENT.union(F::WRITABLE).union(F::USER_ACCESSIBLE);
 
 impl Inner {
@@ -106,28 +148,39 @@ impl Inner {
         if let Some((s, v)) = self.find(at)
             && s != at
         {
-            self.vmas.insert(s, Vma { end: at, prot: v.prot });
+            self.vmas.insert(s, Vma { end: at, ..v });
             self.vmas.insert(at, v);
         }
     }
 
-    /// Insert a VMA, merging with an adjacent one of the same protection.
-    fn insert(&mut self, mut start: u64, end: u64, prot: u32) {
+    /// Insert a VMA, merging with adjacent ones of the same kind.
+    fn insert(&mut self, mut start: u64, end: u64, prot: u32, shared: bool) {
         if let Some((&ps, pv)) = self.vmas.range(..start).next_back()
             && pv.end == start
             && pv.prot == prot
+            && pv.shared == shared
         {
             start = ps;
         }
         let end = match self.vmas.get(&end) {
-            Some(nv) if nv.prot == prot => {
+            Some(nv) if nv.prot == prot && nv.shared == shared => {
                 let e = nv.end;
                 self.vmas.remove(&end);
                 e
             }
             _ => end,
         };
-        self.vmas.insert(start, Vma { end, prot });
+        self.vmas.insert(start, Vma { end, prot, shared });
+    }
+
+    /// Fail with `err` unless every page of `[start, end)` is in a VMA.
+    fn require_mapped(&self, start: u64, end: u64, err: Errno) -> KResult<()> {
+        let mut a = start;
+        while a < end {
+            let (_, v) = self.find(a).ok_or(err)?;
+            a = v.end;
+        }
+        Ok(())
     }
 
     /// Top-down search for a free, page-aligned range of `len` bytes.
@@ -191,13 +244,37 @@ impl AddressSpace {
     fn map_zero(&self, va: u64, prot: u32) -> Option<PhysAddr> {
         let e = self.walk(va, true)?;
         let f = frame::alloc_zeroed()?;
-        e.set_frame(f, pte_flags(prot));
+        let flags = if prot == 0 { PARKED_FLAGS } else { pte_flags(prot) };
+        e.set_frame(f, flags);
         Some(f.start_address())
     }
 
+    /// Make the present private page `e` of `vma` writable (as far as the
+    /// VMA allows), copying it if another address space shares the frame.
+    /// Returns the old frame, to be released after a TLB flush, if it was
+    /// replaced.
+    fn break_cow(&self, e: &mut PageTableEntry, vma: &Vma) -> KResult<Option<PhysFrame>> {
+        let old = PhysFrame::containing_address(e.addr());
+        if frame::refcount(old) == 1 {
+            e.set_addr(old.start_address(), pte_flags(vma.prot));
+            return Ok(None);
+        }
+        let new = frame::alloc().ok_or(ENOMEM)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                phys_to_virt(old.start_address()).as_ptr::<u8>(),
+                phys_to_virt(new.start_address()).as_mut_ptr::<u8>(),
+                PAGE_SIZE as usize,
+            )
+        };
+        e.set_addr(new.start_address(), pte_flags(vma.prot));
+        Ok(Some(old))
+    }
+
     /// Physical address backing user page `va`, faulting it in when the VMA
-    /// allows. `write` requires a writable mapping unless `force`.
-    fn user_page(&self, inner: &Inner, va: u64, write: bool, force: bool) -> KResult<PhysAddr> {
+    /// allows. `write` requires a writable mapping unless `force`; a COW
+    /// page is copied first, its old frame pushed to `release`.
+    fn user_page(&self, inner: &Inner, va: u64, write: bool, force: bool, release: &mut Vec<PhysFrame>) -> KResult<PhysAddr> {
         if va >= USER_END {
             return Err(EFAULT);
         }
@@ -205,8 +282,18 @@ impl AddressSpace {
         if let Some(e) = self.walk(page, false)
             && e.flags().contains(F::PRESENT)
         {
-            if write && !force && !e.flags().contains(F::WRITABLE) {
+            if !write || e.flags().contains(F::WRITABLE) {
+                return Ok(e.addr());
+            }
+            let (_, vma) = inner.find(page).ok_or(EFAULT)?;
+            if vma.shared || (force && frame::refcount(PhysFrame::containing_address(e.addr())) == 1) {
+                return if force { Ok(e.addr()) } else { Err(EFAULT) };
+            }
+            if !force && vma.prot & PROT_WRITE == 0 {
                 return Err(EFAULT);
+            }
+            if let Some(old) = self.break_cow(e, &vma)? {
+                release.push(old);
             }
             return Ok(e.addr());
         }
@@ -223,17 +310,25 @@ impl AddressSpace {
             return Err(EFAULT);
         }
         let inner = self.inner.lock();
+        let mut release = Vec::new();
         let mut done = 0usize;
+        let mut result = Ok(());
         while done < len {
             let a = va + done as u64;
             let off = (a % PAGE_SIZE) as usize;
             let n = (PAGE_SIZE as usize - off).min(len - done);
-            let phys = self.user_page(&inner, a, write, force)?;
-            let p = phys_to_virt(phys + off as u64).as_mut_ptr::<u8>();
-            f(p, done, n);
+            match self.user_page(&inner, a, write, force, &mut release) {
+                Ok(phys) => f(phys_to_virt(phys + off as u64).as_mut_ptr::<u8>(), done, n),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
             done += n;
         }
-        Ok(())
+        drop(inner);
+        self.finish_unmap(release);
+        result
     }
 
     /// Read user memory into `buf`.
@@ -279,7 +374,8 @@ impl AddressSpace {
         }
     }
 
-    /// Resolve a fault on a not-present page. False means SIGSEGV.
+    /// Resolve a user page fault: demand-zero a missing page, or copy a COW
+    /// page on write. False means SIGSEGV.
     pub fn handle_fault(&self, va: u64, write: bool, exec: bool) -> bool {
         if va >= USER_END {
             return false;
@@ -297,10 +393,28 @@ impl AddressSpace {
             return false;
         }
         let page = page_down(va);
-        if self.walk(page, false).is_some_and(|e| e.flags().contains(F::PRESENT)) {
-            return true; // another thread got there first
+        let Some(e) = self.walk(page, false).filter(|e| e.flags().contains(F::PRESENT)) else {
+            return self.map_zero(page, vma.prot).is_some();
+        };
+        // Present: either another thread or CPU got there first (stale TLB
+        // entry), or this is a write to a COW page.
+        if exec && e.flags().contains(F::NO_EXECUTE) {
+            return false;
         }
-        self.map_zero(page, vma.prot).is_some()
+        if !write || e.flags().contains(F::WRITABLE) {
+            return true;
+        }
+        if vma.shared {
+            return false;
+        }
+        match self.break_cow(e, &vma) {
+            Ok(old) => {
+                drop(inner);
+                self.finish_unmap(old.into_iter().collect());
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Add a VMA for `[start, end)`; the range must be free.
@@ -309,7 +423,7 @@ impl AddressSpace {
         if inner.overlaps(start, end) {
             return Err(EINVAL);
         }
-        inner.insert(start, end, prot);
+        inner.insert(start, end, prot, false);
         Ok(())
     }
 
@@ -321,19 +435,19 @@ impl AddressSpace {
         if let Some((_, v)) = inner.find(s) {
             // Overlap with the previous segment's last page.
             let shared_end = v.end.min(end);
-            let combined = v.prot | prot;
+            let combined = Vma { prot: v.prot | prot, ..v };
             for p in (s..shared_end).step_by(PAGE_SIZE as usize) {
                 if let Some(e) = self.walk(p, false)
                     && e.flags().contains(F::PRESENT)
                 {
                     let addr = e.addr();
-                    e.set_addr(addr, pte_flags(combined));
+                    e.set_addr(addr, leaf_flags(&combined, addr));
                 }
             }
             inner.split_at(s);
             inner.split_at(shared_end);
             if let Some(vv) = inner.vmas.get_mut(&s) {
-                vv.prot = combined;
+                vv.prot = combined.prot;
             }
             s = shared_end;
         }
@@ -341,7 +455,7 @@ impl AddressSpace {
             if inner.overlaps(s, end) {
                 return Err(EINVAL);
             }
-            inner.insert(s, end, prot);
+            inner.insert(s, end, prot, false);
         }
         Ok(())
     }
@@ -376,7 +490,7 @@ impl AddressSpace {
             if inner.overlaps(old_end, new_end) {
                 return cur;
             }
-            inner.insert(old_end, new_end, PROT_READ | PROT_WRITE);
+            inner.insert(old_end, new_end, PROT_READ | PROT_WRITE, false);
         } else if new_end < old_end {
             let frames = self.unmap_locked(&mut inner, new_end, old_end);
             drop(inner);
@@ -389,8 +503,8 @@ impl AddressSpace {
         new
     }
 
-    /// Anonymous private mapping. `fixed` replaces whatever is there.
-    pub fn mmap(&self, addr: u64, len: u64, prot: u32, fixed: bool, noreplace: bool) -> KResult<u64> {
+    /// Anonymous mapping. `fixed` replaces whatever is there.
+    pub fn mmap(&self, addr: u64, len: u64, prot: u32, shared: bool, fixed: bool, noreplace: bool) -> KResult<u64> {
         let len = page_up(len).filter(|&l| l > 0 && l < USER_END).ok_or(EINVAL)?;
         let mut inner = self.inner.lock();
         let start = if fixed || noreplace {
@@ -415,7 +529,7 @@ impl AddressSpace {
                 inner.find_free(len).ok_or(ENOMEM)?
             }
         };
-        inner.insert(start, start + len, prot);
+        inner.insert(start, start + len, prot, shared);
         Ok(start)
     }
 
@@ -440,12 +554,7 @@ impl AddressSpace {
         }
         let end = page_up(addr.checked_add(len).ok_or(ENOMEM)?).ok_or(ENOMEM)?;
         let mut inner = self.inner.lock();
-        // Every page must be mapped.
-        let mut a = addr;
-        while a < end {
-            let (_, v) = inner.find(a).ok_or(ENOMEM)?;
-            a = v.end;
-        }
+        inner.require_mapped(addr, end, ENOMEM)?;
         inner.split_at(addr);
         inner.split_at(end);
         let starts: Vec<u64> = inner.vmas.range(addr..end).map(|(&s, _)| s).collect();
@@ -454,26 +563,148 @@ impl AddressSpace {
         }
         for p in (addr..end).step_by(PAGE_SIZE as usize) {
             if let Some(e) = self.walk(p, false)
-                && e.flags().contains(F::PRESENT)
+                && has_frame(e)
             {
                 let f = e.addr();
                 if prot == 0 {
                     // Keep the frame reachable for a later mprotect.
-                    e.set_addr(f, (pte_flags(0) - F::PRESENT) | F::BIT_9);
+                    e.set_addr(f, PARKED_FLAGS);
                 } else {
-                    e.set_addr(f, pte_flags(prot));
+                    let (_, vma) = inner.find(p).unwrap();
+                    e.set_addr(f, leaf_flags(&vma, f));
                 }
-            } else if let Some(e) = self.walk(p, false)
-                && e.flags().contains(F::BIT_9)
-                && prot != 0
-            {
-                let f = e.addr();
-                e.set_addr(f, pte_flags(prot));
             }
         }
         drop(inner);
-        crate::arch::x86_64::tlb::flush_local();
-        crate::arch::x86_64::tlb::shootdown(self.active_cpus.load(Ordering::SeqCst));
+        self.flush_tlb();
+        Ok(())
+    }
+
+    /// `madvise(2)`. DONTNEED and FREE drop the private pages of the range
+    /// (the next touch maps a zeroed page); the other accepted hints are
+    /// no-ops.
+    pub fn madvise(&self, addr: u64, len: u64, advice: u32) -> KResult<()> {
+        if !addr.is_multiple_of(PAGE_SIZE) {
+            return Err(EINVAL);
+        }
+        let drop_pages = match advice {
+            MADV_DONTNEED | MADV_FREE => true,
+            MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED => false,
+            // DONTFORK..DODUMP, COLD, PAGEOUT: accepted, ignored.
+            10..=17 | 20 | 21 => false,
+            _ => return Err(EINVAL),
+        };
+        let end = page_up(addr.checked_add(len).ok_or(EINVAL)?).ok_or(EINVAL)?;
+        if end > USER_END {
+            return Err(ENOMEM);
+        }
+        let inner = self.inner.lock();
+        inner.require_mapped(addr, end, ENOMEM)?;
+        if !drop_pages {
+            return Ok(());
+        }
+        let mut frames = Vec::new();
+        for p in (addr..end).step_by(PAGE_SIZE as usize) {
+            // Shared pages keep their contents (they would come back from
+            // the shmem object on Linux).
+            if inner.find(p).is_some_and(|(_, v)| v.shared) {
+                continue;
+            }
+            if let Some(e) = self.walk(p, false)
+                && has_frame(e)
+            {
+                frames.push(PhysFrame::containing_address(e.addr()));
+                e.set_unused();
+            }
+        }
+        drop(inner);
+        self.finish_unmap(frames);
+        Ok(())
+    }
+
+    /// `mremap(2)` for anonymous mappings. Pages move by moving their PTEs.
+    pub fn mremap(&self, old: u64, old_len: u64, new_len: u64, flags: u32, new_addr: u64) -> KResult<u64> {
+        let fixed = flags & MREMAP_FIXED != 0;
+        let may_move = flags & MREMAP_MAYMOVE != 0;
+        let dontunmap = flags & MREMAP_DONTUNMAP != 0;
+        if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
+            || !old.is_multiple_of(PAGE_SIZE)
+            || (fixed || dontunmap) && !may_move
+        {
+            return Err(EINVAL);
+        }
+        let old_len = page_up(old_len).ok_or(EINVAL)?;
+        let new_len = page_up(new_len).filter(|&l| l > 0 && l < USER_END).ok_or(EINVAL)?;
+        // old_len == 0 duplicates a shared mapping on Linux: not supported.
+        if old_len == 0 || (dontunmap && old_len != new_len) {
+            return Err(EINVAL);
+        }
+        let old_end = old.checked_add(old_len).filter(|&e| e <= USER_END).ok_or(EFAULT)?;
+        let mut inner = self.inner.lock();
+        let (_, vma) = inner.find(old).filter(|(_, v)| v.end >= old_end).ok_or(EFAULT)?;
+        let mut release = Vec::new();
+        let result = if fixed {
+            let new_end = new_addr.checked_add(new_len).filter(|&e| e <= USER_END).ok_or(EINVAL)?;
+            if !new_addr.is_multiple_of(PAGE_SIZE) || new_addr == 0 || (new_addr < old_end && old < new_end) {
+                return Err(EINVAL);
+            }
+            release = self.unmap_locked(&mut inner, new_addr, new_end);
+            self.move_locked(&mut inner, old, old_len, new_addr, new_len, &vma, dontunmap, &mut release)
+                .map(|_| new_addr)
+        } else if new_len <= old_len && !dontunmap {
+            release = self.unmap_locked(&mut inner, old + new_len, old_end);
+            Ok(old)
+        } else if !dontunmap
+            && old + new_len <= USER_END
+            && vma.end == old_end
+            && !inner.overlaps(old_end, old + new_len)
+        {
+            inner.insert(old_end, old + new_len, vma.prot, vma.shared);
+            Ok(old)
+        } else if !may_move {
+            Err(ENOMEM)
+        } else {
+            match inner.find_free(new_len) {
+                Some(dest) => self
+                    .move_locked(&mut inner, old, old_len, dest, new_len, &vma, dontunmap, &mut release)
+                    .map(|_| dest),
+                None => Err(ENOMEM),
+            }
+        };
+        drop(inner);
+        self.flush_tlb();
+        for f in release {
+            frame::free(f);
+        }
+        result
+    }
+
+    /// Move the pages of `[old, old + old_len)` to `dest` and give `dest`
+    /// a VMA of `new_len` bytes. The old range is unmapped unless
+    /// `dontunmap` (then it stays mapped and reads back as zeroes); frames
+    /// past `new_len` are pushed to `release`.
+    #[allow(clippy::too_many_arguments)]
+    fn move_locked(&self, inner: &mut Inner, old: u64, old_len: u64, dest: u64, new_len: u64, vma: &Vma, dontunmap: bool, release: &mut Vec<PhysFrame>) -> KResult<()> {
+        let moved = old_len.min(new_len);
+        // Allocate every destination page table first so nothing fails
+        // half-way.
+        for off in (0..moved).step_by(PAGE_SIZE as usize) {
+            if self.walk(old + off, false).is_some_and(|e| has_frame(e)) {
+                self.walk(dest + off, true).ok_or(ENOMEM)?;
+            }
+        }
+        for off in (0..moved).step_by(PAGE_SIZE as usize) {
+            if let Some(e) = self.walk(old + off, false)
+                && has_frame(e)
+            {
+                *self.walk(dest + off, true).unwrap() = e.clone();
+                e.set_unused();
+            }
+        }
+        if !dontunmap {
+            release.extend(self.unmap_locked(inner, old, old + old_len));
+        }
+        inner.insert(dest, dest + new_len, vma.prot, vma.shared);
         Ok(())
     }
 
@@ -488,7 +719,7 @@ impl AddressSpace {
             let v = inner.vmas.remove(&s).unwrap();
             for p in (s..v.end).step_by(PAGE_SIZE as usize) {
                 if let Some(e) = self.walk(p, false)
-                    && (e.flags().contains(F::PRESENT) || e.flags().contains(F::BIT_9))
+                    && has_frame(e)
                 {
                     frames.push(PhysFrame::containing_address(e.addr()));
                     e.set_unused();
@@ -498,18 +729,24 @@ impl AddressSpace {
         frames
     }
 
+    /// Flush this address space's TLB entries on every CPU using it.
+    fn flush_tlb(&self) {
+        crate::arch::x86_64::tlb::flush_local();
+        crate::arch::x86_64::tlb::shootdown(self.active_cpus.load(Ordering::SeqCst));
+    }
+
+    /// Flush the TLBs, then drop a reference to each of `frames`.
     fn finish_unmap(&self, frames: Vec<PhysFrame>) {
         if frames.is_empty() {
             return;
         }
-        crate::arch::x86_64::tlb::flush_local();
-        crate::arch::x86_64::tlb::shootdown(self.active_cpus.load(Ordering::SeqCst));
+        self.flush_tlb();
         for f in frames {
             frame::free(f);
         }
     }
 
-    /// Eager copy of the whole address space (`fork` without CLONE_VM).
+    /// Copy-on-write copy of the address space (`fork` without CLONE_VM).
     pub fn fork(&self) -> Option<Arc<AddressSpace>> {
         let child = AddressSpace::new()?;
         let inner = self.inner.lock();
@@ -519,36 +756,41 @@ impl AddressSpace {
             ci.brk_start = inner.brk_start;
             ci.brk = inner.brk;
         }
+        // Shared VMAs have no backing object yet (B3b): populate them so
+        // both processes map the same frames.
+        for (&s, v) in inner.vmas.iter().filter(|(_, v)| v.shared) {
+            for p in (s..v.end).step_by(PAGE_SIZE as usize) {
+                if !self.walk(p, false).is_some_and(|e| has_frame(e)) {
+                    self.map_zero(p, v.prot)?;
+                }
+            }
+        }
         let mut ok = true;
         for_each_leaf(self.pml4, |va, e| {
             if !ok {
                 return;
             }
-            let Some(f) = frame::alloc() else {
+            let Some(ce) = child.walk(va, true) else {
                 ok = false;
                 return;
             };
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    phys_to_virt(e.addr()).as_ptr::<u8>(),
-                    phys_to_virt(f.start_address()).as_mut_ptr::<u8>(),
-                    PAGE_SIZE as usize,
-                )
-            };
-            match child.walk(va, true) {
-                Some(ce) => ce.set_frame(f, e.flags()),
-                None => {
-                    frame::free(f);
-                    ok = false;
-                }
+            let shared = inner.find(va).is_some_and(|(_, v)| v.shared);
+            frame::get(PhysFrame::containing_address(e.addr()));
+            if !shared && e.flags().contains(F::WRITABLE) {
+                e.set_flags(e.flags() - F::WRITABLE);
             }
+            *ce = e.clone();
         });
+        drop(inner);
+        // Parent PTEs went read-only: other CPUs running its threads must
+        // not keep writable entries.
+        self.flush_tlb();
         ok.then_some(child)
     }
 }
 
 /// Call `f(va, entry)` for every present (or PROT_NONE-parked) user page.
-fn for_each_leaf(pml4: PhysAddr, mut f: impl FnMut(u64, &PageTableEntry)) {
+fn for_each_leaf(pml4: PhysAddr, mut f: impl FnMut(u64, &mut PageTableEntry)) {
     let l4 = table(pml4);
     for i4 in 0..256 {
         if l4[i4].is_unused() {
@@ -566,8 +808,8 @@ fn for_each_leaf(pml4: PhysAddr, mut f: impl FnMut(u64, &PageTableEntry)) {
                 }
                 let l1 = table(l2[i2].addr());
                 for i1 in 0..512 {
-                    let e = &l1[i1];
-                    if e.flags().contains(F::PRESENT) || e.flags().contains(F::BIT_9) {
+                    let e = &mut l1[i1];
+                    if has_frame(e) {
                         let va = ((i4 as u64) << 39) | ((i3 as u64) << 30) | ((i2 as u64) << 21) | ((i1 as u64) << 12);
                         f(va, e);
                     }
@@ -611,7 +853,7 @@ fn user_space_map_copy_free() {
     let (_, free_before) = frame::stats();
     {
         let mm = AddressSpace::new().unwrap();
-        let a = mm.mmap(0, 3 * PAGE_SIZE, PROT_READ | PROT_WRITE, false, false).unwrap();
+        let a = mm.mmap(0, 3 * PAGE_SIZE, PROT_READ | PROT_WRITE, false, false, false).unwrap();
         mm.copy_out(a + PAGE_SIZE - 2, b"hello").unwrap();
         let mut buf = [0u8; 5];
         mm.copy_in(a + PAGE_SIZE - 2, &mut buf).unwrap();
@@ -623,8 +865,101 @@ fn user_space_map_copy_free() {
         mm.munmap(a, PAGE_SIZE).unwrap();
         assert_eq!(mm.copy_in(a, &mut buf), Err(EFAULT));
         assert_eq!(mm.copy_in(0x1000, &mut buf), Err(EFAULT));
-        let ro = mm.mmap(0, PAGE_SIZE, PROT_READ, false, false).unwrap();
+        let ro = mm.mmap(0, PAGE_SIZE, PROT_READ, false, false, false).unwrap();
         assert_eq!(mm.copy_out(ro, b"x"), Err(EFAULT));
+    }
+    assert_eq!(frame::stats().1, free_before);
+}
+
+#[cfg(test)]
+fn phys_of(mm: &AddressSpace, va: u64) -> Option<PhysAddr> {
+    mm.walk(va, false).filter(|e| has_frame(e)).map(|e| e.addr())
+}
+
+#[test_case]
+fn cow_fork_shares_then_copies_without_leaks() {
+    let (_, free_before) = frame::stats();
+    {
+        let mm = AddressSpace::new().unwrap();
+        let rw = PROT_READ | PROT_WRITE;
+        let a = mm.mmap(0, 8 * PAGE_SIZE, rw, false, false, false).unwrap();
+        for i in 0..8 {
+            mm.copy_out(a + i * PAGE_SIZE, &[i as u8]).unwrap();
+        }
+        let sh = mm.mmap(0, PAGE_SIZE, rw, true, false, false).unwrap();
+        let child = mm.fork().unwrap();
+        // Private pages are shared read-only, shared pages stay writable.
+        let p0 = phys_of(&mm, a).unwrap();
+        assert_eq!(phys_of(&child, a), Some(p0));
+        assert_eq!(frame::refcount(PhysFrame::containing_address(p0)), 2);
+        assert!(!mm.walk(a, false).unwrap().flags().contains(F::WRITABLE));
+        assert!(child.walk(sh, false).unwrap().flags().contains(F::WRITABLE));
+        assert_eq!(phys_of(&child, sh), phys_of(&mm, sh));
+        // A write fault in the child copies; the parent then holds the only
+        // reference and gets its page back without a copy.
+        assert!(child.handle_fault(a, true, false));
+        assert_ne!(phys_of(&child, a), Some(p0));
+        assert!(mm.handle_fault(a, true, false));
+        assert_eq!(phys_of(&mm, a), Some(p0));
+        // Kernel writes (copy_out) break COW too.
+        child.copy_out(a + PAGE_SIZE, b"c").unwrap();
+        let mut b = [0u8; 1];
+        mm.copy_in(a + PAGE_SIZE, &mut b).unwrap();
+        assert_eq!(b[0], 1);
+        child.copy_out(sh, b"s").unwrap();
+        mm.copy_in(sh, &mut b).unwrap();
+        assert_eq!(&b, b"s");
+        // Grandchild, then the middle generation exits first.
+        let grand = child.fork().unwrap();
+        drop(child);
+        grand.copy_in(a + PAGE_SIZE, &mut b).unwrap();
+        assert_eq!(&b, b"c");
+        // mprotect RW on a still-shared page keeps it read-only.
+        mm.mprotect(a + 2 * PAGE_SIZE, PAGE_SIZE, PROT_READ).unwrap();
+        mm.mprotect(a + 2 * PAGE_SIZE, PAGE_SIZE, rw).unwrap();
+        assert!(!mm.walk(a + 2 * PAGE_SIZE, false).unwrap().flags().contains(F::WRITABLE));
+        drop(grand);
+    }
+    assert_eq!(frame::stats().1, free_before);
+}
+
+#[test_case]
+fn madvise_and_mremap() {
+    let (_, free_before) = frame::stats();
+    {
+        let mm = AddressSpace::new().unwrap();
+        let rw = PROT_READ | PROT_WRITE;
+        let a = mm.mmap(0, 2 * PAGE_SIZE, rw, false, false, false).unwrap();
+        mm.copy_out(a, b"x").unwrap();
+        assert_eq!(mm.madvise(a + 1, PAGE_SIZE, MADV_DONTNEED), Err(EINVAL));
+        assert_eq!(mm.madvise(a, PAGE_SIZE, 999), Err(EINVAL));
+        mm.madvise(a, 2 * PAGE_SIZE, MADV_DONTNEED).unwrap();
+        assert_eq!(phys_of(&mm, a), None);
+        let mut b = [1u8; 1];
+        mm.copy_in(a, &mut b).unwrap();
+        assert_eq!(b[0], 0);
+
+        // Move: the frame follows the PTE, the old range is gone.
+        mm.copy_out(a, b"m").unwrap();
+        let p = phys_of(&mm, a).unwrap();
+        mm.mmap(a + 2 * PAGE_SIZE, PAGE_SIZE, PROT_READ, false, true, false).unwrap();
+        let n = mm.mremap(a, 2 * PAGE_SIZE, 8 * PAGE_SIZE, MREMAP_MAYMOVE, 0).unwrap();
+        assert_ne!(n, a);
+        assert_eq!(phys_of(&mm, n), Some(p));
+        assert_eq!(mm.copy_in(a, &mut b), Err(EFAULT));
+        // Shrink in place, then grow in place into the freed tail.
+        assert_eq!(mm.mremap(n, 8 * PAGE_SIZE, PAGE_SIZE, 0, 0), Ok(n));
+        assert_eq!(mm.mremap(n, PAGE_SIZE, 4 * PAGE_SIZE, 0, 0), Ok(n));
+        mm.copy_out(n + 3 * PAGE_SIZE, b"t").unwrap();
+        // Fixed destination with DONTUNMAP: old range reads back zero.
+        let dst = MMAP_BOTTOM;
+        let r = mm.mremap(n, 4 * PAGE_SIZE, 4 * PAGE_SIZE, MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, dst);
+        assert_eq!(r, Ok(dst));
+        mm.copy_in(dst, &mut b).unwrap();
+        assert_eq!(&b, b"m");
+        mm.copy_in(n, &mut b).unwrap();
+        assert_eq!(b[0], 0);
+        assert_eq!(mm.mremap(dst + PAGE_SIZE, PAGE_SIZE, 2 * PAGE_SIZE, MREMAP_FIXED, 0), Err(EINVAL));
     }
     assert_eq!(frame::stats().1, free_before);
 }

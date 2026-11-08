@@ -45,6 +45,7 @@ pub mod nr {
     pub const ACCESS: u64 = 21;
     pub const PIPE: u64 = 22;
     pub const SCHED_YIELD: u64 = 24;
+    pub const MREMAP: u64 = 25;
     pub const MADVISE: u64 = 28;
     pub const DUP: u64 = 32;
     pub const DUP2: u64 = 33;
@@ -191,6 +192,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::MPROTECT => sys_mprotect(a0, a1, a2),
         nr::MUNMAP => current().mm().munmap(a0, a1).map(|_| 0),
         nr::BRK => Ok(current().mm().brk(a0)),
+        nr::MREMAP => current().mm().mremap(a0, a1, a2, a3 as u32, a4),
         nr::RT_SIGACTION => signal::sys_rt_sigaction(a0 as u32, a1, a2, a3),
         nr::RT_SIGPROCMASK => signal::sys_rt_sigprocmask(a0 as u32, a1, a2, a3),
         nr::RT_SIGRETURN => signal::sigreturn(frame),
@@ -205,7 +207,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
             crate::sched::yield_now();
             Ok(0)
         }
-        nr::MADVISE => Ok(0),
+        nr::MADVISE => current().mm().madvise(a0, a1, a2 as u32).map(|_| 0),
         nr::DUP => fs::sys_dup(i0),
         nr::DUP2 => fs::sys_dup3(i0, i1, 0, true),
         nr::NANOSLEEP => time::sys_nanosleep(a0, a1),
@@ -357,8 +359,14 @@ fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i32, off: u64) -> KR
         current().process.files().get(fd)?;
         return Err(ENODEV); // file mappings: phase B3
     }
-    // MAP_SHARED anonymous memory is private until B3 (only differs after fork).
-    current().mm().mmap(addr, len, p, flags & MAP_FIXED != 0, flags & MAP_FIXED_NOREPLACE != 0)
+    current().mm().mmap(
+        addr,
+        len,
+        p,
+        flags & MAP_SHARED != 0,
+        flags & MAP_FIXED != 0,
+        flags & MAP_FIXED_NOREPLACE != 0,
+    )
 }
 
 fn sys_mprotect(addr: u64, len: u64, prot: u64) -> KResult<u64> {

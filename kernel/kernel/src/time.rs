@@ -75,7 +75,9 @@ pub fn realtime_ns() -> i128 {
 /// only for early boot code (tasks sleep through the scheduler).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn sleep_ms(ms: u64) {
-    let target = ticks() + ms.div_ceil(1000 / HZ);
+    // +1: the first tick may come right away, so N tick boundaries only
+    // guarantee N-1 full periods.
+    let target = ticks() + ms.div_ceil(1000 / HZ) + 1;
     while ticks() < target {
         crate::arch::wait_for_interrupt();
     }
