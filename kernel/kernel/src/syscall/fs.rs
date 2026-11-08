@@ -844,11 +844,12 @@ pub fn sys_umask(mask: u32) -> KResult<u64> {
     Ok(old as u64)
 }
 
-fn chmod_inode(inode: &dyn Inode, mode: u32) -> KResult<u64> {
+fn chmod_inode(inode: &dyn Inode, path: Option<&PathRef>, mode: u32) -> KResult<u64> {
     inode.meta().update(|a| {
         a.mode = (a.mode & S_IFMT) | (mode & 0o7777);
         a.ctime = vfs::now();
     });
+    crate::fs::inotify::touched(inode, path, crate::fs::inotify::IN_ATTRIB);
     Ok(0)
 }
 
@@ -857,19 +858,20 @@ pub fn sys_fchmodat(dirfd: i32, path: u64, mode: u32, flags: u32) -> KResult<u64
         return Err(EINVAL);
     }
     let p = user_path(path)?;
-    let (inode, _) = resolve_at(dirfd, &p, flags)?;
+    let (inode, path) = resolve_at(dirfd, &p, flags)?;
     if flags & AT_SYMLINK_NOFOLLOW != 0 && inode.meta().file_type() == S_IFLNK {
         return Err(EOPNOTSUPP);
     }
-    chmod_inode(&*inode, mode)
+    chmod_inode(&*inode, path.as_ref(), mode)
 }
 
 pub fn sys_fchmod(fd: i32, mode: u32) -> KResult<u64> {
-    chmod_inode(&*file(fd)?.inode, mode)
+    let f = file(fd)?;
+    chmod_inode(&*f.inode, f.path.as_ref(), mode)
 }
 
 /// Ownership is stored only (everything runs as root).
-fn chown_inode(inode: &dyn Inode, uid: u32, gid: u32) -> KResult<u64> {
+fn chown_inode(inode: &dyn Inode, path: Option<&PathRef>, uid: u32, gid: u32) -> KResult<u64> {
     inode.meta().update(|a| {
         if uid != u32::MAX {
             a.uid = uid;
@@ -879,6 +881,7 @@ fn chown_inode(inode: &dyn Inode, uid: u32, gid: u32) -> KResult<u64> {
         }
         a.ctime = vfs::now();
     });
+    crate::fs::inotify::touched(inode, path, crate::fs::inotify::IN_ATTRIB);
     Ok(0)
 }
 
@@ -887,12 +890,13 @@ pub fn sys_fchownat(dirfd: i32, path: u64, uid: u32, gid: u32, flags: u32) -> KR
         return Err(EINVAL);
     }
     let p = user_path(path)?;
-    let (inode, _) = resolve_at(dirfd, &p, flags)?;
-    chown_inode(&*inode, uid, gid)
+    let (inode, path) = resolve_at(dirfd, &p, flags)?;
+    chown_inode(&*inode, path.as_ref(), uid, gid)
 }
 
 pub fn sys_fchown(fd: i32, uid: u32, gid: u32) -> KResult<u64> {
-    chown_inode(&*file(fd)?.inode, uid, gid)
+    let f = file(fd)?;
+    chown_inode(&*f.inode, f.path.as_ref(), uid, gid)
 }
 
 pub fn sys_utimensat(dirfd: i32, path: u64, times: u64, flags: u32) -> KResult<u64> {
@@ -932,6 +936,7 @@ pub fn sys_utimensat(dirfd: i32, path: u64, times: u64, flags: u32) -> KResult<u
         }
         a.ctime = now;
     });
+    crate::fs::inotify::touched(&*inode, None, crate::fs::inotify::IN_ATTRIB);
     Ok(0)
 }
 
@@ -957,11 +962,12 @@ fn xattr_inode(t: XattrTarget) -> KResult<Arc<dyn Inode>> {
 
 pub fn sys_getxattr(t: XattrTarget, name: u64, value: u64, size: u64) -> KResult<u64> {
     let inode = xattr_inode(t)?;
-    let name = current().mm().read_cstr(name, 256)?;
-    if name.is_empty() || name.len() > 255 {
-        return Err(ERANGE);
-    }
-    let v = inode.xattrs()?.into_iter().find(|(n, _)| *n == name).ok_or(ENODATA)?.1;
+    let name = xattr_name(name)?;
+    let v = match inode.xattrs()?.into_iter().find(|(n, _)| *n == name) {
+        Some((_, v)) => v,
+        None if name == crate::security::XATTR_SELINUX => crate::security::UNLABELED.to_vec(),
+        None => return Err(ENODATA),
+    };
     if size == 0 {
         return Ok(v.len() as u64);
     }
@@ -989,10 +995,37 @@ pub fn sys_listxattr(t: XattrTarget, list: u64, size: u64) -> KResult<u64> {
     Ok(out.len() as u64)
 }
 
-/// set/removexattr: nothing stores xattrs yet.
-pub fn sys_setxattr(t: XattrTarget) -> KResult<u64> {
+fn xattr_name(name: u64) -> KResult<Vec<u8>> {
+    let name = current().mm().read_cstr(name, 256)?;
+    if name.is_empty() || name.len() > 255 {
+        return Err(ERANGE);
+    }
+    Ok(name)
+}
+
+/// setxattr (`value` = Some((ptr, size))) or removexattr (None). tmpfs
+/// (and every tmpfs-based file system) stores them; disk file systems are
+/// read-only.
+pub fn sys_setxattr(t: XattrTarget, name: u64, value: Option<(u64, u64)>, flags: u32) -> KResult<u64> {
     let inode = xattr_inode(t)?;
-    Err(if inode.read_only_fs() { EROFS } else { EOPNOTSUPP })
+    let name = xattr_name(name)?;
+    if flags & !3 != 0 {
+        return Err(EINVAL);
+    }
+    let data = match value {
+        Some((ptr, size)) => {
+            if size > 65536 {
+                return Err(E2BIG);
+            }
+            let mut v = alloc::vec![0u8; size as usize];
+            current().mm().copy_in(ptr, &mut v)?;
+            Some(v)
+        }
+        None => None,
+    };
+    inode.set_xattr(&name, data.as_deref(), flags)?;
+    crate::fs::inotify::touched(&*inode, None, crate::fs::inotify::IN_ATTRIB);
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,7 +1055,9 @@ pub fn sys_mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -
         return Ok(0);
     }
     if flags & MS_MOVE != 0 {
-        return Err(EINVAL);
+        let src = vfs::lookup(&t.process.cwd(), &user_path(source)?, true)?;
+        vfs::move_mount(&src, &at)?;
+        return Ok(0);
     }
     if flags & MS_BIND != 0 {
         let src = vfs::lookup(&t.process.cwd(), &user_path(source)?, true)?;
@@ -1042,8 +1077,23 @@ pub fn sys_mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -
         vfs::mount(&at, root, name, &src, flags & MS_RDONLY)?;
         return Ok(0);
     }
-    let (root, name) = fs::new_fs(&ty, mode_option(&data))?;
+    let (root, name) = fs::new_fs_opts(&ty, mode_option(&data), &data)?;
     vfs::mount(&at, root, name, &src, flags & MS_RDONLY)?;
+    Ok(0)
+}
+
+/// chroot: one mount namespace and one root for everybody, so only the
+/// current root (after a mount was moved onto "/", Android's switch_root)
+/// is accepted.
+pub fn sys_chroot(path: u64) -> KResult<u64> {
+    let p = vfs::lookup(&current().process.cwd(), &user_path(path)?, true)?;
+    if !p.is_dir() {
+        return Err(ENOTDIR);
+    }
+    if !p.same(&vfs::root()) {
+        log::warn!("chroot({}): only the current root is supported", vfs::path_string(&p));
+        return Err(EPERM);
+    }
     Ok(0)
 }
 
@@ -1055,4 +1105,114 @@ pub fn sys_umount2(target: u64, flags: u32) -> KResult<u64> {
     let at = vfs::lookup(&current().process.cwd(), &p, flags & 8 == 0)?;
     vfs::umount(&at)?;
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// inotify
+
+pub fn sys_inotify_init1(flags: u32) -> KResult<u64> {
+    if flags & !(O_NONBLOCK | O_CLOEXEC) != 0 {
+        return Err(EINVAL);
+    }
+    let f = crate::fs::inotify::new_file(flags & O_NONBLOCK != 0);
+    Ok(current().process.files().alloc(f, flags & O_CLOEXEC != 0, 0)? as u64)
+}
+
+pub fn sys_inotify_add_watch(fd: i32, path: u64, mask: u32) -> KResult<u64> {
+    let f = file(fd)?;
+    let p = user_path(path)?;
+    let flags = if mask & crate::fs::inotify::IN_DONT_FOLLOW != 0 { AT_SYMLINK_NOFOLLOW } else { 0 };
+    let (inode, _) = resolve_at(AT_FDCWD, &p, flags)?;
+    Ok(crate::fs::inotify::add_watch(&f, &inode, mask)? as u64)
+}
+
+pub fn sys_inotify_rm_watch(fd: i32, wd: i32) -> KResult<u64> {
+    crate::fs::inotify::rm_watch(&*file(fd)?, wd)?;
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// sendfile / copy_file_range: a copy loop through a kernel buffer.
+
+/// Copy up to `count` bytes from `src` to `dst`. `src_off`/`dst_off` are
+/// explicit offsets (pread/pwrite, file positions untouched) or None (the
+/// file positions). Returns (bytes copied, final source offset).
+fn copy_between(src: &OpenFile, src_off: Option<u64>, dst: &OpenFile, dst_off: Option<u64>, count: u64) -> KResult<(u64, Option<u64>)> {
+    if !src.readable() || !dst.writable() {
+        return Err(EBADF);
+    }
+    if dst.flags() & O_APPEND != 0 && dst_off.is_some() {
+        return Err(EINVAL);
+    }
+    let mut done = 0u64;
+    let mut buf = vec![0u8; (count as usize).min(IO_CHUNK)];
+    while done < count {
+        let n = ((count - done) as usize).min(buf.len());
+        let r = match src.read(&mut buf[..n], src_off.map(|o| o + done)) {
+            Ok(0) => break,
+            Ok(r) => r,
+            Err(e) if done == 0 => return Err(e),
+            Err(_) => break,
+        };
+        let mut w = 0;
+        while w < r {
+            match dst.write(&buf[w..r], dst_off.map(|o| o + done + w as u64)) {
+                Ok(0) => break,
+                Ok(x) => w += x,
+                Err(e) if done == 0 && w == 0 => return Err(e),
+                Err(_) => break,
+            }
+        }
+        done += w as u64;
+        if w < r {
+            break;
+        }
+    }
+    Ok((done, src_off.map(|o| o + done)))
+}
+
+fn read_off(ptr: u64) -> KResult<Option<u64>> {
+    if ptr == 0 {
+        return Ok(None);
+    }
+    let mut b = [0u8; 8];
+    current().mm().copy_in(ptr, &mut b)?;
+    let v = i64::from_le_bytes(b);
+    if v < 0 {
+        return Err(EINVAL);
+    }
+    Ok(Some(v as u64))
+}
+
+pub fn sys_sendfile(out_fd: i32, in_fd: i32, offset: u64, count: u64) -> KResult<u64> {
+    let (src, dst) = (io_file(in_fd)?, io_file(out_fd)?);
+    let off = read_off(offset)?;
+    let (n, end) = copy_between(&src, off, &dst, None, count.min(0x7fff_f000))?;
+    if let Some(e) = end {
+        current().mm().copy_out(offset, &e.to_le_bytes())?;
+    }
+    Ok(n)
+}
+
+pub fn sys_copy_file_range(fd_in: i32, off_in: u64, fd_out: i32, off_out: u64, len: u64, flags: u32) -> KResult<u64> {
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    let (src, dst) = (io_file(fd_in)?, io_file(fd_out)?);
+    let (si, so) = (src.inode.meta().file_type(), dst.inode.meta().file_type());
+    if si == S_IFDIR || so == S_IFDIR {
+        return Err(EISDIR);
+    }
+    if si != S_IFREG || so != S_IFREG {
+        return Err(EINVAL);
+    }
+    let (oi, oo) = (read_off(off_in)?, read_off(off_out)?);
+    let (n, _) = copy_between(&src, oi, &dst, oo, len.min(0x7fff_f000))?;
+    if let Some(o) = oi {
+        current().mm().copy_out(off_in, &(o + n).to_le_bytes())?;
+    }
+    if let Some(o) = oo {
+        current().mm().copy_out(off_out, &(o + n).to_le_bytes())?;
+    }
+    Ok(n)
 }

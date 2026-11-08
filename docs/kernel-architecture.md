@@ -1,4 +1,4 @@
-# Kernel architecture (phase C2 state: block devices and disk file systems)
+# Kernel architecture (phase C3a state: AOSP init boots)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -22,7 +22,11 @@ tools/run-qemu.sh --aosp-sh-test  # the same, with scripted commands; exit 0 iff
 tools/run-qemu.sh --aosp-disk-test  # AOSP super.img as a read-only virtio disk: dmctl maps
                                   # system_a/vendor_a, erofs mounts, toybox runs from the image,
                                   # every file's md5 checked against the host
+tools/run-qemu.sh --aosp-init     # unmodified AOSP /init (init_boot ramdisk + super.img): first and
+                                  # second stage, rc triggers, console shell; see android-init.md
+tools/run-qemu.sh --aosp-init-test  # the same, boot milestones and getprop/setprop checked
 tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
+                                  # (PCI slots 00:04.0, 00:05.0, ... in order)
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes
 cd kernel && cargo run / cargo test                    # same, script is the cargo runner
@@ -55,6 +59,8 @@ kernel/
       sync.rs          IrqLock (spinlock with local interrupts off)
       errno.rs         Errno / KResult
       random.rs        RDRAND + xorshift (getrandom, AT_RANDOM, /dev/urandom)
+      security.rs      SELinux stub: enforce/policy state, per-process contexts (attr/*),
+                       exec transitions, labels for new files
       testing.rs       custom test framework + isa-debug-exit
       arch/x86_64/     gdt, cpu (per-CPU via GS base, syscall MSRs, FPU/FSGSBASE),
                        entry (syscall/trap asm, TrapFrame, context switch),
@@ -73,16 +79,20 @@ kernel/
                        epoll, eventfd, timerfd, signalfd syscalls), net (socket
                        syscalls, msghdr/cmsg handling, socket options), sys
                        (rlimits, rusage, sched_*, priorities, ids, caps,
-                       personality, sigqueueinfo)
-      net/             sockets: constants, credentials; unix (AF_UNIX sockets)
+                       personality, sigqueueinfo, unshare/setns, syslog,
+                       hostname, ioprio), keys (add_key/keyctl)
+      net/             sockets: constants, credentials; unix (AF_UNIX sockets);
+                       netlink (AF_NETLINK: kernel uevents, stub protocols)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
                        files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
                        dev (character devices), tty (console line discipline),
                        procfs, pipe (+ FIFOs), poll
                        (event bits, wait queues, poll loop), epoll, eventfd,
                        timerfd, signalfd; erofs (+ lz4), ext4 (read-only disk
-                       file systems); mod.rs: cpio unpacking, open,
-                       mountable file system types
+                       file systems); sysfs (device tree, uevent files), sysctl
+                       (/proc/sys table), selinuxfs, cgroupfs (cgroup v1/v2),
+                       inotify, pty (ptmx + devpts); mod.rs: cpio unpacking,
+                       open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); pci (config space, enumeration); virtio/
                        (transports + virtqueues, blk); later net, gpu, dma-buf, ...
@@ -107,7 +117,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
    installs GDT/TSS/GS/IDT, user-mode support, its LAPIC and timer, then
    enters the scheduler's idle loop. The BSP waits up to 1 s for all of them.
 7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module)
-   into a tmpfs that becomes the root mount, create loop0-7
+   into a tmpfs that becomes the root mount, fill in sysfs (mount
+   points, memory/tty/misc character devices), create loop0-7
    (`block::init`), enumerate PCI and bring up virtio-blk disks with
    their partitions (`drivers::init`), start `/init` as pid 1 (cwd
    `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
@@ -337,7 +348,15 @@ One global mount namespace. The pieces:
 - **Mounts** (`vfs::Mount`): root dentry, mount point (`PathRef` = mount +
   dentry), type, source, flags. `child_of` crosses into the most recent
   mount on a dentry; `parent_of` handles `..` at a mount root and never goes
-  above `/`. `path_of` builds absolute paths the same way.
+  above `/`. `path_of` builds absolute paths the same way. MS_MOVE
+  changes a mount's mount point. The root directory is whatever is
+  mounted (moved) on top of the initial rootfs, so after Android's
+  switch_root every path walk starts in the system image; mounts not
+  reachable from it drop out of /proc/mounts. A generation counter and
+  wait queue let /proc/mounts readers poll for changes.
+- **Magic links**: an inode may name its target directly
+  (`Inode::magic_link`: /proc/<pid>/fd/N, exe, cwd, ns/*); the walk
+  follows that instead of the link text.
 - **Path walk** (`vfs::lookup`, `lookup_parent`): absolute or relative to a
   start `PathRef` (cwd or a dirfd), `.`/`..`, symlinks followed for every
   intermediate component and optionally the last one (at most 40, else
@@ -358,7 +377,7 @@ One global mount namespace. The pieces:
     cpio archive (files, directories, symlinks, device nodes, owners,
     mtimes). `mount -t tmpfs|ramfs` makes new instances (`mode=` option).
   - devtmpfs (one shared instance): null, zero, full, random, urandom,
-    kmsg, tty, console, ttyS0 nodes plus `pts/` and `shm/`. Device nodes
+    kmsg, tty, console, ttyS0, ptmx nodes plus `pts/` and `shm/`. Device nodes
     on any file system open the driver in `dev.rs` by major:minor. The
     console (/dev/console, /dev/tty, /dev/ttyS0) is the tty in `tty.rs`,
     below. /dev/kmsg writes go to the kernel log.
@@ -375,8 +394,21 @@ One global mount namespace. The pieces:
     `[timerfd]`/`[signalfd]` for event files, which share one 0600
     anonymous inode); they are not "magic" links yet. `fdinfo/N`: pos,
     flags (with O_CLOEXEC), mnt_id (device), ino, then per-type lines.
-  - sysfs: one shared tmpfs with the empty top-level directories (block,
-    bus, class, dev, devices, firmware, fs, kernel, module, power).
+  - sysfs (`fs/sysfs.rs`): one shared tmpfs. Devices live below
+    /sys/devices (PCI functions, `virtioN`, `virtual/<class>/<name>`,
+    `platform/serial8250`), each with a `uevent` pseudo file and a
+    `subsystem` link; /sys/class, /sys/block, /sys/dev and /sys/bus hold
+    relative symlinks into that tree. Writing an action to `uevent`
+    broadcasts it on NETLINK_KOBJECT_UEVENT; registering or removing a
+    device sends add/remove (hotplug). Plus mount points (fs/selinux,
+    fs/cgroup, kernel/tracing, ...) and a few kernel attributes.
+  - tmpfs extras: *pseudo files* (a `PseudoFile` object produces the
+    contents at open and handles writes, optionally answering on the
+    same fd: sysfs `uevent`, selinuxfs nodes) and extended attributes
+    stored per inode (`security.selinux` from restorecon and fscreate).
+  - selinuxfs, cgroupfs, devpts, /proc/sys: see [syscalls.md](syscalls.md)
+    (SELinux stub, cgroups, pseudo-terminals, /proc and /sys for init)
+    and [android-init.md](android-init.md).
   - pipes: 64 KiB, blocking and O_NONBLOCK, atomic writes up to PIPE_BUF,
     EOF when writers are gone, EPIPE + SIGPIPE when readers are gone.
     FIFO nodes (mknod S_IFIFO on any file system) get a pipe on first open,
@@ -492,7 +524,11 @@ One global mount namespace. The pieces:
 
 ## Sockets (`net/`)
 
-- Only AF_UNIX (`net/unix.rs`); other families get EAFNOSUPPORT. A
+- AF_NETLINK (`net/netlink.rs`): a socket per open, with a port id,
+  multicast groups and a message queue; a global list of live sockets.
+  The kernel's uevents are queued on every NETLINK_KOBJECT_UEVENT socket
+  in group 1 (see [syscalls.md](syscalls.md#netlink-c3a)).
+- AF_UNIX (`net/unix.rs`); other families get EAFNOSUPPORT. A
   socket file is an `OpenFile` whose ops are `SocketFile(Arc<UnixSocket>)`
   and whose inode is a fresh anonymous `S_IFSOCK | 0777` inode (fstat,
   `socket:[ino]`). Dropping the `SocketFile` (last close) *releases* the
@@ -698,26 +734,41 @@ Fixed on the way: every exiting process leaked its task (kernel stack,
 `Process`, executable path) because `exit_group` callers held an
 `Arc<Task>` in frames that never unwind; the exit paths now drop them.
 
+Phase C3a (Android init, [android-init.md](android-init.md)):
+`--aosp-init-test` boots unmodified AOSP `/init` from init_boot.img's
+ramdisk with super.img as the boot disk: first-stage mount of the dynamic
+partitions (uevents over netlink, dm-linear, erofs), switch_root (MS_MOVE
+onto `/`), SELinux policy load into the selinuxfs stub, second stage,
+property service, ueventd coldboot, apexd-bootstrap (10 APEXes on loop
+devices), linkerconfig (a pty), cgroups, `early-init` / `init` /
+`late-init`; then `getprop`/`setprop` in init's console shell: 22/22.
+New user-space suites: c3_selinux 36, c3_cgroup 42 (both Rust kernel
+only), c3_inotify 28, c3_keyctl 26, c3_netlink 25 (9 on the host, which
+cannot trigger uevents unprivileged), c3_misc 49 (36 on the host); the
+host oracle passes all of them. `--ktest` 32/32, `--test` 27/27,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9 still pass.
+
 ## Known gaps / next steps
 
+- Android init (C3b/C3c): a writable /data (ext4 writes or f2fs, then
+  FBE), a real SELinux policy engine, cgroup resource control, a pty
+  line discipline for `adb shell`, logd's /proc/kmsg, adbd over
+  virtio-net or virtio-console, ptrace/process_vm_readv for crash_dump.
+
 - VFS follow-ups: permission checks and credentials, read-only mounts,
-  devpts, /proc/<pid>/fd magic
-  links (so a memfd cannot be re-opened through /proc/self/fd/N yet),
-  /proc/sys, a real sysfs, statfs block accounting.
+  mount namespaces, statfs block accounting.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
   file page caches stay in RAM while the inode lives; only the block caches
   evict), mlock.
 - Block/FS follow-ups: ext4 writes and journal replay (/data), f2fs,
-  uevents for block devices (C3's ueventd / first-stage init), interrupt
-  (MSI-X) driven virtio with several requests in flight, dm targets for
+  interrupt (MSI-X) driven virtio with several requests in flight, dm targets for
   /data (default-key, bow) and real dm-verity, erofs big pclusters /
   ztailpacking / fragments, lazy umount semantics (Linux returns EBUSY
   while files are open).
 - Binder: freezer, oneway spam reports, priority inheritance, SELinux
   contexts, binder_logs; one global lock (fine for now, a per-process
-  split later). servicemanager needs an SELinux stub (selinuxfs status
-  page and access checks, /proc/<pid>/attr/current) in C3.
-- Sockets: AF_INET/INET6, AF_NETLINK (C3), in-flight fd garbage
+  split later).
+- Sockets: AF_INET/INET6, netlink protocols other than uevents, in-flight fd garbage
   collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
 - ELF: map segments from the file's page cache (MAP_PRIVATE) instead of
   copying them, so text pages are shared between processes.

@@ -1,10 +1,18 @@
-//! procfs (minimal): /proc/self, /proc/<pid>/{stat,status,cmdline,comm,
-//! maps,mounts,fd/,fdinfo/,exe,cwd,root}, /proc/{meminfo,cpuinfo,uptime,mounts,
-//! filesystems,cmdline,version,loadavg,stat,net/unix,
-//! sys/kernel/random/{boot_id,uuid}}.
+//! procfs: /proc/self, /proc/thread-self, /proc/<pid>/{stat,status,
+//! cmdline,comm,maps,mounts,mountinfo,cgroup,environ,oom_score_adj,...,
+//! fd/,fdinfo/,attr/,task/<tid>/,ns/,exe,cwd,root}, /proc/{meminfo,cpuinfo,
+//! uptime,mounts,filesystems,cmdline,bootconfig,version,loadavg,stat,
+//! partitions,cgroups,...}, /proc/net/{unix,netlink}, /proc/pressure/*
+//! and /proc/sys (`sysctl`).
 //!
 //! Inodes are made on demand and never cached in dentries; file contents
-//! are generated when the file is opened.
+//! are generated when the file is opened. Writable nodes: /proc/sys/*,
+//! /proc/<pid>/attr/* (the caller's own SELinux attributes),
+//! /proc/<pid>/oom_score_adj (stored), /proc/sysrq-trigger. /proc/mounts
+//! (and <pid>/mounts, mountinfo) are regenerated when read from offset 0
+//! and poll POLLPRI|POLLERR once after every mount table change.
+//! /proc/<pid>/fd/N and ns/* are "magic" links: opening them reaches the
+//! open file (or a namespace file) itself.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -13,10 +21,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt::Write;
-use spin::Once;
+use core::sync::atomic::{AtomicU64, Ordering};
+use spin::{Mutex, Once};
 
-use super::file::{FileOps, SeqFile};
-use super::vfs::{self, DirEntry, Inode, Meta, PathRef, S_IFDIR, S_IFLNK, S_IFREG, dtype};
+use super::file::{FileOps, OpenFile, SeqFile};
+use super::poll::WaitQueue;
+use super::vfs::{self, DirEntry, Inode, MagicLink, Meta, PathRef, S_IFDIR, S_IFLNK, S_IFREG, dtype};
 use crate::errno::*;
 use crate::process::{self, Process, TABLE};
 
@@ -32,15 +42,21 @@ enum Node {
     FdLink(u32, i32),
     FdInfoDir(u32),
     FdInfo(u32, i32),
+    /// attr/ of a process (tid 0) or a thread.
+    AttrDir(u32, u32),
+    Attr(u32, u32, Attr),
+    TaskDir(u32),
+    TaskTid(u32, u32),
+    TaskFile(u32, u32, PidFile),
+    NsDir(u32),
+    Ns(u32, Ns),
     NetDir,
     NetUnix,
-    /// /proc/sys, /proc/sys/kernel, /proc/sys/kernel/random.
-    SysDir,
-    SysKernelDir,
-    SysRandomDir,
-    /// Random UUID fixed at boot (libbinder needs it), and a fresh one per open.
-    BootId,
-    Uuid,
+    NetNetlink,
+    PressureDir,
+    Pressure(u8),
+    /// /proc/sys entries (index into `sysctl::nodes`).
+    Sys(u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,23 +67,39 @@ enum Global {
     Mounts,
     Filesystems,
     Cmdline,
+    Bootconfig,
     Version,
     Loadavg,
     Stat,
     Partitions,
+    Cgroups,
+    Devices,
+    Modules,
+    Swaps,
+    Vmstat,
+    Interrupts,
+    SysrqTrigger,
 }
 
-const GLOBALS: [(&[u8], Global); 10] = [
+const GLOBALS: [(&[u8], Global); 18] = [
+    (b"bootconfig", Global::Bootconfig),
+    (b"cgroups", Global::Cgroups),
     (b"cmdline", Global::Cmdline),
     (b"cpuinfo", Global::Cpuinfo),
+    (b"devices", Global::Devices),
     (b"filesystems", Global::Filesystems),
+    (b"interrupts", Global::Interrupts),
     (b"loadavg", Global::Loadavg),
     (b"meminfo", Global::Meminfo),
+    (b"modules", Global::Modules),
     (b"mounts", Global::Mounts),
     (b"partitions", Global::Partitions),
     (b"stat", Global::Stat),
+    (b"swaps", Global::Swaps),
+    (b"sysrq-trigger", Global::SysrqTrigger),
     (b"uptime", Global::Uptime),
     (b"version", Global::Version),
+    (b"vmstat", Global::Vmstat),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -78,22 +110,100 @@ enum PidFile {
     Comm,
     Maps,
     Mounts,
+    Mountinfo,
+    Cgroup,
+    Environ,
+    OomScoreAdj,
+    OomAdj,
+    OomScore,
+    Statm,
+    Schedstat,
+    TimerslackNs,
+    Wchan,
     Exe,
     Cwd,
     Root,
 }
 
-const PID_FILES: [(&[u8], PidFile); 9] = [
+const PID_FILES: [(&[u8], PidFile); 19] = [
+    (b"cgroup", PidFile::Cgroup),
     (b"cmdline", PidFile::Cmdline),
     (b"comm", PidFile::Comm),
     (b"cwd", PidFile::Cwd),
+    (b"environ", PidFile::Environ),
     (b"exe", PidFile::Exe),
     (b"maps", PidFile::Maps),
+    (b"mountinfo", PidFile::Mountinfo),
     (b"mounts", PidFile::Mounts),
+    (b"oom_adj", PidFile::OomAdj),
+    (b"oom_score", PidFile::OomScore),
+    (b"oom_score_adj", PidFile::OomScoreAdj),
     (b"root", PidFile::Root),
+    (b"schedstat", PidFile::Schedstat),
+    (b"stat", PidFile::Stat),
+    (b"statm", PidFile::Statm),
+    (b"status", PidFile::Status),
+    (b"timerslack_ns", PidFile::TimerslackNs),
+    (b"wchan", PidFile::Wchan),
+];
+
+/// Files in /proc/<pid>/task/<tid>/.
+const TASK_FILES: [(&[u8], PidFile); 6] = [
+    (b"cgroup", PidFile::Cgroup),
+    (b"cmdline", PidFile::Cmdline),
+    (b"comm", PidFile::Comm),
     (b"stat", PidFile::Stat),
     (b"status", PidFile::Status),
+    (b"timerslack_ns", PidFile::TimerslackNs),
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Attr {
+    Current,
+    Prev,
+    Exec,
+    Fscreate,
+    Keycreate,
+    Sockcreate,
+}
+
+const ATTRS: [(&[u8], Attr); 6] = [
+    (b"current", Attr::Current),
+    (b"exec", Attr::Exec),
+    (b"fscreate", Attr::Fscreate),
+    (b"keycreate", Attr::Keycreate),
+    (b"prev", Attr::Prev),
+    (b"sockcreate", Attr::Sockcreate),
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Ns {
+    Cgroup,
+    Ipc,
+    Mnt,
+    Net,
+    Pid,
+    PidForChildren,
+    Time,
+    TimeForChildren,
+    User,
+    Uts,
+}
+
+const NSES: [(&[u8], Ns, u64); 10] = [
+    (b"cgroup", Ns::Cgroup, 4026531835),
+    (b"ipc", Ns::Ipc, 4026531839),
+    (b"mnt", Ns::Mnt, 4026531841),
+    (b"net", Ns::Net, 4026531840),
+    (b"pid", Ns::Pid, 4026531836),
+    (b"pid_for_children", Ns::PidForChildren, 4026531836),
+    (b"time", Ns::Time, 4026531834),
+    (b"time_for_children", Ns::TimeForChildren, 4026531834),
+    (b"user", Ns::User, 4026531837),
+    (b"uts", Ns::Uts, 4026531838),
+];
+
+const PRESSURE: [&[u8]; 3] = [b"cpu", b"io", b"memory"];
 
 pub struct ProcInode {
     meta: Meta,
@@ -106,41 +216,49 @@ fn proc_dev() -> u64 {
     *PROC_DEV.call_once(vfs::alloc_dev)
 }
 
-/// Stable inode numbers: what the node is, packed.
+/// Stable inode numbers: a hash of what the node is.
 fn ino_of(node: Node) -> u64 {
-    match node {
-        Node::Root => 1,
-        Node::SelfLink => 2,
-        Node::ThreadSelfLink => 3,
-        Node::Global(g) => 16 + g as u64,
-        Node::PidDir(p) => (p as u64) << 16 | 1,
-        Node::FdDir(p) => (p as u64) << 16 | 2,
-        Node::PidFile(p, f) => (p as u64) << 16 | (16 + f as u64),
-        Node::FdLink(p, fd) => (1 << 48) | (p as u64) << 16 | fd as u64,
-        Node::FdInfoDir(p) => (p as u64) << 16 | 3,
-        Node::FdInfo(p, fd) => (2 << 48) | (p as u64) << 16 | fd as u64,
-        Node::NetDir => 4,
-        Node::NetUnix => 5,
-        Node::SysDir => 6,
-        Node::SysKernelDir => 7,
-        Node::SysRandomDir => 8,
-        Node::BootId => 9,
-        Node::Uuid => 10,
+    if node == Node::Root {
+        return 1;
     }
+    let s = format!("{node:?}");
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    (h >> 2) | 2
 }
 
 fn mode_of(node: Node) -> u32 {
     match node {
-        Node::Root | Node::PidDir(_) | Node::NetDir | Node::SysDir | Node::SysKernelDir | Node::SysRandomDir => {
-            S_IFDIR | 0o555
-        }
-        Node::FdDir(_) => S_IFDIR | 0o500,
+        Node::Root
+        | Node::PidDir(_)
+        | Node::NetDir
+        | Node::AttrDir(..)
+        | Node::TaskDir(_)
+        | Node::TaskTid(..)
+        | Node::PressureDir => S_IFDIR | 0o555,
+        Node::FdDir(_) | Node::NsDir(_) => S_IFDIR | 0o500 | 0o011,
         Node::FdInfoDir(_) => S_IFDIR | 0o555,
         Node::FdInfo(..) => S_IFREG | 0o444,
         Node::SelfLink | Node::ThreadSelfLink => S_IFLNK | 0o777,
         Node::FdLink(..) => S_IFLNK | 0o700,
+        Node::Ns(..) => S_IFLNK | 0o777,
         Node::PidFile(_, PidFile::Exe | PidFile::Cwd | PidFile::Root) => S_IFLNK | 0o777,
-        Node::Global(_) | Node::PidFile(..) | Node::NetUnix | Node::BootId | Node::Uuid => S_IFREG | 0o444,
+        Node::PidFile(_, PidFile::OomScoreAdj | PidFile::OomAdj | PidFile::TimerslackNs) => S_IFREG | 0o644,
+        Node::Attr(_, _, Attr::Current | Attr::Prev) => S_IFREG | 0o444 | if matches!(node, Node::Attr(_, _, Attr::Current)) { 0o222 } else { 0 },
+        Node::Attr(..) => S_IFREG | 0o666,
+        Node::Global(Global::SysrqTrigger) => S_IFREG | 0o200,
+        Node::Global(Global::Bootconfig) => S_IFREG | 0o440,
+        Node::Sys(i) => {
+            if super::sysctl::nodes()[i as usize].file.is_some() {
+                S_IFREG | 0o644
+            } else {
+                S_IFDIR | 0o555
+            }
+        }
+        Node::Pressure(_) => S_IFREG | 0o666,
+        Node::Global(_) | Node::PidFile(..) | Node::TaskFile(..) | Node::NetUnix | Node::NetNetlink => S_IFREG | 0o444,
     }
 }
 
@@ -157,11 +275,45 @@ fn process(pid: u32) -> KResult<Arc<Process>> {
     TABLE.lock().procs.get(&pid).map(|n| n.proc.clone()).ok_or(ENOENT)
 }
 
+/// `tid` is a live thread of `pid`.
+fn check_thread(pid: u32, tid: u32) -> KResult<()> {
+    let t = TABLE.lock();
+    let n = t.procs.get(&pid).ok_or(ENOENT)?;
+    if n.threads.contains(&tid) { Ok(()) } else { Err(ENOENT) }
+}
+
 fn parse_num(name: &[u8]) -> Option<u64> {
     if name.is_empty() || name.len() > 10 || (name.len() > 1 && name[0] == b'0') {
         return None;
     }
     core::str::from_utf8(name).ok()?.parse().ok()
+}
+
+fn ns_id(n: Ns) -> u64 {
+    NSES.iter().find(|(_, x, _)| *x == n).map_or(0, |e| e.2)
+}
+
+/// The inode an open of /proc/<pid>/ns/<x> reaches (nsfs-like).
+fn ns_inode(n: Ns) -> Arc<dyn Inode> {
+    static NS: Once<Vec<Arc<dyn Inode>>> = Once::new();
+    let all = NS.call_once(|| {
+        let dev = vfs::alloc_dev();
+        NSES.iter().map(|(_, _, id)| Arc::new(NsInode { meta: Meta::with_ino(*id, dev, S_IFREG | 0o444, 0) }) as Arc<dyn Inode>).collect()
+    });
+    all[NSES.iter().position(|(_, x, _)| *x == n).unwrap_or(0)].clone()
+}
+
+struct NsInode {
+    meta: Meta,
+}
+
+impl Inode for NsInode {
+    fn meta(&self) -> &Meta {
+        &self.meta
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl Inode for ProcInode {
@@ -175,26 +327,37 @@ impl Inode for ProcInode {
                 b"self" => Node::SelfLink,
                 b"thread-self" => Node::ThreadSelfLink,
                 b"net" => Node::NetDir,
-                b"sys" => Node::SysDir,
+                b"sys" => Node::Sys(0),
+                b"pressure" => Node::PressureDir,
                 _ => {
                     if let Some((_, g)) = GLOBALS.iter().find(|(n, _)| *n == name) {
                         Node::Global(*g)
                     } else {
                         let pid = parse_num(name).ok_or(ENOENT)? as u32;
-                        process(pid)?;
+                        // A thread id names its thread group's directory
+                        // too (hidden from readdir, as on Linux).
+                        let pid = if process(pid).is_ok() {
+                            pid
+                        } else {
+                            TABLE.lock().tasks.get(&pid).map(|t| t.pid()).ok_or(ENOENT)?;
+                            pid
+                        };
                         Node::PidDir(pid)
                     }
                 }
             },
             Node::PidDir(pid) => {
-                process(pid)?;
-                if name == b"fd" {
-                    Node::FdDir(pid)
-                } else if name == b"fdinfo" {
-                    Node::FdInfoDir(pid)
-                } else {
-                    let (_, f) = PID_FILES.iter().find(|(n, _)| *n == name).ok_or(ENOENT)?;
-                    Node::PidFile(pid, *f)
+                let pid = owner(pid)?;
+                match name {
+                    b"fd" => Node::FdDir(pid),
+                    b"fdinfo" => Node::FdInfoDir(pid),
+                    b"attr" => Node::AttrDir(pid, 0),
+                    b"task" => Node::TaskDir(pid),
+                    b"ns" => Node::NsDir(pid),
+                    _ => {
+                        let (_, f) = PID_FILES.iter().find(|(n, _)| *n == name).ok_or(ENOENT)?;
+                        Node::PidFile(pid, *f)
+                    }
                 }
             }
             Node::FdDir(pid) => {
@@ -207,12 +370,48 @@ impl Inode for ProcInode {
                 process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
                 Node::FdInfo(pid, fd)
             }
-            Node::NetDir if name == b"unix" => Node::NetUnix,
-            Node::SysDir if name == b"kernel" => Node::SysKernelDir,
-            Node::SysKernelDir if name == b"random" => Node::SysRandomDir,
-            Node::SysRandomDir if name == b"boot_id" => Node::BootId,
-            Node::SysRandomDir if name == b"uuid" => Node::Uuid,
-            Node::NetDir | Node::SysDir | Node::SysKernelDir | Node::SysRandomDir => return Err(ENOENT),
+            Node::AttrDir(pid, tid) => {
+                let (_, a) = ATTRS.iter().find(|(n, _)| *n == name).ok_or(ENOENT)?;
+                Node::Attr(pid, tid, *a)
+            }
+            Node::TaskDir(pid) => {
+                let tid = parse_num(name).ok_or(ENOENT)? as u32;
+                check_thread(pid, tid)?;
+                Node::TaskTid(pid, tid)
+            }
+            Node::TaskTid(pid, tid) => {
+                if name == b"attr" {
+                    Node::AttrDir(pid, tid)
+                } else {
+                    let (_, f) = TASK_FILES.iter().find(|(n, _)| *n == name).ok_or(ENOENT)?;
+                    Node::TaskFile(pid, tid, *f)
+                }
+            }
+            Node::NsDir(pid) => {
+                let (_, n, _) = NSES.iter().find(|(n, _, _)| *n == name).ok_or(ENOENT)?;
+                Node::Ns(pid, *n)
+            }
+            Node::NetDir => match name {
+                b"unix" => Node::NetUnix,
+                b"netlink" => Node::NetNetlink,
+                _ => return Err(ENOENT),
+            },
+            Node::PressureDir => {
+                let i = PRESSURE.iter().position(|p| *p == name).ok_or(ENOENT)?;
+                Node::Pressure(i as u8)
+            }
+            Node::Sys(i) => {
+                let n = &super::sysctl::nodes()[i as usize];
+                if n.file.is_some() {
+                    return Err(ENOTDIR);
+                }
+                let path = if n.path.is_empty() {
+                    String::from_utf8_lossy(name).into_owned()
+                } else {
+                    format!("{}/{}", n.path, String::from_utf8_lossy(name))
+                };
+                Node::Sys(super::sysctl::find(&path).ok_or(ENOENT)? as u16)
+            }
             _ => return Err(ENOTDIR),
         };
         Ok(make(node))
@@ -226,7 +425,8 @@ impl Inode for ProcInode {
                 v.push(ent(b"self", Node::SelfLink));
                 v.push(ent(b"thread-self", Node::ThreadSelfLink));
                 v.push(ent(b"net", Node::NetDir));
-                v.push(ent(b"sys", Node::SysDir));
+                v.push(ent(b"sys", Node::Sys(0)));
+                v.push(ent(b"pressure", Node::PressureDir));
                 for (n, g) in GLOBALS {
                     v.push(ent(n, Node::Global(g)));
                 }
@@ -239,6 +439,9 @@ impl Inode for ProcInode {
                 process(pid)?;
                 v.push(ent(b"fd", Node::FdDir(pid)));
                 v.push(ent(b"fdinfo", Node::FdInfoDir(pid)));
+                v.push(ent(b"attr", Node::AttrDir(pid, 0)));
+                v.push(ent(b"task", Node::TaskDir(pid)));
+                v.push(ent(b"ns", Node::NsDir(pid)));
                 for (n, f) in PID_FILES {
                     v.push(ent(n, Node::PidFile(pid, f)));
                 }
@@ -253,12 +456,41 @@ impl Inode for ProcInode {
                     v.push(ent(format!("{fd}").as_bytes(), Node::FdInfo(pid, fd)));
                 }
             }
-            Node::NetDir => v.push(ent(b"unix", Node::NetUnix)),
-            Node::SysDir => v.push(ent(b"kernel", Node::SysKernelDir)),
-            Node::SysKernelDir => v.push(ent(b"random", Node::SysRandomDir)),
-            Node::SysRandomDir => {
-                v.push(ent(b"boot_id", Node::BootId));
-                v.push(ent(b"uuid", Node::Uuid));
+            Node::AttrDir(pid, tid) => {
+                for (n, a) in ATTRS {
+                    v.push(ent(n, Node::Attr(pid, tid, a)));
+                }
+            }
+            Node::TaskDir(pid) => {
+                let tids = TABLE.lock().procs.get(&pid).map(|n| n.threads.clone()).ok_or(ENOENT)?;
+                for tid in tids {
+                    v.push(ent(format!("{tid}").as_bytes(), Node::TaskTid(pid, tid)));
+                }
+            }
+            Node::TaskTid(pid, tid) => {
+                v.push(ent(b"attr", Node::AttrDir(pid, tid)));
+                for (n, f) in TASK_FILES {
+                    v.push(ent(n, Node::TaskFile(pid, tid, f)));
+                }
+            }
+            Node::NsDir(pid) => {
+                for (n, x, _) in NSES {
+                    v.push(ent(n, Node::Ns(pid, x)));
+                }
+            }
+            Node::NetDir => {
+                v.push(ent(b"netlink", Node::NetNetlink));
+                v.push(ent(b"unix", Node::NetUnix));
+            }
+            Node::PressureDir => {
+                for (i, p) in PRESSURE.iter().enumerate() {
+                    v.push(ent(p, Node::Pressure(i as u8)));
+                }
+            }
+            Node::Sys(i) => {
+                for (name, j) in super::sysctl::children(i as usize) {
+                    v.push(ent(name.as_bytes(), Node::Sys(j as u16)));
+                }
             }
             _ => return Err(ENOTDIR),
         }
@@ -280,24 +512,67 @@ impl Inode for ProcInode {
                 let f = process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
                 Ok(super::file_path(&f))
             }
+            Node::Ns(_, n) => {
+                let name = NSES.iter().find(|(_, x, _)| *x == n).map_or(&b"mnt"[..], |e| e.0);
+                let name = match name {
+                    b"pid_for_children" => &b"pid"[..],
+                    b"time_for_children" => &b"time"[..],
+                    x => x,
+                };
+                Ok(format!("{}:[{}]", String::from_utf8_lossy(name), ns_id(n)).into_bytes())
+            }
             _ => Err(EINVAL),
+        }
+    }
+
+    fn magic_link(&self) -> Option<KResult<MagicLink>> {
+        match self.node {
+            Node::FdLink(pid, fd) => Some((|| {
+                let f = process(pid)?.files().get(fd).map_err(|_| ENOENT)?;
+                Ok(match &f.path {
+                    Some(p) => MagicLink::Path(p.clone()),
+                    None => MagicLink::Inode(f.inode.clone()),
+                })
+            })()),
+            Node::Ns(_, n) => Some(Ok(MagicLink::Inode(ns_inode(n)))),
+            Node::PidFile(pid, PidFile::Exe) => {
+                Some(process(pid).and_then(|p| p.exe.lock().clone().map(MagicLink::Path).ok_or(ENOENT)))
+            }
+            Node::PidFile(pid, PidFile::Cwd) => Some(process(pid).map(|p| MagicLink::Path(p.fs.lock().cwd.clone()))),
+            _ => None,
         }
     }
 
     fn open(&self, _flags: u32) -> KResult<Option<Box<dyn FileOps>>> {
         let data = match self.node {
+            Node::Global(Global::Mounts) | Node::PidFile(_, PidFile::Mounts) => {
+                return Ok(Some(Box::new(MountsFile::new(false))));
+            }
+            Node::PidFile(_, PidFile::Mountinfo) => return Ok(Some(Box::new(MountsFile::new(true)))),
+            Node::Global(Global::SysrqTrigger) | Node::Sys(_) | Node::Attr(..) | Node::Pressure(_) => {
+                return Ok(Some(Box::new(ProcRw { node: self.node, data: Mutex::new(rw_contents(self.node)?) })));
+            }
+            Node::PidFile(_, PidFile::OomScoreAdj | PidFile::OomAdj | PidFile::TimerslackNs) => {
+                return Ok(Some(Box::new(ProcRw { node: self.node, data: Mutex::new(rw_contents(self.node)?) })));
+            }
             Node::Global(g) => global(g),
-            Node::PidFile(pid, f) => pid_file(pid, f)?,
+            Node::PidFile(pid, f) | Node::TaskFile(pid, _, f) => pid_file(pid, f)?,
             Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
             Node::NetUnix => crate::net::unix::proc_net_unix(),
-            Node::BootId => {
-                static BOOT_ID: Once<String> = Once::new();
-                BOOT_ID.call_once(random_uuid).clone()
-            }
-            Node::Uuid => random_uuid(),
+            Node::NetNetlink => crate::net::netlink::proc_net_netlink(),
             _ => return Ok(None),
         };
         Ok(Some(Box::new(SeqFile { data: data.into_bytes() })))
+    }
+
+    fn set_xattr(&self, _name: &[u8], _value: Option<&[u8]>, _flags: u32) -> KResult<()> {
+        // restorecon on /proc: labels come from genfscon, nothing to store.
+        Ok(())
+    }
+
+    fn truncate(&self, _size: u64) -> KResult<()> {
+        // O_TRUNC when writing a /proc/sys or attr file.
+        Ok(())
     }
 
     fn cacheable(&self) -> bool {
@@ -309,13 +584,222 @@ impl Inode for ProcInode {
     }
 }
 
+/// The thread group of `pid` (a tid reaches its process's directory).
+fn owner(pid: u32) -> KResult<u32> {
+    let t = TABLE.lock();
+    if t.procs.contains_key(&pid) {
+        return Ok(pid);
+    }
+    t.tasks.get(&pid).map(|x| x.pid()).ok_or(ENOENT)
+}
+
+// ---------------------------------------------------------------------------
+// Writable nodes
+
+fn attr_of(s: &crate::security::SecAttrs, a: Attr) -> Vec<u8> {
+    let v = match a {
+        Attr::Current => &s.current,
+        Attr::Prev => &s.prev,
+        Attr::Exec => &s.exec,
+        Attr::Fscreate => &s.fscreate,
+        Attr::Keycreate => &s.keycreate,
+        Attr::Sockcreate => &s.sockcreate,
+    };
+    let mut v = v.clone();
+    if !v.is_empty() {
+        v.push(0);
+    }
+    v
+}
+
+fn rw_contents(node: Node) -> KResult<Vec<u8>> {
+    Ok(match node {
+        Node::Sys(i) => super::sysctl::read(i as usize),
+        Node::Attr(pid, _, a) => attr_of(&process(pid)?.sec.lock(), a),
+        Node::PidFile(pid, PidFile::OomScoreAdj) => format!("{}\n", process(pid)?.attrs.lock().oom_score_adj).into_bytes(),
+        Node::PidFile(pid, PidFile::OomAdj) => {
+            let adj = process(pid)?.attrs.lock().oom_score_adj;
+            format!("{}\n", if adj == 1000 { 15 } else { adj * 17 / 1000 }).into_bytes()
+        }
+        Node::PidFile(pid, PidFile::TimerslackNs) => format!("{}\n", process(pid)?.attrs.lock().timerslack).into_bytes(),
+        Node::Pressure(_) => b"some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n".to_vec(),
+        _ => Vec::new(),
+    })
+}
+
+fn parse_int(data: &[u8]) -> KResult<i64> {
+    core::str::from_utf8(data).map_err(|_| EINVAL)?.trim_matches(|c: char| c.is_whitespace() || c == '\0').parse().map_err(|_| EINVAL)
+}
+
+fn proc_write(node: Node, data: &[u8]) -> KResult<usize> {
+    match node {
+        Node::Sys(i) => super::sysctl::write(i as usize, data),
+        Node::Attr(pid, _, a) => {
+            let me = process::current();
+            if me.pid() != pid {
+                return Err(EACCES);
+            }
+            let c = crate::security::clean_context(data);
+            if !c.is_empty() && !crate::security::valid_context(&c) {
+                return Err(EINVAL);
+            }
+            let mut s = me.process.sec.lock();
+            match a {
+                Attr::Current => {
+                    if c.is_empty() {
+                        return Err(EINVAL);
+                    }
+                    s.prev = core::mem::replace(&mut s.current, c);
+                }
+                Attr::Prev => return Err(EACCES),
+                Attr::Exec => s.exec = c,
+                Attr::Fscreate => s.fscreate = c,
+                Attr::Keycreate => s.keycreate = c,
+                Attr::Sockcreate => s.sockcreate = c,
+            }
+            Ok(data.len())
+        }
+        Node::PidFile(pid, PidFile::OomScoreAdj) => {
+            let v = parse_int(data)?;
+            if !(-1000..=1000).contains(&v) {
+                return Err(EINVAL);
+            }
+            process(pid)?.attrs.lock().oom_score_adj = v as i32;
+            Ok(data.len())
+        }
+        Node::PidFile(pid, PidFile::OomAdj) => {
+            let v = parse_int(data)?;
+            if !(-17..=15).contains(&v) {
+                return Err(EINVAL);
+            }
+            process(pid)?.attrs.lock().oom_score_adj = if v == 15 { 1000 } else { (v * 1000 / 17) as i32 };
+            Ok(data.len())
+        }
+        Node::PidFile(pid, PidFile::TimerslackNs) => {
+            let v = parse_int(data)?;
+            if v < 0 {
+                return Err(EINVAL);
+            }
+            process(pid)?.attrs.lock().timerslack = v as u64;
+            Ok(data.len())
+        }
+        Node::Global(Global::SysrqTrigger) => {
+            log::info!("sysrq: {}", String::from_utf8_lossy(data).trim());
+            Ok(data.len())
+        }
+        // PSI triggers ("some 150000 1000000"): accepted, never fire.
+        Node::Pressure(_) => Ok(data.len()),
+        _ => Err(EINVAL),
+    }
+}
+
+struct ProcRw {
+    node: Node,
+    data: Mutex<Vec<u8>>,
+}
+
+impl FileOps for ProcRw {
+    fn read(&self, _: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut d = self.data.lock();
+        if *pos == 0
+            && let Ok(fresh) = rw_contents(self.node)
+        {
+            // Re-read from the start sees later writes (init checks
+            // mmap_rnd_bits that way, through one ifstream).
+            *d = fresh;
+        }
+        let start = (*pos as usize).min(d.len());
+        let n = buf.len().min(d.len() - start);
+        buf[..n].copy_from_slice(&d[start..start + n]);
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn write(&self, _: &OpenFile, _: &mut u64, data: &[u8]) -> KResult<usize> {
+        let n = proc_write(self.node, data)?;
+        if let Ok(d) = rw_contents(self.node) {
+            *self.data.lock() = d;
+        }
+        Ok(n)
+    }
+
+    fn seekable(&self) -> bool {
+        true
+    }
+
+    fn size(&self, _: &OpenFile) -> u64 {
+        self.data.lock().len() as u64
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// /proc/mounts, /proc/<pid>/mounts and mountinfo: regenerated whenever
+/// read from offset 0; POLLERR|POLLPRI once per mount table change.
+struct MountsFile {
+    info: bool,
+    data: Mutex<Vec<u8>>,
+    seen: AtomicU64,
+}
+
+impl MountsFile {
+    fn new(info: bool) -> MountsFile {
+        MountsFile { info, data: Mutex::new(mounts_text(info).into_bytes()), seen: AtomicU64::new(vfs::mount_generation()) }
+    }
+}
+
+impl FileOps for MountsFile {
+    fn read(&self, _: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut d = self.data.lock();
+        if *pos == 0 {
+            *d = mounts_text(self.info).into_bytes();
+        }
+        let start = (*pos as usize).min(d.len());
+        let n = buf.len().min(d.len() - start);
+        buf[..n].copy_from_slice(&d[start..start + n]);
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn seekable(&self) -> bool {
+        true
+    }
+
+    fn size(&self, _: &OpenFile) -> u64 {
+        self.data.lock().len() as u64
+    }
+
+    fn poll(&self, _: &OpenFile) -> u32 {
+        let g = vfs::mount_generation();
+        let mut m = super::poll::READ_EVENTS;
+        if self.seen.swap(g, Ordering::Relaxed) != g {
+            m |= super::poll::POLLERR | super::poll::POLLPRI;
+        }
+        m
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        Some(vfs::mount_wait_queue())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contents
 
-/// /proc/<pid>/fdinfo/<fd>: position, flags (with O_CLOEXEC), inode, then
-/// what the file type adds (epoll items, eventfd count, timerfd state...).
+/// The boot id (/proc/sys/kernel/random/boot_id), fixed at boot.
+pub fn boot_id() -> String {
+    static BOOT_ID: Once<String> = Once::new();
+    BOOT_ID.call_once(random_uuid).clone()
+}
+
 /// A random (version 4) UUID line, as /proc/sys/kernel/random/uuid.
-fn random_uuid() -> String {
+pub fn random_uuid() -> String {
     let mut b = [0u8; 16];
     crate::random::fill(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -343,7 +827,10 @@ fn fdinfo(pid: u32, fd: i32) -> KResult<String> {
     Ok(s)
 }
 
-pub const FILESYSTEMS: [&str; 7] = ["rootfs", "tmpfs", "ramfs", "devtmpfs", "proc", "sysfs", "binder"];
+pub const FILESYSTEMS: [&str; 17] = [
+    "rootfs", "tmpfs", "ramfs", "devtmpfs", "proc", "sysfs", "binder", "selinuxfs", "cgroup", "cgroup2", "devpts",
+    "tracefs", "debugfs", "pstore", "bpf", "configfs", "fusectl",
+];
 
 fn global(g: Global) -> String {
     let mut s = String::new();
@@ -379,7 +866,30 @@ fn global(g: Global) -> String {
             let ms = crate::time::uptime_ms();
             let _ = writeln!(s, "{}.{:02} {}.{:02}", ms / 1000, ms % 1000 / 10, ms / 1000, ms % 1000 / 10);
         }
-        Global::Mounts => mounts(&mut s),
+        Global::Mounts => s = mounts_text(false),
+        Global::Bootconfig => s = bootconfig(),
+        Global::Cgroups => s = super::cgroupfs::proc_cgroups(),
+        Global::Devices => {
+            s.push_str("Character devices:\n  1 mem\n  4 /dev/vc/0\n  4 tty\n  5 /dev/tty\n  5 /dev/console\n  5 /dev/ptmx\n  7 vcs\n 10 misc\n244 binder\n\nBlock devices:\n  7 loop\n253 device-mapper\n254 virtblk\n259 blkext\n");
+        }
+        Global::Modules | Global::SysrqTrigger => {}
+        Global::Swaps => s.push_str("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"),
+        Global::Vmstat => {
+            let (total, free) = crate::mm::frame::stats();
+            let _ = write!(
+                s,
+                "nr_free_pages {free}\nnr_inactive_anon 0\nnr_active_anon {}\nnr_inactive_file 0\nnr_active_file 0\nnr_unevictable 0\nnr_file_pages 0\nnr_shmem 0\nnr_dirty 0\nnr_writeback 0\npgpgin 0\npgpgout 0\npswpin 0\npswpout 0\npgfault 0\npgmajfault 0\npgsteal_kswapd 0\npgsteal_direct 0\npgscan_kswapd 0\npgscan_direct 0\nworkingset_refault_file 0\nnr_zone_inactive_file 0\nnr_zone_active_file 0\n",
+                total - free
+            );
+        }
+        Global::Interrupts => {
+            let cpus = crate::arch::x86_64::smp::online_cpus();
+            s.push_str("     ");
+            for i in 0..cpus {
+                let _ = write!(s, "      CPU{i}");
+            }
+            s.push('\n');
+        }
         Global::Partitions => s.push_str(&crate::block::proc_partitions()),
         Global::Filesystems => {
             for f in FILESYSTEMS {
@@ -420,13 +930,64 @@ fn global(g: Global) -> String {
     s
 }
 
-fn mounts(s: &mut String) {
-    for m in vfs::mounts() {
-        let at = vfs::path_string(&PathRef { dentry: m.root.clone(), mnt: m.clone() });
+/// /proc/mounts (or, with `info`, /proc/self/mountinfo) lines for every
+/// mount reachable from the root.
+fn mounts_text(info: bool) -> String {
+    let mut s = String::new();
+    let all = vfs::mounts();
+    let root = vfs::root();
+    for (i, m) in all.iter().enumerate() {
+        let me = PathRef { dentry: m.root.clone(), mnt: m.clone() };
+        if !vfs::reachable(&me, &root) {
+            continue;
+        }
+        let at = vfs::path_string(&me);
         let src = String::from_utf8_lossy(&m.source);
-        let ro = if m.flags & 1 != 0 { "ro" } else { "rw" };
-        let _ = writeln!(s, "{src} {at} {} {ro} 0 0", m.fstype);
+        let mut opts = String::from(if m.flags & 1 != 0 { "ro" } else { "rw" });
+        if let Some(extra) = m.root.inode.mount_options()
+            && !extra.is_empty()
+        {
+            opts.push(',');
+            opts.push_str(&extra);
+        }
+        if info {
+            let parent = m
+                .parent()
+                .and_then(|p| all.iter().position(|x| Arc::ptr_eq(x, &p.mnt)))
+                .map_or(i, |x| x);
+            let dev = m.root.inode.meta().dev;
+            let _ = writeln!(
+                s,
+                "{} {} {}:{} / {at} {opts} shared:{} - {} {src} {opts}",
+                i + 1,
+                parent + 1,
+                vfs::dev_major(dev),
+                vfs::dev_minor(dev),
+                i + 1,
+                m.fstype
+            );
+        } else {
+            let _ = writeln!(s, "{src} {at} {} {opts} 0 0", m.fstype);
+        }
     }
+    s
+}
+
+/// /proc/bootconfig: the androidboot.* parameters of the kernel command
+/// line in bootconfig syntax (there is no separate bootconfig blob).
+fn bootconfig() -> String {
+    let mut s = String::new();
+    for w in crate::boot::cmdline().split_ascii_whitespace() {
+        if w == "--" {
+            break;
+        }
+        if let Some((k, v)) = w.split_once('=')
+            && k.starts_with("androidboot.")
+        {
+            let _ = writeln!(s, "{k} = \"{v}\"");
+        }
+    }
+    s
 }
 
 fn cpuinfo(s: &mut String) {
@@ -570,7 +1131,21 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
             let _ = writeln!(s, "{}", comm(p));
         }
         PidFile::Maps => maps(pid, p, &mut s),
-        PidFile::Mounts => mounts(&mut s),
+        PidFile::Mounts => s = mounts_text(false),
+        PidFile::Mountinfo => s = mounts_text(true),
+        PidFile::Cgroup => s = super::cgroupfs::proc_cgroup(&p.cgroups.lock()),
+        PidFile::Environ => {}
+        PidFile::OomScoreAdj | PidFile::OomAdj | PidFile::TimerslackNs => {}
+        PidFile::OomScore => {
+            let adj = p.attrs.lock().oom_score_adj;
+            let _ = writeln!(s, "{}", (adj.max(0) as i64 + 666 * (adj >= 0) as i64).min(2000));
+        }
+        PidFile::Statm => {
+            let pages = own_mm(pid).map_or(0, |mm| mm.total_size() / 4096);
+            let _ = writeln!(s, "{pages} 0 0 0 0 0 0");
+        }
+        PidFile::Schedstat => s.push_str("0 0 0\n"),
+        PidFile::Wchan => s.push('0'),
         PidFile::Exe | PidFile::Cwd | PidFile::Root => return Err(EINVAL),
     }
     Ok(s)

@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a Android init)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -30,7 +30,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); block devices, loop, device mapper: see Block devices below; everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets, FIONREAD on netlink and inotify fds; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TIOCSCTTY (the caller's session and process group become the console's, so a shell started after setsid is in the foreground), TCSBRK/TCSBRKP/TCXONC/TIOCNOTTY (no-ops), TIOCGSID; pseudo-terminals: TIOCGPTN, TIOCSPTLCK/TIOCGPTLCK, TIOCGPTPEER, TCGETS/TCSETS*, TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP, FIONREAD; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); block devices, loop, device mapper: see Block devices below; everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
@@ -47,7 +47,8 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 33 | dup2 | yes | |
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
 | 39 | getpid | yes | thread group id |
-| 41 | socket | yes | AF_UNIX: SOCK_STREAM, SOCK_DGRAM (SOCK_RAW = DGRAM), SOCK_SEQPACKET; SOCK_NONBLOCK, SOCK_CLOEXEC; protocol 0/1 else EPROTONOSUPPORT, other types ESOCKTNOSUPPORT, unknown flags EINVAL; every other family (AF_INET, AF_INET6, AF_NETLINK, ...) EAFNOSUPPORT |
+| 40 | sendfile | yes | any readable fd to any writable fd through a kernel buffer; with an offset pointer the input position is untouched and the pointer advanced |
+| 41 | socket | yes | AF_UNIX: SOCK_STREAM, SOCK_DGRAM (SOCK_RAW = DGRAM), SOCK_SEQPACKET; SOCK_NONBLOCK, SOCK_CLOEXEC; protocol 0/1 else EPROTONOSUPPORT, other types ESOCKTNOSUPPORT, unknown flags EINVAL. AF_NETLINK: SOCK_RAW/SOCK_DGRAM, any protocol below 32 (see Netlink below). Every other family (AF_INET, AF_INET6, ...) EAFNOSUPPORT |
 | 42 | connect | yes | stream/seqpacket: to a listener by path or abstract name (ECONNREFUSED if nothing listens, ENOENT for a missing path, EPROTOTYPE on type mismatch, EISCONN, EINVAL on a listener); queued on the listener at once (no accept needed to send), blocks (EAGAIN with O_NONBLOCK) while the backlog is full. dgram: sets the default destination (EPERM if the target is connected elsewhere), AF_UNSPEC disconnects |
 | 43 | accept | yes | = accept4(0) |
 | 44 | sendto | yes | see "Sockets" below; an address on a connected stream EISCONN, unconnected EOPNOTSUPP |
@@ -60,14 +61,15 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 51 | getsockname | yes | path + NUL, abstract name, or family only |
 | 52 | getpeername | yes | ENOTCONN |
 | 53 | socketpair | yes | AF_UNIX, all three types; SO_PEERCRED of both ends = the caller |
-| 54 | setsockopt | partial | SOL_SOCKET: SO_PASSCRED, SO_SNDBUF/RCVBUF(+FORCE) (stored doubled, min 4608/2304), SO_RCVTIMEO/SNDTIMEO (old and new; EDOM for bad usec), common flags (REUSEADDR, KEEPALIVE, ...) accepted; others ENOPROTOOPT, other levels EOPNOTSUPP |
-| 55 | getsockopt | partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_PROTOCOL, SO_ERROR, SO_SNDBUF/RCVBUF (212992 default), SO_PASSCRED, SO_PEERCRED (pid 0 uid/gid 65534 without peer), SO_ACCEPTCONN, SO_RCVTIMEO/SNDTIMEO, SO_RCVLOWAT/SNDLOWAT (1); SO_PEERSEC ENOPROTOOPT |
+| 54 | setsockopt | partial | netlink: SO_PASSCRED, SO_RCVBUF(FORCE), SO_RCVTIMEO, NETLINK_ADD/DROP_MEMBERSHIP, others accepted. AF_UNIX SOL_SOCKET: SO_PASSCRED, SO_SNDBUF/RCVBUF(+FORCE) (stored doubled, min 4608/2304), SO_RCVTIMEO/SNDTIMEO (old and new; EDOM for bad usec), common flags (REUSEADDR, KEEPALIVE, ...) accepted; others ENOPROTOOPT, other levels EOPNOTSUPP |
+| 55 | getsockopt | partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_PROTOCOL, SO_ERROR, SO_SNDBUF/RCVBUF (212992 default), SO_PASSCRED, SO_PEERCRED (pid 0 uid/gid 65534 without peer), SO_ACCEPTCONN, SO_RCVTIMEO/SNDTIMEO, SO_RCVLOWAT/SNDLOWAT (1); SO_PEERSEC: the peer process's SELinux context (`/proc/<pid>/attr/current`); netlink: type, domain, protocol, buffers, SO_PASSCRED |
 | 56 | clone | yes | fork-style and thread-style (CLONE_VM, THREAD, SIGHAND, FILES, VFORK, PARENT, SETTLS, PARENT_SETTID, CHILD_SETTID, CHILD_CLEARTID); CLONE_PIDFD -> EINVAL; namespaces ignored |
 | 57 | fork | yes | copy-on-write: private pages shared read-only, copied on the first write (or made writable again when no longer shared) |
 | 58 | vfork | yes | shares memory, parent sleeps until the child execs or exits |
 | 59 | execve | yes | path resolved through the VFS (cwd-relative, symlinks); ELF ET_EXEC and ET_DYN (PIE at 0x555555554000), static or dynamic: the PT_INTERP program (bionic's linker64) is loaded at 0x7fc000000000 and entered with AT_BASE, AT_PHDR/AT_ENTRY of the program, AT_RANDOM, AT_SECURE 0, AT_EXECFN; `#!interp [arg]` scripts (up to 5 levels, else ELOOP); ELIBBAD for a bad interpreter; ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset; records /proc/<pid>/exe and cmdline |
 | 60 | exit | yes | thread exit, CLONE_CHILD_CLEARTID + futex wake |
 | 61 | wait4 | yes | pid > 0, -1, 0, < -1; WNOHANG; ECHILD; rusage zeroed |
+| 103 | syslog | stub | the kernel log is only on the serial port: reads return nothing, SIZE_BUFFER 128 KiB, console-level actions accepted |
 | 62 | kill | yes | pid > 0, 0 (group), -1, < -1; sig 0 = existence check |
 | 63 | uname | yes | Linux / 6.6.0-android-pc / x86_64 |
 | 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed), F_ADD_SEALS/F_GET_SEALS on tmpfs/memfd files (SEAL, SHRINK, GROW, WRITE, FUTURE_WRITE, EXEC; tmpfs files and memfds without MFD_ALLOW_SEALING start with F_SEAL_SEAL; EPERM for a read-only fd or after F_SEAL_SEAL, EBUSY for F_SEAL_WRITE while a shared mapping could write; EINVAL on other files); record locks (F_SETLK*, F_OFD_*) always granted, F_GETLK says unlocked |
@@ -131,16 +133,19 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 145 | sched_getscheduler | yes | stored policy (default SCHED_OTHER) |
 | 146 | sched_get_priority_max | yes | 99 for FIFO/RR, 0 otherwise; sched_get_priority_min (147): 1 / 0 |
 | 149 | mlock | stub | all memory is resident: 0; also munlock (150), mlockall (151), munlockall (152), mlock2 (325) |
-| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME, PR_GET/SET_DUMPABLE, PR_GET/SET_KEEPCAPS, PR_GET/SET_NO_NEW_PRIVS (stored, not enforced), PR_CAPBSET_READ (1 for caps 0-40), PR_SET_VMA (anon names accepted, not kept); others EINVAL |
+| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME, PR_GET/SET_DUMPABLE, PR_GET/SET_KEEPCAPS, PR_GET/SET_NO_NEW_PRIVS (stored, not enforced), PR_CAPBSET_READ (1 for caps 0-40), PR_CAPBSET_DROP and PR_CAP_AMBIENT (accepted: no capability model), PR_GET/SET_SECUREBITS, PR_GET/SET_PDEATHSIG, PR_GET/SET_TIMERSLACK, PR_GET/SET_CHILD_SUBREAPER (stored, not acted on), PR_GET/SET_SECCOMP and THP_DISABLE (accepted, filters not applied), PR_SET_VMA (anon names accepted, not kept); others EINVAL |
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
 | 160 | setrlimit | yes | = prlimit64(0) |
+| 161 | chroot | partial | one root for everybody: chroot to the current root succeeds (Android's switch_root does `chroot(".")` after moving a mount onto `/`), anything else EPERM |
 | 162 | sync | stub | 0 |
-| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored); erofs, ext4 (also ext2/ext3) from a block device path or "major:minor", always read-only (MS_RDONLY is forced, with a warning when not asked for), ENOTBLK for a source that is not a block device (toybox mount then sets up a loop device), EINVAL for a bad superblock or unsupported features; MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
+| 165 | mount | partial | tmpfs, ramfs (`mode=` option; uid=/gid= ignored), proc (`hidepid=` ignored), sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored), selinuxfs, devpts and sysfs (single shared instances), cgroup2 and cgroup (v1, controllers from the options; see cgroups below), tracefs/debugfs/pstore/bpf/configfs/fusectl/functionfs (empty instances); erofs, ext4 (also ext2/ext3) from a block device path or "major:minor", always read-only (MS_RDONLY is forced, with a warning when not asked for), ENOTBLK for a source that is not a block device (toybox mount then sets up a loop device), EINVAL for a bad superblock or unsupported features; MS_BIND (also files); MS_MOVE of a mount root (also onto `/`: the moved mount becomes the root everybody sees; ELOOP below itself); MS_REMOUNT and propagation-only calls accepted as no-ops; other types ENODEV. Every change wakes pollers of /proc/mounts (POLLPRI\|POLLERR once) |
 | 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW. Lazy: files still open keep the file system (and its device's holder count) alive |
-| 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART |
+| 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART, RESTART2 (the reason string is logged) |
+| 170 | sethostname | yes | uname's nodename (default "android-pc"; also /proc/sys/kernel/hostname); setdomainname (171) likewise |
+| 175 | init_module | no | ENOSYS (no loadable modules); also finit_module (313) |
 | 186 | gettid | yes | |
-| 188 | setxattr | stub | EROFS on erofs/ext4, EOPNOTSUPP elsewhere (nothing stores xattrs yet); also lsetxattr (189), fsetxattr (190), removexattr (197-199) |
-| 191 | getxattr | partial | erofs and ext4 xattrs (all name indexes: user., trusted., security., system.posix_acl_*; ext4 in-inode, xattr block and EA-inode values; erofs inline and shared); size 0 returns the length, ERANGE, ENODATA; empty everywhere else; also lgetxattr (192), fgetxattr (193) |
+| 188 | setxattr | partial | stored on tmpfs-based file systems (tmpfs, rootfs, devtmpfs, sysfs, devpts, ...): any name, XATTR_CREATE (EEXIST) / XATTR_REPLACE (ENODATA), values up to 64 KiB; accepted and dropped on procfs and cgroupfs (restorecon); EROFS on erofs/ext4, EOPNOTSUPP elsewhere; also lsetxattr (189), fsetxattr (190), removexattr (197-199, ENODATA when absent) |
+| 191 | getxattr | partial | stored xattrs (above), erofs and ext4 xattrs (all name indexes: user., trusted., security., system.posix_acl_*; ext4 in-inode, xattr block and EA-inode values; erofs inline and shared); size 0 returns the length, ERANGE, ENODATA; `security.selinux` with nothing stored reads `u:object_r:unlabeled:s0`; also lgetxattr (192), fgetxattr (193) |
 | 194 | listxattr | partial | as getxattr; also llistxattr (195), flistxattr (196) |
 | 200 | tkill | yes | |
 | 201 | time | yes | |
@@ -148,6 +153,14 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 203 | sched_setaffinity | partial | accepted when the mask names an online CPU (else EINVAL); threads still run anywhere |
 | 204 | sched_getaffinity | yes | all online CPUs; returns the mask size in bytes (EINVAL when `len` is too small or not a multiple of 8) |
 | 213 | epoll_create | yes | size must be > 0 |
+| 247 | waitid | yes | P_ALL, P_PID, P_PGID; WEXITED (WSTOPPED/WCONTINUED never report: no job control), WNOHANG (si_pid 0 when nothing is ready), WNOWAIT (peek, the child stays a zombie); siginfo: SIGCHLD, CLD_EXITED/KILLED/DUMPED, pid, status |
+| 248 | add_key | partial | see Keys below |
+| 249 | request_key | partial | searches the session then the user keyring; no upcall (ENOKEY) |
+| 250 | keyctl | partial | see Keys below |
+| 251 | ioprio_set | partial | IOPRIO_WHO_PROCESS stored per process (not applied); PGRP/USER accepted; ioprio_get (252) reports it (default BE/4) |
+| 253 | inotify_init | yes | = inotify_init1(0); see inotify below |
+| 254 | inotify_add_watch | yes | see inotify below |
+| 255 | inotify_rm_watch | yes | IN_IGNORED queued; EINVAL for an unknown wd |
 | 217 | getdents64 | yes | ".", "..", then the entries with real d_type; position = entry index (lseek 0 rewinds); EINVAL if the first record does not fit |
 | 218 | set_tid_address | yes | |
 | 221 | fadvise64 | stub | hints ignored (all files in RAM); EBADF, ESPIPE on pipes and sockets, EINVAL for unknown advice |
@@ -172,6 +185,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 269 | faccessat | yes | |
 | 270 | pselect6 | yes | select with a timespec and the { sigset, size } argument (temporary signal mask) |
 | 271 | ppoll | yes | poll with a timespec (updated) and a temporary signal mask: kept until the handler runs on EINTR, restored on any other return |
+| 272 | unshare | partial | CLONE_FILES gives a private fd table; namespace flags (NEWNS, NEWUTS, NEWIPC, NEWNET, NEWPID, NEWUSER, NEWCGROUP, NEWTIME), CLONE_FS, SYSVSEM accepted without effect (one namespace of each kind); others EINVAL |
 | 273 | set_robust_list | partial | stored; robust futexes are not walked at exit yet |
 | 274 | get_robust_list | yes | |
 | 280 | utimensat | yes | UTIME_NOW/UTIME_OMIT, NULL path = dirfd |
@@ -192,13 +206,16 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 296 | pwritev | yes | |
 | 297 | rt_tgsigqueueinfo | yes | thread-directed rt_sigqueueinfo |
 | 299 | recvmmsg | partial | recvmsg in a loop, MSG_WAITFORONE; the timeout is ignored |
-| 302 | prlimit64 | yes | per-process limits, inherited by fork; Linux defaults (STACK 8 MiB, NOFILE 1024, ...); EINVAL soft > hard, EPERM for RLIMIT_NOFILE above 1024 (the fd table size); not enforced except NOFILE by the fd table |
+| 294 | inotify_init1 | yes | IN_NONBLOCK, IN_CLOEXEC |
+| 302 | prlimit64 | yes | per-process limits, inherited by fork; Linux defaults (STACK 8 MiB, NOFILE 1024, ...); EINVAL soft > hard, EPERM for RLIMIT_NOFILE above 32768 (the largest fd table; init raises it to 32768); not enforced except NOFILE by the fd table |
 | 306 | syncfs | stub | 0 |
 | 307 | sendmmsg | yes | sendmsg in a loop; count sent, the error only if none was |
+| 308 | setns | stub | one namespace of each kind: joining is a no-op (the fd must be open) |
 | 309 | getcpu | yes | current CPU, node 0 |
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
 | 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
+| 326 | copy_file_range | yes | regular files (EINVAL otherwise, EISDIR for directories), optional offset pointers, flags must be 0 |
 | 332 | statx | yes | basic stats (STATX_BASIC_STATS, no btime) |
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
 | 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
@@ -383,6 +400,157 @@ Code: `kernel/kernel/src/block/` (block layer, cache, GPT, loop, dm),
   not held back while suspended. AOSP's dmctl (libdm, and liblp's
   `create-from-super` reading the super partition metadata) works.
 
+## Netlink (C3a)
+
+- **NETLINK_KOBJECT_UEVENT**: sockets bound to group 1 (any mask with bit
+  0) receive every uevent the kernel sends: on device registration and
+  removal ("add"/"remove": block devices, partitions, loop and dm
+  devices) and when an action ("add", "change", "remove", "move",
+  "online", "offline", "bind", "unbind"; EINVAL otherwise) is written to
+  a device's sysfs `uevent` file. Payload: `ACTION@DEVPATH`, then
+  `ACTION=`, `DEVPATH=`, `SUBSYSTEM=`, the `uevent` file's lines
+  (MAJOR, MINOR, DEVNAME, DEVTYPE, PARTN, PARTNAME, ...) and `SEQNUM=`,
+  NUL-separated. The sender address is port 0, group 1; with SO_PASSCRED
+  an SCM_CREDENTIALS message (pid 0, uid 0, gid 0) is attached, as
+  libcutils' `uevent_kernel_recv` requires. Messages beyond the receive
+  buffer (SO_RCVBUF(FORCE)) are dropped and the next read gives ENOBUFS.
+- bind with port 0 picks the caller's pid (or a unique number); explicit
+  ports must be free (EADDRINUSE). getsockname reports (port, groups).
+  NETLINK_ADD/DROP_MEMBERSHIP change the groups. Messages to another
+  socket's port are delivered (ECONNREFUSED if none), to groups to every
+  member.
+- Every other protocol (ROUTE, SELINUX, AUDIT, ...) is a stub: requests
+  to the kernel get NLMSG_DONE for dumps, an NLMSG_ERROR ack (0 with
+  NLM_F_ACK, else -EOPNOTSUPP) otherwise; nothing is ever multicast.
+  Protocols >= 32 EPROTONOSUPPORT, stream sockets ESOCKTNOSUPPORT.
+
+## SELinux stub (C3a)
+
+No policy engine: a policy is accepted and every check allows. What
+libselinux and init see:
+
+- **selinuxfs** (`mount -t selinuxfs`, one shared instance, statfs
+  SELINUX_MAGIC): `enforce` (reads 0/1; writes stored and reported, the
+  system stays permissive in effect), `load` (any policy; written in
+  chunks, the write at offset 0 starts a load and bumps the load
+  counter), `status` (mmap-able `selinux_kernel_status`: version 1, even
+  sequence bumped on every change, enforcing, policyload, deny_unknown 0),
+  transaction files that answer on the same fd: `context` (validity:
+  "user:role:type[:level]", EINVAL otherwise), `access` (`ffffffff
+  ffffffff 0 ffffffff <seqno> 0`), `create`/`relabel`/`member` (the
+  target context), `user` (no contexts); `deny_unknown` and
+  `reject_unknown` 0, `checkreqprot` 0, `mls` 1, `policyvers` 33, `null`
+  (1:3), `initial_contexts/*`, empty `class/`, `booleans/`,
+  `policy_capabilities/`, `avc/`.
+- **Process attributes**: /proc/<pid>/attr/{current,prev,exec,fscreate,
+  keycreate,sockcreate} (also /proc/<pid>/task/<tid>/attr and
+  /proc/thread-self/attr; per process, writable only by the process
+  itself, NUL-terminated on read, EINVAL for a malformed context, an
+  empty write clears). Processes start as `u:r:kernel:s0`; fork copies
+  all of them; execve sets `current` to `exec` when set, else, for the
+  kernel and init domains, to the domain named by the program's
+  `security.selinux` label (`u:object_r:foo_exec:s0` -> `u:r:foo:s0`),
+  then clears exec/fscreate/keycreate/sockcreate. Files created while
+  `fscreate` is set get it as their label (sockets: `sockcreate` first).
+- `SO_PEERSEC` reports the peer's current context; KEYCTL_GET_SECURITY
+  the caller's.
+
+## cgroups (C3a)
+
+- `mount -t cgroup2` gives the one v2 hierarchy; `mount -t cgroup -o
+  <controllers>[,noprefix]` a v1 hierarchy for those controllers (cpuset,
+  cpu, cpuacct, memory, blkio, freezer, devices, net_cls, pids,
+  schedtune; at least one, EINVAL otherwise). The same controller set
+  again is the same hierarchy; a controller already in another one gives
+  EBUSY. /proc/mounts lists the controllers (and `noprefix`) as options,
+  as libprocessgroup expects.
+- Groups: mkdir creates one with the hierarchy's control files (v2:
+  cgroup.procs/threads/controllers/subtree_control/events/type/freeze/
+  kill/..., memory.*, cpu.*, cpuset.*, io.weight, pids.*, *.pressure; v1:
+  cgroup.procs, tasks, notify_on_release, the controllers' files, cpuset
+  files without the `cpuset.` prefix under `noprefix`). Values start as
+  the parent's. Creating plain files is EPERM; rmdir is EBUSY while the
+  group or a child group has live members, or has children.
+- Membership is per process and hierarchy, inherited by fork.
+  `cgroup.procs` and `tasks` list live members (pids / thread ids);
+  writing a pid (0 = the caller) or a tid moves that whole process.
+  `cgroup.events` reports `populated` (this group or below);
+  `cgroup.kill` ("1") sends SIGKILL to every member at or below.
+  /proc/<pid>/cgroup and /proc/cgroups are generated from it.
+- Everything else (limits, cpus, uclamp, freeze, PSI triggers) is stored
+  and read back but not enforced.
+
+## inotify (C3a)
+
+inotify_init1 (IN_NONBLOCK, IN_CLOEXEC), inotify_add_watch on any path
+(IN_DONT_FOLLOW, IN_ONLYDIR -> ENOTDIR, IN_MASK_ADD, IN_MASK_CREATE ->
+EEXIST, a zero event mask EINVAL; the same inode gives the same wd),
+inotify_rm_watch (IN_IGNORED). Events: IN_CREATE (create, mkdir, mknod,
+symlink, link), IN_DELETE (+ IN_DELETE_SELF and IN_IGNORED for a watched
+inode whose last link or directory went), IN_MOVED_FROM/IN_MOVED_TO
+(shared cookie) and IN_MOVE_SELF, IN_MODIFY (each successful write),
+IN_CLOSE_WRITE / IN_CLOSE_NOWRITE (last close of a file opened by path),
+IN_ATTRIB (chmod, chown, utimes, link count, xattrs). Events about a
+child also go to its directory's watches with its name; IN_ISDIR for
+directories; IN_ONESHOT; identical consecutive events coalesce; 16384
+queued events, then IN_Q_OVERFLOW. read returns whole events (EINVAL if
+the first does not fit, EAGAIN/blocking when empty), poll/epoll and
+FIONREAD work. Not generated: IN_ACCESS, IN_OPEN, IN_UNMOUNT.
+
+## Keys (C3a)
+
+One system-wide table. add_key ("user", "logon", "keyring", "big_key",
+"fscrypt-provisioning", "asymmetric"; ENODEV otherwise, EPERM for "."
+types): the same type and description in the target keyring is updated
+in place (same serial). keyctl: GET_KEYRING_ID (special keyrings thread,
+process, session, user, user-session, group: one each for the system,
+created on demand), JOIN_SESSION_KEYRING (named or the session one),
+UPDATE, REVOKE / INVALIDATE (then EKEYREVOKED), CHOWN, SETPERM (stored),
+DESCRIBE ("type;uid;gid;perm;description"), CLEAR, LINK, UNLINK (ENOENT
+if not linked), SEARCH (depth-first through nested keyrings, ENOKEY),
+READ (keyrings: serials; logon keys: EOPNOTSUPP), SET_TIMEOUT,
+SET_REQKEY_KEYRING, GET_SECURITY, GET_PERSISTENT, SESSION_TO_PARENT,
+RESTRICT_KEYRING; others EOPNOTSUPP. No permission checks, quotas or
+expiry.
+
+## Pseudo-terminals (C3a)
+
+/dev/ptmx (5:2, also in devtmpfs and devpts) opens a new master and
+creates /dev/pts/N (136:N, 0620) in the shared devpts instance; the
+slave is locked until TIOCSPTLCK(0) (EIO before). TIOCGPTN, TIOCGPTLCK,
+TIOCGPTPEER (opens the slave without a path). No line discipline: bytes
+written to the master reach slave reads unchanged (no echo, canonical
+mode or signals); slave output gets "\n" -> "\r\n" while OPOST|ONLCR
+are set (the default termios). 64 KiB per direction (writers block).
+Master closed: slave reads EOF, writes EIO, POLLHUP. Every slave fd
+closed (after one was opened): master reads EIO, POLLHUP.
+
+## /proc and /sys for init (C3a)
+
+- /proc/sys: a fixed table of sysctls (kernel.*, vm.*, fs.*, net.core.*,
+  ...) whose values are stored and read back (a re-read from offset 0 of
+  an open file sees later writes); kernel/hostname and domainname are
+  uname's; kernel/random/{boot_id,uuid} generated. Unknown names ENOENT
+  (EACCES for O_CREAT).
+- /proc/bootconfig: the `androidboot.*` command-line parameters as
+  `key = "value"` lines. /proc/cgroups, devices, swaps, vmstat,
+  interrupts, modules (empty), sysrq-trigger (logged), pressure/{cpu,io,
+  memory} (PSI triggers accepted, never fire).
+- /proc/<pid>/: mountinfo, cgroup, environ (empty), oom_score_adj (and
+  oom_adj, oom_score; stored), timerslack_ns, statm, schedstat, wchan,
+  attr/, task/<tid>/ (attr/, comm, stat, status, cgroup), ns/ (cgroup,
+  ipc, mnt, net, pid, time, user, uts as `mnt:[4026531841]`-style links;
+  opening one gives a namespace file for setns). fd/N, exe, cwd and ns/*
+  are magic links: opening them reaches the file itself (a memfd can be
+  re-opened through /proc/self/fd/N). A tid names its thread group's
+  directory. /proc/mounts and mountinfo show mounts reachable from the
+  root, with cgroup controllers as options, are regenerated when read
+  from offset 0, and poll POLLPRI|POLLERR once after each mount change.
+- /sys: devices under /sys/devices with `uevent` files and `subsystem`
+  links, symlinks from /sys/class, /sys/block, /sys/dev, /sys/bus (see
+  [android-init.md](android-init.md)); kernel/uevent_seqnum, fs/selinux,
+  fs/cgroup and the other mount points.
+
 ## Signals: what is delivered how
 
 - Delivery happens on every return to user mode (syscall exit, interrupt,
@@ -407,35 +575,41 @@ Code: `kernel/kernel/src/block/` (block layer, cache, GPT, loop, dm),
 
 ## Not implemented yet (selection, by phase)
 
-- **B2 leftovers**: legacy getdents (78), chroot/pivot_root, sendfile,
-  copy_file_range, inotify, storing xattrs (only erofs/ext4 report theirs),
-  devpts, permission checks (everything is root), read-only mounts
-  (recorded only, except on erofs/ext4 which refuse writes).
+- **B2 leftovers**: legacy getdents (78), pivot_root (EINVAL), chroot
+  to anything but the root, permission checks (everything is root),
+  read-only mounts (recorded only, except on erofs/ext4 which refuse
+  writes), per-process mount namespaces.
 - **C2 leftovers (block devices)**: ext4 writes (for /data), f2fs, the
   ext4 journal replay, erofs big pclusters / ztailpacking / fragments /
   other compressors, MBR partitions, dm-verity hash checking and the
   other dm targets AOSP uses on /data (default-key, bow), uevents for new
-  block devices (netlink, C3), O_DIRECT semantics, interrupt-driven
+  O_DIRECT semantics, interrupt-driven
   virtio (requests are polled), blocking a dm device's I/O while
   suspended, umount EBUSY while files are open (umount is lazy).
 - **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
   without a page cache (procfs, devices other than /dev/zero),
-  re-opening a memfd through /proc/<pid>/fd/N (not a magic link).
+  process_vm_readv/writev.
 - **B4 leftovers**: pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
   cancellation, SIGIO/O_ASYNC. Sockets: AF_INET/AF_INET6 (no network
-  stack), AF_NETLINK (uevents in C3), MSG_OOB, SO_PEEK_OFF,
+  stack), netlink protocols other than uevents, MSG_OOB, SO_PEEK_OFF,
   SO_PEERGROUPS, SCM_SECURITY, garbage collection of in-flight fd cycles
   (a socket sent over itself and never received leaks),
   /proc/sys/net/unix/max_dgram_qlen (fixed at 600).
 - **B5 leftovers**: a credentials model (the set*id calls change nothing,
   capabilities are not checked), CPU time accounting (getrusage/times
   report 0), scheduling classes/affinity/nice (stored only), SIGTTIN/SIGTTOU
-  and stop/continue job control, PR_SET_PDEATHSIG, ELF segments are
-  copied (not mapped from the file's page cache), waitid, membarrier.
+  and stop/continue job control, PR_SET_PDEATHSIG (stored, never sent),
+  ELF segments are copied (not mapped from the file's page cache),
+  membarrier, ptrace.
 - **C1 leftovers (binder)**: the freezer (BINDER_FREEZE is a no-op, no
   BR_FROZEN_REPLY / freeze notifications), oneway spam detection (never
   reports BR_ONEWAY_SPAM_SUSPECT), priority inheritance and
   FLAT_BINDER_FLAG_INHERIT_RT, real SELinux security contexts, the
   binder_logs/ files, per-mount binderfs device sets, TF_CLEAR_BUF and
   TF_UPDATE_TXN, BINDER_FLUSH on close of one of several fds.
+- **C3a leftovers**: a SELinux policy engine (checks always allow),
+  cgroup resource control, loadable modules (init_module/finit_module
+  ENOSYS), a pty line discipline, key permissions and quotas, seccomp
+  filters (accepted, not applied), /data (see
+  [android-init.md](android-init.md)).
 - Later: rseq, clone3, io_uring (not used by AOSP).

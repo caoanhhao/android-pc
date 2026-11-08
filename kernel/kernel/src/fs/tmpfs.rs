@@ -5,6 +5,10 @@
 //! is also what `mmap` maps; files unpacked from the initramfs keep pointing
 //! into the boot module until a page is first touched. memfds are tmpfs
 //! files with no name.
+//!
+//! Pseudo files ([`PseudoFile`]: sysfs `uevent`, selinuxfs nodes, ...) are
+//! tmpfs inodes whose reads and writes go to kernel code. Every inode can
+//! carry extended attributes (`security.selinux` labels from restorecon).
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -42,12 +46,27 @@ impl Data {
     }
 }
 
+/// A file whose contents kernel code produces and whose writes it handles
+/// (sysfs attributes, selinuxfs nodes).
+pub trait PseudoFile: Send + Sync {
+    /// The contents, taken when the file is opened.
+    fn read(&self) -> Vec<u8>;
+
+    /// A write of `data` at offset `off` (large writes come in chunks). A
+    /// non-empty `reply` is what later reads of the same open file return
+    /// (selinuxfs transaction files) and resets the file position to 0.
+    fn write(&self, _off: u64, _data: &[u8], _reply: &mut Vec<u8>) -> KResult<usize> {
+        Err(EINVAL)
+    }
+}
+
 enum Kind {
     Dir(Mutex<BTreeMap<Vec<u8>, Arc<TmpInode>>>),
     File(Arc<Shmem>),
     Symlink(Vec<u8>),
     /// Device node, FIFO or socket: only metadata.
     Special,
+    Pseudo(Arc<dyn PseudoFile>),
 }
 
 pub struct TmpInode {
@@ -55,11 +74,25 @@ pub struct TmpInode {
     kind: Kind,
     /// memfd_create name (the file has no path).
     memfd_name: Option<Vec<u8>>,
+    xattrs: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
 }
+
+pub const XATTR_CREATE: u32 = 1;
+pub const XATTR_REPLACE: u32 = 2;
 
 impl TmpInode {
     fn new(dev: u64, mode: u32, rdev: u64, kind: Kind) -> Arc<TmpInode> {
-        Arc::new(TmpInode { meta: Meta::new(dev, mode, rdev), kind, memfd_name: None })
+        Arc::new(TmpInode { meta: Meta::new(dev, mode, rdev), kind, memfd_name: None, xattrs: Mutex::new(Vec::new()) })
+    }
+
+    /// Add a pseudo file `name` (regular file mode bits `perm`).
+    pub fn add_pseudo(&self, name: &[u8], perm: u32, obj: Arc<dyn PseudoFile>) -> KResult<Arc<TmpInode>> {
+        let mut children = self.dir()?.lock();
+        let node = Self::new(self.meta.dev, S_IFREG | (perm & 0o7777), 0, Kind::Pseudo(obj));
+        if let Some(old) = children.insert(name.to_vec(), node.clone()) {
+            old.meta.inc_nlink(-1);
+        }
+        Ok(node)
     }
 
     /// An unnamed file for memfd_create, with seals `seals` (F_SEAL_SEAL
@@ -72,6 +105,7 @@ impl TmpInode {
             meta: Meta::new(*MEMFD_DEV.call_once(alloc_dev), S_IFREG | mode, 0),
             kind: Kind::File(obj),
             memfd_name: Some(name.to_vec()),
+            xattrs: Mutex::new(Vec::new()),
         })
     }
 
@@ -174,7 +208,7 @@ impl Inode for TmpInode {
         match &self.kind {
             Kind::File(d) => d.size(),
             Kind::Symlink(t) => t.len() as u64,
-            Kind::Dir(_) => 4096,
+            Kind::Dir(_) | Kind::Pseudo(_) => 4096,
             Kind::Special => 0,
         }
     }
@@ -306,6 +340,10 @@ impl Inode for TmpInode {
     }
 
     fn truncate(&self, size: u64) -> KResult<()> {
+        if matches!(self.kind, Kind::Pseudo(_)) {
+            // O_TRUNC on an attribute file: nothing to drop.
+            return Ok(());
+        }
         self.data()?.truncate(size)?;
         self.meta.touch_mtime();
         Ok(())
@@ -313,6 +351,77 @@ impl Inode for TmpInode {
 
     fn shmem(&self) -> Option<Arc<Shmem>> {
         self.data().ok().cloned()
+    }
+
+    fn xattrs(&self) -> KResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        Ok(self.xattrs.lock().clone())
+    }
+
+    fn set_xattr(&self, name: &[u8], value: Option<&[u8]>, flags: u32) -> KResult<()> {
+        let mut x = self.xattrs.lock();
+        let at = x.iter().position(|(n, _)| n == name);
+        match (value, at) {
+            (Some(_), Some(_)) if flags & XATTR_CREATE != 0 => return Err(EEXIST),
+            (Some(_), None) if flags & XATTR_REPLACE != 0 => return Err(ENODATA),
+            (Some(v), Some(i)) => x[i].1 = v.to_vec(),
+            (Some(v), None) => x.push((name.to_vec(), v.to_vec())),
+            (None, Some(i)) => {
+                x.remove(i);
+            }
+            (None, None) => return Err(ENODATA),
+        }
+        drop(x);
+        self.meta.update(|a| a.ctime = now());
+        Ok(())
+    }
+
+    fn open(&self, _flags: u32) -> KResult<Option<alloc::boxed::Box<dyn super::file::FileOps>>> {
+        match &self.kind {
+            Kind::Pseudo(obj) => Ok(Some(alloc::boxed::Box::new(PseudoOps { obj: obj.clone(), buf: Mutex::new(obj.read()) }))),
+            _ => Ok(None),
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Open pseudo file: reads come from a buffer filled at open (or by the
+/// last write's reply).
+struct PseudoOps {
+    obj: Arc<dyn PseudoFile>,
+    buf: Mutex<Vec<u8>>,
+}
+
+impl super::file::FileOps for PseudoOps {
+    fn read(&self, _: &super::file::OpenFile, pos: &mut u64, out: &mut [u8]) -> KResult<usize> {
+        let b = self.buf.lock();
+        let start = (*pos as usize).min(b.len());
+        let n = out.len().min(b.len() - start);
+        out[..n].copy_from_slice(&b[start..start + n]);
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn write(&self, _: &super::file::OpenFile, pos: &mut u64, data: &[u8]) -> KResult<usize> {
+        let mut reply = Vec::new();
+        let n = self.obj.write(*pos, data, &mut reply)?;
+        if reply.is_empty() {
+            *pos += n as u64;
+        } else {
+            *self.buf.lock() = reply;
+            *pos = 0;
+        }
+        Ok(n)
+    }
+
+    fn seekable(&self) -> bool {
+        true
+    }
+
+    fn size(&self, _: &super::file::OpenFile) -> u64 {
+        self.buf.lock().len() as u64
     }
 
     fn as_any(&self) -> &dyn Any {

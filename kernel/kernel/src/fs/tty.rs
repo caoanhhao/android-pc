@@ -88,6 +88,8 @@ struct State {
     termios: [u8; 36],
     winsize: [u8; 8],
     pgrp: i32,
+    /// Session the console is the controlling tty of (TIOCSCTTY).
+    sid: i32,
     /// Canonical mode: completed lines (an empty one is an EOF from ^D).
     lines: VecDeque<Vec<u8>>,
     /// Canonical mode: the line being edited.
@@ -277,6 +279,7 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
             termios: default_termios(),
             winsize,
             pgrp: 1,
+            sid: 1,
             lines: VecDeque::new(),
             line: Vec::new(),
             raw: VecDeque::new(),
@@ -487,7 +490,25 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
             }
             with(|s| s.pgrp = pgrp);
         }
-        TIOCGSID => mm.copy_out(arg, &1i32.to_le_bytes())?,
+        TIOCGSID => {
+            let sid = with(|s| s.sid);
+            mm.copy_out(arg, &sid.to_le_bytes())?
+        }
+        // Become the controlling tty of the caller's session, its process
+        // group in the foreground (a shell started after setsid, like
+        // init's console service, waits until it is).
+        TIOCSCTTY => {
+            let me = crate::process::current().pid();
+            let (pgid, sid) = {
+                let t = crate::process::TABLE.lock();
+                let n = t.procs.get(&me).ok_or(ESRCH)?;
+                (n.pgid as i32, n.sid as i32)
+            };
+            with(|s| {
+                s.pgrp = pgid;
+                s.sid = sid;
+            });
+        }
         FIONREAD => {
             let n = with(|s| s.available()) as i32;
             mm.copy_out(arg, &n.to_le_bytes())?;
@@ -499,7 +520,7 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
             _ => return Err(EINVAL),
         },
         // Output is synchronous: drain and flow control are no-ops.
-        TCSBRK | TCSBRKP | TCXONC | TIOCSCTTY | TIOCNOTTY => {}
+        TCSBRK | TCSBRKP | TCXONC | TIOCNOTTY => {}
         _ => return Err(ENOTTY),
     }
     Ok(0)

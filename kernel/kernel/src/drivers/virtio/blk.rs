@@ -139,7 +139,7 @@ impl Backend for VirtioBlk {
 }
 
 /// Bring up one virtio-blk device and register it as a disk.
-pub fn probe(t: Transport) {
+pub fn probe(t: Transport, sysdev: alloc::string::String) {
     t.begin_init();
     let offered = t.device_features();
     let wanted = F_SIZE_MAX | F_SEG_MAX | F_RO | F_BLK_SIZE | F_FLUSH | if t.is_modern() { F_VERSION_1 } else { 0 };
@@ -175,6 +175,7 @@ pub fn probe(t: Transport) {
         if dev.state.lock().transport.is_modern() { "modern" } else { "legacy" },
         if dev.ro { ", read-only" } else { "" }
     );
-    let disk = BlockDev::new(name, block::VIRTBLK_MAJOR, idx * 16, Arc::new(dev));
+    let mut disk = BlockDev::new(name, block::VIRTBLK_MAJOR, idx * 16, Arc::new(dev));
+    disk.sysdev = Some(sysdev);
     block::add_disk(Arc::new(disk));
 }

@@ -47,13 +47,41 @@ pub fn init() {
             0x1040..=0x107f => d.device - 0x1040,
             _ => 0,
         };
+        let sysdev = sysfs_device(&d, ty);
         if ty == 2 {
             match Transport::new(&d) {
-                Some(t) => blk::probe(t),
+                Some(t) => blk::probe(t, sysdev),
                 None => log::warn!("virtio-blk {:?}: no usable transport", d.addr),
             }
         }
     }
+}
+
+static NEXT_VIRTIO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// sysfs directories of a virtio PCI function and of its virtio device
+/// (`devices/pci0000:00/0000:00:04.0/virtio0`); returns the latter.
+fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
+    use crate::fs::sysfs;
+    use alloc::format;
+    let a = d.addr;
+    let slot = format!("0000:{:02x}:{:02x}.{}", a.bus, a.dev, a.func);
+    let pci_dir = format!("devices/pci0000:{:02x}/{slot}", a.bus);
+    let vars = format!(
+        "DRIVER=virtio-pci\nPCI_CLASS={:X}{:02X}00\nPCI_ID={:04X}:{:04X}\nPCI_SLOT_NAME={slot}\n",
+        d.class, d.subclass, d.vendor, d.device
+    );
+    sysfs::add_device(&pci_dir, "pci", "bus/pci", vars, false);
+    sysfs::set(&pci_dir, "vendor", &format!("0x{:04x}\n", d.vendor));
+    sysfs::set(&pci_dir, "device", &format!("0x{:04x}\n", d.device));
+    sysfs::set(&pci_dir, "class", &format!("0x{:02x}{:02x}00\n", d.class, d.subclass));
+    sysfs::symlink("bus/pci/devices", &slot, &sysfs::relative("bus/pci/devices", &pci_dir));
+    let n = NEXT_VIRTIO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let vdir = format!("{pci_dir}/virtio{n}");
+    let vars = format!("DRIVER=virtio_{}\nVIRTIO_ID={ty}\n", if ty == 2 { "blk" } else { "unknown" });
+    sysfs::add_device(&vdir, "virtio", "bus/virtio", vars, false);
+    sysfs::symlink("bus/virtio/devices", &format!("virtio{n}"), &sysfs::relative("bus/virtio/devices", &vdir));
+    vdir
 }
 
 fn mmio_of(d: &pci::Device, bar: u8, off: u32) -> Option<u64> {

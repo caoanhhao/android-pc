@@ -32,3 +32,10 @@ c2_block
 c2_fs
 c2_loop
 c2_dm
+# C3: Android init's kernel interfaces (selinux and cgroup tests need the Rust kernel)
+c3_selinux
+c3_cgroup
+c3_inotify
+c3_keyctl
+c3_netlink
+c3_misc

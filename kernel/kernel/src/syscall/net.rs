@@ -10,6 +10,7 @@ use super::fs::iovecs;
 use crate::errno::*;
 use crate::fs::file::OpenFile;
 use crate::fs::vfs::PathRef;
+use crate::net::netlink::{self, AF_NETLINK, NetlinkSocket, netlink_of};
 use crate::net::unix::{Addr, Opt, Received, SCM_MAX_FD, SOCKADDR_UN_LEN, UnixSocket, socket_of};
 use crate::net::*;
 use crate::process::{current, signal};
@@ -58,6 +59,21 @@ fn sock(fd: i32) -> KResult<(Arc<OpenFile>, Arc<UnixSocket>)> {
     let f = current().process.files().get(fd)?;
     let s = socket_of(&f)?;
     Ok((f, s))
+}
+
+/// The netlink socket behind `fd`, if it is one.
+fn nl(fd: i32) -> KResult<Option<(Arc<OpenFile>, Arc<NetlinkSocket>)>> {
+    let f = current().process.files().get(fd)?;
+    Ok(netlink_of(&f).map(|s| (f, s)))
+}
+
+fn read_nl_addr(ptr: u64, len: u32) -> KResult<(u32, u32)> {
+    if (len as usize) < netlink::SOCKADDR_NL_LEN {
+        return Err(EINVAL);
+    }
+    let mut b = [0u8; netlink::SOCKADDR_NL_LEN];
+    current().mm().copy_in(ptr, &mut b)?;
+    netlink::parse_addr(&b)
 }
 
 fn base() -> PathRef {
@@ -118,6 +134,17 @@ fn new_socket_args(domain: u32, ty: u32, protocol: u32) -> KResult<(u32, bool, b
 }
 
 pub fn sys_socket(domain: u32, ty: u32, protocol: u32) -> KResult<u64> {
+    if domain == AF_NETLINK as u32 {
+        if ty & !(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+            return Err(EINVAL);
+        }
+        let base = ty & SOCK_TYPE_MASK;
+        if base != SOCK_RAW && base != SOCK_DGRAM {
+            return Err(ESOCKTNOSUPPORT);
+        }
+        let f = NetlinkSocket::new(base, protocol)?.open_file(ty & SOCK_NONBLOCK != 0);
+        return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
     let (base, nonblock, cloexec) = new_socket_args(domain, ty, protocol)?;
     let f = UnixSocket::new(base).open_file(nonblock);
     Ok(current().process.files().alloc(f, cloexec, 0)? as u64)
@@ -147,6 +174,11 @@ pub fn sys_socketpair(domain: u32, ty: u32, protocol: u32, sv: u64) -> KResult<u
 }
 
 pub fn sys_bind(fd: i32, addr: u64, len: u32) -> KResult<u64> {
+    if let Some((_, n)) = nl(fd)? {
+        let (port, groups) = read_nl_addr(addr, len)?;
+        n.bind(port, groups)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     let a = read_addr(addr, len)?;
     let umask = current().process.fs.lock().umask;
@@ -155,12 +187,21 @@ pub fn sys_bind(fd: i32, addr: u64, len: u32) -> KResult<u64> {
 }
 
 pub fn sys_listen(fd: i32, backlog: i32) -> KResult<u64> {
+    if nl(fd)?.is_some() {
+        return Err(EOPNOTSUPP);
+    }
     let (_, s) = sock(fd)?;
     s.listen(backlog, Ucred::current())?;
     Ok(0)
 }
 
 pub fn sys_connect(fd: i32, addr: u64, len: u32) -> KResult<u64> {
+    if let Some((_, n)) = nl(fd)? {
+        // Only the kernel (port 0) is a supported default destination.
+        read_nl_addr(addr, len)?;
+        n.bind(0, n.groups())?;
+        return Ok(0);
+    }
     let (f, s) = sock(fd)?;
     // AF_UNSPEC dissolves a datagram association.
     if len >= 2 && s.ty == SOCK_DGRAM {
@@ -183,6 +224,9 @@ pub fn sys_accept4(fd: i32, addr: u64, lenp: u64, flags: u32) -> KResult<u64> {
     if flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
         return Err(EINVAL);
     }
+    if nl(fd)?.is_some() {
+        return Err(EOPNOTSUPP);
+    }
     let (f, s) = sock(fd)?;
     let c = s.accept(f.nonblock())?;
     let peer = c.peer_addr().unwrap_or(Addr::Unnamed).to_sockaddr();
@@ -192,18 +236,29 @@ pub fn sys_accept4(fd: i32, addr: u64, lenp: u64, flags: u32) -> KResult<u64> {
 }
 
 pub fn sys_getsockname(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
+    if let Some((_, n)) = nl(fd)? {
+        write_addr(&n.local_addr(), addr, lenp)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     write_addr(&s.local_addr().to_sockaddr(), addr, lenp)?;
     Ok(0)
 }
 
 pub fn sys_getpeername(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
+    if nl(fd)?.is_some() {
+        write_addr(&netlink::sockaddr(0, 0), addr, lenp)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     write_addr(&s.peer_addr()?.to_sockaddr(), addr, lenp)?;
     Ok(0)
 }
 
 pub fn sys_shutdown(fd: i32, how: u32) -> KResult<u64> {
+    if nl(fd)?.is_some() {
+        return if how <= 2 { Ok(0) } else { Err(EINVAL) };
+    }
     let (_, s) = sock(fd)?;
     s.shutdown(how)?;
     Ok(0)
@@ -294,6 +349,12 @@ fn do_send(fd: i32, data: &[u8], flags: u32, to: Option<Addr>, fds: Vec<Arc<Open
 }
 
 pub fn sys_sendto(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u32) -> KResult<u64> {
+    if let Some((_, n)) = nl(fd)? {
+        let to = if addr != 0 && alen != 0 { Some(read_nl_addr(addr, alen)?) } else { None };
+        let mut data = vec![0u8; (len as usize).min(RECV_MAX)];
+        current().mm().copy_in(buf, &mut data)?;
+        return Ok(n.send(&data, to)? as u64);
+    }
     sock(fd)?;
     let to = if addr != 0 && alen != 0 { Some(read_addr(addr, alen)?) } else { None };
     let len = (len as usize).min(i32::MAX as usize);
@@ -311,6 +372,11 @@ fn sendmsg_one(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
     let q = |i: usize| u64::from_le_bytes(h[i..i + 8].try_into().unwrap());
     let (name, namelen) = (q(0), u32::from_le_bytes(h[8..12].try_into().unwrap()));
     let (iov, iovlen, control, controllen) = (q(16), q(24), q(32), q(40));
+    if let Some((_, n)) = nl(fd)? {
+        let to = if name != 0 && namelen != 0 { Some(read_nl_addr(name, namelen)?) } else { None };
+        let data = gather(iov, iovlen)?;
+        return Ok(n.send(&data, to)? as u64);
+    }
     sock(fd)?;
     let to = if name != 0 && namelen != 0 { Some(read_addr(name, namelen)?) } else { None };
     let (fds, cred) = if controllen >= CMSG_HDR as u64 {
@@ -363,7 +429,19 @@ fn recv_result(s: &UnixSocket, r: &Received, flags: u32) -> u64 {
     if flags & MSG_TRUNC != 0 && s.ty != SOCK_STREAM { r.len as u64 } else { r.n as u64 }
 }
 
+fn nl_recv(f: &OpenFile, n: &NetlinkSocket, len: usize, flags: u32) -> KResult<netlink::Received> {
+    n.recv(len.min(RECV_MAX), flags & MSG_PEEK != 0, f.nonblock() || flags & MSG_DONTWAIT != 0)
+}
+
 pub fn sys_recvfrom(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u64) -> KResult<u64> {
+    if let Some((f, n)) = nl(fd)? {
+        let r = nl_recv(&f, &n, len as usize, flags)?;
+        current().mm().copy_out(buf, &r.data)?;
+        if addr != 0 {
+            write_addr(&r.addr, addr, alen)?;
+        }
+        return Ok(if flags & MSG_TRUNC != 0 { r.len } else { r.data.len() } as u64);
+    }
     let (s, data, r) = do_recv(fd, len as usize, flags)?;
     current().mm().copy_out(buf, &data[..r.n])?;
     if addr != 0 {
@@ -433,6 +511,9 @@ fn recvmsg_one(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
     let (iov, iovlen, control, controllen) = (q(16), q(24), q(32), q(40));
     let iov = iovecs(iov, iovlen)?;
     let total: u64 = iov.iter().map(|&(_, l)| l).sum();
+    if let Some((f, n)) = nl(fd)? {
+        return nl_recvmsg(msg, &f, &n, &iov, total, name, namelen, control, controllen, flags);
+    }
     let (s, data, r) = do_recv(fd, total.min(isize::MAX as u64) as usize, flags)?;
     scatter(&iov, &data[..r.n])?;
     let mut mflags = 0;
@@ -457,6 +538,49 @@ fn recvmsg_one(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
     mm.copy_out(msg + 40, &(ctl.len() as u64).to_le_bytes())?;
     mm.copy_out(msg + 48, &mflags.to_le_bytes())?;
     Ok(ret)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn nl_recvmsg(
+    msg: u64,
+    f: &OpenFile,
+    n: &NetlinkSocket,
+    iov: &[(u64, u64)],
+    total: u64,
+    name: u64,
+    namelen: i32,
+    control: u64,
+    controllen: u64,
+    flags: u32,
+) -> KResult<u64> {
+    let mm = current().mm();
+    let r = nl_recv(f, n, total.min(isize::MAX as u64) as usize, flags)?;
+    scatter(iov, &r.data)?;
+    let mut mflags = if r.len > r.data.len() { MSG_TRUNC } else { 0 };
+    if name != 0 && namelen >= 0 {
+        let k = (namelen as usize).min(r.addr.len());
+        mm.copy_out(name, &r.addr[..k])?;
+        mm.copy_out(msg + 8, &(r.addr.len() as u32).to_le_bytes())?;
+    } else {
+        mm.copy_out(msg + 8, &0u32.to_le_bytes())?;
+    }
+    let mut ctl = Vec::new();
+    if let Some(c) = r.cred {
+        let room = if control == 0 { 0 } else { controllen.min(i32::MAX as u64) as usize };
+        if room >= CMSG_HDR + 12 {
+            ctl.extend_from_slice(&((CMSG_HDR + 12) as u64).to_le_bytes());
+            ctl.extend_from_slice(&SOL_SOCKET.to_le_bytes());
+            ctl.extend_from_slice(&SCM_CREDENTIALS.to_le_bytes());
+            ctl.extend_from_slice(&c.to_bytes());
+            ctl.resize(cmsg_align(ctl.len()).min(room), 0);
+            mm.copy_out(control, &ctl)?;
+        } else {
+            mflags |= MSG_CTRUNC;
+        }
+    }
+    mm.copy_out(msg + 40, &(ctl.len() as u64).to_le_bytes())?;
+    mm.copy_out(msg + 48, &mflags.to_le_bytes())?;
+    Ok(if flags & MSG_TRUNC != 0 { r.len } else { r.data.len() } as u64)
 }
 
 pub fn sys_recvmsg(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
@@ -517,12 +641,51 @@ fn ns_timeval(ns: u64) -> [u8; 16] {
     b
 }
 
+/// SOL_NETLINK and its options.
+const SOL_NETLINK: i32 = 270;
+const NETLINK_ADD_MEMBERSHIP: i32 = 1;
+const NETLINK_DROP_MEMBERSHIP: i32 = 2;
+
+fn nl_setsockopt(n: &NetlinkSocket, level: i32, name: i32, b: &[u8]) -> KResult<u64> {
+    let int = || -> KResult<i32> {
+        if b.len() < 4 {
+            return Err(EINVAL);
+        }
+        Ok(i32::from_le_bytes(b[..4].try_into().unwrap()))
+    };
+    match (level, name) {
+        (SOL_SOCKET, SO_PASSCRED) => n.set_passcred(int()? != 0),
+        (SOL_SOCKET, SO_RCVBUF | SO_RCVBUFFORCE) => n.set_rcvbuf(int()?.max(0) as usize * 2),
+        (SOL_SOCKET, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) => n.set_rcvtimeo(timeval_ns(b)?),
+        (SOL_SOCKET, _) => {
+            int()?;
+        }
+        (SOL_NETLINK, NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP) => {
+            let g = int()? as u32;
+            if g == 0 || g > 32 {
+                return Err(EINVAL);
+            }
+            let groups = if name == NETLINK_ADD_MEMBERSHIP { n.groups() | 1 << (g - 1) } else { n.groups() & !(1 << (g - 1)) };
+            n.bind(0, groups)?;
+        }
+        (SOL_NETLINK, _) => {
+            int()?;
+        }
+        _ => return Err(ENOPROTOOPT),
+    }
+    Ok(0)
+}
+
 pub fn sys_setsockopt(fd: i32, level: i32, name: i32, val: u64, len: u32) -> KResult<u64> {
+    let mut b = vec![0u8; (len as usize).min(64)];
+    if let Some((_, n)) = nl(fd)? {
+        current().mm().copy_in(val, &mut b)?;
+        return nl_setsockopt(&n, level, name, &b);
+    }
     let (_, s) = sock(fd)?;
     if level != SOL_SOCKET {
         return Err(EOPNOTSUPP);
     }
-    let mut b = vec![0u8; (len as usize).min(64)];
     current().mm().copy_in(val, &mut b)?;
     let int = || -> KResult<i32> {
         if b.len() < 4 {
@@ -551,7 +714,6 @@ pub fn sys_setsockopt(fd: i32, level: i32, name: i32, val: u64, len: u32) -> KRe
 }
 
 pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KResult<u64> {
-    let (_, s) = sock(fd)?;
     let mm = current().mm();
     let mut lb = [0u8; 4];
     mm.copy_in(lenp, &mut lb)?;
@@ -559,11 +721,36 @@ pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KR
     if len < 0 {
         return Err(EINVAL);
     }
+    let int = |v: i64| (v as i32).to_le_bytes().to_vec();
+    let v: Vec<u8> = if let Some((_, n)) = nl(fd)? {
+        match (level, name) {
+            (SOL_SOCKET, SO_TYPE) => int(n.ty as i64),
+            (SOL_SOCKET, SO_DOMAIN) => int(AF_NETLINK as i64),
+            (SOL_SOCKET, SO_PROTOCOL) => int(n.protocol as i64),
+            (SOL_SOCKET, SO_RCVBUF) => int(n.rcvbuf() as i64),
+            (SOL_SOCKET, SO_SNDBUF) => int(212_992),
+            (SOL_SOCKET, SO_PASSCRED) => int(n.passcred() as i64),
+            (SOL_SOCKET, SO_ERROR) => int(0),
+            (SOL_SOCKET, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) => ns_timeval(n.rcvtimeo()).to_vec(),
+            (SOL_SOCKET, _) | (SOL_NETLINK, _) => int(0),
+            _ => return Err(ENOPROTOOPT),
+        }
+    } else {
+        sockopt_unix(fd, level, name)?
+    };
+    let n = (len as usize).min(v.len());
+    mm.copy_out(val, &v[..n])?;
+    mm.copy_out(lenp, &(n as u32).to_le_bytes())?;
+    Ok(0)
+}
+
+fn sockopt_unix(fd: i32, level: i32, name: i32) -> KResult<Vec<u8>> {
+    let (_, s) = sock(fd)?;
     if level != SOL_SOCKET {
         return Err(EOPNOTSUPP);
     }
     let int = |v: i64| (v as i32).to_le_bytes().to_vec();
-    let v: Vec<u8> = match name {
+    Ok(match name {
         SO_TYPE => int(s.ty as i64),
         SO_DOMAIN => int(AF_UNIX as i64),
         SO_PROTOCOL => int(0),
@@ -579,12 +766,13 @@ pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KR
         SO_DEBUG | SO_REUSEADDR | SO_DONTROUTE | SO_BROADCAST | SO_KEEPALIVE | SO_OOBINLINE | SO_PRIORITY
         | SO_REUSEPORT | SO_PASSSEC => int(0),
         SO_LINGER => vec![0u8; 8],
-        SO_PEERSEC => return Err(ENOPROTOOPT),
+        SO_PEERSEC => {
+            // The peer process's SELinux context (NUL-terminated).
+            let mut c = crate::security::context_of_pid(s.peer_cred().pid);
+            c.push(0);
+            c
+        }
         _ => return Err(ENOPROTOOPT),
-    };
-    let n = (len as usize).min(v.len());
-    mm.copy_out(val, &v[..n])?;
-    mm.copy_out(lenp, &(n as u32).to_le_bytes())?;
-    Ok(0)
+    })
 }
 

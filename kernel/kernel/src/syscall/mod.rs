@@ -9,6 +9,7 @@
 //! Booting with `strace` on the kernel command line logs every syscall.
 
 pub mod fs;
+pub mod keys;
 pub mod net;
 pub mod poll;
 pub mod sys;
@@ -62,6 +63,7 @@ pub mod nr {
     pub const DUP2: u64 = 33;
     pub const NANOSLEEP: u64 = 35;
     pub const GETPID: u64 = 39;
+    pub const SENDFILE: u64 = 40;
     pub const SOCKET: u64 = 41;
     pub const CONNECT: u64 = 42;
     pub const ACCEPT: u64 = 43;
@@ -154,17 +156,23 @@ pub mod nr {
     pub const SCHED_GETSCHEDULER: u64 = 145;
     pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
     pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const PIVOT_ROOT: u64 = 155;
     pub const MLOCK: u64 = 149;
     pub const MUNLOCK: u64 = 150;
     pub const MLOCKALL: u64 = 151;
     pub const MUNLOCKALL: u64 = 152;
     pub const PRCTL: u64 = 157;
     pub const ARCH_PRCTL: u64 = 158;
+    pub const SYSLOG: u64 = 103;
     pub const SETRLIMIT: u64 = 160;
     pub const SYNC: u64 = 162;
+    pub const CHROOT: u64 = 161;
     pub const MOUNT: u64 = 165;
     pub const UMOUNT2: u64 = 166;
     pub const REBOOT: u64 = 169;
+    pub const SETHOSTNAME: u64 = 170;
+    pub const SETDOMAINNAME: u64 = 171;
+    pub const INIT_MODULE: u64 = 175;
     pub const GETTID: u64 = 186;
     pub const SETXATTR: u64 = 188;
     pub const LSETXATTR: u64 = 189;
@@ -184,6 +192,15 @@ pub mod nr {
     pub const SCHED_SETAFFINITY: u64 = 203;
     pub const SCHED_GETAFFINITY: u64 = 204;
     pub const EPOLL_CREATE: u64 = 213;
+    pub const WAITID: u64 = 247;
+    pub const ADD_KEY: u64 = 248;
+    pub const REQUEST_KEY: u64 = 249;
+    pub const KEYCTL: u64 = 250;
+    pub const IOPRIO_SET: u64 = 251;
+    pub const IOPRIO_GET: u64 = 252;
+    pub const INOTIFY_INIT: u64 = 253;
+    pub const INOTIFY_ADD_WATCH: u64 = 254;
+    pub const INOTIFY_RM_WATCH: u64 = 255;
     pub const GETDENTS64: u64 = 217;
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const FADVISE64: u64 = 221;
@@ -208,6 +225,7 @@ pub mod nr {
     pub const FACCESSAT: u64 = 269;
     pub const PSELECT6: u64 = 270;
     pub const PPOLL: u64 = 271;
+    pub const UNSHARE: u64 = 272;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const GET_ROBUST_LIST: u64 = 274;
     pub const UTIMENSAT: u64 = 280;
@@ -224,6 +242,7 @@ pub mod nr {
     pub const EPOLL_CREATE1: u64 = 291;
     pub const DUP3: u64 = 292;
     pub const PIPE2: u64 = 293;
+    pub const INOTIFY_INIT1: u64 = 294;
     pub const PREADV: u64 = 295;
     pub const PWRITEV: u64 = 296;
     pub const RT_TGSIGQUEUEINFO: u64 = 297;
@@ -231,11 +250,14 @@ pub mod nr {
     pub const PRLIMIT64: u64 = 302;
     pub const SYNCFS: u64 = 306;
     pub const SENDMMSG: u64 = 307;
+    pub const SETNS: u64 = 308;
     pub const GETCPU: u64 = 309;
+    pub const FINIT_MODULE: u64 = 313;
     pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
     pub const MEMFD_CREATE: u64 = 319;
     pub const MLOCK2: u64 = 325;
+    pub const COPY_FILE_RANGE: u64 = 326;
     pub const STATX: u64 = 332;
     pub const CLOSE_RANGE: u64 = 436;
     pub const FACCESSAT2: u64 = 439;
@@ -343,6 +365,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::EXECVE => lifecycle::sys_execve(frame, a0, a1, a2),
         nr::EXIT => lifecycle::sys_exit(i0),
         nr::WAIT4 => lifecycle::sys_wait4(i0, a1, a2 as u32, a3),
+        nr::WAITID => lifecycle::sys_waitid(a0 as u32, a1 as u32, a2, a3 as u32, a4),
         nr::KILL => signal::sys_kill(i0, a1 as u32),
         nr::UNAME => sys_uname(a0),
         nr::FCNTL => fs::sys_fcntl(i0, a1 as u32, a2),
@@ -372,14 +395,19 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::FGETXATTR => fs::sys_getxattr(fs::XattrTarget::Fd(i0), a1, a2, a3),
         nr::LISTXATTR | nr::LLISTXATTR => fs::sys_listxattr(fs::XattrTarget::Path(a0, n == nr::LISTXATTR), a1, a2),
         nr::FLISTXATTR => fs::sys_listxattr(fs::XattrTarget::Fd(i0), a1, a2),
-        nr::SETXATTR | nr::LSETXATTR | nr::REMOVEXATTR | nr::LREMOVEXATTR => {
-            fs::sys_setxattr(fs::XattrTarget::Path(a0, matches!(n, nr::SETXATTR | nr::REMOVEXATTR)))
+        nr::SETXATTR | nr::LSETXATTR => {
+            fs::sys_setxattr(fs::XattrTarget::Path(a0, n == nr::SETXATTR), a1, Some((a2, a3)), a4 as u32)
         }
-        nr::FSETXATTR | nr::FREMOVEXATTR => fs::sys_setxattr(fs::XattrTarget::Fd(i0)),
+        nr::FSETXATTR => fs::sys_setxattr(fs::XattrTarget::Fd(i0), a1, Some((a2, a3)), a4 as u32),
+        nr::REMOVEXATTR | nr::LREMOVEXATTR => {
+            fs::sys_setxattr(fs::XattrTarget::Path(a0, n == nr::REMOVEXATTR), a1, None, 0)
+        }
+        nr::FREMOVEXATTR => fs::sys_setxattr(fs::XattrTarget::Fd(i0), a1, None, 0),
         nr::FSTATFS => fs::sys_fstatfs(i0, a1),
         nr::SYNC => Ok(0),
         nr::SYNCFS => fs::sys_fsync(i0),
         nr::MOUNT => fs::sys_mount(a0, a1, a2, a3, a4),
+        nr::CHROOT => fs::sys_chroot(a0),
         nr::UMOUNT2 => fs::sys_umount2(a0, a1 as u32),
         nr::GETDENTS64 => fs::sys_getdents64(i0, a1, a2),
         nr::GETTIMEOFDAY => time::sys_gettimeofday(a0, a1),
@@ -396,7 +424,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::SIGALTSTACK => signal::sys_sigaltstack(a0, a1),
         nr::PRCTL => sys_prctl(a0 as u32, a1, a2),
         nr::ARCH_PRCTL => sys_arch_prctl(a0 as u32, a1),
-        nr::REBOOT => sys_reboot(a0 as u32, a1 as u32, a2 as u32),
+        nr::REBOOT => sys_reboot(a0 as u32, a1 as u32, a2 as u32, a3),
         nr::GETTID => Ok(current().tid as u64),
         nr::TKILL => signal::sys_tgkill(-1, i0, a1 as u32),
         nr::TIME => time::sys_time(a0),
@@ -492,6 +520,25 @@ pub fn dispatch(frame: &mut TrapFrame) {
         // All memory is resident: locking is a no-op.
         nr::MLOCK | nr::MUNLOCK | nr::MLOCK2 | nr::MLOCKALL | nr::MUNLOCKALL => Ok(0),
         nr::FADVISE64 => fs::sys_fadvise64(i0, a3 as u32),
+        nr::SENDFILE => fs::sys_sendfile(i0, i1, a2, a3),
+        nr::COPY_FILE_RANGE => fs::sys_copy_file_range(i0, a1, a2 as i32, a3, a4, a5 as u32),
+        nr::INOTIFY_INIT => fs::sys_inotify_init1(0),
+        nr::INOTIFY_INIT1 => fs::sys_inotify_init1(a0 as u32),
+        nr::INOTIFY_ADD_WATCH => fs::sys_inotify_add_watch(i0, a1, a2 as u32),
+        nr::INOTIFY_RM_WATCH => fs::sys_inotify_rm_watch(i0, i1),
+        nr::ADD_KEY => keys::sys_add_key(a0, a1, a2, a3, a4 as i32),
+        nr::REQUEST_KEY => keys::sys_request_key(a0, a1, a2, a3 as i32),
+        nr::KEYCTL => keys::sys_keyctl(a0 as u32, a1, a2, a3, a4),
+        nr::UNSHARE => sys::sys_unshare(a0),
+        nr::SETNS => sys::sys_setns(i0, a1 as u32),
+        nr::SYSLOG => sys::sys_syslog(i0, a1, a2 as i32),
+        nr::SETHOSTNAME => sys::sys_sethostname(a0, a1, false),
+        nr::SETDOMAINNAME => sys::sys_sethostname(a0, a1, true),
+        nr::IOPRIO_SET => sys::sys_ioprio_set(i0, i1, a2 as u32),
+        nr::IOPRIO_GET => sys::sys_ioprio_get(i0, i1),
+        // No loadable modules: the drivers are built in.
+        nr::INIT_MODULE | nr::FINIT_MODULE => Err(ENOSYS),
+        nr::PIVOT_ROOT => Err(EINVAL),
         _ => {
             warn_once(n);
             Err(ENOSYS)
@@ -593,13 +640,14 @@ fn sys_mprotect(addr: u64, len: u64, prot: u64) -> KResult<u64> {
 
 fn sys_uname(buf: u64) -> KResult<u64> {
     let mut b = [0u8; 65 * 6];
+    let (host, domain) = sys::uts_names();
     let fields: [&[u8]; 6] = [
         b"Linux",
-        b"android-pc",
+        &host,
         b"6.6.0-android-pc",
         concat!("#1 SMP android-pc ", env!("CARGO_PKG_VERSION")).as_bytes(),
         b"x86_64",
-        b"(none)",
+        &domain,
     ];
     for (i, f) in fields.iter().enumerate() {
         b[i * 65..i * 65 + f.len()].copy_from_slice(f);
@@ -644,7 +692,20 @@ const PR_GET_DUMPABLE: u32 = 3;
 const PR_SET_DUMPABLE: u32 = 4;
 const PR_GET_KEEPCAPS: u32 = 7;
 const PR_SET_KEEPCAPS: u32 = 8;
+const PR_SET_PDEATHSIG: u32 = 1;
+const PR_GET_PDEATHSIG: u32 = 2;
 const PR_SET_NAME: u32 = 15;
+const PR_GET_SECCOMP: u32 = 21;
+const PR_SET_SECCOMP: u32 = 22;
+const PR_GET_SECUREBITS: u32 = 27;
+const PR_SET_SECUREBITS: u32 = 28;
+const PR_SET_TIMERSLACK: u32 = 29;
+const PR_GET_TIMERSLACK: u32 = 30;
+const PR_SET_CHILD_SUBREAPER: u32 = 36;
+const PR_GET_CHILD_SUBREAPER: u32 = 37;
+const PR_SET_THP_DISABLE: u32 = 41;
+const PR_GET_THP_DISABLE: u32 = 42;
+const PR_CAP_AMBIENT: u32 = 47;
 const PR_GET_NAME: u32 = 16;
 const PR_CAPBSET_READ: u32 = 23;
 const PR_SET_NO_NEW_PRIVS: u32 = 38;
@@ -668,6 +729,47 @@ fn sys_prctl(option: u32, arg: u64, arg3: u64) -> KResult<u64> {
             Ok(0)
         }
         PR_CAPBSET_READ if arg <= CAP_LAST_CAP => Ok(1),
+        // Capabilities are not modelled (everything is root): dropping
+        // from the bounding set and ambient changes succeed.
+        24 /* PR_CAPBSET_DROP */ if arg <= CAP_LAST_CAP => Ok(0),
+        PR_CAP_AMBIENT => match arg {
+            1 => Ok(0),     // IS_SET
+            2..=4 => Ok(0), // RAISE, LOWER, CLEAR_ALL
+            _ => Err(EINVAL),
+        },
+        PR_GET_SECUREBITS => Ok(t.process.attrs.lock().securebits as u64),
+        PR_SET_SECUREBITS => {
+            t.process.attrs.lock().securebits = arg as u32;
+            Ok(0)
+        }
+        PR_GET_PDEATHSIG => {
+            let v = t.process.attrs.lock().pdeathsig;
+            t.mm().copy_out(arg, &v.to_le_bytes())?;
+            Ok(0)
+        }
+        PR_SET_PDEATHSIG if arg <= 64 => {
+            t.process.attrs.lock().pdeathsig = arg as i32;
+            Ok(0)
+        }
+        PR_GET_TIMERSLACK => Ok(t.process.attrs.lock().timerslack),
+        PR_SET_TIMERSLACK => {
+            t.process.attrs.lock().timerslack = if arg == 0 { 50_000 } else { arg };
+            Ok(0)
+        }
+        PR_GET_CHILD_SUBREAPER => {
+            let v = t.process.attrs.lock().subreaper as i32;
+            t.mm().copy_out(arg, &v.to_le_bytes())?;
+            Ok(0)
+        }
+        PR_SET_CHILD_SUBREAPER => {
+            t.process.attrs.lock().subreaper = arg != 0;
+            Ok(0)
+        }
+        // seccomp filters are accepted but not applied.
+        PR_GET_SECCOMP => Ok(0),
+        PR_SET_SECCOMP => Ok(0),
+        PR_GET_THP_DISABLE => Ok(0),
+        PR_SET_THP_DISABLE => Ok(0),
         PR_GET_NO_NEW_PRIVS => Ok(t.process.attrs.lock().no_new_privs as u64),
         // Cannot be unset once set.
         PR_SET_NO_NEW_PRIVS if arg == 1 && arg3 == 0 => {
@@ -755,10 +857,11 @@ const REBOOT_MAGIC2: [u32; 4] = [672274793, 85072278, 369367448, 537993216];
 const CMD_RESTART: u32 = 0x0123_4567;
 const CMD_HALT: u32 = 0xcdef_0123;
 const CMD_POWER_OFF: u32 = 0x4321_fedc;
+const CMD_RESTART2: u32 = 0xa1b2_c3d4;
 const CMD_CAD_ON: u32 = 0x89ab_cdef;
 const CMD_CAD_OFF: u32 = 0;
 
-fn sys_reboot(magic1: u32, magic2: u32, cmd: u32) -> KResult<u64> {
+fn sys_reboot(magic1: u32, magic2: u32, cmd: u32, arg: u64) -> KResult<u64> {
     if magic1 != REBOOT_MAGIC1 || !REBOOT_MAGIC2.contains(&magic2) {
         return Err(EINVAL);
     }
@@ -769,6 +872,15 @@ fn sys_reboot(magic1: u32, magic2: u32, cmd: u32) -> KResult<u64> {
         }
         CMD_RESTART => {
             log::info!("reboot(2): restart requested by pid {}", current().pid());
+            crate::arch::reboot()
+        }
+        CMD_RESTART2 => {
+            let reason = current().mm().read_cstr(arg, 256).unwrap_or_default();
+            log::info!(
+                "reboot(2): restart ({}) requested by pid {}",
+                core::str::from_utf8(&reason).unwrap_or("?"),
+                current().pid()
+            );
             crate::arch::reboot()
         }
         CMD_CAD_ON | CMD_CAD_OFF => Ok(0),

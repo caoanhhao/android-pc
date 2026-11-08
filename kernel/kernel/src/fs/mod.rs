@@ -5,7 +5,9 @@
 //! - `tmpfs`: in-memory read-write file system; the root file system is a
 //!   tmpfs filled from the initramfs (cpio "newc").
 //! - `dev`: character devices (null, zero, random, console, kmsg, ...) and
-//!   devtmpfs. `procfs`, sysfs (an empty tmpfs skeleton), `pipe`.
+//!   devtmpfs. `procfs`, `sysfs` (device tree with uevent files), `pipe`.
+//! - `selinuxfs` (SELinux stub interface), `cgroupfs` (cgroup v1 and v2),
+//!   `inotify`, `pty` (/dev/ptmx and devpts), `sysctl` (/proc/sys).
 //!
 //! File data of tmpfs (and memfd) lives in `mm::shmem` objects, the page
 //! cache that `mmap` maps.
@@ -15,8 +17,9 @@
 //!
 //! binderfs lives with the binder driver (`drivers::binder`).
 //!
-//! Planned: ext4 writes, devpts.
+//! Planned: ext4 writes.
 
+pub mod cgroupfs;
 pub mod dev;
 pub mod epoll;
 pub mod erofs;
@@ -24,11 +27,16 @@ pub mod eventfd;
 pub mod ext4;
 pub mod lz4;
 pub mod file;
+pub mod inotify;
 pub mod pipe;
 pub mod poll;
 pub mod signalfd;
 pub mod timerfd;
 pub mod procfs;
+pub mod pty;
+pub mod selinuxfs;
+pub mod sysctl;
+pub mod sysfs;
 pub mod tmpfs;
 pub mod tty;
 pub mod vfs;
@@ -56,6 +64,7 @@ pub fn init(initramfs: Option<&'static [u8]>) {
         None => log::warn!("no initramfs module"),
     }
     vfs::set_root(root, "rootfs");
+    sysfs::init();
 }
 
 /// Create every missing directory of `path` below `root`.
@@ -282,6 +291,16 @@ pub fn fs_magic(fstype: &str) -> u64 {
         "sysfs" => SYSFS_MAGIC,
         "ramfs" | "rootfs" => RAMFS_MAGIC,
         "binder" => crate::drivers::binder::BINDERFS_SUPER_MAGIC,
+        "selinuxfs" => selinuxfs::SELINUX_MAGIC,
+        "cgroup" => cgroupfs::CGROUP_SUPER_MAGIC,
+        "cgroup2" => cgroupfs::CGROUP2_SUPER_MAGIC,
+        "devpts" => 0x1cd1,
+        "tracefs" => 0x7472_6163,
+        "debugfs" => 0x6462_6720,
+        "pstore" => 0x6165_676c,
+        "bpf" => 0xcafe_4a11,
+        "configfs" => 0x6265_6570,
+        "fusectl" => 0x6573_5546,
         _ => TMPFS_MAGIC,
     }
 }
@@ -289,7 +308,7 @@ pub fn fs_magic(fstype: &str) -> u64 {
 static DEVTMPFS: Once<Arc<Dentry>> = Once::new();
 static DEVTMPFS_ROOT: Once<Arc<TmpInode>> = Once::new();
 static SYSFS: Once<Arc<Dentry>> = Once::new();
-static SYSFS_ROOT: Once<Arc<TmpInode>> = Once::new();
+static DEVPTS: Once<Arc<Dentry>> = Once::new();
 
 /// The shared devtmpfs instance (drivers add their nodes to it).
 pub fn devtmpfs_root() -> Arc<TmpInode> {
@@ -302,18 +321,9 @@ pub fn devtmpfs_root() -> Arc<TmpInode> {
         .clone()
 }
 
-/// The sysfs tree: the top-level directories, filled in by drivers
-/// (block devices).
+/// The sysfs tree (see `sysfs`).
 pub fn sysfs_root() -> Arc<TmpInode> {
-    SYSFS_ROOT
-        .call_once(|| {
-            let root = TmpInode::new_fs(0o555);
-            for d in ["block", "bus", "class", "dev", "devices", "firmware", "fs", "kernel", "module", "power"] {
-                let _ = root.add(d.as_bytes(), S_IFDIR | 0o755, 0, None);
-            }
-            root
-        })
-        .clone()
+    sysfs::root()
 }
 
 /// Mount a disk file system of type `fstype` from the block device (or
@@ -344,9 +354,28 @@ pub fn new_block_fs(fstype: &[u8], source: &[u8], flags: u64) -> KResult<Option<
 
 /// A new instance of `fstype` (devtmpfs and sysfs are single shared
 /// instances, like on Linux). Returns its root dentry and the type name.
+#[cfg(test)]
 pub fn new_fs(fstype: &[u8], mode: Option<u32>) -> KResult<(Arc<Dentry>, &'static str)> {
+    new_fs_opts(fstype, mode, b"")
+}
+
+/// [`new_fs`] with the mount's data string (cgroup v1 controller lists).
+pub fn new_fs_opts(fstype: &[u8], mode: Option<u32>, data: &[u8]) -> KResult<(Arc<Dentry>, &'static str)> {
     let fresh = |i: Arc<dyn Inode>| Dentry::new_root(i);
     let (root, name) = match fstype {
+        b"selinuxfs" => (selinuxfs::mount_root(), "selinuxfs"),
+        b"cgroup2" => (cgroupfs::mount(None)?, "cgroup2"),
+        b"cgroup" => (cgroupfs::mount(Some(data))?, "cgroup"),
+        // Pseudo file systems with nothing behind them yet: empty
+        // instances, so init's mounts succeed.
+        b"devpts" => (DEVPTS.call_once(|| Dentry::new_root(pty::devpts_root())).clone(), "devpts"),
+        b"tracefs" => (fresh(TmpInode::new_fs(0o700)), "tracefs"),
+        b"debugfs" => (fresh(TmpInode::new_fs(0o700)), "debugfs"),
+        b"pstore" => (fresh(TmpInode::new_fs(0o750)), "pstore"),
+        b"bpf" => (fresh(TmpInode::new_fs(0o700)), "bpf"),
+        b"configfs" => (fresh(TmpInode::new_fs(0o755)), "configfs"),
+        b"fusectl" => (fresh(TmpInode::new_fs(0o755)), "fusectl"),
+        b"functionfs" => (fresh(TmpInode::new_fs(0o755)), "functionfs"),
         b"tmpfs" => (fresh(TmpInode::new_fs(mode.unwrap_or(0o1777))), "tmpfs"),
         b"ramfs" => (fresh(TmpInode::new_fs(mode.unwrap_or(0o755))), "ramfs"),
         b"devtmpfs" => (DEVTMPFS.call_once(|| Dentry::new_root(devtmpfs_root())).clone(), "devtmpfs"),

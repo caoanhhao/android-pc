@@ -37,7 +37,11 @@ pub const O_CLOEXEC: u32 = 0o2000000;
 pub const O_PATH: u32 = 0o10000000;
 pub const O_TMPFILE: u32 = 0o20000000 | O_DIRECTORY;
 
-pub const MAX_FDS: usize = 1024;
+/// Largest fd table (Linux's fs.nr_open default is far larger; init asks
+/// for 32768).
+pub const MAX_FDS: usize = 32768;
+/// Default RLIMIT_NOFILE.
+pub const DEFAULT_NOFILE: u64 = 1024;
 
 /// Per-kind file behaviour. `pos` is the file position (seekable files
 /// update it; stream files ignore it).
@@ -191,13 +195,17 @@ impl OpenFile {
             let mut p = 0;
             return self.ops.write(self, &mut p, data);
         }
-        match at {
+        let r = match at {
             Some(mut p) => self.ops.write(self, &mut p, data),
             None => {
                 let mut pos = self.pos.lock();
                 self.ops.write(self, &mut pos, data)
             }
+        };
+        if matches!(r, Ok(n) if n > 0) && self.path.is_some() {
+            super::inotify::touched(&*self.inode, self.path.as_ref(), super::inotify::IN_MODIFY);
         }
+        r
     }
 
     pub fn lseek(&self, off: i64, whence: u32) -> KResult<u64> {
@@ -229,6 +237,15 @@ impl OpenFile {
 }
 
 /// Regular files: read/write through the inode at the file position.
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        if self.path.is_some() && self.flags() & O_PATH == 0 {
+            let mask = if self.writable() { super::inotify::IN_CLOSE_WRITE } else { super::inotify::IN_CLOSE_NOWRITE };
+            super::inotify::touched(&*self.inode, self.path.as_ref(), mask);
+        }
+    }
+}
+
 pub struct RegularFile;
 
 impl FileOps for RegularFile {

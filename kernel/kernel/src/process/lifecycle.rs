@@ -138,6 +138,8 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         *p.interp.lock() = cur.process.interp.lock().clone();
         *p.cmdline.lock() = cur.process.cmdline.lock().clone();
         *p.attrs.lock() = cur.process.attrs.lock().clone();
+        *p.sec.lock() = cur.process.sec.lock().clone();
+        *p.cgroups.lock() = cur.process.cgroups.lock().clone();
         p
     };
     let task = Task::new(tid, process.clone(), mm.clone(), &child_frame).ok_or(ENOMEM)?;
@@ -364,13 +366,22 @@ pub fn exit_thread(status: i32) -> ! {
 // ---------------------------------------------------------------------------
 // wait4
 
-pub fn sys_wait4(pid: i32, status_ptr: u64, options: u32, rusage: u64) -> KResult<u64> {
-    if options & !(WNOHANG | 2 | 8 | 0x0100_0000 | 0x2000_0000 | 0x4000_0000 | 0x8000_0000) != 0 {
-        return Err(EINVAL);
-    }
-    let t = current();
-    let me = t.pid();
-    let mut result: KResult<(u32, i32)> = Err(ECHILD);
+/// Which children a wait call is about (wait4's pid argument).
+#[derive(Clone, Copy)]
+enum WaitFor {
+    Pid(u32),
+    Any,
+    OwnGroup,
+    Group(u32),
+}
+
+const WNOWAIT: u32 = 0x0100_0000;
+
+/// Wait for a matching child to become a zombie and reap it (unless
+/// WNOWAIT). Ok(None) for WNOHANG without one.
+fn wait_child(which: WaitFor, options: u32) -> KResult<Option<(u32, i32)>> {
+    let me = current().pid();
+    let mut result: KResult<Option<(u32, i32)>> = Err(ECHILD);
     let w = sched::wait_until((WAIT_CHILD, me as u64), None, WaitMode::Interruptible, || {
         let mut table = TABLE.lock();
         let my_pgid = table.node(me).pgid;
@@ -379,11 +390,11 @@ pub fn sys_wait4(pid: i32, status_ptr: u64, options: u32, rusage: u64) -> KResul
             .into_iter()
             .filter(|c| {
                 let n = &table.procs[c];
-                match pid {
-                    p if p > 0 => *c == p as u32,
-                    -1 => true,
-                    0 => n.pgid == my_pgid,
-                    g => n.pgid == (-g) as u32,
+                match which {
+                    WaitFor::Pid(p) => *c == p,
+                    WaitFor::Any => true,
+                    WaitFor::OwnGroup => n.pgid == my_pgid,
+                    WaitFor::Group(g) => n.pgid == g,
                 }
             })
             .collect();
@@ -392,13 +403,16 @@ pub fn sys_wait4(pid: i32, status_ptr: u64, options: u32, rusage: u64) -> KResul
             return true;
         }
         if let Some(&z) = matching.iter().find(|c| table.procs[c].zombie.is_some()) {
-            let status = table.procs.remove(&z).unwrap().zombie.unwrap();
-            table.node(me).children.retain(|&c| c != z);
-            result = Ok((z, status));
+            let status = table.procs[&z].zombie.unwrap();
+            if options & WNOWAIT == 0 {
+                table.procs.remove(&z);
+                table.node(me).children.retain(|&c| c != z);
+            }
+            result = Ok(Some((z, status)));
             return true;
         }
         if options & WNOHANG != 0 {
-            result = Ok((0, 0));
+            result = Ok(None);
             return true;
         }
         false
@@ -406,15 +420,90 @@ pub fn sys_wait4(pid: i32, status_ptr: u64, options: u32, rusage: u64) -> KResul
     if w != Wake::Ready {
         return Err(ERESTARTSYS);
     }
-    let (child, status) = result?;
+    result
+}
+
+pub fn sys_wait4(pid: i32, status_ptr: u64, options: u32, rusage: u64) -> KResult<u64> {
+    if options & !(WNOHANG | 2 | 8 | 0x0100_0000 | 0x2000_0000 | 0x4000_0000 | 0x8000_0000) != 0 {
+        return Err(EINVAL);
+    }
+    let which = match pid {
+        p if p > 0 => WaitFor::Pid(p as u32),
+        -1 => WaitFor::Any,
+        0 => WaitFor::OwnGroup,
+        g => WaitFor::Group((-g) as u32),
+    };
+    // WNOWAIT is a waitid flag only.
+    let r = wait_child(which, options & !WNOWAIT)?;
+    let t = current();
     let mm = t.mm();
-    if child != 0 && status_ptr != 0 {
+    if let Some((_, status)) = r
+        && status_ptr != 0
+    {
         mm.copy_out(status_ptr, &status.to_le_bytes())?;
     }
     if rusage != 0 {
         mm.copy_out(rusage, &[0u8; 144])?;
     }
-    Ok(child as u64)
+    Ok(r.map_or(0, |(c, _)| c as u64))
+}
+
+const P_ALL: u32 = 0;
+const P_PID: u32 = 1;
+const P_PGID: u32 = 2;
+const WEXITED: u32 = 4;
+const WSTOPPED: u32 = 2;
+const WCONTINUED: u32 = 8;
+const CLD_EXITED: i32 = 1;
+const CLD_KILLED: i32 = 2;
+const CLD_DUMPED: i32 = 3;
+
+/// waitid: like wait4 but reports a siginfo_t (and can peek with
+/// WNOWAIT). Stopped/continued children never happen (no job control).
+pub fn sys_waitid(idtype: u32, id: u32, infop: u64, options: u32, rusage: u64) -> KResult<u64> {
+    if options & !(WNOHANG | WEXITED | WSTOPPED | WCONTINUED | WNOWAIT | 0x2000_0000 | 0x4000_0000 | 0x8000_0000) != 0
+        || options & (WEXITED | WSTOPPED | WCONTINUED) == 0
+    {
+        return Err(EINVAL);
+    }
+    let which = match idtype {
+        P_ALL => WaitFor::Any,
+        P_PID if id > 0 => WaitFor::Pid(id),
+        P_PGID if id == 0 => WaitFor::OwnGroup,
+        P_PGID => WaitFor::Group(id),
+        _ => return Err(EINVAL),
+    };
+    let r = if options & WEXITED != 0 {
+        wait_child(which, options)?
+    } else if options & WNOHANG != 0 {
+        None
+    } else {
+        // Only stops/continues wanted: they never come.
+        wait_child(which, options | WNOHANG)?;
+        return Err(ECHILD);
+    };
+    let mm = current().mm();
+    if infop != 0 {
+        let mut b = [0u8; 128];
+        if let Some((pid, status)) = r {
+            let (code, value) = if status & 0x7f == 0 {
+                (CLD_EXITED, (status >> 8) & 0xff)
+            } else if status & 0x80 != 0 {
+                (CLD_DUMPED, status & 0x7f)
+            } else {
+                (CLD_KILLED, status & 0x7f)
+            };
+            b[0..4].copy_from_slice(&(signal::SIGCHLD as i32).to_le_bytes());
+            b[8..12].copy_from_slice(&code.to_le_bytes());
+            b[16..20].copy_from_slice(&(pid as i32).to_le_bytes());
+            b[24..28].copy_from_slice(&value.to_le_bytes());
+        }
+        mm.copy_out(infop, &b)?;
+    }
+    if rusage != 0 {
+        mm.copy_out(rusage, &[0u8; 144])?;
+    }
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +581,10 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     }
     t.process.files().close_on_exec();
     t.process.set_comm(basename(&path));
+    let label = exe.inode().xattrs().ok().and_then(|x| {
+        x.into_iter().find(|(n, _)| n == crate::security::XATTR_SELINUX).map(|(_, v)| v)
+    });
+    t.process.sec.lock().exec(label.as_deref());
     t.process.set_exec(exe, &argv, interp.zip(image.interp_range));
     t.clear_child_tid.store(0, Ordering::Relaxed);
     t.robust_list.store(0, Ordering::Relaxed);
