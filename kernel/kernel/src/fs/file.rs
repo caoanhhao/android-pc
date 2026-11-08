@@ -1,14 +1,20 @@
-//! Open files, file descriptor tables and pipes.
+//! Open files (file descriptions) and file descriptor tables.
+//!
+//! An [`OpenFile`] is what `open` returns and `dup` shares: the inode, the
+//! path it was opened by (for /proc/self/fd and getcwd-like lookups), the
+//! status flags, the file position and the [`FileOps`] that implement
+//! read/write for this kind of file (regular file, directory, device,
+//! pipe end, pseudo file).
 
-use alloc::collections::VecDeque;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::any::Any;
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-use super::ramfs::Inode;
+use super::vfs::{Inode, PathRef, S_IFDIR, S_IFMT, S_IFREG};
 use crate::errno::*;
-use crate::sched::{self, Wake};
 
 pub const O_ACCMODE: u32 = 3;
 pub const O_RDONLY: u32 = 0;
@@ -16,253 +22,283 @@ pub const O_WRONLY: u32 = 1;
 pub const O_RDWR: u32 = 2;
 pub const O_CREAT: u32 = 0o100;
 pub const O_EXCL: u32 = 0o200;
+pub const O_NOCTTY: u32 = 0o400;
 pub const O_TRUNC: u32 = 0o1000;
 pub const O_APPEND: u32 = 0o2000;
 pub const O_NONBLOCK: u32 = 0o4000;
+pub const O_DIRECT: u32 = 0o40000;
+pub const O_LARGEFILE: u32 = 0o100000;
 pub const O_DIRECTORY: u32 = 0o200000;
+pub const O_NOFOLLOW: u32 = 0o400000;
+pub const O_NOATIME: u32 = 0o1000000;
 pub const O_CLOEXEC: u32 = 0o2000000;
+pub const O_PATH: u32 = 0o10000000;
+pub const O_TMPFILE: u32 = 0o20000000 | O_DIRECTORY;
 
-pub const PIPE_CAPACITY: usize = 64 * 1024;
-const WAIT_PIPE: u64 = 0x5049_5045_0000_0000;
 const MAX_FDS: usize = 1024;
 
-pub enum FileKind {
-    Inode(Arc<Inode>),
-    Console,
-    Null,
-    Zero,
-    Random,
-    PipeRead(Arc<Pipe>),
-    PipeWrite(Arc<Pipe>),
+/// Per-kind file behaviour. `pos` is the file position (seekable files
+/// update it; stream files ignore it).
+pub trait FileOps: Send + Sync + Any {
+    fn read(&self, _file: &OpenFile, _pos: &mut u64, _buf: &mut [u8]) -> KResult<usize> {
+        Err(EINVAL)
+    }
+
+    fn write(&self, _file: &OpenFile, _pos: &mut u64, _data: &[u8]) -> KResult<usize> {
+        Err(EINVAL)
+    }
+
+    /// False for pipes and character devices: lseek/pread give ESPIPE
+    /// (devices that accept lseek override [`FileOps::lseek_ok`]).
+    fn seekable(&self) -> bool {
+        false
+    }
+
+    /// lseek on a non-seekable file: pipes say ESPIPE, devices succeed
+    /// with position 0 (Linux's noop_llseek / no_seek_end).
+    fn lseek_ok(&self) -> bool {
+        false
+    }
+
+    /// Size for SEEK_END.
+    fn size(&self, file: &OpenFile) -> u64 {
+        file.inode.size()
+    }
+
+    fn ioctl(&self, _file: &OpenFile, _cmd: u32, _arg: u64) -> KResult<u64> {
+        Err(ENOTTY)
+    }
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct OpenFile {
-    pub kind: FileKind,
-    /// Access mode and status flags (O_APPEND, O_NONBLOCK).
+    pub inode: Arc<dyn Inode>,
+    /// The path it was opened by (None for pipes and the boot console).
+    pub path: Option<PathRef>,
+    pub ops: Box<dyn FileOps>,
+    /// Access mode and status flags (O_APPEND, O_NONBLOCK, ...).
     pub flags: AtomicU32,
-    offset: Mutex<u64>,
+    pos: Mutex<u64>,
 }
 
+/// Flags that `open` does not keep in the file description.
+const OPEN_ONLY_FLAGS: u32 = O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC;
+/// Flags F_SETFL may change.
+pub const SETFL_FLAGS: u32 = O_APPEND | O_NONBLOCK | O_DIRECT | O_NOATIME | 0o20000; // O_ASYNC
+
 impl OpenFile {
-    pub fn new(kind: FileKind, flags: u32) -> Arc<OpenFile> {
-        match &kind {
-            FileKind::PipeRead(p) => p.readers.fetch_add(1, Ordering::SeqCst),
-            FileKind::PipeWrite(p) => p.writers.fetch_add(1, Ordering::SeqCst),
-            _ => 0,
-        };
+    pub fn new(inode: Arc<dyn Inode>, path: Option<PathRef>, ops: Box<dyn FileOps>, flags: u32) -> Arc<OpenFile> {
         Arc::new(OpenFile {
-            kind,
-            flags: AtomicU32::new(flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC)),
-            offset: Mutex::new(0),
+            inode,
+            path,
+            ops,
+            flags: AtomicU32::new((flags & !OPEN_ONLY_FLAGS) | O_LARGEFILE),
+            pos: Mutex::new(0),
         })
     }
 
-    fn nonblock(&self) -> bool {
-        self.flags.load(Ordering::Relaxed) & O_NONBLOCK != 0
+    pub fn flags(&self) -> u32 {
+        self.flags.load(Ordering::Relaxed)
+    }
+
+    pub fn nonblock(&self) -> bool {
+        self.flags() & O_NONBLOCK != 0
     }
 
     fn readable(&self) -> bool {
-        self.flags.load(Ordering::Relaxed) & O_ACCMODE != O_WRONLY
+        let f = self.flags();
+        f & O_PATH == 0 && f & O_ACCMODE != O_WRONLY
     }
 
     fn writable(&self) -> bool {
-        self.flags.load(Ordering::Relaxed) & O_ACCMODE != O_RDONLY
+        let f = self.flags();
+        f & O_PATH == 0 && f & O_ACCMODE != O_RDONLY
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> KResult<usize> {
+    pub fn is_path_only(&self) -> bool {
+        self.flags() & O_PATH != 0
+    }
+
+    pub fn pos(&self) -> u64 {
+        *self.pos.lock()
+    }
+
+    pub fn set_pos(&self, pos: u64) {
+        *self.pos.lock() = pos;
+    }
+
+    /// Read at the file position (or at `at`, for pread).
+    pub fn read(&self, buf: &mut [u8], at: Option<u64>) -> KResult<usize> {
         if !self.readable() {
             return Err(EBADF);
         }
-        match &self.kind {
-            FileKind::Inode(i) => {
-                if i.is_dir() {
-                    return Err(EISDIR);
-                }
-                let mut off = self.offset.lock();
-                let data = i.data.lock();
-                let bytes = data.bytes();
-                let start = (*off as usize).min(bytes.len());
-                let n = buf.len().min(bytes.len() - start);
-                buf[..n].copy_from_slice(&bytes[start..start + n]);
-                *off += n as u64;
-                Ok(n)
+        if !self.ops.seekable() {
+            if at.is_some() {
+                return Err(ESPIPE);
             }
-            FileKind::Console | FileKind::Null => Ok(0),
-            FileKind::Zero => {
-                buf.fill(0);
-                Ok(buf.len())
+            let mut p = 0;
+            return self.ops.read(self, &mut p, buf);
+        }
+        match at {
+            Some(mut p) => self.ops.read(self, &mut p, buf),
+            None => {
+                let mut pos = self.pos.lock();
+                self.ops.read(self, &mut pos, buf)
             }
-            FileKind::Random => {
-                crate::random::fill(buf);
-                Ok(buf.len())
-            }
-            FileKind::PipeRead(p) => p.read(buf, self.nonblock()),
-            FileKind::PipeWrite(_) => Err(EBADF),
         }
     }
 
-    pub fn write(&self, data: &[u8]) -> KResult<usize> {
+    pub fn write(&self, data: &[u8], at: Option<u64>) -> KResult<usize> {
         if !self.writable() {
             return Err(EBADF);
         }
-        match &self.kind {
-            FileKind::Inode(i) => {
-                if i.is_dir() {
-                    return Err(EISDIR);
-                }
-                let mut off = self.offset.lock();
-                let mut d = i.data.lock();
-                let v = d.owned();
-                if self.flags.load(Ordering::Relaxed) & O_APPEND != 0 {
-                    *off = v.len() as u64;
-                }
-                let start = *off as usize;
-                if v.len() < start + data.len() {
-                    v.resize(start + data.len(), 0);
-                }
-                v[start..start + data.len()].copy_from_slice(data);
-                *off += data.len() as u64;
-                Ok(data.len())
+        if !self.ops.seekable() {
+            if at.is_some() {
+                return Err(ESPIPE);
             }
-            FileKind::Console => {
-                crate::drivers::serial::write_bytes(data);
-                Ok(data.len())
+            let mut p = 0;
+            return self.ops.write(self, &mut p, data);
+        }
+        match at {
+            Some(mut p) => self.ops.write(self, &mut p, data),
+            None => {
+                let mut pos = self.pos.lock();
+                self.ops.write(self, &mut pos, data)
             }
-            FileKind::Null | FileKind::Zero | FileKind::Random => Ok(data.len()),
-            FileKind::PipeWrite(p) => p.write(data, self.nonblock()),
-            FileKind::PipeRead(_) => Err(EBADF),
         }
     }
 
     pub fn lseek(&self, off: i64, whence: u32) -> KResult<u64> {
-        let FileKind::Inode(i) = &self.kind else {
-            return match self.kind {
-                FileKind::PipeRead(_) | FileKind::PipeWrite(_) => Err(ESPIPE),
-                _ => Ok(0),
-            };
-        };
-        let mut cur = self.offset.lock();
+        if !self.ops.seekable() {
+            return if self.ops.lseek_ok() && whence <= 2 { Ok(0) } else { Err(ESPIPE) };
+        }
+        let mut cur = self.pos.lock();
         let base = match whence {
             0 => 0,
             1 => *cur as i64,
-            2 => i.size() as i64,
+            2 => self.ops.size(self) as i64,
             _ => return Err(EINVAL),
         };
         let new = base.checked_add(off).filter(|&n| n >= 0).ok_or(EINVAL)?;
         *cur = new as u64;
         Ok(new as u64)
     }
-}
 
-impl Drop for OpenFile {
-    fn drop(&mut self) {
-        match &self.kind {
-            FileKind::PipeRead(p) => {
-                p.readers.fetch_sub(1, Ordering::SeqCst);
-                sched::wake_all(p.key());
-            }
-            FileKind::PipeWrite(p) => {
-                p.writers.fetch_sub(1, Ordering::SeqCst);
-                sched::wake_all(p.key());
-            }
-            _ => {}
+    pub fn ioctl(&self, cmd: u32, arg: u64) -> KResult<u64> {
+        if self.is_path_only() {
+            return Err(EBADF);
         }
+        self.ops.ioctl(self, cmd, arg)
     }
 }
 
-pub struct Pipe {
-    buf: Mutex<VecDeque<u8>>,
-    readers: AtomicUsize,
-    writers: AtomicUsize,
+/// Regular files: read/write through the inode at the file position.
+pub struct RegularFile;
+
+impl FileOps for RegularFile {
+    fn read(&self, f: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        let n = f.inode.read_at(*pos, buf)?;
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn write(&self, f: &OpenFile, pos: &mut u64, data: &[u8]) -> KResult<usize> {
+        if f.flags() & O_APPEND != 0 {
+            let (n, size) = f.inode.append(data)?;
+            *pos = size;
+            return Ok(n);
+        }
+        let n = f.inode.write_at(*pos, data)?;
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn seekable(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
-impl Pipe {
-    pub fn new() -> Arc<Pipe> {
-        Arc::new(Pipe {
-            buf: Mutex::new(VecDeque::new()),
-            readers: AtomicUsize::new(0),
-            writers: AtomicUsize::new(0),
-        })
+/// Directories: read gives EISDIR; the position is the getdents index.
+pub struct DirFile;
+
+impl FileOps for DirFile {
+    fn read(&self, _: &OpenFile, _: &mut u64, _: &mut [u8]) -> KResult<usize> {
+        Err(EISDIR)
     }
 
-    fn key(&self) -> sched::WaitKey {
-        (WAIT_PIPE, self as *const Pipe as u64)
+    fn write(&self, _: &OpenFile, _: &mut u64, _: &[u8]) -> KResult<usize> {
+        Err(EISDIR)
     }
 
-    fn read(&self, out: &mut [u8], nonblock: bool) -> KResult<usize> {
-        if out.is_empty() {
-            return Ok(0);
-        }
-        let mut result = Ok(0);
-        let wake = sched::wait_until(self.key(), None, sched::WaitMode::Interruptible, || {
-            let mut b = self.buf.lock();
-            if !b.is_empty() {
-                let n = out.len().min(b.len());
-                for (i, byte) in b.drain(..n).enumerate() {
-                    out[i] = byte;
-                }
-                result = Ok(n);
-                return true;
-            }
-            if self.writers.load(Ordering::SeqCst) == 0 {
-                result = Ok(0);
-                return true;
-            }
-            if nonblock {
-                result = Err(EAGAIN);
-                return true;
-            }
-            false
-        });
-        match wake {
-            Wake::Ready => {
-                sched::wake_all(self.key());
-                result
-            }
-            _ => Err(ERESTARTSYS),
-        }
+    fn seekable(&self) -> bool {
+        true
     }
 
-    fn write(&self, data: &[u8], nonblock: bool) -> KResult<usize> {
-        let mut written = 0;
-        while written < data.len() || data.is_empty() {
-            let mut err = None;
-            let wake = sched::wait_until(self.key(), None, sched::WaitMode::Interruptible, || {
-                if self.readers.load(Ordering::SeqCst) == 0 {
-                    err = Some(EPIPE);
-                    return true;
-                }
-                let mut b = self.buf.lock();
-                let space = PIPE_CAPACITY - b.len();
-                if space > 0 || data.is_empty() {
-                    let n = space.min(data.len() - written);
-                    b.extend(&data[written..written + n]);
-                    written += n;
-                    return true;
-                }
-                if nonblock {
-                    err = Some(EAGAIN);
-                    return true;
-                }
-                false
-            });
-            sched::wake_all(self.key());
-            if let Some(e) = err {
-                if e == EPIPE {
-                    crate::process::signal::send_to_current(crate::process::signal::SIGPIPE);
-                }
-                return if written > 0 { Ok(written) } else { Err(e) };
-            }
-            if wake != Wake::Ready {
-                return if written > 0 { Ok(written) } else { Err(ERESTARTSYS) };
-            }
-            if data.is_empty() {
-                break;
-            }
-        }
-        Ok(written)
+    fn size(&self, _: &OpenFile) -> u64 {
+        0
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
+
+/// O_PATH descriptors and other files with no I/O.
+pub struct NoIo;
+
+impl FileOps for NoIo {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Pseudo files whose contents are generated when opened (/proc).
+pub struct SeqFile {
+    pub data: Vec<u8>,
+}
+
+impl FileOps for SeqFile {
+    fn read(&self, _: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        let start = (*pos as usize).min(self.data.len());
+        let n = buf.len().min(self.data.len() - start);
+        buf[..n].copy_from_slice(&self.data[start..start + n]);
+        *pos += n as u64;
+        Ok(n)
+    }
+
+    fn write(&self, _: &OpenFile, _: &mut u64, _: &[u8]) -> KResult<usize> {
+        Err(EACCES)
+    }
+
+    fn seekable(&self) -> bool {
+        true
+    }
+
+    fn size(&self, _: &OpenFile) -> u64 {
+        self.data.len() as u64
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// The default file operations for an inode of the given type.
+pub fn default_ops(mode: u32) -> Box<dyn FileOps> {
+    match mode & S_IFMT {
+        S_IFREG => Box::new(RegularFile),
+        S_IFDIR => Box::new(DirFile),
+        _ => Box::new(NoIo),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File descriptor tables
 
 #[derive(Clone)]
 pub struct FdEntry {
@@ -276,15 +312,11 @@ pub struct FdTable {
 
 impl FdTable {
     pub fn new() -> Arc<FdTable> {
-        Arc::new(FdTable {
-            fds: Mutex::new(Vec::new()),
-        })
+        Arc::new(FdTable { fds: Mutex::new(Vec::new()) })
     }
 
     pub fn duplicate(&self) -> Arc<FdTable> {
-        Arc::new(FdTable {
-            fds: Mutex::new(self.fds.lock().clone()),
-        })
+        Arc::new(FdTable { fds: Mutex::new(self.fds.lock().clone()) })
     }
 
     pub fn get(&self, fd: i32) -> KResult<Arc<OpenFile>> {
@@ -299,6 +331,9 @@ impl FdTable {
 
     /// Install `file` at the lowest free descriptor >= `min`.
     pub fn alloc(&self, file: Arc<OpenFile>, cloexec: bool, min: usize) -> KResult<i32> {
+        if min >= MAX_FDS {
+            return Err(EINVAL);
+        }
         let mut fds = self.fds.lock();
         let i = (min..MAX_FDS)
             .find(|&i| fds.get(i).is_none_or(|e| e.is_none()))
@@ -338,6 +373,27 @@ impl FdTable {
         Ok(())
     }
 
+    /// close_range: close (or, with `cloexec_only`, mark CLOEXEC) every
+    /// descriptor in [first, last].
+    pub fn close_range(&self, first: u32, last: u32, cloexec_only: bool) {
+        let closed: Vec<FdEntry> = {
+            let mut fds = self.fds.lock();
+            let end = (last as usize).saturating_add(1).min(fds.len());
+            let mut v = Vec::new();
+            for e in fds.iter_mut().take(end).skip(first as usize) {
+                if cloexec_only {
+                    if let Some(e) = e.as_mut() {
+                        e.cloexec = true;
+                    }
+                } else if let Some(x) = e.take() {
+                    v.push(x);
+                }
+            }
+            v
+        };
+        drop(closed);
+    }
+
     pub fn cloexec(&self, fd: i32) -> KResult<bool> {
         let fds = self.fds.lock();
         usize::try_from(fd)
@@ -357,6 +413,16 @@ impl FdTable {
             .ok_or(EBADF)?;
         e.cloexec = on;
         Ok(())
+    }
+
+    /// Every open descriptor (for /proc/<pid>/fd).
+    pub fn list(&self) -> Vec<(i32, Arc<OpenFile>)> {
+        self.fds
+            .lock()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.as_ref().map(|e| (i as i32, e.file.clone())))
+            .collect()
     }
 
     /// Close every close-on-exec descriptor (execve).

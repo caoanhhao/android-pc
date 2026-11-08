@@ -38,8 +38,11 @@ pub mod nr {
     pub const RT_SIGPROCMASK: u64 = 14;
     pub const RT_SIGRETURN: u64 = 15;
     pub const IOCTL: u64 = 16;
+    pub const PREAD64: u64 = 17;
+    pub const PWRITE64: u64 = 18;
     pub const READV: u64 = 19;
     pub const WRITEV: u64 = 20;
+    pub const ACCESS: u64 = 21;
     pub const PIPE: u64 = 22;
     pub const SCHED_YIELD: u64 = 24;
     pub const MADVISE: u64 = 28;
@@ -56,10 +59,28 @@ pub mod nr {
     pub const KILL: u64 = 62;
     pub const UNAME: u64 = 63;
     pub const FCNTL: u64 = 72;
+    pub const FLOCK: u64 = 73;
+    pub const FSYNC: u64 = 74;
+    pub const FDATASYNC: u64 = 75;
+    pub const TRUNCATE: u64 = 76;
+    pub const FTRUNCATE: u64 = 77;
     pub const GETCWD: u64 = 79;
+    pub const CHDIR: u64 = 80;
+    pub const FCHDIR: u64 = 81;
+    pub const RENAME: u64 = 82;
     pub const MKDIR: u64 = 83;
     pub const RMDIR: u64 = 84;
+    pub const CREAT: u64 = 85;
+    pub const LINK: u64 = 86;
     pub const UNLINK: u64 = 87;
+    pub const SYMLINK: u64 = 88;
+    pub const READLINK: u64 = 89;
+    pub const CHMOD: u64 = 90;
+    pub const FCHMOD: u64 = 91;
+    pub const CHOWN: u64 = 92;
+    pub const FCHOWN: u64 = 93;
+    pub const LCHOWN: u64 = 94;
+    pub const UMASK: u64 = 95;
     pub const GETTIMEOFDAY: u64 = 96;
     pub const GETUID: u64 = 102;
     pub const GETGID: u64 = 104;
@@ -75,13 +96,20 @@ pub mod nr {
     pub const RT_SIGTIMEDWAIT: u64 = 128;
     pub const RT_SIGSUSPEND: u64 = 130;
     pub const SIGALTSTACK: u64 = 131;
+    pub const MKNOD: u64 = 133;
+    pub const STATFS: u64 = 137;
+    pub const FSTATFS: u64 = 138;
     pub const PRCTL: u64 = 157;
     pub const ARCH_PRCTL: u64 = 158;
+    pub const SYNC: u64 = 162;
+    pub const MOUNT: u64 = 165;
+    pub const UMOUNT2: u64 = 166;
     pub const REBOOT: u64 = 169;
     pub const GETTID: u64 = 186;
     pub const TKILL: u64 = 200;
     pub const TIME: u64 = 201;
     pub const FUTEX: u64 = 202;
+    pub const GETDENTS64: u64 = 217;
     pub const SET_TID_ADDRESS: u64 = 218;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
@@ -90,13 +118,29 @@ pub mod nr {
     pub const TGKILL: u64 = 234;
     pub const OPENAT: u64 = 257;
     pub const MKDIRAT: u64 = 258;
+    pub const MKNODAT: u64 = 259;
+    pub const FCHOWNAT: u64 = 260;
     pub const NEWFSTATAT: u64 = 262;
     pub const UNLINKAT: u64 = 263;
+    pub const RENAMEAT: u64 = 264;
+    pub const LINKAT: u64 = 265;
+    pub const SYMLINKAT: u64 = 266;
+    pub const READLINKAT: u64 = 267;
+    pub const FCHMODAT: u64 = 268;
+    pub const FACCESSAT: u64 = 269;
     pub const SET_ROBUST_LIST: u64 = 273;
     pub const GET_ROBUST_LIST: u64 = 274;
+    pub const UTIMENSAT: u64 = 280;
     pub const DUP3: u64 = 292;
     pub const PIPE2: u64 = 293;
+    pub const PREADV: u64 = 295;
+    pub const PWRITEV: u64 = 296;
+    pub const SYNCFS: u64 = 306;
+    pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
+    pub const STATX: u64 = 332;
+    pub const CLOSE_RANGE: u64 = 436;
+    pub const FACCESSAT2: u64 = 439;
 }
 
 fn encode(r: KResult<u64>) -> u64 {
@@ -139,7 +183,8 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::WRITE => fs::sys_write(i0, a1, a2),
         nr::OPEN => fs::sys_openat(fs::AT_FDCWD, a0, a1 as u32, a2 as u32),
         nr::CLOSE => fs::sys_close(i0),
-        nr::STAT | nr::LSTAT => fs::sys_newfstatat(fs::AT_FDCWD, a0, a1, 0),
+        nr::STAT => fs::sys_stat(a0, a1, true),
+        nr::LSTAT => fs::sys_stat(a0, a1, false),
         nr::FSTAT => fs::sys_fstat(i0, a1),
         nr::LSEEK => fs::sys_lseek(i0, a1 as i64, a2 as u32),
         nr::MMAP => sys_mmap(a0, a1, a2, a3, a4 as i32, a5),
@@ -149,9 +194,12 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::RT_SIGACTION => signal::sys_rt_sigaction(a0 as u32, a1, a2, a3),
         nr::RT_SIGPROCMASK => signal::sys_rt_sigprocmask(a0 as u32, a1, a2, a3),
         nr::RT_SIGRETURN => signal::sigreturn(frame),
-        nr::IOCTL => current().process.files().get(i0).and(Err(ENOTTY)),
+        nr::IOCTL => fs::sys_ioctl(i0, a1 as u32, a2),
+        nr::PREAD64 => fs::sys_pread64(i0, a1, a2, a3 as i64),
+        nr::PWRITE64 => fs::sys_pwrite64(i0, a1, a2, a3 as i64),
         nr::READV => fs::sys_readv(i0, a1, a2),
         nr::WRITEV => fs::sys_writev(i0, a1, a2),
+        nr::ACCESS => fs::sys_faccessat(fs::AT_FDCWD, a0, a1 as u32, 0),
         nr::PIPE => fs::sys_pipe2(a0, 0),
         nr::SCHED_YIELD => {
             crate::sched::yield_now();
@@ -178,10 +226,34 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::KILL => signal::sys_kill(i0, a1 as u32),
         nr::UNAME => sys_uname(a0),
         nr::FCNTL => fs::sys_fcntl(i0, a1 as u32, a2),
-        nr::GETCWD => sys_getcwd(a0, a1),
+        nr::FLOCK | nr::FSYNC | nr::FDATASYNC => fs::sys_fsync(i0),
+        nr::TRUNCATE => fs::sys_truncate(a0, a1 as i64),
+        nr::FTRUNCATE => fs::sys_ftruncate(i0, a1 as i64),
+        nr::GETCWD => fs::sys_getcwd(a0, a1),
+        nr::CHDIR => fs::sys_chdir(a0),
+        nr::FCHDIR => fs::sys_fchdir(i0),
+        nr::RENAME => fs::sys_renameat2(fs::AT_FDCWD, a0, fs::AT_FDCWD, a1, 0),
         nr::MKDIR => fs::sys_mkdirat(fs::AT_FDCWD, a0, a1 as u32),
         nr::RMDIR => fs::sys_unlinkat(fs::AT_FDCWD, a0, 0x200),
+        nr::CREAT => fs::sys_openat(fs::AT_FDCWD, a0, 0o1101, a1 as u32),
+        nr::LINK => fs::sys_linkat(fs::AT_FDCWD, a0, fs::AT_FDCWD, a1, 0),
         nr::UNLINK => fs::sys_unlinkat(fs::AT_FDCWD, a0, 0),
+        nr::SYMLINK => fs::sys_symlinkat(a0, fs::AT_FDCWD, a1),
+        nr::READLINK => fs::sys_readlinkat(fs::AT_FDCWD, a0, a1, a2 as i32),
+        nr::CHMOD => fs::sys_fchmodat(fs::AT_FDCWD, a0, a1 as u32, 0),
+        nr::FCHMOD => fs::sys_fchmod(i0, a1 as u32),
+        nr::CHOWN => fs::sys_fchownat(fs::AT_FDCWD, a0, a1 as u32, a2 as u32, 0),
+        nr::FCHOWN => fs::sys_fchown(i0, a1 as u32, a2 as u32),
+        nr::LCHOWN => fs::sys_fchownat(fs::AT_FDCWD, a0, a1 as u32, a2 as u32, 0x100),
+        nr::UMASK => fs::sys_umask(a0 as u32),
+        nr::MKNOD => fs::sys_mknodat(fs::AT_FDCWD, a0, a1 as u32, a2),
+        nr::STATFS => fs::sys_statfs(a0, a1),
+        nr::FSTATFS => fs::sys_fstatfs(i0, a1),
+        nr::SYNC => Ok(0),
+        nr::SYNCFS => fs::sys_fsync(i0),
+        nr::MOUNT => fs::sys_mount(a0, a1, a2, a3, a4),
+        nr::UMOUNT2 => fs::sys_umount2(a0, a1 as u32),
+        nr::GETDENTS64 => fs::sys_getdents64(i0, a1, a2),
         nr::GETTIMEOFDAY => time::sys_gettimeofday(a0, a1),
         nr::GETUID | nr::GETGID | nr::GETEUID | nr::GETEGID => Ok(0),
         nr::SETPGID => sys_setpgid(a0 as u32, a1 as u32),
@@ -215,6 +287,21 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::MKDIRAT => fs::sys_mkdirat(i0, a1, a2 as u32),
         nr::NEWFSTATAT => fs::sys_newfstatat(i0, a1, a2, a3 as u32),
         nr::UNLINKAT => fs::sys_unlinkat(i0, a1, a2 as u32),
+        nr::MKNODAT => fs::sys_mknodat(i0, a1, a2 as u32, a3),
+        nr::FCHOWNAT => fs::sys_fchownat(i0, a1, a2 as u32, a3 as u32, a4 as u32),
+        nr::RENAMEAT => fs::sys_renameat2(i0, a1, a2 as i32, a3, 0),
+        nr::LINKAT => fs::sys_linkat(i0, a1, a2 as i32, a3, a4 as u32),
+        nr::SYMLINKAT => fs::sys_symlinkat(a0, i1, a2),
+        nr::READLINKAT => fs::sys_readlinkat(i0, a1, a2, a3 as i32),
+        nr::FCHMODAT => fs::sys_fchmodat(i0, a1, a2 as u32, 0),
+        nr::FACCESSAT => fs::sys_faccessat(i0, a1, a2 as u32, 0),
+        nr::FACCESSAT2 => fs::sys_faccessat(i0, a1, a2 as u32, a3 as u32),
+        nr::UTIMENSAT => fs::sys_utimensat(i0, a1, a2, a3 as u32),
+        nr::PREADV => fs::sys_preadv(i0, a1, a2, a3 as i64),
+        nr::PWRITEV => fs::sys_pwritev(i0, a1, a2, a3 as i64),
+        nr::RENAMEAT2 => fs::sys_renameat2(i0, a1, a2 as i32, a3, a4 as u32),
+        nr::STATX => fs::sys_statx(i0, a1, a2 as u32, a3 as u32, a4),
+        nr::CLOSE_RANGE => fs::sys_close_range(a0 as u32, a1 as u32, a2 as u32),
         nr::SET_ROBUST_LIST => {
             if a1 != 24 {
                 Err(EINVAL)
@@ -267,7 +354,7 @@ fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i32, off: u64) -> KR
         return Err(EINVAL);
     }
     if flags & MAP_ANONYMOUS == 0 {
-        let _ = fd;
+        current().process.files().get(fd)?;
         return Err(ENODEV); // file mappings: phase B3
     }
     // MAP_SHARED anonymous memory is private until B3 (only differs after fork).
@@ -295,14 +382,6 @@ fn sys_uname(buf: u64) -> KResult<u64> {
     }
     current().mm().copy_out(buf, &b)?;
     Ok(0)
-}
-
-fn sys_getcwd(buf: u64, size: u64) -> KResult<u64> {
-    if size < 2 {
-        return Err(ERANGE);
-    }
-    current().mm().copy_out(buf, b"/\0")?;
-    Ok(2)
 }
 
 fn sys_setpgid(pid: u32, pgid: u32) -> KResult<u64> {
