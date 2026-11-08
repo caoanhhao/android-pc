@@ -1,4 +1,4 @@
-# Kernel architecture (phase B4b state)
+# Kernel architecture (phase B5 state: AOSP shell)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -16,6 +16,9 @@ tools/run-qemu.sh                 # build + boot (UEFI, KVM, 4 CPUs, 2 GiB), ser
 tools/run-qemu.sh --test          # build + run in-kernel tests, exit status 0/1
 tools/run-qemu.sh --ktest b1      # build the test initramfs, run ktest-init in the guest
                                   # (FILTER prefixes optional), exit 0 iff "END ktest-init ... fail=0"
+tools/run-qemu.sh --aosp          # AOSP mksh + toybox (dynamically linked against bionic) on the
+                                  # serial console, see aosp-shell.md
+tools/run-qemu.sh --aosp-sh-test  # the same, with scripted commands; exit 0 iff all checks pass
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes
 cd kernel && cargo run / cargo test                    # same, script is the cargo runner
@@ -61,11 +64,14 @@ kernel/
                        wait4), elf (loader + initial stack), signal, futex
       syscall/         dispatch table (Linux numbers), fs, time, poll (poll/select,
                        epoll, eventfd, timerfd, signalfd syscalls), net (socket
-                       syscalls, msghdr/cmsg handling, socket options)
+                       syscalls, msghdr/cmsg handling, socket options), sys
+                       (rlimits, rusage, sched_*, priorities, ids, caps,
+                       personality, sigqueueinfo)
       net/             sockets: constants, credentials; unix (AF_UNIX sockets)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
                        files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
-                       dev (character devices), procfs, pipe (+ FIFOs), poll
+                       dev (character devices), tty (console line discipline),
+                       procfs, pipe (+ FIFOs), poll
                        (event bits, wait queues, poll loop), epoll, eventfd,
                        timerfd, signalfd; mod.rs: cpio unpacking, open,
                        mountable file system types
@@ -260,7 +266,9 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 - `Process` = thread group: pid (= leader tid), signal actions and
   process-wide pending signals, fd table (`Arc`, shared by CLONE_FILES),
   `FsContext` (cwd as a `PathRef`, umask; copied by fork), the executable
-  path and argv (for /proc), exit signal, name.
+  and dynamic linker paths and argv (for /proc), exit signal, name, and
+  `Attrs` (rlimits, nice, personality, sched policy, prctl flags; copied
+  by fork, reported back by their syscalls but not acted on).
 - `TABLE`: tid -> task map and pid -> node (parent, children, live threads,
   pgid/sid, zombie status, group exit status) under one lock. Orphans are
   reparented to pid 1; a parent with SIGCHLD set to SIG_IGN (or
@@ -277,10 +285,16 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   vfork parent, resets handled signals to SIG_DFL (ignored stay ignored, the
   mask stays), clears the altstack, closes CLOEXEC fds, clears FS/GS and the
   FPU.
-- ELF loader (`elf.rs`): ET_EXEC and static-PIE ET_DYN, PT_LOAD segments
-  (pages shared by two segments get both protections), bss zeroed, brk after
-  the last segment. PT_INTERP is refused with ENOEXEC and a log line until
-  bionic's linker64 can be loaded. Initial stack: argc, argv, envp, auxv
+- ELF loader (`elf.rs`): ET_EXEC and ET_DYN (PIE at 0x555555554000),
+  PT_LOAD segments copied into anonymous memory (pages shared by two
+  segments get both protections), bss zeroed, brk after the last segment.
+  A PT_INTERP program (bionic's `/system/bin/linker64`, an ET_DYN) is read
+  through the VFS by `lifecycle::load_executable`, mapped at
+  0x7fc000000000 (between the top-down mmap area, below 0x7f0000000000, and
+  the stack) and entered first, with AT_BASE = its base and AT_PHDR/
+  AT_PHNUM/AT_ENTRY describing the program, as Linux's binfmt_elf does.
+  `#!interp [arg]` scripts re-run the lookup with the interpreter (up to 5
+  levels). /proc/<pid>/maps names the linker's range by its path. Initial stack: argc, argv, envp, auxv
   (AT_PHDR, AT_PHENT, AT_PHNUM, AT_PAGESZ, AT_BASE, AT_FLAGS, AT_ENTRY,
   AT_UID/EUID/GID/EGID, AT_HWCAP, AT_HWCAP2, AT_CLKTCK, AT_SECURE,
   AT_MINSIGSTKSZ, AT_RANDOM, AT_EXECFN, AT_PLATFORM), strings at the top,
@@ -329,9 +343,8 @@ One global mount namespace. The pieces:
   - devtmpfs (one shared instance): null, zero, full, random, urandom,
     kmsg, tty, console, ttyS0 nodes plus `pts/` and `shm/`. Device nodes
     on any file system open the driver in `dev.rs` by major:minor. The
-    console is a minimal tty (termios and window size ioctls, so isatty()
-    works); it has no input yet (reads return EOF). /dev/kmsg writes go to
-    the kernel log.
+    console (/dev/console, /dev/tty, /dev/ttyS0) is the tty in `tty.rs`,
+    below. /dev/kmsg writes go to the kernel log.
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
     mounts,fd/,fdinfo/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
     `filesystems`, `cmdline`, `version`, `loadavg`, `stat`, `net/unix`. Contents are
@@ -432,6 +445,25 @@ One global mount namespace. The pieces:
   through in-flight fds are not collected.
 - `/proc/net/unix` is generated from a table of all live sockets.
 
+## Console tty (`fs/tty.rs`)
+
+A subset of Linux's N_TTY line discipline on COM1. There is no IOAPIC
+routing yet, so the BSP's timer tick (100 Hz) drains the UART receive FIFO
+(at most 64 bytes per tick; QEMU holds back further input while the FIFO
+is full, so nothing is lost) and runs each byte through the line
+discipline under an `IrqLock`: ICRNL/IGNCR/INLCR/ISTRIP, canonical line
+editing (VERASE, VKILL, VWERASE, VEOF = EOF on an empty line, VEOL/VEOL2),
+echo (ECHO, ECHOE, ECHOK, ECHOKE, ECHONL, ECHOCTL) and ISIG. Readers sleep
+on the tty's wait queue: canonical reads return at most one line,
+non-canonical ones follow VMIN/VTIME; O_NONBLOCK gives EAGAIN. VINTR,
+VQUIT and VSUSP send SIGINT/SIGQUIT/SIGTSTP to the foreground process
+group (TIOCSPGRP, default 1); since the process table lock is not
+interrupt-safe, the tick only records them and `deliver_signals` sends
+them from process context, on the next return to user mode or in the idle
+loop. Output applies OPOST/ONLCR and goes straight to the UART. Missing:
+SIGTTIN/SIGTTOU, sessions and controlling ttys (TIOCSCTTY is a no-op),
+IXON flow control, devpts.
+
 ## Tests
 
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
@@ -473,11 +505,15 @@ as the Linux host, with 1, 4 and 8 CPUs. Phase B4b: b4_unix 64/64 (socketpair of
 all three types, SCM_RIGHTS across processes, MSG_CTRUNC, path and
 abstract listeners, SO_PEERCRED, SCM_CREDENTIALS, shutdown/EPIPE), same as
 the Linux host, with 1, 4 and 8 CPUs; the whole suite still passes.
+Phase B5 (AOSP shell, [aosp-shell.md](aosp-shell.md)):
+`tools/run-qemu.sh --aosp-sh-test` boots unmodified AOSP mksh and toybox
+(dynamically linked against bionic) and passes 15/15 checks, with 1, 4 and
+8 CPUs, debug and release; ktest and `--test` still pass.
 
 ## Known gaps / next steps
 
 - VFS follow-ups: permission checks and credentials, read-only mounts,
-  devpts, console input (and its poll), /proc/<pid>/fd magic
+  devpts, /proc/<pid>/fd magic
   links (so a memfd cannot be re-opened through /proc/self/fd/N yet),
   /proc/sys, a real sysfs, statfs block accounting.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
@@ -485,9 +521,13 @@ the Linux host, with 1, 4 and 8 CPUs; the whole suite still passes.
   behind the same `Inode::shmem` hook.
 - Sockets: AF_INET/INET6, AF_NETLINK (C3), in-flight fd garbage
   collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
-- Dynamic ELF (PT_INTERP: load bionic's linker64 and pass AT_BASE).
+- ELF: map segments from the file's page cache (MAP_PRIVATE) instead of
+  copying them, so text pages are shared between processes.
+- Interrupt routing (IOAPIC from the ACPI MADT) for UART RX and later
+  virtio devices, instead of polling the UART from the tick.
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
-  time accounting (CPU-time clocks currently report uptime), sleep timers
+  time accounting (CPU-time clocks currently report uptime; getrusage and
+  times report 0), scheduling classes and affinity (stored only), sleep timers
   in a timer wheel instead of one list, real-time signal queueing, job
   control (SIGSTOP/SIGCONT), credentials.
 - XSAVE (AVX) state, no ACPI parsing yet (power off uses the q35/PIIX PM1a

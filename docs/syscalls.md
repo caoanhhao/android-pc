@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b)
+## Implemented (phases B1-B4b, B5 AOSP shell)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -30,7 +30,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console: TCGETS/TCSETS*/TIOCGWINSZ/TIOCSWINSZ/TIOCGPGRP/TIOCSPGRP/TIOCSCTTY/TIOCGSID; everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
@@ -42,7 +42,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 25 | mremap | partial | anonymous, shared and file mappings: shrink, grow in place, MREMAP_MAYMOVE, MREMAP_FIXED, MREMAP_DONTUNMAP; pages move by moving PTEs, a file/shared VMA keeps its object and offset; old_size 0 on a shared mapping (with MAYMOVE) maps the same pages again, EINVAL otherwise; the old range must lie in one VMA (EFAULT) |
 | 26 | msync | yes | argument checks only (EINVAL: unaligned address, unknown flags, MS_SYNC with MS_ASYNC; ENOMEM: unmapped range); every file is RAM-backed |
 | 27 | mincore | yes | 1 per page that is mapped or in its object's page cache; EINVAL unaligned, ENOMEM unmapped |
-| 28 | madvise | partial | MADV_DONTNEED / MADV_FREE drop the pages of the range (private anonymous memory comes back zero-filled, file and shared mappings refault from their object); MADV_REMOVE punches a hole in the object behind a shared mapping (EINVAL for private, EACCES if not writable); NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTFORK..DODUMP, COLD, PAGEOUT accepted as no-ops; EINVAL for an unaligned address or unknown advice, ENOMEM for an unmapped range |
+| 28 | madvise | partial | MADV_DONTNEED / MADV_FREE drop the pages of the range (private anonymous memory comes back zero-filled, file and shared mappings refault from their object); MADV_REMOVE punches a hole in the object behind a shared mapping (EINVAL for private, EACCES if not writable); MADV_WIPEONFORK / MADV_KEEPONFORK on private anonymous memory (a fork child gets zero pages; EINVAL on shared or file mappings, used by bionic's arc4random); NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTFORK..DODUMP, COLD, PAGEOUT accepted as no-ops; EINVAL for an unaligned address or unknown advice, ENOMEM for an unmapped range |
 | 32 | dup | yes | |
 | 33 | dup2 | yes | |
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
@@ -65,7 +65,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 56 | clone | yes | fork-style and thread-style (CLONE_VM, THREAD, SIGHAND, FILES, VFORK, PARENT, SETTLS, PARENT_SETTID, CHILD_SETTID, CHILD_CLEARTID); CLONE_PIDFD -> EINVAL; namespaces ignored |
 | 57 | fork | yes | copy-on-write: private pages shared read-only, copied on the first write (or made writable again when no longer shared) |
 | 58 | vfork | yes | shares memory, parent sleeps until the child execs or exits |
-| 59 | execve | yes | path resolved through the VFS (cwd-relative, symlinks); static ELF (ET_EXEC, static-PIE); PT_INTERP -> ENOEXEC (dynamic linking later); ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset; records /proc/<pid>/exe and cmdline |
+| 59 | execve | yes | path resolved through the VFS (cwd-relative, symlinks); ELF ET_EXEC and ET_DYN (PIE at 0x555555554000), static or dynamic: the PT_INTERP program (bionic's linker64) is loaded at 0x7fc000000000 and entered with AT_BASE, AT_PHDR/AT_ENTRY of the program, AT_RANDOM, AT_SECURE 0, AT_EXECFN; `#!interp [arg]` scripts (up to 5 levels, else ELOOP); ELIBBAD for a bad interpreter; ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset; records /proc/<pid>/exe and cmdline |
 | 60 | exit | yes | thread exit, CLONE_CHILD_CLEARTID + futex wake |
 | 61 | wait4 | yes | pid > 0, -1, 0, < -1; WNOHANG; ECHILD; rusage zeroed |
 | 62 | kill | yes | pid > 0, 0 (group), -1, < -1; sig 0 = existence check |
@@ -94,25 +94,46 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 94 | lchown | partial | stored only |
 | 95 | umask | yes | per process, inherited by fork |
 | 96 | gettimeofday | yes | |
+| 97 | getrlimit | yes | = prlimit64(0) |
+| 98 | getrusage | stub | RUSAGE_SELF/CHILDREN/THREAD; all fields 0 (no CPU time accounting yet); EINVAL for other `who` |
+| 99 | sysinfo | yes | uptime, totalram/freeram (frames), procs; loads and swap 0, mem_unit 1 |
+| 100 | times | partial | CPU times 0; returns clock ticks (HZ 100) since boot |
 | 102 | getuid | yes | always 0 (credentials are later) |
 | 104 | getgid | yes | 0 |
+| 105 | setuid | stub | everyone is root: any id is accepted, ids stay 0 (no credentials model yet); same for setgid (106), setreuid (113), setregid (114), setgroups (116), setresuid (117), setresgid (119) |
 | 107 | geteuid | yes | 0 |
 | 108 | getegid | yes | 0 |
 | 109 | setpgid | partial | no permission checks |
 | 110 | getppid | yes | 0 for init |
 | 111 | getpgrp | yes | |
 | 112 | setsid | partial | |
+| 115 | getgroups | yes | no supplementary groups: 0; EINVAL for a negative size |
+| 118 | getresuid | yes | 0, 0, 0; getresgid (120) the same |
 | 121 | getpgid | yes | |
+| 122 | setfsuid | stub | returns 0 (the old fs id); setfsgid (123) the same |
 | 124 | getsid | yes | |
+| 125 | capget | yes | versions 1-3 (EINVAL + preferred version written back otherwise); effective = permitted = all caps 0-40, inheritable 0 |
+| 126 | capset | stub | header/data checked, nothing enforced |
 | 127 | rt_sigpending | yes | pending & blocked |
 | 128 | rt_sigtimedwait | yes | EAGAIN on timeout, EINTR on another signal |
+| 129 | rt_sigqueueinfo | yes | siginfo from the caller (si_code, pid, uid, si_value); EPERM for si_code >= 0 or SI_TKILL to another process |
 | 130 | rt_sigsuspend | yes | old mask restored after the handler |
 | 131 | sigaltstack | yes | SS_DISABLE, EPERM while on it, ENOMEM below MINSIGSTKSZ |
 | 133 | mknod | yes | regular files, device nodes, FIFOs (open: readers wait for a writer and writers for a reader, O_NONBLOCK reader opens at once, O_NONBLOCK writer without reader ENXIO, O_RDWR never blocks), sockets (open ENXIO, connect works on a bound one) |
+| 135 | personality | yes | stored per process (inherited by fork); 0xffffffff queries |
 | 137 | statfs | partial | f_type from the mount (tmpfs/ramfs/proc/sysfs magic); block counts are RAM frames |
 | 138 | fstatfs | partial | pipes report PIPEFS_MAGIC |
-| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME; others EINVAL |
+| 140 | getpriority | yes | PRIO_PROCESS/PGRP/USER; returns 20 - nice like the raw syscall |
+| 141 | setpriority | partial | nice stored (clamped to -20..19), the scheduler ignores it |
+| 142 | sched_setparam | partial | = sched_setscheduler with the current policy |
+| 143 | sched_getparam | yes | stored priority |
+| 144 | sched_setscheduler | partial | OTHER/BATCH/IDLE (priority 0), FIFO/RR (1-99) checked and stored per process (SCHED_RESET_ON_FORK ignored); one round-robin scheduler runs everything |
+| 145 | sched_getscheduler | yes | stored policy (default SCHED_OTHER) |
+| 146 | sched_get_priority_max | yes | 99 for FIFO/RR, 0 otherwise; sched_get_priority_min (147): 1 / 0 |
+| 149 | mlock | stub | all memory is resident: 0; also munlock (150), mlockall (151), munlockall (152), mlock2 (325) |
+| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME, PR_GET/SET_DUMPABLE, PR_GET/SET_KEEPCAPS, PR_GET/SET_NO_NEW_PRIVS (stored, not enforced), PR_CAPBSET_READ (1 for caps 0-40), PR_SET_VMA (anon names accepted, not kept); others EINVAL |
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
+| 160 | setrlimit | yes | = prlimit64(0) |
 | 162 | sync | stub | 0 |
 | 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs; MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
 | 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW |
@@ -121,9 +142,12 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 200 | tkill | yes | |
 | 201 | time | yes | |
 | 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; in a MAP_SHARED mapping (without FUTEX_PRIVATE_FLAG) keyed by (shmem object, offset), so it works across processes and mappings; otherwise by (address space, address); PI futexes ENOSYS |
+| 203 | sched_setaffinity | partial | accepted when the mask names an online CPU (else EINVAL); threads still run anywhere |
+| 204 | sched_getaffinity | yes | all online CPUs; returns the mask size in bytes (EINVAL when `len` is too small or not a multiple of 8) |
 | 213 | epoll_create | yes | size must be > 0 |
 | 217 | getdents64 | yes | ".", "..", then the entries with real d_type; position = entry index (lseek 0 rewinds); EINVAL if the first record does not fit |
 | 218 | set_tid_address | yes | |
+| 221 | fadvise64 | stub | hints ignored (all files in RAM); EBADF, ESPIPE on pipes and sockets, EINVAL for unknown advice |
 | 228 | clock_gettime | yes | REALTIME (Limine boot date + TSC), MONOTONIC/BOOTTIME/RAW/COARSE (TSC); CPU-time clocks report uptime |
 | 229 | clock_getres | yes | 1 ns, coarse clocks 10 ms |
 | 230 | clock_nanosleep | yes | TIMER_ABSTIME |
@@ -163,9 +187,12 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 293 | pipe2 | yes | O_CLOEXEC, O_NONBLOCK, O_DIRECT accepted (not packet mode); 64 KiB buffer |
 | 295 | preadv | yes | |
 | 296 | pwritev | yes | |
+| 297 | rt_tgsigqueueinfo | yes | thread-directed rt_sigqueueinfo |
 | 299 | recvmmsg | partial | recvmsg in a loop, MSG_WAITFORONE; the timeout is ignored |
+| 302 | prlimit64 | yes | per-process limits, inherited by fork; Linux defaults (STACK 8 MiB, NOFILE 1024, ...); EINVAL soft > hard, EPERM for RLIMIT_NOFILE above 1024 (the fd table size); not enforced except NOFILE by the fd table |
 | 306 | syncfs | stub | 0 |
 | 307 | sendmmsg | yes | sendmsg in a loop; count sent, the error only if none was |
+| 309 | getcpu | yes | current CPU, node 0 |
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
 | 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
@@ -207,7 +234,8 @@ static programs use; **partial** = works for the common case, gaps listed;
   readers; eventfd POLLIN when > 0, POLLOUT below 2^64-2; timerfd POLLIN
   with unread expirations; signalfd POLLIN while a masked signal is
   pending for the polling thread; epoll fd POLLIN while an item on its
-  ready list has events; console POLLOUT only (no input yet); regular
+  ready list has events; console POLLOUT, and POLLIN while a line
+  (canonical) or a byte (raw) is readable; regular
   files and memory devices are always ready (and not epoll-able).
   Sockets: POLLIN with queued data, a listener POLLIN with a pending
   connection; POLLRDHUP | POLLIN after the peer shut down writing,
@@ -252,10 +280,10 @@ static programs use; **partial** = works for the common case, gaps listed;
 ## Not implemented yet (selection, by phase)
 
 - **B2 leftovers**: legacy getdents (78), chroot/pivot_root, sendfile,
-  copy_file_range, fadvise, inotify, xattrs, devpts, console input (reads EOF),
+  copy_file_range, inotify, xattrs, devpts,
   permission checks (everything is root), read-only mounts (recorded only).
 - **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
-  without a page cache (procfs, devices other than /dev/zero), mlock family,
+  without a page cache (procfs, devices other than /dev/zero),
   re-opening a memfd through /proc/<pid>/fd/N (not a magic link).
 - **B4 leftovers**: pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
   cancellation, SIGIO/O_ASYNC. Sockets: AF_INET/AF_INET6 (no network
@@ -263,5 +291,9 @@ static programs use; **partial** = works for the common case, gaps listed;
   SO_PEERGROUPS, SCM_SECURITY, garbage collection of in-flight fd cycles
   (a socket sent over itself and never received leaks),
   /proc/sys/net/unix/max_dgram_qlen (fixed at 600).
-- Later: credentials (setuid family, capabilities), rlimits, sched_*
-  affinity/priority, rseq, clone3, io_uring (not used by AOSP).
+- **B5 leftovers**: a credentials model (the set*id calls change nothing,
+  capabilities are not checked), CPU time accounting (getrusage/times
+  report 0), scheduling classes/affinity/nice (stored only), SIGTTIN/SIGTTOU
+  and stop/continue job control, PR_SET_PDEATHSIG, ELF segments are
+  copied (not mapped from the file's page cache), waitid, membarrier.
+- Later: rseq, clone3, io_uring (not used by AOSP).

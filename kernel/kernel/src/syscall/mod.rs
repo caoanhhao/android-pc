@@ -11,6 +11,7 @@
 pub mod fs;
 pub mod net;
 pub mod poll;
+pub mod sys;
 pub mod time;
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -108,25 +109,58 @@ pub mod nr {
     pub const LCHOWN: u64 = 94;
     pub const UMASK: u64 = 95;
     pub const GETTIMEOFDAY: u64 = 96;
+    pub const GETRLIMIT: u64 = 97;
+    pub const GETRUSAGE: u64 = 98;
+    pub const SYSINFO: u64 = 99;
+    pub const TIMES: u64 = 100;
     pub const GETUID: u64 = 102;
     pub const GETGID: u64 = 104;
+    pub const SETUID: u64 = 105;
+    pub const SETGID: u64 = 106;
     pub const GETEUID: u64 = 107;
     pub const GETEGID: u64 = 108;
     pub const SETPGID: u64 = 109;
     pub const GETPPID: u64 = 110;
     pub const GETPGRP: u64 = 111;
     pub const SETSID: u64 = 112;
+    pub const SETREUID: u64 = 113;
+    pub const SETREGID: u64 = 114;
+    pub const GETGROUPS: u64 = 115;
+    pub const SETGROUPS: u64 = 116;
+    pub const SETRESUID: u64 = 117;
+    pub const GETRESUID: u64 = 118;
+    pub const SETRESGID: u64 = 119;
+    pub const GETRESGID: u64 = 120;
     pub const GETPGID: u64 = 121;
+    pub const SETFSUID: u64 = 122;
+    pub const SETFSGID: u64 = 123;
     pub const GETSID: u64 = 124;
+    pub const CAPGET: u64 = 125;
+    pub const CAPSET: u64 = 126;
     pub const RT_SIGPENDING: u64 = 127;
     pub const RT_SIGTIMEDWAIT: u64 = 128;
+    pub const RT_SIGQUEUEINFO: u64 = 129;
     pub const RT_SIGSUSPEND: u64 = 130;
     pub const SIGALTSTACK: u64 = 131;
     pub const MKNOD: u64 = 133;
+    pub const PERSONALITY: u64 = 135;
     pub const STATFS: u64 = 137;
     pub const FSTATFS: u64 = 138;
+    pub const GETPRIORITY: u64 = 140;
+    pub const SETPRIORITY: u64 = 141;
+    pub const SCHED_SETPARAM: u64 = 142;
+    pub const SCHED_GETPARAM: u64 = 143;
+    pub const SCHED_SETSCHEDULER: u64 = 144;
+    pub const SCHED_GETSCHEDULER: u64 = 145;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 146;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 147;
+    pub const MLOCK: u64 = 149;
+    pub const MUNLOCK: u64 = 150;
+    pub const MLOCKALL: u64 = 151;
+    pub const MUNLOCKALL: u64 = 152;
     pub const PRCTL: u64 = 157;
     pub const ARCH_PRCTL: u64 = 158;
+    pub const SETRLIMIT: u64 = 160;
     pub const SYNC: u64 = 162;
     pub const MOUNT: u64 = 165;
     pub const UMOUNT2: u64 = 166;
@@ -135,9 +169,12 @@ pub mod nr {
     pub const TKILL: u64 = 200;
     pub const TIME: u64 = 201;
     pub const FUTEX: u64 = 202;
+    pub const SCHED_SETAFFINITY: u64 = 203;
+    pub const SCHED_GETAFFINITY: u64 = 204;
     pub const EPOLL_CREATE: u64 = 213;
     pub const GETDENTS64: u64 = 217;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const FADVISE64: u64 = 221;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const CLOCK_GETRES: u64 = 229;
     pub const CLOCK_NANOSLEEP: u64 = 230;
@@ -177,12 +214,16 @@ pub mod nr {
     pub const PIPE2: u64 = 293;
     pub const PREADV: u64 = 295;
     pub const PWRITEV: u64 = 296;
+    pub const RT_TGSIGQUEUEINFO: u64 = 297;
     pub const RECVMMSG: u64 = 299;
+    pub const PRLIMIT64: u64 = 302;
     pub const SYNCFS: u64 = 306;
     pub const SENDMMSG: u64 = 307;
+    pub const GETCPU: u64 = 309;
     pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
     pub const MEMFD_CREATE: u64 = 319;
+    pub const MLOCK2: u64 = 325;
     pub const STATX: u64 = 332;
     pub const CLOSE_RANGE: u64 = 436;
     pub const FACCESSAT2: u64 = 439;
@@ -333,7 +374,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::RT_SIGTIMEDWAIT => signal::sys_rt_sigtimedwait(a0, a1, a2, a3),
         nr::RT_SIGSUSPEND => signal::sys_rt_sigsuspend(a0, a1),
         nr::SIGALTSTACK => signal::sys_sigaltstack(a0, a1),
-        nr::PRCTL => sys_prctl(a0 as u32, a1),
+        nr::PRCTL => sys_prctl(a0 as u32, a1, a2),
         nr::ARCH_PRCTL => sys_arch_prctl(a0 as u32, a1),
         nr::REBOOT => sys_reboot(a0 as u32, a1 as u32, a2 as u32),
         nr::GETTID => Ok(current().tid as u64),
@@ -400,6 +441,37 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::SIGNALFD => poll::sys_signalfd4(i0, a1, a2, 0),
         nr::SIGNALFD4 => poll::sys_signalfd4(i0, a1, a2, a3 as u32),
         nr::GETRANDOM => sys_getrandom(a0, a1, a2 as u32),
+        nr::GETRLIMIT => sys::sys_getrlimit(a0 as u32, a1),
+        nr::SETRLIMIT => sys::sys_setrlimit(a0 as u32, a1),
+        nr::PRLIMIT64 => sys::sys_prlimit64(i0, a1 as u32, a2, a3),
+        nr::GETRUSAGE => sys::sys_getrusage(i0, a1),
+        nr::SYSINFO => sys::sys_sysinfo(a0),
+        nr::TIMES => sys::sys_times(a0),
+        nr::SETUID | nr::SETGID | nr::SETREUID | nr::SETREGID | nr::SETRESUID | nr::SETRESGID | nr::SETGROUPS => {
+            sys::sys_setid()
+        }
+        nr::SETFSUID | nr::SETFSGID => sys::sys_setfsid(),
+        nr::GETRESUID | nr::GETRESGID => sys::sys_getresid(a0, a1, a2),
+        nr::GETGROUPS => sys::sys_getgroups(i0, a1),
+        nr::CAPGET => sys::sys_capget(a0, a1),
+        nr::CAPSET => sys::sys_capset(a0, a1),
+        nr::RT_SIGQUEUEINFO => sys::sys_rt_sigqueueinfo(i0, -1, a1 as u32, a2),
+        nr::RT_TGSIGQUEUEINFO => sys::sys_rt_sigqueueinfo(i0, i1, a2 as u32, a3),
+        nr::PERSONALITY => sys::sys_personality(a0 as u32),
+        nr::GETPRIORITY => sys::sys_getpriority(a0 as u32, i1),
+        nr::SETPRIORITY => sys::sys_setpriority(a0 as u32, i1, a2 as i32),
+        nr::SCHED_SETPARAM => sys::sys_sched_setparam(i0, a1),
+        nr::SCHED_GETPARAM => sys::sys_sched_getparam(i0, a1),
+        nr::SCHED_SETSCHEDULER => sys::sys_sched_setscheduler(i0, a1 as i32, a2),
+        nr::SCHED_GETSCHEDULER => sys::sys_sched_getscheduler(i0),
+        nr::SCHED_GET_PRIORITY_MAX => sys::sys_sched_get_priority_max(a0 as u32),
+        nr::SCHED_GET_PRIORITY_MIN => sys::sys_sched_get_priority_min(a0 as u32),
+        nr::SCHED_SETAFFINITY => sys::sys_sched_setaffinity(i0, a1, a2),
+        nr::SCHED_GETAFFINITY => sys::sys_sched_getaffinity(i0, a1, a2),
+        nr::GETCPU => sys::sys_getcpu(a0, a1),
+        // All memory is resident: locking is a no-op.
+        nr::MLOCK | nr::MUNLOCK | nr::MLOCK2 | nr::MLOCKALL | nr::MUNLOCKALL => Ok(0),
+        nr::FADVISE64 => fs::sys_fadvise64(i0, a3 as u32),
         _ => {
             warn_once(n);
             Err(ENOSYS)
@@ -547,12 +619,43 @@ fn sys_setsid() -> KResult<u64> {
     Ok(me as u64)
 }
 
+const PR_GET_DUMPABLE: u32 = 3;
+const PR_SET_DUMPABLE: u32 = 4;
+const PR_GET_KEEPCAPS: u32 = 7;
+const PR_SET_KEEPCAPS: u32 = 8;
 const PR_SET_NAME: u32 = 15;
 const PR_GET_NAME: u32 = 16;
+const PR_CAPBSET_READ: u32 = 23;
+const PR_SET_NO_NEW_PRIVS: u32 = 38;
+const PR_GET_NO_NEW_PRIVS: u32 = 39;
+/// Android's anonymous VMA naming (PR_SET_VMA_ANON_NAME).
+const PR_SET_VMA: u32 = 0x53564d41;
+/// CAP_CHECKPOINT_RESTORE, the highest capability.
+const CAP_LAST_CAP: u64 = 40;
 
-fn sys_prctl(option: u32, arg: u64) -> KResult<u64> {
+fn sys_prctl(option: u32, arg: u64, arg3: u64) -> KResult<u64> {
     let t = current();
     match option {
+        PR_GET_DUMPABLE => Ok(t.process.attrs.lock().dumpable as u64),
+        PR_SET_DUMPABLE if arg <= 1 => {
+            t.process.attrs.lock().dumpable = arg == 1;
+            Ok(0)
+        }
+        PR_GET_KEEPCAPS => Ok(t.process.attrs.lock().keepcaps as u64),
+        PR_SET_KEEPCAPS if arg <= 1 => {
+            t.process.attrs.lock().keepcaps = arg == 1;
+            Ok(0)
+        }
+        PR_CAPBSET_READ if arg <= CAP_LAST_CAP => Ok(1),
+        PR_GET_NO_NEW_PRIVS => Ok(t.process.attrs.lock().no_new_privs as u64),
+        // Cannot be unset once set.
+        PR_SET_NO_NEW_PRIVS if arg == 1 && arg3 == 0 => {
+            t.process.attrs.lock().no_new_privs = true;
+            Ok(0)
+        }
+        // PR_SET_VMA_ANON_NAME: names are not kept (maps shows the
+        // region unnamed).
+        PR_SET_VMA if arg == 0 => Ok(0),
         PR_SET_NAME => {
             let name = t.mm().read_cstr(arg, 4096)?;
             t.process.set_comm(&name);

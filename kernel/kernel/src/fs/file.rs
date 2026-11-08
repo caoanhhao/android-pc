@@ -37,7 +37,7 @@ pub const O_CLOEXEC: u32 = 0o2000000;
 pub const O_PATH: u32 = 0o10000000;
 pub const O_TMPFILE: u32 = 0o20000000 | O_DIRECTORY;
 
-const MAX_FDS: usize = 1024;
+pub const MAX_FDS: usize = 1024;
 
 /// Per-kind file behaviour. `pos` is the file position (seekable files
 /// update it; stream files ignore it).

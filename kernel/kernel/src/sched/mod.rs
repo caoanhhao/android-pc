@@ -248,6 +248,10 @@ pub fn yield_now() {
 pub fn idle() -> ! {
     let bit = 1u64 << cpu::index_fast();
     loop {
+        if crate::fs::tty::signals_pending() {
+            interrupts::enable();
+            crate::fs::tty::deliver_signals();
+        }
         interrupts::disable();
         IDLE_CPUS.fetch_or(bit, Ordering::SeqCst);
         if RQ_LEN.load(Ordering::SeqCst) > 0 {
@@ -266,6 +270,7 @@ pub fn idle() -> ! {
 pub fn timer_interrupt() {
     if cpu::index_fast() == 0 {
         crate::time::tick();
+        crate::fs::tty::poll_input();
         expire_sleepers();
         timer::run_expired();
     }
@@ -279,6 +284,11 @@ pub fn timer_interrupt() {
 pub fn exit_to_user(frame: &mut TrapFrame) {
     loop {
         interrupts::disable();
+        if crate::fs::tty::signals_pending() {
+            interrupts::enable();
+            crate::fs::tty::deliver_signals();
+            continue;
+        }
         if this_cpu().need_resched.load(Ordering::Relaxed) {
             interrupts::enable();
             schedule();

@@ -36,15 +36,60 @@ pub fn basename(path: &[u8]) -> &[u8] {
 }
 
 /// Look up an executable (relative to `cwd`) and load it into a new
-/// address space. Returns the image and the resolved path.
-pub fn load_executable(cwd: &PathRef, path: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<(elf::Image, PathRef)> {
+/// address space. Returns the image, the resolved path and the PT_INTERP
+/// program's path. Handles PT_INTERP (the dynamic linker) and `#!` scripts.
+pub fn load_executable(
+    cwd: &PathRef,
+    path: &[u8],
+    argv: &[Vec<u8>],
+    envp: &[Vec<u8>],
+) -> KResult<(elf::Image, PathRef, Option<PathRef>)> {
+    let mut path = path.to_vec();
+    let mut argv = argv.to_vec();
+    // Linux allows a few levels of interpreter scripts (BINPRM_MAX_RECURSION).
+    for _ in 0..5 {
+        let (p, data) = read_executable(cwd, &path)?;
+        if data.starts_with(b"#!") {
+            // "#!interp [one-arg]": argv becomes interp [arg] path argv[1..].
+            let line = data[2..].split(|&c| c == b'\n').next().unwrap_or(&[]);
+            let line = line.trim_ascii();
+            let (interp, arg) = match line.iter().position(|c| c.is_ascii_whitespace()) {
+                Some(i) => (&line[..i], line[i..].trim_ascii()),
+                None => (line, &[][..]),
+            };
+            if interp.is_empty() {
+                return Err(ENOEXEC);
+            }
+            let mut nargv = alloc::vec![interp.to_vec()];
+            if !arg.is_empty() {
+                nargv.push(arg.to_vec());
+            }
+            nargv.push(path.clone());
+            nargv.extend(argv.iter().skip(1).cloned());
+            argv = nargv;
+            path = interp.to_vec();
+            continue;
+        }
+        let (ipath, idata) = match elf::interp_path(&data)? {
+            Some(ip) => {
+                let (ipath, idata) = read_executable(cwd, &ip).map_err(|e| if e == ENOENT { ENOENT } else { ELIBBAD })?;
+                (Some(ipath), Some(idata))
+            }
+            None => (None, None),
+        };
+        return Ok((elf::load(&data, idata.as_deref(), &path, &argv, envp)?, p, ipath));
+    }
+    Err(ELOOP)
+}
+
+fn read_executable(cwd: &PathRef, path: &[u8]) -> KResult<(PathRef, Vec<u8>)> {
     let p = vfs::lookup(cwd, path, true)?;
     let meta = p.inode().meta();
     if meta.file_type() != vfs::S_IFREG || meta.mode() & 0o111 == 0 {
         return Err(EACCES);
     }
     let data = crate::fs::read_all(p.inode())?;
-    Ok((elf::load(&data, path, argv, envp)?, p))
+    Ok((p, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +135,9 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         let p = Process::new(tid, files, fs, cur.process.sig.lock().fork(), (flags & CSIGNAL) as u32);
         *p.comm.lock() = *cur.process.comm.lock();
         *p.exe.lock() = cur.process.exe.lock().clone();
+        *p.interp.lock() = cur.process.interp.lock().clone();
         *p.cmdline.lock() = cur.process.cmdline.lock().clone();
+        *p.attrs.lock() = cur.process.attrs.lock().clone();
         p
     };
     let task = Task::new(tid, process.clone(), mm.clone(), &child_frame).ok_or(ENOMEM)?;
@@ -397,7 +444,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     let argv = read_string_array(&mm, argv, &mut total)?;
     let envp = read_string_array(&mm, envp, &mut total)?;
     drop(mm);
-    let (image, exe) = load_executable(&t.process.cwd(), &path, &argv, &envp)?;
+    let (image, exe, interp) = load_executable(&t.process.cwd(), &path, &argv, &envp)?;
 
     // Point of no return. Other threads of the group go away first.
     let others: Vec<Arc<Task>> = {
@@ -433,7 +480,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     }
     t.process.files().close_on_exec();
     t.process.set_comm(basename(&path));
-    t.process.set_exec(exe, &argv);
+    t.process.set_exec(exe, &argv, interp.zip(image.interp_range));
     t.clear_child_tid.store(0, Ordering::Relaxed);
     t.robust_list.store(0, Ordering::Relaxed);
     t.fs_base.store(0, Ordering::Relaxed);

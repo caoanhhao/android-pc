@@ -9,6 +9,12 @@
 #                                     ktest-init (all tests, or FILTER prefixes
 #                                     such as b1) and exit 0 iff it reports
 #                                     "END ktest-init ... fail=0"
+#   tools/run-qemu.sh --aosp-sh-test  build out/aosp-initramfs.cpio from the
+#                                     AOSP build (tools/mkaosp-initramfs.sh),
+#                                     boot it and run tools/aosp-sh-test.py:
+#                                     commands typed into the AOSP mksh on
+#                                     the serial console, output checked
+#   tools/run-qemu.sh --aosp          the same initramfs, interactive shell
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Options: --release, --bios (legacy BIOS instead of UEFI), --no-kvm,
@@ -41,6 +47,8 @@ while [[ $# -gt 0 ]]; do
         --timeout) timeout="$2"; shift ;;
         --initrd) initrd="$2"; shift ;;
         --append) append="$2"; shift ;;
+        --aosp-sh-test) mode=aosp-test ;;
+        --aosp) mode=aosp ;;
         --ktest)
             mode=ktest
             while [[ $# -gt 1 && $2 != -* ]]; do ktest_filters+=("$2"); shift; done ;;
@@ -68,6 +76,12 @@ if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
     [[ ${#ktest_filters[@]} -gt 0 ]] && append="$append -- ${ktest_filters[*]}"
+fi
+if [[ $mode == aosp-test || $mode == aosp ]]; then
+    "$ROOT/tools/mkaosp-initramfs.sh" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/aosp-initramfs.cpio"
+    [[ $append == *init=* ]] || append="init=/init $append"
+    [[ $mode == aosp ]] && mode=run
 fi
 if [[ -z $elf ]]; then
     cargo_ build --profile "$profile"
@@ -176,6 +190,15 @@ if [[ $mode == ktest ]]; then
     fi
     [[ $code == 124 ]] && echo "run-qemu.sh: timed out after ${timeout}s" >&2
     echo "run-qemu.sh: ktest-init FAILED (log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-test ]]; then
+    log="$work/aosp-sh-test.log"
+    args+=(-display none -serial stdio)
+    if timeout --foreground $((timeout * 3)) python3 "$ROOT/tools/aosp-sh-test.py" --log "$log" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP shell test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display none -serial stdio)

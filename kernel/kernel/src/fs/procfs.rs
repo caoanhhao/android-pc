@@ -528,6 +528,10 @@ fn maps(pid: u32, p: &Process, s: &mut String) {
     let (exe_name, exe_ino) = exe
         .map(|e| (vfs::path_string(&e), e.inode().meta().ino))
         .unwrap_or_default();
+    let interp = p.interp.lock().clone();
+    let (interp_name, interp_ino, interp_range) = interp
+        .map(|(i, r)| (vfs::path_string(&i), i.inode().meta().ino, r))
+        .unwrap_or_default();
     let stack_top = crate::mm::user::STACK_TOP;
     for v in mm.vma_list() {
         let (start, end, prot) = (v.start, v.end, v.prot);
@@ -549,6 +553,8 @@ fn maps(pid: u32, p: &Process, s: &mut String) {
             ("/dev/zero (deleted)", 0)
         } else if start < brk_start && !exe_name.is_empty() {
             (exe_name.as_str(), exe_ino)
+        } else if start >= interp_range.0 && end <= interp_range.1 && !interp_name.is_empty() {
+            (interp_name.as_str(), interp_ino)
         } else if start >= brk_start && end <= brk.next_multiple_of(4096).max(brk_start) && start < brk {
             ("[heap]", 0)
         } else if start < stack_top && end >= stack_top {

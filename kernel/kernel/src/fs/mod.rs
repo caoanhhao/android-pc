@@ -22,6 +22,7 @@ pub mod signalfd;
 pub mod timerfd;
 pub mod procfs;
 pub mod tmpfs;
+pub mod tty;
 pub mod vfs;
 
 use alloc::format;

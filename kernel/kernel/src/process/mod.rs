@@ -147,6 +147,8 @@ pub struct Process {
     pub fs: Mutex<FsContext>,
     /// The executable (for /proc/<pid>/exe and maps).
     pub exe: Mutex<Option<PathRef>>,
+    /// The dynamic linker and where it is mapped (for maps).
+    pub interp: Mutex<Option<(PathRef, (u64, u64))>>,
     /// argv joined by NULs (/proc/<pid>/cmdline).
     pub cmdline: Mutex<Vec<u8>>,
     /// Signal sent to the parent on exit (SIGCHLD for fork; 0 for none).
@@ -156,6 +158,43 @@ pub struct Process {
     pub comm: Mutex<[u8; 16]>,
     /// Woken when a signal is queued (signalfd readers and pollers).
     pub signalfd_wq: Arc<WaitQueue>,
+    /// Resource limits, nice value, personality, ... (inherited by fork).
+    pub attrs: Mutex<Attrs>,
+}
+
+pub const RLIM_NLIMITS: usize = 16;
+pub const RLIM_INFINITY: u64 = u64::MAX;
+
+/// Per-process settings that only matter to the syscalls reporting them.
+#[derive(Clone)]
+pub struct Attrs {
+    /// (soft, hard) per RLIMIT_*.
+    pub rlimits: [(u64, u64); RLIM_NLIMITS],
+    pub nice: i32,
+    pub personality: u32,
+    /// sched_setscheduler policy and priority (not acted on).
+    pub policy: u32,
+    pub rt_priority: u32,
+    pub dumpable: bool,
+    pub no_new_privs: bool,
+    pub keepcaps: bool,
+}
+
+impl Default for Attrs {
+    fn default() -> Self {
+        const INF: u64 = RLIM_INFINITY;
+        let mut rlimits = [(INF, INF); RLIM_NLIMITS];
+        rlimits[3] = (8 << 20, INF); // STACK
+        rlimits[4] = (0, INF); // CORE
+        rlimits[6] = (4096, 4096); // NPROC
+        rlimits[7] = (crate::fs::file::MAX_FDS as u64, crate::fs::file::MAX_FDS as u64); // NOFILE
+        rlimits[8] = (8 << 20, 8 << 20); // MEMLOCK
+        rlimits[11] = (4096, 4096); // SIGPENDING
+        rlimits[12] = (819200, 819200); // MSGQUEUE
+        rlimits[13] = (0, 0); // NICE
+        rlimits[14] = (0, 0); // RTPRIO
+        Attrs { rlimits, nice: 0, personality: 0, policy: 0, rt_priority: 0, dumpable: true, no_new_privs: false, keepcaps: false }
+    }
 }
 
 impl Process {
@@ -166,11 +205,13 @@ impl Process {
             files: Mutex::new(files),
             fs: Mutex::new(fs),
             exe: Mutex::new(None),
+            interp: Mutex::new(None),
             cmdline: Mutex::new(Vec::new()),
             exit_signal,
             vfork_done: AtomicBool::new(false),
             comm: Mutex::new([0; 16]),
             signalfd_wq: WaitQueue::new(),
+            attrs: Mutex::new(Attrs::default()),
         })
     }
 
@@ -183,8 +224,9 @@ impl Process {
     }
 
     /// Record what execve (or the boot) started: executable and argv.
-    pub fn set_exec(&self, exe: PathRef, argv: &[Vec<u8>]) {
+    pub fn set_exec(&self, exe: PathRef, argv: &[Vec<u8>], interp: Option<(PathRef, (u64, u64))>) {
         *self.exe.lock() = Some(exe);
+        *self.interp.lock() = interp;
         let mut c = Vec::new();
         for a in argv {
             c.extend_from_slice(a);
@@ -261,7 +303,7 @@ pub fn start_init(path: &[u8], args: &[&[u8]]) {
         .map(|e| e.to_vec())
         .collect();
     let root = crate::fs::vfs::root();
-    let (image, exe) = match lifecycle::load_executable(&root, path, &argv, &envp) {
+    let (image, exe, interp) = match lifecycle::load_executable(&root, path, &argv, &envp) {
         Ok(i) => i,
         Err(e) => {
             log::error!(
@@ -281,7 +323,7 @@ pub fn start_init(path: &[u8], args: &[&[u8]]) {
     let fs = FsContext { cwd: root, umask: 0o022 };
     let proc = Process::new(pid, files, fs, ProcessSignals::default(), 0);
     proc.set_comm(lifecycle::basename(path));
-    proc.set_exec(exe, &argv);
+    proc.set_exec(exe, &argv, interp.zip(image.interp_range));
     let frame = TrapFrame::new_user(image.entry, image.sp);
     let task = Task::new(pid, proc.clone(), image.mm, &frame).expect("no memory for init");
     table.tasks.insert(pid, task.clone());

@@ -414,6 +414,18 @@ pub fn sys_pipe2(fds: u64, flags: u32) -> KResult<u64> {
     Ok(0)
 }
 
+/// `fadvise64`: hints only (everything is in RAM).
+pub fn sys_fadvise64(fd: i32, advice: u32) -> KResult<u64> {
+    let f = io_file(fd)?;
+    if f.inode.meta().file_type() == vfs::S_IFIFO || crate::net::unix::socket_of(&f).is_ok() {
+        return Err(ESPIPE);
+    }
+    if advice > 5 {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
 pub fn sys_fsync(fd: i32) -> KResult<u64> {
     file(fd)?;
     Ok(0)
