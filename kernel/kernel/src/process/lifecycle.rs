@@ -18,6 +18,7 @@ pub const CLONE_FILES: u64 = 0x400;
 pub const CLONE_SIGHAND: u64 = 0x800;
 pub const CLONE_PIDFD: u64 = 0x1000;
 pub const CLONE_VFORK: u64 = 0x4000;
+pub const CLONE_NEWNS: u64 = 0x2_0000;
 pub const CLONE_PARENT: u64 = 0x8000;
 pub const CLONE_THREAD: u64 = 0x10000;
 pub const CLONE_SETTLS: u64 = 0x80000;
@@ -36,14 +37,16 @@ pub fn basename(path: &[u8]) -> &[u8] {
 }
 
 /// Look up an executable (relative to `cwd`) and load it into a new
-/// address space. Returns the image, the resolved path and the PT_INTERP
-/// program's path. Handles PT_INTERP (the dynamic linker) and `#!` scripts.
+/// address space. Returns the image, the resolved path, the PT_INTERP
+/// program's path and the caller's credentials after the exec (set-user-ID
+/// and set-group-ID bits). Handles PT_INTERP (the dynamic linker) and `#!`
+/// scripts.
 pub fn load_executable(
     cwd: &PathRef,
     path: &[u8],
     argv: &[Vec<u8>],
     envp: &[Vec<u8>],
-) -> KResult<(elf::Image, PathRef, Option<PathRef>)> {
+) -> KResult<(elf::Image, PathRef, Option<PathRef>, super::Creds)> {
     let mut path = path.to_vec();
     let mut argv = argv.to_vec();
     // Linux allows a few levels of interpreter scripts (BINPRM_MAX_RECURSION).
@@ -77,7 +80,10 @@ pub fn load_executable(
             }
             None => (None, None),
         };
-        return Ok((elf::load(&data, idata.as_deref(), &path, &argv, envp)?, p, ipath));
+        let a = p.inode().meta().attr();
+        let (creds, secure) = super::current_creds().after_exec(a.mode, a.uid, a.gid);
+        let image = elf::load(&data, idata.as_deref(), &path, &argv, envp, &creds, secure)?;
+        return Ok((image, p, ipath, creds));
     }
     Err(ELOOP)
 }
@@ -111,6 +117,12 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
     } else {
         cur.mm().fork().ok_or(ENOMEM)?
     };
+    // CLONE_NEWNS: the child gets a copy of the mount namespace (and its
+    // working directory moves into the copy).
+    let new_ns = (flags & CLONE_NEWNS != 0 && flags & CLONE_THREAD == 0).then(|| {
+        let (ns, map) = vfs::copy_ns(&vfs::current_ns());
+        (ns, map(&cur.process.cwd()))
+    });
     let mut child_frame = *frame;
     child_frame.rax = 0;
     child_frame.error_code = u64::MAX;
@@ -140,9 +152,15 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         *p.attrs.lock() = cur.process.attrs.lock().clone();
         *p.sec.lock() = cur.process.sec.lock().clone();
         *p.cgroups.lock() = cur.process.cgroups.lock().clone();
+        *p.mnt_ns.lock() = cur.process.mnt_ns.lock().clone();
+        if let Some((ns, cwd)) = new_ns {
+            *p.mnt_ns.lock() = Some(ns);
+            p.fs.lock().cwd = cwd;
+        }
         p
     };
     let task = Task::new(tid, process.clone(), mm.clone(), &child_frame).ok_or(ENOMEM)?;
+    *task.creds.lock() = cur.creds.lock().clone();
     let mut fpu = FpuState::initial();
     fpu.save();
     task.set_fpu(&fpu);
@@ -539,7 +557,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     let argv = read_string_array(&mm, argv, &mut total)?;
     let envp = read_string_array(&mm, envp, &mut total)?;
     drop(mm);
-    let (image, exe, interp) = load_executable(&t.process.cwd(), &path, &argv, &envp)?;
+    let (image, exe, interp, creds) = load_executable(&t.process.cwd(), &path, &argv, &envp)?;
 
     // Point of no return. Other threads of the group go away first.
     let others: Vec<Arc<Task>> = {
@@ -585,6 +603,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
         x.into_iter().find(|(n, _)| n == crate::security::XATTR_SELINUX).map(|(_, v)| v)
     });
     t.process.sec.lock().exec(label.as_deref());
+    *t.creds.lock() = creds;
     t.process.set_exec(exe, &argv, interp.zip(image.interp_range));
     t.clear_child_tid.store(0, Ordering::Relaxed);
     t.robust_list.store(0, Ordering::Relaxed);

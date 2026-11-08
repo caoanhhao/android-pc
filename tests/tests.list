@@ -39,3 +39,7 @@ c3_inotify
 c3_keyctl
 c3_netlink
 c3_misc
+c3_kmsg
+c3_creds
+c3_sysfs
+c3_mntns

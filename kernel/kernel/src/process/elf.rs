@@ -199,7 +199,17 @@ fn map_image(mm: &AddressSpace, data: &[u8], p: &Parsed, bias: u64) -> KResult<M
 
 /// Load `data` into a new address space. `interp` is the contents of its
 /// PT_INTERP program (see [`interp_path`]), which then gets control first.
-pub fn load(data: &[u8], interp: Option<&[u8]>, execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<Image> {
+/// `creds` are the ids after the exec (auxv AT_UID, ...), `secure` whether
+/// the exec changed them (AT_SECURE).
+pub fn load(
+    data: &[u8],
+    interp: Option<&[u8]>,
+    execfn: &[u8],
+    argv: &[Vec<u8>],
+    envp: &[Vec<u8>],
+    creds: &crate::process::Creds,
+    secure: bool,
+) -> KResult<Image> {
     let exe = parse(data)?;
     let has_interp = exe.phdrs.iter().any(|p| p.ty == PT_INTERP);
     if has_interp != interp.is_some() {
@@ -231,14 +241,14 @@ pub fn load(data: &[u8], interp: Option<&[u8]>, execfn: &[u8], argv: &[Vec<u8>],
         (AT_BASE, base),
         (AT_FLAGS, 0),
         (AT_ENTRY, main.entry),
-        (AT_UID, 0),
-        (AT_EUID, 0),
-        (AT_GID, 0),
-        (AT_EGID, 0),
+        (AT_UID, creds.uid as u64),
+        (AT_EUID, creds.euid as u64),
+        (AT_GID, creds.gid as u64),
+        (AT_EGID, creds.egid as u64),
         (AT_HWCAP, core::arch::x86_64::__cpuid(1).edx as u64),
         (AT_HWCAP2, if crate::arch::x86_64::cpu::has_fsgsbase() { HWCAP2_FSGSBASE } else { 0 }),
         (AT_CLKTCK, crate::time::HZ),
-        (AT_SECURE, 0),
+        (AT_SECURE, secure as u64),
         (AT_MINSIGSTKSZ, crate::process::signal::MINSIGSTKSZ),
     ];
     let sp = build_stack(&mm, execfn, argv, envp, &auxv)?;

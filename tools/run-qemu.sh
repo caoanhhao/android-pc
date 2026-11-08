@@ -139,6 +139,8 @@ if [[ $mode == aosp-init || $mode == aosp-init-test ]]; then
     boot_args+=" androidboot.selinux=permissive androidboot.verifiedbootstate=orange"
     boot_args+=" androidboot.veritymode=disabled androidboot.dynamic_partitions=true"
     boot_args+=" androidboot.serialno=RUSTPC000001 androidboot.console=ttyS0 printk.devkmsg=on"
+    # RAM disks: the block devices of the tmpfs /metadata and /data.
+    boot_args+=" brd.rd_nr=2 brd.rd_size=4096"
     boot_args+=" androidboot.hardware.gralloc=minigbm androidboot.hardware.hwcomposer=ranchu"
     boot_args+=" androidboot.hardware.egl=angle androidboot.hardware.vulkan=pastel androidboot.lcd_density=320"
     boot_args+=" androidboot.setupwizard_mode=DISABLED androidboot.hw_timeout_multiplier=3"

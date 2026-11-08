@@ -19,10 +19,12 @@
 //! device sends "add"/"remove" uevents (`fs::sysfs`).
 //!
 //! Device numbers: virtio disks 254:(16 * disk + part) with partitions past
-//! 15 on 259:n (Linux's blkext), loop 7:n, device-mapper 253:n. Control
+//! 15 on 259:n (Linux's blkext), loop 7:n, device-mapper 253:n, RAM disks
+//! 1:n ([`brd`]). Control
 //! devices: /dev/loop-control 10:237, /dev/device-mapper (and
 //! /dev/mapper/control) 10:236.
 
+pub mod brd;
 pub mod cache;
 pub mod dm;
 pub mod gpt;
@@ -610,6 +612,7 @@ pub fn open_misc(minor: u32) -> KResult<Box<dyn FileOps>> {
 /// max_loop default of 8).
 pub fn init() {
     loop_dev::init();
+    brd::init();
 }
 
 // ---------------------------------------------------------------------------

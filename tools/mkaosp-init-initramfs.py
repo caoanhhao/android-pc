@@ -8,7 +8,11 @@ first-stage init finds through androidboot.fstab_suffix=rustpc. Cuttlefish's
 vendor_boot ramdisk is not used: it only adds kernel modules (we have no
 module loader) and an fstab with AVB, /metadata and /data entries we cannot
 serve yet. The fstab mounts the logical partitions of super.img read-only
-(dm-linear, erofs), without AVB.
+(dm-linear, erofs), without AVB, and tmpfs on /metadata and /data (empty
+on every boot: there are no ext4 writes or file-based encryption yet).
+First-stage init wants a block device for each of those two entries:
+the kernel's RAM disks ram0 and ram1 (brd.rd_nr=2 on the command line),
+which tmpfs ignores.
 
 Usage: mkaosp-init-initramfs.py [-o OUT] [--product DIR]
 
@@ -30,6 +34,10 @@ FSTAB = """\
 # First-stage fstab for the Rust kernel (see tools/mkaosp-init-initramfs.py).
 # Logical partitions come from /dev/block/by-name/super
 # (androidboot.partition_map=vda,super); no AVB, all read-only erofs.
+# /metadata and /data are tmpfs (the RAM disks only satisfy first-stage
+# init's wait for a block device).
+/dev/block/ram0 /metadata tmpfs nodev,noatime,nosuid,mode=0755 wait,first_stage_mount
+/dev/block/ram1 /data     tmpfs nodev,noatime,nosuid,mode=0771 wait,first_stage_mount
 system      /system      erofs ro wait,logical,first_stage_mount,slotselect
 vendor      /vendor      erofs ro wait,logical,first_stage_mount,slotselect
 system_ext  /system_ext  erofs ro wait,logical,first_stage_mount,slotselect,nofail

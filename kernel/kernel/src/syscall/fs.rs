@@ -521,7 +521,8 @@ pub fn sys_faccessat(dirfd: i32, path: u64, mode: u32, flags: u32) -> KResult<u6
     }
     let p = user_path(path)?;
     let (inode, _) = resolve_at(dirfd, &p, flags)?;
-    // Everything runs as root: only execute permission can be missing.
+    // Permissions are not checked (credentials are only tracked): only
+    // execute permission can be missing.
     let a = inode.meta().attr();
     if mode & 1 != 0 && a.mode & S_IFMT != S_IFDIR && a.mode & 0o111 == 0 {
         return Err(EACCES);
@@ -870,7 +871,7 @@ pub fn sys_fchmod(fd: i32, mode: u32) -> KResult<u64> {
     chmod_inode(&*f.inode, f.path.as_ref(), mode)
 }
 
-/// Ownership is stored only (everything runs as root).
+/// Ownership is stored only (credentials are never checked).
 fn chown_inode(inode: &dyn Inode, path: Option<&PathRef>, uid: u32, gid: u32) -> KResult<u64> {
     inode.meta().update(|a| {
         if uid != u32::MAX {
@@ -1036,6 +1037,7 @@ const MS_REMOUNT: u64 = 32;
 const MS_BIND: u64 = 4096;
 const MS_MOVE: u64 = 8192;
 const MS_REC: u64 = 16384;
+const MS_SHARED: u64 = 1 << 20;
 const MS_PROPAGATION: u64 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20);
 const MNT_FLAGS: u32 = 1 | 2 | 4 | 8; // FORCE, DETACH, EXPIRE, UMOUNT_NOFOLLOW
 
@@ -1064,10 +1066,12 @@ pub fn sys_mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -
         if src.is_dir() != at.is_dir() {
             return Err(ENOTDIR);
         }
-        vfs::mount(&at, src.dentry.clone(), src.mnt.fstype, &src.mnt.source, flags & MS_REC)?;
+        vfs::bind_mount(&src, &at, flags & MS_REC != 0)?;
         return Ok(0);
     }
-    if fstype == 0 && flags & MS_PROPAGATION != 0 {
+    if flags & MS_PROPAGATION != 0 {
+        // MS_SHARED, or MS_PRIVATE/MS_SLAVE/MS_UNBINDABLE (all private here).
+        vfs::set_propagation(&at, flags & MS_SHARED != 0, flags & MS_REC != 0)?;
         return Ok(0);
     }
     let ty = user_path(fstype)?;

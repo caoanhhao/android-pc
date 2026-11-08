@@ -262,32 +262,161 @@ pub fn sys_setpriority(which: u32, who: i32, nice: i32) -> KResult<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// Credentials and capabilities (everyone is root)
+// Credentials (`process::Creds`) and capabilities (not modelled)
 
-pub fn sys_getresid(r: u64, e: u64, s: u64) -> KResult<u64> {
+const NO_ID: u32 = u32::MAX;
+
+fn creds() -> crate::process::Creds {
+    current().creds.lock().clone()
+}
+
+/// Apply `f` to the caller's credentials; fs ids follow the effective ones.
+fn change_creds(f: impl FnOnce(&mut crate::process::Creds) -> KResult<()>) -> KResult<u64> {
+    let t = current();
+    let mut c = t.creds.lock();
+    let mut n = c.clone();
+    f(&mut n)?;
+    n.fsuid = n.euid;
+    n.fsgid = n.egid;
+    *c = n;
+    Ok(0)
+}
+
+pub fn sys_getid(nr: u64) -> KResult<u64> {
+    use super::nr;
+    let c = creds();
+    Ok(match nr {
+        nr::GETUID => c.uid,
+        nr::GETEUID => c.euid,
+        nr::GETGID => c.gid,
+        _ => c.egid,
+    } as u64)
+}
+
+pub fn sys_getresid(group: bool, r: u64, e: u64, s: u64) -> KResult<u64> {
+    let c = creds();
+    let ids = if group { [c.gid, c.egid, c.sgid] } else { [c.uid, c.euid, c.suid] };
     let mm = current().mm();
-    for a in [r, e, s] {
-        mm.copy_out(a, &0u32.to_le_bytes())?;
+    for (a, v) in [r, e, s].into_iter().zip(ids) {
+        mm.copy_out(a, &v.to_le_bytes())?;
     }
     Ok(0)
 }
 
-/// setuid/setgid/setre*id/setres*id/setgroups: root may set anything; the
-/// ids stay 0 since there is no credentials model yet.
-pub fn sys_setid() -> KResult<u64> {
-    Ok(0)
+/// setuid / setgid: privileged callers set all three ids, others only the
+/// effective one, to their real or saved id.
+pub fn sys_setid1(group: bool, id: u32) -> KResult<u64> {
+    if id == NO_ID {
+        return Err(EINVAL);
+    }
+    change_creds(|c| {
+        let priv_ = c.privileged();
+        let (r, e, s) = if group { (&mut c.gid, &mut c.egid, &mut c.sgid) } else { (&mut c.uid, &mut c.euid, &mut c.suid) };
+        if priv_ {
+            (*r, *e, *s) = (id, id, id);
+        } else if id == *r || id == *s {
+            *e = id;
+        } else {
+            return Err(EPERM);
+        }
+        Ok(())
+    })
 }
 
-/// setfsuid/setfsgid return the previous fs id.
-pub fn sys_setfsid() -> KResult<u64> {
-    Ok(0)
+/// setresuid / setresgid (-1 keeps an id); setreuid / setregid map to it
+/// (the saved id becomes the new effective one when the real id is set or
+/// the effective one differs from the old real id).
+pub fn sys_setresid(group: bool, nr: i32, ne: i32, ns: i32, re: bool) -> KResult<u64> {
+    change_creds(|c| {
+        let priv_ = c.privileged();
+        let (r, e, s) = if group { (&mut c.gid, &mut c.egid, &mut c.sgid) } else { (&mut c.uid, &mut c.euid, &mut c.suid) };
+        let (old_r, old_e, old_s) = (*r, *e, *s);
+        let want = |v: i32| (v != -1).then_some(v as u32);
+        let (nr, ne) = (want(nr), want(ne));
+        let ns = if re {
+            // setre*id: saved = new effective if the real id is set or the
+            // effective one changes to something other than the old real id.
+            match (nr, ne) {
+                (Some(_), _) => Some(ne.unwrap_or(old_e)),
+                (None, Some(x)) if x != old_r => Some(x),
+                _ => None,
+            }
+        } else {
+            want(ns)
+        };
+        if !priv_ {
+            // Unprivileged: only ids the caller already has (setre*id: the
+            // real id only from the real or effective one).
+            let any = |v: Option<u32>| v.is_none_or(|v| v == old_r || v == old_e || v == old_s);
+            let real_ok = if re { nr.is_none_or(|v| v == old_r || v == old_e) } else { any(nr) };
+            if !real_ok || !any(ne) || (!re && !any(ns)) {
+                return Err(EPERM);
+            }
+        }
+        if let Some(v) = nr {
+            *r = v;
+        }
+        if let Some(v) = ne {
+            *e = v;
+        }
+        if let Some(v) = ns {
+            *s = v;
+        }
+        Ok(())
+    })
 }
 
-pub fn sys_getgroups(size: i32, _list: u64) -> KResult<u64> {
+/// setfsuid / setfsgid: returns the previous fs id; changes it when
+/// privileged or to one of the caller's ids.
+pub fn sys_setfsid(group: bool, id: u32) -> KResult<u64> {
+    let t = current();
+    let mut c = t.creds.lock();
+    let old = if group { c.fsgid } else { c.fsuid };
+    let ok = c.privileged()
+        || if group { [c.gid, c.egid, c.sgid, c.fsgid].contains(&id) } else { [c.uid, c.euid, c.suid, c.fsuid].contains(&id) };
+    if ok && id != NO_ID {
+        if group {
+            c.fsgid = id;
+        } else {
+            c.fsuid = id;
+        }
+    }
+    Ok(old as u64)
+}
+
+pub fn sys_getgroups(size: i32, list: u64) -> KResult<u64> {
     if size < 0 {
         return Err(EINVAL);
     }
-    Ok(0)
+    let g = creds().groups;
+    if size == 0 {
+        return Ok(g.len() as u64);
+    }
+    if (size as usize) < g.len() {
+        return Err(EINVAL);
+    }
+    let b: alloc::vec::Vec<u8> = g.iter().flat_map(|x| x.to_le_bytes()).collect();
+    current().mm().copy_out(list, &b)?;
+    Ok(g.len() as u64)
+}
+
+const NGROUPS_MAX: i32 = 65536;
+
+pub fn sys_setgroups(size: i32, list: u64) -> KResult<u64> {
+    if !(0..=NGROUPS_MAX).contains(&size) {
+        return Err(EINVAL);
+    }
+    let mut b = alloc::vec![0u8; size as usize * 4];
+    current().mm().copy_in(list, &mut b)?;
+    let mut groups: alloc::vec::Vec<u32> = b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+    groups.sort_unstable();
+    change_creds(|c| {
+        if !c.privileged() {
+            return Err(EPERM);
+        }
+        c.groups = groups;
+        Ok(())
+    })
 }
 
 const CAP_V1: u32 = 0x1998_0330;
@@ -445,8 +574,9 @@ const CLONE_NEWPID: u64 = 0x2000_0000;
 const CLONE_NEWNET: u64 = 0x4000_0000;
 const CLONE_NEWTIME: u64 = 0x80;
 
-/// unshare: CLONE_FILES gives the caller a private fd table; namespace
-/// flags are accepted but there is one global namespace of each kind.
+/// unshare: CLONE_FILES gives the caller a private fd table, CLONE_NEWNS a
+/// copy of its mount namespace; the other namespace flags are accepted but
+/// there is one global namespace of each other kind.
 pub fn sys_unshare(flags: u64) -> KResult<u64> {
     let ns = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME;
     if flags & !(ns | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM) != 0 {
@@ -457,33 +587,63 @@ pub fn sys_unshare(flags: u64) -> KResult<u64> {
         let dup = p.files().duplicate();
         *p.files.lock() = dup;
     }
+    if flags & CLONE_NEWNS != 0 {
+        let p = current().process.clone();
+        let (ns, map) = crate::fs::vfs::copy_ns(&crate::fs::vfs::current_ns());
+        let cwd = map(&p.cwd());
+        *p.mnt_ns.lock() = Some(ns);
+        p.fs.lock().cwd = cwd;
+    }
     Ok(0)
 }
 
-/// setns: one namespace of each kind, so joining one is a no-op (the fd
-/// must still be open).
-pub fn sys_setns(fd: i32, _nstype: u32) -> KResult<u64> {
-    current().process.files().get(fd)?;
-    Ok(0)
-}
-
-const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
-const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
-
-/// syslog (klogctl): the kernel log goes to the serial port only; reads
-/// return nothing, console level changes are accepted.
-pub fn sys_syslog(ty: i32, _buf: u64, len: i32) -> KResult<u64> {
-    match ty {
-        0 | 1 | 5 | 6 | 7 | 8 => Ok(0),
-        2..=4 => {
-            if len < 0 {
-                Err(EINVAL)
-            } else {
-                Ok(0)
-            }
+/// setns: joining a mount namespace (an open /proc/<pid>/ns/mnt) moves the
+/// caller there, its working directory to that namespace's root; there is
+/// one namespace of every other kind, so joining one of those is a no-op.
+pub fn sys_setns(fd: i32, nstype: u32) -> KResult<u64> {
+    let f = current().process.files().get(fd)?;
+    if let Some(ns) = crate::fs::procfs::mnt_ns_of(&*f.inode) {
+        if nstype != 0 && nstype as u64 != CLONE_NEWNS {
+            return Err(EINVAL);
         }
-        SYSLOG_ACTION_SIZE_UNREAD => Ok(0),
-        SYSLOG_ACTION_SIZE_BUFFER => Ok(1 << 17),
+        let p = current().process.clone();
+        p.fs.lock().cwd = crate::fs::vfs::ns_root(&ns);
+        *p.mnt_ns.lock() = Some(ns);
+    }
+    Ok(0)
+}
+
+/// syslog (klogctl) on the kernel log buffer (`fs::kmsg`).
+pub fn sys_syslog(ty: i32, buf: u64, len: i32) -> KResult<u64> {
+    use crate::fs::kmsg;
+    match ty {
+        // CLOSE, OPEN, CONSOLE_OFF/ON/LEVEL
+        0 | 1 | 6 | 7 => Ok(0),
+        8 => if (1..=8).contains(&len) { Ok(0) } else { Err(EINVAL) },
+        2..=4 => {
+            if len < 0 || buf == 0 {
+                return Err(EINVAL);
+            }
+            if len == 0 {
+                return Ok(0);
+            }
+            let data = if ty == 2 {
+                let mut b = alloc::vec![0u8; len as usize];
+                let n = kmsg::read_syslog(&mut b, false)?;
+                b.truncate(n);
+                b
+            } else {
+                kmsg::read_all(len as usize, ty == 4)
+            };
+            current().mm().copy_out(buf, &data)?;
+            Ok(data.len() as u64)
+        }
+        5 => {
+            kmsg::clear();
+            Ok(0)
+        }
+        9 => Ok(kmsg::size_unread() as u64),
+        10 => Ok(kmsg::BUFFER_SIZE as u64),
         _ => Err(EINVAL),
     }
 }

@@ -85,6 +85,8 @@ impl SigInfo {
             signo: signo as i32,
             code,
             pid: pid as i32,
+            // si_uid: the sender's real uid (kernel-sent: 0).
+            uid: if pid != 0 { crate::process::current_creds().uid } else { 0 },
             ..Default::default()
         }
     }
