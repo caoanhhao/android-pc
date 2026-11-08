@@ -43,9 +43,10 @@ nén `commandlinetools-linux-*.zip` vào `~/Android/Sdk/cmdline-tools/latest` r�
   `app_process`, nạp `libhello.so` lấy từ chính APK, in `HELLO_OK`.
   Chế độ này chỉ cần ART + dex + JNI, không cần `system_server`, nên cũng dùng
   được trên kernel Rust trước mốc D3.
-- Cài đặt qua `adb install`: Waydroid này có GApps, và **Google Play Protect từ
-  chối** (`INSTALL_FAILED_VERIFICATION_FAILURE: Install not allowed`) vì app không
-  thuộc developer đã đăng ký. Muốn cài, chủ thiết bị phải cho phép trên thiết bị
-  (Play Store → Play Protect → tắt quét app cài qua adb, hoặc
-  `adb shell settings put global verifier_verify_adb_installs 0`). Ảnh
-  AOSP build từ mã nguồn (A2) không có Play Protect nên không bị chặn.
+- Cài đặt + mở Activity: **PASS** — `am start` cold start ~0.75 s, logcat có
+  `AndroidPcHello: HELLO_OK JNI: x86_64 native code machine=x86_64 ... sum(1..100) = 5050`.
+  Lưu ý: image Waydroid có GApps, nên **Google Play Protect mặc định từ chối** cài
+  qua adb (`INSTALL_FAILED_VERIFICATION_FAILURE: Install not allowed`). Chủ thiết
+  bị cần cho phép trước:
+  `adb shell settings put global verifier_verify_adb_installs 0`. Image AOSP
+  build từ mã nguồn (A2) không có Play Protect nên không bị chặn.
