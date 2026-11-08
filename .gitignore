@@ -1,0 +1,5 @@
+aosp/
+target/
+out/
+*.img
+*.iso
