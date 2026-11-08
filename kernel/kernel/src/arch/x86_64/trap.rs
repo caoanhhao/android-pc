@@ -86,8 +86,8 @@ fn user_exception(frame: &mut TrapFrame) {
         14 => {
             let write = frame.error_code & PF_WRITE != 0;
             let exec = frame.error_code & PF_INSN != 0;
-            if frame.error_code & PF_PRESENT == 0
-                && crate::process::current().mm().handle_fault(cr2, write, exec)
+            // Not present: demand paging; present: copy-on-write.
+            if crate::process::current().mm().handle_fault(cr2, write, exec)
             {
                 return;
             }

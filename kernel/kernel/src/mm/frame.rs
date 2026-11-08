@@ -1,4 +1,8 @@
-//! Physical frame allocator: one bit per 4 KiB frame (1 = in use).
+//! Physical frame allocator: one bit per 4 KiB frame (1 = in use), plus a
+//! reference count per frame so user pages can be shared between address
+//! spaces (copy-on-write fork). `alloc` hands out a frame with count 1,
+//! `get` adds a reference and `free` drops one; the frame goes back to the
+//! pool when the count reaches 0.
 //!
 //! Only USABLE memory is handed out. Bootloader-reclaimable memory stays
 //! reserved because Limine's responses (and the APs' initial page tables)
@@ -14,6 +18,8 @@ use super::paging::phys_to_virt;
 
 struct BitmapAllocator {
     bitmap: &'static mut [u64],
+    /// Reference count of each frame (0 for free frames).
+    refs: &'static mut [u32],
     /// Number of frames covered by the bitmap.
     frames: usize,
     free: usize,
@@ -30,17 +36,35 @@ impl BitmapAllocator {
     fn set_used(&mut self, i: usize) {
         debug_assert!(!self.is_used(i));
         self.bitmap[i / 64] |= 1 << (i % 64);
+        self.refs[i] = 1;
         self.free -= 1;
     }
 
     fn set_free(&mut self, i: usize) {
+        self.bitmap[i / 64] &= !(1 << (i % 64));
+        self.refs[i] = 0;
+        self.free += 1;
+    }
+
+    fn check(&self, i: usize) {
         assert!(
-            self.is_used(i),
-            "double free of frame {:#x}",
+            i < self.frames && self.is_used(i) && self.refs[i] > 0,
+            "reference to free frame {:#x}",
             i as u64 * PAGE_SIZE
         );
-        self.bitmap[i / 64] &= !(1 << (i % 64));
-        self.free += 1;
+    }
+
+    fn get(&mut self, i: usize) {
+        self.check(i);
+        self.refs[i] += 1;
+    }
+
+    fn put(&mut self, i: usize) {
+        self.check(i);
+        self.refs[i] -= 1;
+        if self.refs[i] == 0 {
+            self.set_free(i);
+        }
     }
 
     fn alloc(&mut self) -> Option<usize> {
@@ -87,18 +111,22 @@ pub fn init(memmap: &[&Entry]) {
     let frames = (end / PAGE_SIZE) as usize;
     let words = frames.div_ceil(64);
     let bitmap_bytes = (words * 8) as u64;
-    let bitmap_frames = bitmap_bytes.div_ceil(PAGE_SIZE) as usize;
+    let refs_bytes = (frames * 4) as u64;
+    let meta_frames = (bitmap_bytes + refs_bytes).div_ceil(PAGE_SIZE) as usize;
 
     let home = usable()
-        .find(|e| e.length >= bitmap_bytes && e.base != 0)
+        .find(|e| e.length >= bitmap_bytes + refs_bytes && e.base != 0)
         .expect("no room for the frame bitmap");
-    let bitmap = unsafe {
-        core::slice::from_raw_parts_mut(phys_to_virt(PhysAddr::new(home.base)).as_mut_ptr(), words)
-    };
+    let meta = phys_to_virt(PhysAddr::new(home.base));
+    let bitmap = unsafe { core::slice::from_raw_parts_mut(meta.as_mut_ptr(), words) };
     bitmap.fill(u64::MAX);
+    let refs =
+        unsafe { core::slice::from_raw_parts_mut((meta + bitmap_bytes).as_mut_ptr(), frames) };
+    refs.fill(1);
 
     let mut a = BitmapAllocator {
         bitmap,
+        refs,
         frames,
         free: 0,
         usable: 0,
@@ -112,19 +140,19 @@ pub fn init(memmap: &[&Entry]) {
         }
         a.usable += last - first;
     }
-    // Keep the bitmap itself and the null frame reserved.
+    // Keep the bitmap, the reference counts and the null frame reserved.
     let home_first = (home.base / PAGE_SIZE) as usize;
-    for i in home_first..home_first + bitmap_frames {
+    for i in home_first..home_first + meta_frames {
         a.set_used(i);
     }
     if !a.is_used(0) {
         a.set_used(0);
     }
     log::info!(
-        "frames: {} usable ({} MiB), bitmap {} KiB at {:#x}",
+        "frames: {} usable ({} MiB), bitmap + refcounts {} KiB at {:#x}",
         a.usable,
         (a.usable as u64 * PAGE_SIZE) >> 20,
-        bitmap_bytes / 1024,
+        (bitmap_bytes + refs_bytes) / 1024,
         home.base
     );
     *ALLOCATOR.lock() = Some(a);
@@ -164,9 +192,27 @@ pub fn alloc_contiguous(count: usize, align: usize) -> Option<PhysAddr> {
     with(|a| a.alloc_contiguous(count, align.max(1))).map(|i| PhysAddr::new(i as u64 * PAGE_SIZE))
 }
 
-#[allow(dead_code)]
+fn index(frame: PhysFrame) -> usize {
+    (frame.start_address().as_u64() / PAGE_SIZE) as usize
+}
+
+/// Drop one reference; the frame is freed when none are left.
 pub fn free(frame: PhysFrame) {
-    with(|a| a.set_free((frame.start_address().as_u64() / PAGE_SIZE) as usize))
+    with(|a| a.put(index(frame)))
+}
+
+/// Add a reference to an allocated frame.
+pub fn get(frame: PhysFrame) {
+    with(|a| a.get(index(frame)))
+}
+
+/// Number of references to an allocated frame.
+pub fn refcount(frame: PhysFrame) -> u32 {
+    with(|a| {
+        let i = index(frame);
+        a.check(i);
+        a.refs[i]
+    })
 }
 
 /// (usable frames, free frames).
@@ -192,6 +238,19 @@ fn alloc_and_free() {
     assert_eq!(stats().1, free_before - 2);
     free(a);
     free(b);
+    assert_eq!(stats().1, free_before);
+}
+
+#[test_case]
+fn shared_frame_freed_on_last_reference() {
+    let (_, free_before) = stats();
+    let f = alloc().unwrap();
+    get(f);
+    assert_eq!(refcount(f), 2);
+    free(f);
+    assert_eq!(refcount(f), 1);
+    assert_eq!(stats().1, free_before - 1);
+    free(f);
     assert_eq!(stats().1, free_before);
 }
 

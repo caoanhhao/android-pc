@@ -22,8 +22,8 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 5 | fstat | yes | any fd (pipes S_IFIFO, devices S_IFCHR with rdev); uid/gid/times stored |
 | 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
 | 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
-| 9 | mmap | partial | anonymous only, lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED behaves as private; file mappings -> ENODEV (B3), EBADF for a bad fd |
-| 10 | mprotect | yes | splits VMAs, updates PTEs, TLB shootdown |
+| 9 | mmap | partial | anonymous only, lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous is shared across fork (pages populated at fork, no shmem object yet); file mappings -> ENODEV (B3b), EBADF for a bad fd |
+| 10 | mprotect | yes | splits VMAs, updates PTEs (COW-shared pages stay read-only), TLB shootdown |
 | 11 | munmap | yes | frees pages, TLB shootdown IPI to CPUs using the address space |
 | 12 | brk | yes | lazy heap after the highest PT_LOAD |
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
@@ -37,13 +37,14 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 21 | access | yes | = faccessat; root: only X_OK can fail |
 | 22 | pipe | yes | = pipe2(0) |
 | 24 | sched_yield | yes | |
-| 28 | madvise | stub | returns 0 (MADV_DONTNEED zeroing is B3) |
+| 25 | mremap | partial | anonymous mappings: shrink, grow in place, MREMAP_MAYMOVE, MREMAP_FIXED, MREMAP_DONTUNMAP; pages move by moving PTEs; the old range must lie in one VMA (EFAULT); old_size 0 -> EINVAL |
+| 28 | madvise | partial | MADV_DONTNEED / MADV_FREE drop private pages (next touch is zero-filled; shared pages are kept); NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTFORK..DODUMP, COLD, PAGEOUT accepted as no-ops; EINVAL for an unaligned address or unknown advice, ENOMEM for an unmapped range |
 | 32 | dup | yes | |
 | 33 | dup2 | yes | |
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
 | 39 | getpid | yes | thread group id |
 | 56 | clone | yes | fork-style and thread-style (CLONE_VM, THREAD, SIGHAND, FILES, VFORK, PARENT, SETTLS, PARENT_SETTID, CHILD_SETTID, CHILD_CLEARTID); CLONE_PIDFD -> EINVAL; namespaces ignored |
-| 57 | fork | yes | eager copy of the address space (COW is B3) |
+| 57 | fork | yes | copy-on-write: private pages shared read-only, copied on the first write (or made writable again when no longer shared) |
 | 58 | vfork | yes | shares memory, parent sleeps until the child execs or exits |
 | 59 | execve | yes | path resolved through the VFS (cwd-relative, symlinks); static ELF (ET_EXEC, static-PIE); PT_INTERP -> ENOEXEC (dynamic linking later); ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset; records /proc/<pid>/exe and cmdline |
 | 60 | exit | yes | thread exit, CLONE_CHILD_CLEARTID + futex wake |
@@ -157,8 +158,9 @@ static programs use; **partial** = works for the common case, gaps listed;
   copy_file_range, fallocate, fadvise, inotify, xattrs, FIFOs in the file
   system (mknod works, open is ENXIO), devpts, console input (reads EOF),
   permission checks (everything is root), read-only mounts (recorded only).
-- **B3 (memory)**: file and shared mappings, mremap, madvise, msync,
-  memfd_create, COW fork.
+- **B3b (memory)**: file mappings and a real shmem object for MAP_SHARED,
+  page cache, msync, memfd_create, mremap of file/shared mappings,
+  MAP_GROWSDOWN.
 - **B4 (IPC / multiplexing)**: poll/ppoll/select, epoll_*, eventfd2,
   timerfd_*, signalfd4, sockets (AF_UNIX), pidfd.
 - Later: credentials (setuid family, capabilities), rlimits, sched_*

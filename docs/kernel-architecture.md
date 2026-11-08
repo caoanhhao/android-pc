@@ -53,7 +53,7 @@ kernel/
                        entry (syscall/trap asm, TrapFrame, context switch),
                        trap (exceptions -> signals), idt, fpu (FXSAVE), tlb
                        (shootdown/kick IPIs), pic, pit, apic, smp
-      mm/              frame (bitmap allocator), paging, heap, kstack (guarded
+      mm/              frame (bitmap allocator + refcounts), paging, heap, kstack (guarded
                        kernel stacks), user (address spaces, VMAs, user copies)
       sched/           run queue, context switch, sleep/wake, idle loop
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
@@ -92,8 +92,11 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 ## Memory
 
 - **Physical**: bitmap allocator over USABLE regions only (1 bit / 4 KiB,
-  ~64 KiB for 2 GiB). `alloc`, `alloc_zeroed`, `alloc_contiguous(n, align)`,
-  `free`. Bootloader-reclaimable memory is *not* reclaimed yet (Limine
+  ~64 KiB for 2 GiB) plus a `u32` reference count per frame (~2 MiB for
+  2 GiB, stored next to the bitmap). `alloc`, `alloc_zeroed`,
+  `alloc_contiguous(n, align)` return frames with count 1; `get` adds a
+  reference, `free` drops one and frees the frame at 0, `refcount` reads it.
+  Only user pages are ever shared; everything else keeps count 1. Bootloader-reclaimable memory is *not* reclaimed yet (Limine
   responses, AP trampolines/stacks live there).
 - **Virtual layout** (kernel half):
   - `0xffff8000_00000000 + phys`: direct map (same offset as Limine's HHDM) of
@@ -110,16 +113,37 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   clamped to 4..64 MiB) reached via the direct map. Interrupts are off while
   its lock is held, so interrupt handlers may allocate. Does not grow yet.
 - **User address spaces** (`mm/user.rs`): a PML4 whose entries 256..511 are
-  copied from the kernel PML4 (shared kernel PDPTs). VMAs (start, end, prot)
-  in a BTreeMap. ELF segments are copied in at exec; anonymous memory (stack,
-  brk heap, mmap) is zero-filled on first touch, from the page-fault handler
-  or from kernel user-copies. `fork` copies every present page (COW is B3).
+  copied from the kernel PML4 (shared kernel PDPTs). VMAs (start, end, prot,
+  shared) in a BTreeMap. ELF segments are copied in at exec; anonymous memory
+  (stack, brk heap, mmap) is zero-filled on first touch, from the page-fault
+  handler or from kernel user-copies. PROT_NONE pages keep their frame in a
+  not-present PTE marked BIT_9.
+  - **Copy-on-write fork**: every present private page gets a second frame
+    reference and its PTE loses WRITABLE in parent and child; the parent's
+    TLBs are shot down. A PTE that is read-only inside a writable private VMA
+    *is* a COW page (no extra PTE bit). A write to it — page fault with
+    P=1, or `copy_out` from the kernel — copies the frame, or, if the
+    refcount is back to 1, just sets WRITABLE again; the old frame is
+    released after a TLB shootdown. `mprotect` and ELF segment merging keep
+    still-shared pages read-only. Frames return to the allocator only when
+    the last address space drops them (munmap, exit, exec).
+  - **MAP_SHARED anonymous** (stop-gap until B3b's shmem object): fork
+    populates every page of a shared VMA and maps the same frames writable
+    in both processes. Pages are not shared with mappings created later, and
+    madvise(DONTNEED) leaves shared pages alone.
+  - **madvise** DONTNEED/FREE unmap the private pages of the range;
+    **mremap** shrinks, grows in place when the following range is free, or
+    moves the PTEs (not the data) to a new range (MAYMOVE, FIXED,
+    DONTUNMAP).
+  - **Stack**: the 8 MiB stack VMA is demand-faulted, which covers normal
+    growth; MAP_GROWSDOWN and RLIMIT_STACK-driven growth are not done.
   Layout: ELF at its link address (static-PIE at 0x5555_5555_4000), brk after
   it, mmap top-down below 0x7f00_0000_0000, 8 MiB stack VMA below
   0x7fff_ffff_f000. The kernel never dereferences user pointers: `copy_in` /
   `copy_out` walk the page tables under the address-space lock and use the
   direct map, so bad pointers are `EFAULT`. Each address space tracks the CPUs
-  that have it loaded; munmap/mprotect send a TLB shootdown IPI (0xf0) to
+  that have it loaded; munmap/mprotect/mremap/madvise, fork (parent PTEs made
+  read-only) and COW copies send a TLB shootdown IPI (0xf0) to
   them and wait for the acknowledgements.
 
 ## CPU structures
@@ -290,11 +314,16 @@ One global mount namespace. The pieces:
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (15): int3
+fails the run; the script times out after 120 s. Current tests (18): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
-across pages, fork copy, munmap, read-only EFAULT, no frame leak), VFS
+across pages, fork copy, munmap, read-only EFAULT, no frame leak), frame
+refcounts, COW fork (pages shared read-only, copy on write fault and on
+`copy_out`, refcount-1 reuse, shared mapping stays shared, grandchild after
+the middle generation exits, mprotect keeps shared pages read-only, no frame
+leak), madvise DONTNEED and mremap move/shrink/grow/FIXED+DONTUNMAP (no
+frame leak), VFS
 (cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
 tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
 umount).
@@ -305,7 +334,8 @@ and B2 tests pass with the same case counts as on the Linux host (b1_hello
 22, b1_time 24, b1_fork_wait 24, b1_execve 7, b1_signals 36, b1_threads 16,
 b1_tls 14, b2_files 92, b2_pipe 27, b2_getdents 13, b2_devproc 26); the
 B3/B4 tests fail cleanly (missing syscalls) without taking the kernel down.
-B2 was checked with 1, 4 and 8 CPUs, debug and release.
+B2 was checked with 1, 4 and 8 CPUs, debug and release. Phase B3a: b3_fork_cow
+11/11 and b3_mmap 40/40 pass as well (b3_memfd is B3b).
 
 ## Known gaps / next steps
 
@@ -313,8 +343,8 @@ B2 was checked with 1, 4 and 8 CPUs, debug and release.
   FIFOs in the file system, devpts, console input, /proc/<pid>/fd magic
   links, /proc/sys, a real sysfs, statfs block accounting, page cache
   (B3, also for file mmap and to lift the 64 MiB tmpfs file cap).
-- B3: COW fork, shared and file mappings, memfd, mremap/madvise, stack
-  growth; page cache.
+- B3b: file mappings, a shmem object behind MAP_SHARED (replacing the
+  populate-at-fork stop-gap), memfd, page cache, MAP_GROWSDOWN.
 - Dynamic ELF (PT_INTERP: load bionic's linker64 and pass AT_BASE).
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
   time accounting (CPU-time clocks currently report uptime), sleep timers
