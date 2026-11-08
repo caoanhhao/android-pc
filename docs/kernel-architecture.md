@@ -1,4 +1,4 @@
-# Kernel architecture (phase B1 state)
+# Kernel architecture (phase B2 state)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -59,8 +59,10 @@ kernel/
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
                        wait4), elf (loader + initial stack), signal, futex
       syscall/         dispatch table (Linux numbers), fs, time
-      fs/              ramfs (initramfs cpio unpacked, writable), file (open
-                       files, fd tables, pipes, devices) -- B1 stopgap, B2 = VFS
+      fs/              vfs (inodes, dentries, mounts, path walk), file (open
+                       files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
+                       dev (character devices), procfs, pipe; mod.rs: cpio
+                       unpacking, open, mountable file system types
       drivers/         serial (COM1); later virtio, binder, dma-buf, ...
 ```
 
@@ -82,9 +84,10 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
    stack, `MpInfo::bootstrap`. The AP loads the kernel CR3, switches stack,
    installs GDT/TSS/GS/IDT, user-mode support, its LAPIC and timer, then
    enters the scheduler's idle loop. The BSP waits up to 1 s for all of them.
-7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module),
-   start `/init` as pid 1 with fds 0-2 on the serial console, and enter the
-   idle loop. When init exits the kernel logs its status and powers off.
+7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module)
+   into a tmpfs that becomes the root mount, start `/init` as pid 1 (cwd
+   `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
+   loop. When init exits the kernel logs its status and powers off.
 
 ## Memory
 
@@ -198,7 +201,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   pending, altstack), clear_child_tid, robust list.
 - `Process` = thread group: pid (= leader tid), signal actions and
   process-wide pending signals, fd table (`Arc`, shared by CLONE_FILES),
-  exit signal, name.
+  `FsContext` (cwd as a `PathRef`, umask; copied by fork), the executable
+  path and argv (for /proc), exit signal, name.
 - `TABLE`: tid -> task map and pid -> node (parent, children, live threads,
   pgid/sid, zombie status, group exit status) under one lock. Orphans are
   reparented to pid 1; a parent with SIGCHLD set to SIG_IGN (or
@@ -209,7 +213,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   signal, else the leader's exit code), closes its files, sends its exit
   signal and wakes `wait4` sleepers. `exit_group` and SIGKILL mark every
   thread with a pending SIGKILL and wake it.
-- `execve` loads the new image first (errors return normally), then kills
+- `execve` resolves the path through the VFS (relative to the cwd,
+  following symlinks), loads the new image first (errors return normally), then kills
   the other threads and waits for them, swaps the address space, releases a
   vfork parent, resets handled signals to SIG_DFL (ignored stay ignored, the
   mask stays), clears the altstack, closes CLOEXEC fds, clears FS/GS and the
@@ -224,15 +229,61 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   RSP 16-byte aligned at argc.
 - Signals and futexes: see [syscalls.md](syscalls.md).
 
-## Files (B1 stopgap, `fs/`)
+## Files (`fs/`)
 
-The initramfs (newc cpio, built by `tools/mkinitramfs.sh`) is unpacked into
-an in-memory tree; file data stays in the module memory until first
-written. It is writable (mkdir, create, write, unlink) so that tests can use
-/tmp, but has no mounts, permissions, links, symlinks or timestamps, and
-relative paths resolve from `/`. Open files (`OpenFile`) are ramfs inodes,
-the serial console, /dev/null, /dev/zero, /dev/urandom or pipe ends; fd
-tables support CLOEXEC, dup*, fcntl. The B2 VFS replaces all of it.
+One global mount namespace. The pieces:
+
+- **Inodes** (`vfs::Inode` trait): what a file system implements — lookup,
+  create (file/dir/device node/FIFO by mode), symlink, link, unlink,
+  rename (with RENAME_NOREPLACE/EXCHANGE), entries, readlink,
+  read_at/write_at/append/truncate, and an optional `open` hook returning
+  custom file operations (pseudo files). Every inode has a `Meta`: ino,
+  dev, rdev and the attributes (mode, uid, gid, nlink, a/m/ctime ns).
+- **Dentries** (`vfs::Dentry`): name, strong parent pointer, inode and a
+  cache of children as weak references. Every namespace change goes
+  through `vfs::{create, symlink, link, unlink, rename}`, which update the
+  cache: unlinked dentries are marked deleted (paths get " (deleted)",
+  getcwd gives ENOENT), renamed ones move, so cwd and open files keep the
+  right path. Dynamic directories (procfs) opt out of caching.
+- **Mounts** (`vfs::Mount`): root dentry, mount point (`PathRef` = mount +
+  dentry), type, source, flags. `child_of` crosses into the most recent
+  mount on a dentry; `parent_of` handles `..` at a mount root and never goes
+  above `/`. `path_of` builds absolute paths the same way.
+- **Path walk** (`vfs::lookup`, `lookup_parent`): absolute or relative to a
+  start `PathRef` (cwd or a dirfd), `.`/`..`, symlinks followed for every
+  intermediate component and optionally the last one (at most 40, else
+  ELOOP), ENOTDIR through files, trailing slashes require directories,
+  ENAMETOOLONG for components > 255 bytes or paths >= 4096.
+- **Open files** (`file::OpenFile`): inode, the `PathRef` it was opened
+  by, status flags, position, and boxed `FileOps` (regular file, directory,
+  O_PATH, generated `SeqFile`, device, pipe end). `FdTable` holds
+  `(OpenFile, cloexec)` slots (1024 max); dup shares the description.
+- **File systems**:
+  - `tmpfs`: directories as `BTreeMap`s (so getdents order is by name),
+    file data in a heap `Vec` (64 MiB cap per file until the page cache);
+    files from the initramfs keep pointing into the boot module until first
+    written. The root file system ("rootfs") is a tmpfs filled from the
+    cpio archive (files, directories, symlinks, device nodes, owners,
+    mtimes). `mount -t tmpfs|ramfs` makes new instances (`mode=` option).
+  - devtmpfs (one shared instance): null, zero, full, random, urandom,
+    kmsg, tty, console, ttyS0 nodes plus `pts/` and `shm/`. Device nodes
+    on any file system open the driver in `dev.rs` by major:minor. The
+    console is a minimal tty (termios and window size ioctls, so isatty()
+    works); it has no input yet (reads return EOF). /dev/kmsg writes go to
+    the kernel log.
+  - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
+    mounts,fd/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
+    `filesystems`, `cmdline`, `version`, `loadavg`, `stat`. Contents are
+    generated at open. `maps`/`VmSize` are only filled in for the calling
+    process (reading another task's address space pointer would race with
+    its execve). `fd/N` are symlinks whose target is the open file's path
+    (`pipe:[ino]` for pipes); they are not "magic" links yet.
+  - sysfs: one shared tmpfs with the empty top-level directories (block,
+    bus, class, dev, devices, firmware, fs, kernel, module, power).
+  - pipes: 64 KiB, blocking and O_NONBLOCK, atomic writes up to PIPE_BUF,
+    EOF when writers are gone, EPIPE + SIGPIPE when readers are gone.
+- Everything runs as root: no permission checks except the execute bit
+  (execve, access X_OK). chown/chmod are stored; MS_RDONLY is recorded only.
 
 ## Tests
 
@@ -243,21 +294,25 @@ fails the run; the script times out after 120 s. Current tests (15): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
-across pages, fork copy, munmap, read-only EFAULT, no frame leak), cpio
-unpack and path lookup.
+across pages, fork copy, munmap, read-only EFAULT, no frame leak), VFS
+(cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
+tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
+umount).
 
 User-space conformance tests (`tests/`, see `tests/README.md`) run in the
-guest with `tools/run-qemu.sh --ktest [FILTER]`. Phase B1 state: all seven
-B1 tests pass with the same case counts as on the Linux host (b1_hello 22,
-b1_time 24, b1_fork_wait 24, b1_execve 7, b1_signals 36, b1_threads 16,
-b1_tls 14), and b2_pipe passes as well; the other B2-B4 tests fail cleanly
-(missing syscalls) without taking the kernel down. Verified with 1, 4 and 8
-CPUs, UEFI and BIOS, x2APIC and xAPIC, debug and release, and TCG.
+guest with `tools/run-qemu.sh --ktest [FILTER]`. Phase B2 state: all B1
+and B2 tests pass with the same case counts as on the Linux host (b1_hello
+22, b1_time 24, b1_fork_wait 24, b1_execve 7, b1_signals 36, b1_threads 16,
+b1_tls 14, b2_files 92, b2_pipe 27, b2_getdents 13, b2_devproc 26); the
+B3/B4 tests fail cleanly (missing syscalls) without taking the kernel down.
+B2 was checked with 1, 4 and 8 CPUs, debug and release.
 
 ## Known gaps / next steps
 
-- B2: a real VFS (mounts, cwd, dirfd-relative paths, tmpfs, devfs, procfs,
-  sysfs, getdents, symlinks) replacing the ramfs stopgap; console as a tty.
+- VFS follow-ups: permission checks and credentials, read-only mounts,
+  FIFOs in the file system, devpts, console input, /proc/<pid>/fd magic
+  links, /proc/sys, a real sysfs, statfs block accounting, page cache
+  (B3, also for file mmap and to lift the 64 MiB tmpfs file cap).
 - B3: COW fork, shared and file mappings, memfd, mremap/madvise, stack
   growth; page cache.
 - Dynamic ELF (PT_INTERP: load bionic's linker64 and pass AT_BASE).

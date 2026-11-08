@@ -10,28 +10,31 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phase B1)
+## Implemented (phases B1, B2)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
-| 0 | read | yes | ramfs files, console (EOF), /dev/null, /dev/zero, /dev/urandom, pipes |
-| 1 | write | yes | console = serial (fd 0-2 of init), ramfs files, pipes (EPIPE + SIGPIPE) |
-| 2 | open | partial | = openat(AT_FDCWD) |
+| 0 | read | yes | VFS files, devices, pipes, /proc; regular files read in 64 KiB chunks until done |
+| 1 | write | yes | VFS files (O_APPEND atomic), devices, pipes (EPIPE + SIGPIPE, atomic up to PIPE_BUF) |
+| 2 | open | yes | = openat(AT_FDCWD) |
 | 3 | close | yes | |
-| 4 | stat | partial | = newfstatat; no timestamps/uid |
-| 5 | fstat | partial | ramfs inode, pipe (S_IFIFO), devices (S_IFCHR) |
-| 6 | lstat | partial | no symlinks yet, same as stat |
-| 8 | lseek | yes | SEEK_SET/CUR/END on ramfs files, ESPIPE on pipes |
-| 9 | mmap | partial | anonymous only, lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED behaves as private; file mappings -> ENODEV (B3) |
+| 4 | stat | yes | = newfstatat(AT_FDCWD, 0) |
+| 5 | fstat | yes | any fd (pipes S_IFIFO, devices S_IFCHR with rdev); uid/gid/times stored |
+| 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
+| 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
+| 9 | mmap | partial | anonymous only, lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED behaves as private; file mappings -> ENODEV (B3), EBADF for a bad fd |
 | 10 | mprotect | yes | splits VMAs, updates PTEs, TLB shootdown |
 | 11 | munmap | yes | frees pages, TLB shootdown IPI to CPUs using the address space |
 | 12 | brk | yes | lazy heap after the highest PT_LOAD |
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | stub | ENOTTY for every valid fd (no tty layer yet) |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes; console: TCGETS/TCSETS*/TIOCGWINSZ/TIOCSWINSZ/TIOCGPGRP/TIOCSPGRP/TIOCSCTTY/TIOCGSID; everything else ENOTTY |
+| 17 | pread64 | yes | ESPIPE on pipes/devices |
+| 18 | pwrite64 | yes | |
 | 19 | readv | yes | |
 | 20 | writev | yes | gathered into one write |
+| 21 | access | yes | = faccessat; root: only X_OK can fail |
 | 22 | pipe | yes | = pipe2(0) |
 | 24 | sched_yield | yes | |
 | 28 | madvise | stub | returns 0 (MADV_DONTNEED zeroing is B3) |
@@ -42,16 +45,34 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 56 | clone | yes | fork-style and thread-style (CLONE_VM, THREAD, SIGHAND, FILES, VFORK, PARENT, SETTLS, PARENT_SETTID, CHILD_SETTID, CHILD_CLEARTID); CLONE_PIDFD -> EINVAL; namespaces ignored |
 | 57 | fork | yes | eager copy of the address space (COW is B3) |
 | 58 | vfork | yes | shares memory, parent sleeps until the child execs or exits |
-| 59 | execve | yes | static ELF (ET_EXEC, static-PIE); PT_INTERP -> ENOEXEC (dynamic linking later); ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset |
+| 59 | execve | yes | path resolved through the VFS (cwd-relative, symlinks); static ELF (ET_EXEC, static-PIE); PT_INTERP -> ENOEXEC (dynamic linking later); ENOENT/EACCES/ENOEXEC/E2BIG; kills other threads; CLOEXEC; signal reset; records /proc/<pid>/exe and cmdline |
 | 60 | exit | yes | thread exit, CLONE_CHILD_CLEARTID + futex wake |
 | 61 | wait4 | yes | pid > 0, -1, 0, < -1; WNOHANG; ECHILD; rusage zeroed |
 | 62 | kill | yes | pid > 0, 0 (group), -1, < -1; sig 0 = existence check |
 | 63 | uname | yes | Linux / 6.6.0-android-pc / x86_64 |
-| 72 | fcntl | partial | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK) |
-| 79 | getcwd | stub | always "/" (cwd is B2) |
-| 83 | mkdir | yes | ramfs |
-| 84 | rmdir | yes | ENOTEMPTY, ENOTDIR |
-| 87 | unlink | yes | EISDIR |
+| 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed); record locks (F_SETLK*, F_OFD_*) always granted, F_GETLK says unlocked |
+| 73 | flock | stub | 0 for a valid fd (no locking) |
+| 74 | fsync | stub | 0 (everything is in memory) |
+| 75 | fdatasync | stub | 0 |
+| 76 | truncate | yes | |
+| 77 | ftruncate | yes | EINVAL on read-only fds and non-regular files; files are capped at 64 MiB (EFBIG) until the page cache |
+| 79 | getcwd | yes | ENOENT when the cwd was removed, ERANGE |
+| 80 | chdir | yes | |
+| 81 | fchdir | yes | |
+| 82 | rename | yes | = renameat2(0) |
+| 83 | mkdir | yes | = mkdirat(AT_FDCWD) |
+| 84 | rmdir | yes | ENOTEMPTY, ENOTDIR, EBUSY on mount points |
+| 85 | creat | yes | |
+| 86 | link | yes | |
+| 87 | unlink | yes | EISDIR; open files stay readable (nlink 0) |
+| 88 | symlink | yes | |
+| 89 | readlink | yes | |
+| 90 | chmod | yes | |
+| 91 | fchmod | yes | |
+| 92 | chown | partial | stored only (no permission checks: everything runs as root) |
+| 93 | fchown | partial | stored only |
+| 94 | lchown | partial | stored only |
+| 95 | umask | yes | per process, inherited by fork |
 | 96 | gettimeofday | yes | |
 | 102 | getuid | yes | always 0 (credentials are later) |
 | 104 | getgid | yes | 0 |
@@ -67,28 +88,51 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 128 | rt_sigtimedwait | yes | EAGAIN on timeout, EINTR on another signal |
 | 130 | rt_sigsuspend | yes | old mask restored after the handler |
 | 131 | sigaltstack | yes | SS_DISABLE, EPERM while on it, ENOMEM below MINSIGSTKSZ |
+| 133 | mknod | yes | regular files, device nodes, FIFOs/sockets (opening a FIFO/socket node is ENXIO for now) |
+| 137 | statfs | partial | f_type from the mount (tmpfs/ramfs/proc/sysfs magic); block counts are RAM frames |
+| 138 | fstatfs | partial | pipes report PIPEFS_MAGIC |
 | 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME; others EINVAL |
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
+| 162 | sync | stub | 0 |
+| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs; MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
+| 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW |
 | 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART |
 | 186 | gettid | yes | |
 | 200 | tkill | yes | |
 | 201 | time | yes | |
 | 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; keyed by (address space, address) so shared futexes across processes wait for MAP_SHARED (B3); PI futexes ENOSYS |
+| 217 | getdents64 | yes | ".", "..", then the entries with real d_type; position = entry index (lseek 0 rewinds); EINVAL if the first record does not fit |
 | 218 | set_tid_address | yes | |
 | 228 | clock_gettime | yes | REALTIME (Limine boot date + TSC), MONOTONIC/BOOTTIME/RAW/COARSE (TSC); CPU-time clocks report uptime |
 | 229 | clock_getres | yes | 1 ns, coarse clocks 10 ms |
 | 230 | clock_nanosleep | yes | TIMER_ABSTIME |
 | 231 | exit_group | yes | kills every thread of the group |
 | 234 | tgkill | yes | si_code SI_TKILL |
-| 257 | openat | partial | O_CREAT/EXCL/TRUNC/APPEND/DIRECTORY/CLOEXEC/NONBLOCK; dirfd must be AT_FDCWD or the path absolute (else ENOSYS until B2) |
-| 258 | mkdirat | partial | same dirfd limit |
-| 262 | newfstatat | partial | AT_EMPTY_PATH |
-| 263 | unlinkat | partial | AT_REMOVEDIR |
+| 257 | openat | yes | O_CREAT/EXCL/TRUNC/APPEND/DIRECTORY/NOFOLLOW/CLOEXEC/NONBLOCK/PATH; dirfd-relative; mode & ~umask; creating through a dangling symlink; O_TMPFILE EOPNOTSUPP |
+| 258 | mkdirat | yes | |
+| 259 | mknodat | yes | see mknod |
+| 260 | fchownat | partial | stored only; AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
+| 262 | newfstatat | yes | AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW |
+| 263 | unlinkat | yes | AT_REMOVEDIR |
+| 264 | renameat | yes | |
+| 265 | linkat | yes | AT_SYMLINK_FOLLOW, AT_EMPTY_PATH; EXDEV across mounts |
+| 266 | symlinkat | yes | |
+| 267 | readlinkat | yes | AT_EMPTY_PATH-style empty path on an O_PATH symlink fd |
+| 268 | fchmodat | yes | |
+| 269 | faccessat | yes | |
 | 273 | set_robust_list | partial | stored; robust futexes are not walked at exit yet |
 | 274 | get_robust_list | yes | |
+| 280 | utimensat | yes | UTIME_NOW/UTIME_OMIT, NULL path = dirfd |
 | 292 | dup3 | yes | O_CLOEXEC |
-| 293 | pipe2 | yes | O_CLOEXEC, O_NONBLOCK; 64 KiB buffer |
+| 293 | pipe2 | yes | O_CLOEXEC, O_NONBLOCK, O_DIRECT accepted (not packet mode); 64 KiB buffer |
+| 295 | preadv | yes | |
+| 296 | pwritev | yes | |
+| 306 | syncfs | stub | 0 |
+| 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
+| 332 | statx | yes | basic stats (STATX_BASIC_STATS, no btime) |
+| 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
+| 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
 
 ## Signals: what is delivered how
 
@@ -109,9 +153,10 @@ static programs use; **partial** = works for the common case, gaps listed;
 
 ## Not implemented yet (selection, by phase)
 
-- **B2 (VFS)**: pread64/pwrite64, getdents64, chdir/fchdir, rename*, link*,
-  symlink*/readlink*, access/faccessat, ftruncate, umask, close_range,
-  statfs, mount/umount2, *at with a real directory fd, /proc, /sys, /dev.
+- **B2 leftovers**: legacy getdents (78), chroot/pivot_root, sendfile,
+  copy_file_range, fallocate, fadvise, inotify, xattrs, FIFOs in the file
+  system (mknod works, open is ENXIO), devpts, console input (reads EOF),
+  permission checks (everything is root), read-only mounts (recorded only).
 - **B3 (memory)**: file and shared mappings, mremap, madvise, msync,
   memfd_create, COW fork.
 - **B4 (IPC / multiplexing)**: poll/ppoll/select, epoll_*, eventfd2,

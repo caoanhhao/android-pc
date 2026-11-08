@@ -1,0 +1,775 @@
+//! VFS core: inodes, dentries, mounts and path resolution.
+//!
+//! - [`Inode`] is what a file system implements (tmpfs, procfs, ...). Every
+//!   inode carries a [`Meta`] (ino, dev, mode, owner, link count, times).
+//! - [`Dentry`] is a name in the tree: (name, parent, inode) plus a cache of
+//!   child dentries (weak refs). Unlink/rename go through the VFS, which keeps
+//!   the cache in sync, so a dentry stays valid for open files and cwd.
+//! - [`Mount`] attaches a file system root (or a bind-mounted dentry) on a
+//!   (mount, dentry) point. There is one global mount namespace.
+//! - [`PathRef`] = (mount, dentry), the unit everything resolves to.
+//!
+//! Path walk follows symlinks (at most [`MAX_SYMLINKS`]), handles `.` and
+//! `..` (also across mount points) and crosses into mounts.
+
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use core::any::Any;
+use core::sync::atomic::{AtomicU64, Ordering};
+use spin::{Mutex, Once};
+
+use crate::errno::*;
+
+pub const S_IFMT: u32 = 0o170000;
+pub const S_IFSOCK: u32 = 0o140000;
+pub const S_IFLNK: u32 = 0o120000;
+pub const S_IFREG: u32 = 0o100000;
+pub const S_IFBLK: u32 = 0o060000;
+pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFCHR: u32 = 0o020000;
+pub const S_IFIFO: u32 = 0o010000;
+
+pub const DT_UNKNOWN: u8 = 0;
+pub const DT_FIFO: u8 = 1;
+pub const DT_CHR: u8 = 2;
+pub const DT_DIR: u8 = 4;
+pub const DT_BLK: u8 = 6;
+pub const DT_REG: u8 = 8;
+pub const DT_LNK: u8 = 10;
+pub const DT_SOCK: u8 = 12;
+
+pub const MAX_SYMLINKS: u32 = 40;
+pub const NAME_MAX: usize = 255;
+pub const PATH_MAX: usize = 4096;
+
+pub const RENAME_NOREPLACE: u32 = 1;
+pub const RENAME_EXCHANGE: u32 = 2;
+
+pub fn dtype(mode: u32) -> u8 {
+    match mode & S_IFMT {
+        S_IFDIR => DT_DIR,
+        S_IFREG => DT_REG,
+        S_IFLNK => DT_LNK,
+        S_IFCHR => DT_CHR,
+        S_IFBLK => DT_BLK,
+        S_IFIFO => DT_FIFO,
+        S_IFSOCK => DT_SOCK,
+        _ => DT_UNKNOWN,
+    }
+}
+
+/// Linux `new_encode_dev`.
+pub fn encode_dev(major: u32, minor: u32) -> u64 {
+    ((minor & 0xff) | (major << 8) | ((minor & !0xff) << 12)) as u64
+}
+
+pub fn dev_major(dev: u64) -> u32 {
+    ((dev >> 8) & 0xfff) as u32
+}
+
+pub fn dev_minor(dev: u64) -> u32 {
+    ((dev & 0xff) | ((dev >> 12) & 0xfff00)) as u32
+}
+
+static NEXT_INO: AtomicU64 = AtomicU64::new(1);
+static NEXT_DEV: AtomicU64 = AtomicU64::new(1);
+
+pub fn alloc_ino() -> u64 {
+    NEXT_INO.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A new anonymous device number (major 0) for a file system instance.
+pub fn alloc_dev() -> u64 {
+    encode_dev(0, NEXT_DEV.fetch_add(1, Ordering::Relaxed) as u32)
+}
+
+/// Time in nanoseconds since the epoch.
+pub fn now() -> i64 {
+    crate::time::realtime_ns() as i64
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Attr {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub nlink: u32,
+    pub atime: i64,
+    pub mtime: i64,
+    pub ctime: i64,
+}
+
+/// Inode metadata common to every file system.
+pub struct Meta {
+    pub ino: u64,
+    pub dev: u64,
+    /// Device number for character/block device nodes.
+    pub rdev: u64,
+    attr: Mutex<Attr>,
+}
+
+impl Meta {
+    pub fn new(dev: u64, mode: u32, rdev: u64) -> Meta {
+        Meta::with_ino(alloc_ino(), dev, mode, rdev)
+    }
+
+    pub fn with_ino(ino: u64, dev: u64, mode: u32, rdev: u64) -> Meta {
+        let t = now();
+        Meta {
+            ino,
+            dev,
+            rdev,
+            attr: Mutex::new(Attr {
+                mode,
+                uid: 0,
+                gid: 0,
+                nlink: if mode & S_IFMT == S_IFDIR { 2 } else { 1 },
+                atime: t,
+                mtime: t,
+                ctime: t,
+            }),
+        }
+    }
+
+    pub fn attr(&self) -> Attr {
+        *self.attr.lock()
+    }
+
+    pub fn update(&self, f: impl FnOnce(&mut Attr)) {
+        f(&mut self.attr.lock())
+    }
+
+    pub fn mode(&self) -> u32 {
+        self.attr.lock().mode
+    }
+
+    pub fn file_type(&self) -> u32 {
+        self.mode() & S_IFMT
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.file_type() == S_IFDIR
+    }
+
+    pub fn inc_nlink(&self, by: i32) {
+        let mut a = self.attr.lock();
+        a.nlink = (a.nlink as i32 + by).max(0) as u32;
+        a.ctime = now();
+    }
+
+    pub fn touch_mtime(&self) {
+        let t = now();
+        let mut a = self.attr.lock();
+        a.mtime = t;
+        a.ctime = t;
+    }
+}
+
+pub struct DirEntry {
+    pub name: Vec<u8>,
+    pub ino: u64,
+    pub dtype: u8,
+}
+
+/// What a file system implements for each of its inodes. Defaults are
+/// the answers for an inode that does not support the operation.
+pub trait Inode: Send + Sync + Any {
+    fn meta(&self) -> &Meta;
+
+    /// File size in bytes (regular files, symlinks).
+    fn size(&self) -> u64 {
+        0
+    }
+
+    /// Directory: find `name` (never "." or "..").
+    fn lookup(&self, _name: &[u8]) -> KResult<Arc<dyn Inode>> {
+        Err(ENOTDIR)
+    }
+
+    /// Directory: create a regular file, directory, device node or FIFO
+    /// (type from `mode`). EEXIST if the name is taken.
+    fn create(&self, _name: &[u8], _mode: u32, _rdev: u64) -> KResult<Arc<dyn Inode>> {
+        Err(self.not_dir_or(EACCES))
+    }
+
+    fn symlink(&self, _name: &[u8], _target: &[u8]) -> KResult<Arc<dyn Inode>> {
+        Err(self.not_dir_or(EACCES))
+    }
+
+    /// Directory: add a hard link `name` -> `inode` (same file system).
+    fn link(&self, _name: &[u8], _inode: &Arc<dyn Inode>) -> KResult<()> {
+        Err(self.not_dir_or(EPERM))
+    }
+
+    /// Directory: remove `name` (a directory iff `dir`, which must be empty).
+    fn unlink(&self, _name: &[u8], _dir: bool) -> KResult<()> {
+        Err(self.not_dir_or(EACCES))
+    }
+
+    /// Directory: move `old` to `new` in `new_dir` (same file system).
+    fn rename(&self, _old: &[u8], _new_dir: &Arc<dyn Inode>, _new: &[u8], _flags: u32) -> KResult<()> {
+        Err(self.not_dir_or(EXDEV))
+    }
+
+    /// Directory: the entries, without "." and "..".
+    fn entries(&self) -> KResult<Vec<DirEntry>> {
+        Err(ENOTDIR)
+    }
+
+    fn readlink(&self) -> KResult<Vec<u8>> {
+        Err(EINVAL)
+    }
+
+    fn read_at(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
+        Err(EINVAL)
+    }
+
+    fn write_at(&self, _off: u64, _data: &[u8]) -> KResult<usize> {
+        Err(EINVAL)
+    }
+
+    /// Append atomically; returns (bytes written, new size).
+    fn append(&self, data: &[u8]) -> KResult<(usize, u64)> {
+        let n = self.write_at(self.size(), data)?;
+        Ok((n, self.size()))
+    }
+
+    fn truncate(&self, _size: u64) -> KResult<()> {
+        Err(EINVAL)
+    }
+
+    /// File operations for an open of this inode when they are not the
+    /// generic ones (pseudo files); `None` = use the VFS default.
+    fn open(&self, _flags: u32) -> KResult<Option<alloc::boxed::Box<dyn super::file::FileOps>>> {
+        Ok(None)
+    }
+
+    /// Whether lookups of this directory's children may be cached in
+    /// dentries (false for dynamic directories like /proc).
+    fn cacheable(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn Any;
+
+    fn not_dir_or(&self, e: Errno) -> Errno {
+        if self.meta().is_dir() { e } else { ENOTDIR }
+    }
+}
+
+/// An inode with no file system behind it (pipes, the boot console).
+pub struct AnonInode {
+    meta: Meta,
+}
+
+impl AnonInode {
+    pub fn new(mode: u32, rdev: u64) -> Arc<dyn Inode> {
+        static ANON_DEV: Once<u64> = Once::new();
+        let dev = *ANON_DEV.call_once(alloc_dev);
+        Arc::new(AnonInode { meta: Meta::new(dev, mode, rdev) })
+    }
+}
+
+impl Inode for AnonInode {
+    fn meta(&self) -> &Meta {
+        &self.meta
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dentries
+
+struct DentryInner {
+    name: Vec<u8>,
+    parent: Option<Arc<Dentry>>,
+    children: BTreeMap<Vec<u8>, Weak<Dentry>>,
+    deleted: bool,
+}
+
+pub struct Dentry {
+    pub inode: Arc<dyn Inode>,
+    inner: Mutex<DentryInner>,
+}
+
+impl Dentry {
+    pub fn new_root(inode: Arc<dyn Inode>) -> Arc<Dentry> {
+        Self::new(inode, b"/", None)
+    }
+
+    fn new(inode: Arc<dyn Inode>, name: &[u8], parent: Option<Arc<Dentry>>) -> Arc<Dentry> {
+        Arc::new(Dentry {
+            inode,
+            inner: Mutex::new(DentryInner {
+                name: name.to_vec(),
+                parent,
+                children: BTreeMap::new(),
+                deleted: false,
+            }),
+        })
+    }
+
+    pub fn name(&self) -> Vec<u8> {
+        self.inner.lock().name.clone()
+    }
+
+    pub fn parent(&self) -> Option<Arc<Dentry>> {
+        self.inner.lock().parent.clone()
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.inner.lock().deleted
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.inode.meta().is_dir()
+    }
+
+    fn cached(&self, name: &[u8]) -> Option<Arc<Dentry>> {
+        self.inner.lock().children.get(name).and_then(Weak::upgrade)
+    }
+
+    /// The child dentry `name` (from the cache or the file system).
+    pub fn child(self: &Arc<Self>, name: &[u8]) -> KResult<Arc<Dentry>> {
+        if let Some(d) = self.cached(name) {
+            return Ok(d);
+        }
+        let inode = self.inode.lookup(name)?;
+        Ok(self.attach(name, inode))
+    }
+
+    /// A dentry for a freshly created (or looked up) child inode.
+    pub fn attach(self: &Arc<Self>, name: &[u8], inode: Arc<dyn Inode>) -> Arc<Dentry> {
+        if !self.inode.cacheable() {
+            return Dentry::new(inode, name, Some(self.clone()));
+        }
+        let mut inner = self.inner.lock();
+        if let Some(d) = inner.children.get(name).and_then(Weak::upgrade)
+            && Arc::ptr_eq(&d.inode, &inode)
+        {
+            return d;
+        }
+        let d = Dentry::new(inode, name, Some(self.clone()));
+        if inner.children.len() >= 64 && inner.children.len().is_power_of_two() {
+            inner.children.retain(|_, w| w.strong_count() > 0);
+        }
+        inner.children.insert(name.to_vec(), Arc::downgrade(&d));
+        d
+    }
+
+    /// Drop the cached child `name` (it was unlinked or replaced).
+    pub fn forget(&self, name: &[u8]) {
+        let old = self.inner.lock().children.remove(name).and_then(|w| w.upgrade());
+        if let Some(d) = old {
+            d.inner.lock().deleted = true;
+        }
+    }
+
+    /// Move the cached child `old` of `self` to `new` in `new_parent`.
+    fn moved(self: &Arc<Self>, old: &[u8], new_parent: &Arc<Dentry>, new: &[u8]) {
+        let d = self.inner.lock().children.remove(old).and_then(|w| w.upgrade());
+        if let Some(d) = d {
+            {
+                let mut i = d.inner.lock();
+                i.name = new.to_vec();
+                i.parent = Some(new_parent.clone());
+            }
+            new_parent.inner.lock().children.insert(new.to_vec(), Arc::downgrade(&d));
+        }
+    }
+
+    /// True if `self` is `other` or below it in the dentry tree.
+    pub fn is_descendant_of(self: &Arc<Self>, other: &Arc<Dentry>) -> bool {
+        let mut cur = Some(self.clone());
+        while let Some(d) = cur {
+            if Arc::ptr_eq(&d, other) {
+                return true;
+            }
+            cur = d.parent();
+        }
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mounts
+
+pub struct Mount {
+    /// Root of what is mounted (a file system root, or a dentry for binds).
+    pub root: Arc<Dentry>,
+    /// Where it is mounted; `None` for the root mount.
+    pub parent: Option<PathRef>,
+    pub fstype: &'static str,
+    pub source: Vec<u8>,
+    /// MS_RDONLY (recorded, not enforced yet).
+    pub flags: u64,
+}
+
+static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
+static ROOT: Once<PathRef> = Once::new();
+
+#[derive(Clone)]
+pub struct PathRef {
+    pub mnt: Arc<Mount>,
+    pub dentry: Arc<Dentry>,
+}
+
+impl PathRef {
+    pub fn inode(&self) -> &Arc<dyn Inode> {
+        &self.dentry.inode
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.dentry.is_dir()
+    }
+
+    pub fn same(&self, other: &PathRef) -> bool {
+        Arc::ptr_eq(&self.mnt, &other.mnt) && Arc::ptr_eq(&self.dentry, &other.dentry)
+    }
+
+    fn is_mount_root(&self) -> bool {
+        Arc::ptr_eq(&self.dentry, &self.mnt.root)
+    }
+}
+
+/// Install the root file system (once, at boot).
+pub fn set_root(inode: Arc<dyn Inode>, fstype: &'static str) {
+    let m = Arc::new(Mount {
+        root: Dentry::new_root(inode),
+        parent: None,
+        fstype,
+        source: b"rootfs".to_vec(),
+        flags: 0,
+    });
+    MOUNTS.lock().push(m.clone());
+    ROOT.call_once(|| PathRef { dentry: m.root.clone(), mnt: m });
+}
+
+pub fn root() -> PathRef {
+    ROOT.get().expect("VFS root not mounted").clone()
+}
+
+/// Mount `root` on `at`.
+pub fn mount(at: &PathRef, root: Arc<Dentry>, fstype: &'static str, source: &[u8], flags: u64) -> KResult<()> {
+    if !at.is_dir() {
+        return Err(ENOTDIR);
+    }
+    let m = Arc::new(Mount {
+        root,
+        parent: Some(at.clone()),
+        fstype,
+        source: source.to_vec(),
+        flags,
+    });
+    MOUNTS.lock().push(m);
+    Ok(())
+}
+
+/// Unmount the mount whose root is `at`.
+pub fn umount(at: &PathRef) -> KResult<()> {
+    if !at.is_mount_root() {
+        return Err(EINVAL);
+    }
+    let mut mounts = MOUNTS.lock();
+    if at.mnt.parent.is_none() {
+        return Err(EBUSY);
+    }
+    let busy = mounts
+        .iter()
+        .any(|m| m.parent.as_ref().is_some_and(|p| Arc::ptr_eq(&p.mnt, &at.mnt)));
+    if busy {
+        return Err(EBUSY);
+    }
+    mounts.retain(|m| !Arc::ptr_eq(m, &at.mnt));
+    Ok(())
+}
+
+/// Every mount, oldest first.
+pub fn mounts() -> Vec<Arc<Mount>> {
+    MOUNTS.lock().clone()
+}
+
+/// The mount stacked on `p`, if any (the most recent one).
+fn mounted_on(p: &PathRef) -> Option<Arc<Mount>> {
+    MOUNTS
+        .lock()
+        .iter()
+        .rev()
+        .find(|m| m.parent.as_ref().is_some_and(|q| q.same(p)))
+        .cloned()
+}
+
+/// Follow mounts stacked on `p`.
+fn cross_mounts(mut p: PathRef) -> PathRef {
+    while let Some(m) = mounted_on(&p) {
+        p = PathRef { dentry: m.root.clone(), mnt: m };
+    }
+    p
+}
+
+/// `..` of `p`, never above `root`.
+pub fn parent_of(root: &PathRef, p: &PathRef) -> PathRef {
+    let mut cur = p.clone();
+    loop {
+        if cur.same(root) {
+            return cur;
+        }
+        if !cur.is_mount_root() {
+            break;
+        }
+        match &cur.mnt.parent {
+            Some(mp) => cur = mp.clone(),
+            None => return cur,
+        }
+    }
+    match cur.dentry.parent() {
+        Some(d) => PathRef { mnt: cur.mnt.clone(), dentry: d },
+        None => cur,
+    }
+}
+
+/// Child `name` of directory `dir`, crossing into mounts.
+pub fn child_of(dir: &PathRef, name: &[u8]) -> KResult<PathRef> {
+    let d = dir.dentry.child(name)?;
+    Ok(cross_mounts(PathRef { mnt: dir.mnt.clone(), dentry: d }))
+}
+
+/// Absolute path of `p` as seen from the global root. Deleted entries get
+/// " (deleted)" appended, like Linux's d_path.
+pub fn path_of(p: &PathRef) -> Vec<u8> {
+    let root = root();
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    let mut cur = p.clone();
+    while !cur.same(&root) {
+        if cur.is_mount_root() {
+            match &cur.mnt.parent {
+                Some(mp) => {
+                    cur = mp.clone();
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let Some(parent) = cur.dentry.parent() else { break };
+        names.push(cur.dentry.name());
+        cur = PathRef { mnt: cur.mnt.clone(), dentry: parent };
+    }
+    let mut out = Vec::new();
+    for n in names.iter().rev() {
+        out.push(b'/');
+        out.extend_from_slice(n);
+    }
+    if out.is_empty() {
+        out.push(b'/');
+    }
+    if p.dentry.is_deleted() {
+        out.extend_from_slice(b" (deleted)");
+    }
+    out
+}
+
+pub fn path_string(p: &PathRef) -> String {
+    String::from_utf8_lossy(&path_of(p)).into_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Path resolution
+
+fn components(path: &[u8]) -> impl Iterator<Item = &[u8]> {
+    path.split(|&c| c == b'/').filter(|c| !c.is_empty())
+}
+
+/// Resolve `path` relative to `start` (absolute paths from the root).
+/// The last component is followed if it is a symlink only when `follow`.
+pub fn lookup(start: &PathRef, path: &[u8], follow: bool) -> KResult<PathRef> {
+    let mut depth = 0;
+    walk(&root(), start, path, follow, &mut depth)
+}
+
+fn walk(root: &PathRef, start: &PathRef, path: &[u8], follow: bool, depth: &mut u32) -> KResult<PathRef> {
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+    if path.len() >= PATH_MAX {
+        return Err(ENAMETOOLONG);
+    }
+    let mut cur = if path[0] == b'/' { root.clone() } else { start.clone() };
+    let trailing_slash = path.ends_with(b"/");
+    let comps: Vec<&[u8]> = components(path).collect();
+    for (i, &c) in comps.iter().enumerate() {
+        let last = i + 1 == comps.len();
+        if !cur.is_dir() {
+            return Err(ENOTDIR);
+        }
+        match c {
+            b"." => {}
+            b".." => cur = parent_of(root, &cur),
+            name => {
+                if name.len() > NAME_MAX {
+                    return Err(ENAMETOOLONG);
+                }
+                let next = child_of(&cur, name)?;
+                if next.inode().meta().file_type() == S_IFLNK && (!last || follow || trailing_slash) {
+                    *depth += 1;
+                    if *depth > MAX_SYMLINKS {
+                        return Err(ELOOP);
+                    }
+                    let target = next.inode().readlink()?;
+                    cur = walk(root, &cur, &target, true, depth)?;
+                } else {
+                    cur = next;
+                }
+            }
+        }
+    }
+    if trailing_slash && !cur.is_dir() {
+        return Err(ENOTDIR);
+    }
+    Ok(cur)
+}
+
+/// Resolve all but the last component: (directory, last name). The last
+/// name is "." or ".." for paths like "/" or "a/..", which callers reject
+/// as appropriate. A trailing slash is reported in the third field.
+pub fn lookup_parent(start: &PathRef, path: &[u8]) -> KResult<(PathRef, Vec<u8>, bool)> {
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+    if path.len() >= PATH_MAX {
+        return Err(ENAMETOOLONG);
+    }
+    let trailing = path.ends_with(b"/");
+    let mut end = path.len();
+    while end > 0 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    if end == 0 {
+        return Ok((root(), b".".to_vec(), true));
+    }
+    let trimmed = &path[..end];
+    let (dir, name) = match trimmed.iter().rposition(|&c| c == b'/') {
+        Some(i) => (&path[..i + 1], &trimmed[i + 1..]),
+        None => (&b"."[..], trimmed),
+    };
+    if name.len() > NAME_MAX {
+        return Err(ENAMETOOLONG);
+    }
+    let d = if dir == b"." { start.clone() } else { lookup(start, dir, true)? };
+    if !d.is_dir() {
+        return Err(ENOTDIR);
+    }
+    Ok((d, name.to_vec(), trailing))
+}
+
+// ---------------------------------------------------------------------------
+// Namespace operations (keep the dentry cache in sync)
+
+fn check_name(name: &[u8]) -> KResult<()> {
+    if name == b"." || name == b".." {
+        Err(EEXIST)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathRef> {
+    check_name(name)?;
+    let inode = dir.inode().create(name, mode, rdev)?;
+    Ok(PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) })
+}
+
+pub fn symlink(dir: &PathRef, name: &[u8], target: &[u8]) -> KResult<()> {
+    check_name(name)?;
+    if target.is_empty() {
+        return Err(ENOENT);
+    }
+    let inode = dir.inode().symlink(name, target)?;
+    dir.dentry.attach(name, inode);
+    Ok(())
+}
+
+pub fn link(old: &PathRef, dir: &PathRef, name: &[u8]) -> KResult<()> {
+    check_name(name)?;
+    if !Arc::ptr_eq(&old.mnt, &dir.mnt) {
+        return Err(EXDEV);
+    }
+    if old.is_dir() {
+        return Err(EPERM);
+    }
+    dir.inode().link(name, old.inode())?;
+    dir.dentry.attach(name, old.inode().clone());
+    Ok(())
+}
+
+pub fn unlink(dir: &PathRef, name: &[u8], rmdir: bool) -> KResult<()> {
+    match name {
+        b"." => return Err(EINVAL),
+        b".." => return Err(ENOTEMPTY),
+        _ => {}
+    }
+    let target = child_of(dir, name)?;
+    if !Arc::ptr_eq(&target.mnt, &dir.mnt) || mounted_on(&target).is_some() {
+        return Err(EBUSY);
+    }
+    dir.inode().unlink(name, rmdir)?;
+    dir.dentry.forget(name);
+    Ok(())
+}
+
+pub fn rename(old_dir: &PathRef, old: &[u8], new_dir: &PathRef, new: &[u8], flags: u32) -> KResult<()> {
+    if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE) != 0
+        || flags & RENAME_NOREPLACE != 0 && flags & RENAME_EXCHANGE != 0
+    {
+        return Err(EINVAL);
+    }
+    if matches!(old, b"." | b"..") || matches!(new, b"." | b"..") {
+        return Err(EBUSY);
+    }
+    if !Arc::ptr_eq(&old_dir.mnt, &new_dir.mnt) {
+        return Err(EXDEV);
+    }
+    let src = child_of(old_dir, old)?;
+    if !Arc::ptr_eq(&src.mnt, &old_dir.mnt) || mounted_on(&src).is_some() {
+        return Err(EBUSY);
+    }
+    let dst = match child_of(new_dir, new) {
+        Ok(d) => Some(d),
+        Err(ENOENT) => None,
+        Err(e) => return Err(e),
+    };
+    if let Some(d) = &dst {
+        if Arc::ptr_eq(d.inode(), src.inode()) {
+            return Ok(());
+        }
+        if !Arc::ptr_eq(&d.mnt, &new_dir.mnt) || mounted_on(d).is_some() {
+            return Err(EBUSY);
+        }
+    }
+    // A directory cannot move below itself (nor, when exchanging, the other).
+    if src.is_dir() && new_dir.dentry.is_descendant_of(&src.dentry) {
+        return Err(EINVAL);
+    }
+    if flags & RENAME_EXCHANGE != 0
+        && let Some(d) = &dst
+        && d.is_dir()
+        && old_dir.dentry.is_descendant_of(&d.dentry)
+    {
+        return Err(EINVAL);
+    }
+    old_dir.inode().rename(old, new_dir.inode(), new, flags)?;
+    if flags & RENAME_EXCHANGE != 0 {
+        // Swap the two cached dentries through a temporary name.
+        let tmp = b"\0rename-exchange";
+        new_dir.dentry.moved(new, &new_dir.dentry, tmp);
+        old_dir.dentry.moved(old, &new_dir.dentry, new);
+        new_dir.dentry.moved(tmp, &old_dir.dentry, old);
+    } else {
+        new_dir.dentry.forget(new);
+        old_dir.dentry.moved(old, &new_dir.dentry, new);
+    }
+    Ok(())
+}

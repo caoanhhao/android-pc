@@ -3,7 +3,7 @@
 //! - `Task`: a schedulable thread with its kernel stack, saved context,
 //!   user FPU/FS/GS state, address space and per-thread signal state.
 //! - `Process`: what threads of a group share: pid, signal actions and
-//!   process-wide pending signals, the fd table.
+//!   process-wide pending signals, the fd table, cwd/umask, executable.
 //! - `TABLE`: the global process tree (parent/children, threads, zombies)
 //!   and the tid -> task map, under one lock.
 //!
@@ -27,6 +27,7 @@ use x86_64::registers::model_specific::{FsBase, KernelGsBase};
 use crate::arch::x86_64::entry;
 use crate::arch::{FpuState, TrapFrame};
 use crate::fs::file::FdTable;
+use crate::fs::vfs::PathRef;
 use crate::mm::kstack::KernelStack;
 use crate::mm::user::AddressSpace;
 use crate::sched;
@@ -131,10 +132,22 @@ impl Task {
     }
 }
 
+/// File system context: working directory and umask.
+#[derive(Clone)]
+pub struct FsContext {
+    pub cwd: PathRef,
+    pub umask: u32,
+}
+
 pub struct Process {
     pub pid: u32,
     pub sig: Mutex<ProcessSignals>,
     pub files: Mutex<Arc<FdTable>>,
+    pub fs: Mutex<FsContext>,
+    /// The executable (for /proc/<pid>/exe and maps).
+    pub exe: Mutex<Option<PathRef>>,
+    /// argv joined by NULs (/proc/<pid>/cmdline).
+    pub cmdline: Mutex<Vec<u8>>,
     /// Signal sent to the parent on exit (SIGCHLD for fork; 0 for none).
     pub exit_signal: u32,
     /// Set when a vfork child execs or exits (releases the parent).
@@ -143,11 +156,14 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn new(pid: u32, files: Arc<FdTable>, sig: ProcessSignals, exit_signal: u32) -> Arc<Process> {
+    pub fn new(pid: u32, files: Arc<FdTable>, fs: FsContext, sig: ProcessSignals, exit_signal: u32) -> Arc<Process> {
         Arc::new(Process {
             pid,
             sig: Mutex::new(sig),
             files: Mutex::new(files),
+            fs: Mutex::new(fs),
+            exe: Mutex::new(None),
+            cmdline: Mutex::new(Vec::new()),
             exit_signal,
             vfork_done: AtomicBool::new(false),
             comm: Mutex::new([0; 16]),
@@ -156,6 +172,21 @@ impl Process {
 
     pub fn files(&self) -> Arc<FdTable> {
         self.files.lock().clone()
+    }
+
+    pub fn cwd(&self) -> PathRef {
+        self.fs.lock().cwd.clone()
+    }
+
+    /// Record what execve (or the boot) started: executable and argv.
+    pub fn set_exec(&self, exe: PathRef, argv: &[Vec<u8>]) {
+        *self.exe.lock() = Some(exe);
+        let mut c = Vec::new();
+        for a in argv {
+            c.extend_from_slice(a);
+            c.push(0);
+        }
+        *self.cmdline.lock() = c;
     }
 
     pub fn set_comm(&self, name: &[u8]) {
@@ -225,7 +256,8 @@ pub fn start_init(path: &[u8], args: &[&[u8]]) {
         .iter()
         .map(|e| e.to_vec())
         .collect();
-    let image = match lifecycle::load_executable(path, &argv, &envp) {
+    let root = crate::fs::vfs::root();
+    let (image, exe) = match lifecycle::load_executable(&root, path, &argv, &envp) {
         Ok(i) => i,
         Err(e) => {
             log::error!(
@@ -242,8 +274,10 @@ pub fn start_init(path: &[u8], args: &[&[u8]]) {
     }
     let mut table = TABLE.lock();
     let pid = table.alloc_pid();
-    let proc = Process::new(pid, files, ProcessSignals::default(), 0);
+    let fs = FsContext { cwd: root, umask: 0o022 };
+    let proc = Process::new(pid, files, fs, ProcessSignals::default(), 0);
     proc.set_comm(lifecycle::basename(path));
+    proc.set_exec(exe, &argv);
     let frame = TrapFrame::new_user(image.entry, image.sp);
     let task = Task::new(pid, proc.clone(), image.mm, &frame).expect("no memory for init");
     table.tasks.insert(pid, task.clone());

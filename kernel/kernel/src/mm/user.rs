@@ -346,6 +346,18 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Every VMA as (start, end, prot), for /proc/<pid>/maps.
+    pub fn vma_list(&self) -> Vec<(u64, u64, u32)> {
+        let inner = self.inner.lock();
+        inner.vmas.iter().map(|(&s, v)| (s, v.end, v.prot)).collect()
+    }
+
+    /// (start, current) of the brk heap.
+    pub fn brk_range(&self) -> (u64, u64) {
+        let inner = self.inner.lock();
+        (inner.brk_start, inner.brk)
+    }
+
     pub fn set_brk_start(&self, start: u64) {
         let mut inner = self.inner.lock();
         inner.brk_start = start;

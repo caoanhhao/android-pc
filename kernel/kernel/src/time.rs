@@ -46,6 +46,10 @@ pub fn set_tsc_hz(hz: u64) {
     log::info!("TSC: {} MHz", hz / 1_000_000);
 }
 
+pub fn tsc_hz() -> u64 {
+    TSC_HZ.load(Ordering::Relaxed)
+}
+
 pub fn set_boot_epoch(secs: i64) {
     BOOT_EPOCH.store(secs, Ordering::Relaxed);
 }

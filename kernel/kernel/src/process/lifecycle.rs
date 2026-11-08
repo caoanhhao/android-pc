@@ -9,6 +9,7 @@ use super::signal::{self, bit};
 use super::{ProcNode, Process, TABLE, Task, current, elf, futex};
 use crate::arch::{FpuState, TrapFrame};
 use crate::errno::*;
+use crate::fs::vfs::{self, PathRef};
 use crate::sched::{self, Wake, WaitMode};
 
 pub const CSIGNAL: u64 = 0xff;
@@ -34,14 +35,16 @@ pub fn basename(path: &[u8]) -> &[u8] {
     path.rsplit(|&c| c == b'/').next().unwrap_or(path)
 }
 
-/// Look up an executable and load it into a new address space.
-pub fn load_executable(path: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<elf::Image> {
-    let node = crate::fs::lookup(path)?;
-    if node.is_dir() || !node.is_reg() || node.mode & 0o111 == 0 {
+/// Look up an executable (relative to `cwd`) and load it into a new
+/// address space. Returns the image and the resolved path.
+pub fn load_executable(cwd: &PathRef, path: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<(elf::Image, PathRef)> {
+    let p = vfs::lookup(cwd, path, true)?;
+    let meta = p.inode().meta();
+    if meta.file_type() != vfs::S_IFREG || meta.mode() & 0o111 == 0 {
         return Err(EACCES);
     }
-    let data = node.data.lock();
-    elf::load(data.bytes(), path, argv, envp)
+    let data = crate::fs::read_all(p.inode())?;
+    Ok((elf::load(&data, path, argv, envp)?, p))
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +86,11 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         } else {
             cur.process.files().duplicate()
         };
-        let p = Process::new(tid, files, cur.process.sig.lock().fork(), (flags & CSIGNAL) as u32);
+        let fs = cur.process.fs.lock().clone();
+        let p = Process::new(tid, files, fs, cur.process.sig.lock().fork(), (flags & CSIGNAL) as u32);
         *p.comm.lock() = *cur.process.comm.lock();
+        *p.exe.lock() = cur.process.exe.lock().clone();
+        *p.cmdline.lock() = cur.process.cmdline.lock().clone();
         p
     };
     let task = Task::new(tid, process.clone(), mm.clone(), &child_frame).ok_or(ENOMEM)?;
@@ -383,7 +389,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     let argv = read_string_array(&mm, argv, &mut total)?;
     let envp = read_string_array(&mm, envp, &mut total)?;
     drop(mm);
-    let image = load_executable(&path, &argv, &envp)?;
+    let (image, exe) = load_executable(&t.process.cwd(), &path, &argv, &envp)?;
 
     // Point of no return. Other threads of the group go away first.
     let others: Vec<Arc<Task>> = {
@@ -419,6 +425,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     }
     t.process.files().close_on_exec();
     t.process.set_comm(basename(&path));
+    t.process.set_exec(exe, &argv);
     t.clear_child_tid.store(0, Ordering::Relaxed);
     t.robust_list.store(0, Ordering::Relaxed);
     t.fs_base.store(0, Ordering::Relaxed);
