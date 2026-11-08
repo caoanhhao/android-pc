@@ -9,6 +9,7 @@
 //! Booting with `strace` on the kernel command line logs every syscall.
 
 pub mod fs;
+pub mod net;
 pub mod poll;
 pub mod time;
 
@@ -60,6 +61,21 @@ pub mod nr {
     pub const DUP2: u64 = 33;
     pub const NANOSLEEP: u64 = 35;
     pub const GETPID: u64 = 39;
+    pub const SOCKET: u64 = 41;
+    pub const CONNECT: u64 = 42;
+    pub const ACCEPT: u64 = 43;
+    pub const SENDTO: u64 = 44;
+    pub const RECVFROM: u64 = 45;
+    pub const SENDMSG: u64 = 46;
+    pub const RECVMSG: u64 = 47;
+    pub const SHUTDOWN: u64 = 48;
+    pub const BIND: u64 = 49;
+    pub const LISTEN: u64 = 50;
+    pub const GETSOCKNAME: u64 = 51;
+    pub const GETPEERNAME: u64 = 52;
+    pub const SOCKETPAIR: u64 = 53;
+    pub const SETSOCKOPT: u64 = 54;
+    pub const GETSOCKOPT: u64 = 55;
     pub const CLONE: u64 = 56;
     pub const FORK: u64 = 57;
     pub const VFORK: u64 = 58;
@@ -153,6 +169,7 @@ pub mod nr {
     pub const FALLOCATE: u64 = 285;
     pub const TIMERFD_SETTIME: u64 = 286;
     pub const TIMERFD_GETTIME: u64 = 287;
+    pub const ACCEPT4: u64 = 288;
     pub const SIGNALFD4: u64 = 289;
     pub const EVENTFD2: u64 = 290;
     pub const EPOLL_CREATE1: u64 = 291;
@@ -160,7 +177,9 @@ pub mod nr {
     pub const PIPE2: u64 = 293;
     pub const PREADV: u64 = 295;
     pub const PWRITEV: u64 = 296;
+    pub const RECVMMSG: u64 = 299;
     pub const SYNCFS: u64 = 306;
+    pub const SENDMMSG: u64 = 307;
     pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
     pub const MEMFD_CREATE: u64 = 319;
@@ -240,6 +259,24 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::DUP2 => fs::sys_dup3(i0, i1, 0, true),
         nr::NANOSLEEP => time::sys_nanosleep(a0, a1),
         nr::GETPID => Ok(current().pid() as u64),
+        nr::SOCKET => net::sys_socket(a0 as u32, a1 as u32, a2 as u32),
+        nr::SOCKETPAIR => net::sys_socketpair(a0 as u32, a1 as u32, a2 as u32, a3),
+        nr::CONNECT => net::sys_connect(i0, a1, a2 as u32),
+        nr::ACCEPT => net::sys_accept4(i0, a1, a2, 0),
+        nr::ACCEPT4 => net::sys_accept4(i0, a1, a2, a3 as u32),
+        nr::SENDTO => net::sys_sendto(i0, a1, a2, a3 as u32, a4, a5 as u32),
+        nr::RECVFROM => net::sys_recvfrom(i0, a1, a2, a3 as u32, a4, a5),
+        nr::SENDMSG => net::sys_sendmsg(i0, a1, a2 as u32),
+        nr::RECVMSG => net::sys_recvmsg(i0, a1, a2 as u32),
+        nr::SENDMMSG => net::sys_sendmmsg(i0, a1, a2 as u32, a3 as u32),
+        nr::RECVMMSG => net::sys_recvmmsg(i0, a1, a2 as u32, a3 as u32, a4),
+        nr::SHUTDOWN => net::sys_shutdown(i0, a1 as u32),
+        nr::BIND => net::sys_bind(i0, a1, a2 as u32),
+        nr::LISTEN => net::sys_listen(i0, a1 as i32),
+        nr::GETSOCKNAME => net::sys_getsockname(i0, a1, a2),
+        nr::GETPEERNAME => net::sys_getpeername(i0, a1, a2),
+        nr::SETSOCKOPT => net::sys_setsockopt(i0, a1 as i32, a2 as i32, a3, a4 as u32),
+        nr::GETSOCKOPT => net::sys_getsockopt(i0, a1 as i32, a2 as i32, a3, a4),
         nr::CLONE => lifecycle::sys_clone(frame, a0, a1, a2, a3, a4),
         nr::FORK => lifecycle::sys_clone(frame, signal::SIGCHLD as u64, 0, 0, 0, 0),
         nr::VFORK => lifecycle::sys_clone(

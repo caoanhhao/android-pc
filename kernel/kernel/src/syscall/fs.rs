@@ -183,7 +183,7 @@ pub fn sys_pwrite64(fd: i32, buf: u64, count: u64, off: i64) -> KResult<u64> {
     write_from(&*io_file(fd)?, buf, count, Some(off as u64))
 }
 
-fn iovecs(iov: u64, cnt: u64) -> KResult<Vec<(u64, u64)>> {
+pub(super) fn iovecs(iov: u64, cnt: u64) -> KResult<Vec<(u64, u64)>> {
     if cnt > 1024 {
         return Err(EINVAL);
     }
@@ -201,8 +201,16 @@ fn iovecs(iov: u64, cnt: u64) -> KResult<Vec<(u64, u64)>> {
 
 fn readv_at(fd: i32, iov: u64, cnt: u64, at: Option<u64>) -> KResult<u64> {
     let f = io_file(fd)?;
+    let iov = iovecs(iov, cnt)?;
+    // One receive per call on a socket: a datagram is not split over reads.
+    if let Ok(s) = crate::net::unix::socket_of(&f) {
+        if at.is_some() {
+            return Err(ESPIPE);
+        }
+        return super::net::readv(&f, &s, &iov);
+    }
     let mut total = 0;
-    for (base, len) in iovecs(iov, cnt)? {
+    for (base, len) in iov {
         if len == 0 {
             continue;
         }

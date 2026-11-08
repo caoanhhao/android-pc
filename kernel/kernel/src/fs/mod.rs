@@ -241,6 +241,7 @@ pub fn file_path(f: &OpenFile) -> Vec<u8> {
     let meta = f.inode.meta();
     match meta.file_type() {
         S_IFIFO => format!("pipe:[{}]", meta.ino).into_bytes(),
+        S_IFSOCK => format!("socket:[{}]", meta.ino).into_bytes(),
         S_IFCHR => b"/dev/console".to_vec(),
         _ => format!("anon_inode:[{}]", meta.ino).into_bytes(),
     }

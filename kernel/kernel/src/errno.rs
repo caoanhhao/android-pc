@@ -31,13 +31,27 @@ pub const EFBIG: Errno = Errno(27);
 pub const ENOSPC: Errno = Errno(28);
 pub const ESPIPE: Errno = Errno(29);
 pub const EPIPE: Errno = Errno(32);
+pub const EDOM: Errno = Errno(33);
 pub const ERANGE: Errno = Errno(34);
 pub const ENAMETOOLONG: Errno = Errno(36);
 pub const ENOSYS: Errno = Errno(38);
 pub const ENOTEMPTY: Errno = Errno(39);
 pub const ELOOP: Errno = Errno(40);
 pub const EOVERFLOW: Errno = Errno(75);
+pub const ENOTSOCK: Errno = Errno(88);
+pub const EMSGSIZE: Errno = Errno(90);
+pub const EPROTOTYPE: Errno = Errno(91);
+pub const ENOPROTOOPT: Errno = Errno(92);
+pub const EPROTONOSUPPORT: Errno = Errno(93);
+pub const ESOCKTNOSUPPORT: Errno = Errno(94);
 pub const EOPNOTSUPP: Errno = Errno(95);
+pub const EAFNOSUPPORT: Errno = Errno(97);
+pub const EADDRINUSE: Errno = Errno(98);
+pub const ECONNRESET: Errno = Errno(104);
+pub const ENOBUFS: Errno = Errno(105);
+pub const EISCONN: Errno = Errno(106);
+pub const ENOTCONN: Errno = Errno(107);
+pub const ECONNREFUSED: Errno = Errno(111);
 pub const ETIMEDOUT: Errno = Errno(110);
 /// Internal: restart the syscall if the signal handler has SA_RESTART
 /// (otherwise the task sees EINTR). Never reaches user space.
