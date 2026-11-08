@@ -76,6 +76,9 @@ pub const EADDRINUSE: i32 = 98;
 pub const ENOTCONN: i32 = 107;
 pub const ETIMEDOUT: i32 = 110;
 pub const ECONNREFUSED: i32 = 111;
+pub const EPROTONOSUPPORT: i32 = 93;
+pub const ENOKEY: i32 = 126;
+pub const EKEYREVOKED: i32 = 128;
 
 pub const O_RDONLY: i32 = 0;
 pub const O_WRONLY: i32 = 1;

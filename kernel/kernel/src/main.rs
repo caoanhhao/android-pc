@@ -25,6 +25,7 @@ mod net;
 mod process;
 mod random;
 mod sched;
+mod security;
 mod sync;
 mod syscall;
 mod testing;

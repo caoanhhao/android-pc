@@ -610,8 +610,56 @@ pub fn errname(r: isize) -> &'static str {
         EMSGSIZE => "EMSGSIZE",
         ENOTSOCK => "ENOTSOCK",
         EOPNOTSUPP => "EOPNOTSUPP",
+        EPROTONOSUPPORT => "EPROTONOSUPPORT",
+        ENOKEY => "ENOKEY",
+        EKEYREVOKED => "EKEYREVOKED",
         _ => "E?",
     }
+}
+
+/// True on the Rust kernel (uname release "...-android-pc").
+pub fn is_rust_kernel() -> bool {
+    let mut u = [0u8; 65 * 6];
+    unsafe { syscall!(63, u.as_mut_ptr()) };
+    u[65 * 2..65 * 3].windows(10).any(|w| w == b"android-pc")
+}
+
+/// Read up to buf.len() bytes of a file (negative errno on failure).
+pub fn read_file(path: *const u8, buf: &mut [u8]) -> isize {
+    let fd = open(path, O_RDONLY | O_CLOEXEC, 0);
+    if fd < 0 {
+        return fd;
+    }
+    let mut n = 0usize;
+    while n < buf.len() {
+        let r = read(fd as i32, &mut buf[n..]);
+        if r <= 0 {
+            break;
+        }
+        n += r as usize;
+    }
+    close(fd as i32);
+    n as isize
+}
+
+/// Open (O_WRONLY|O_TRUNC) and write `data` in one write call.
+pub fn write_file(path: *const u8, data: &[u8]) -> isize {
+    let fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC, 0);
+    if fd < 0 {
+        return fd;
+    }
+    let r = write(fd as i32, data);
+    close(fd as i32);
+    r
+}
+
+/// `b` without trailing newlines / NULs.
+pub fn trim(b: &[u8]) -> &[u8] {
+    let mut e = b.len();
+    while e > 0 && matches!(b[e - 1], b'\n' | 0 | b' ') {
+        e -= 1;
+    }
+    &b[..e]
 }
 
 /// Parse a decimal integer (optional leading '-').

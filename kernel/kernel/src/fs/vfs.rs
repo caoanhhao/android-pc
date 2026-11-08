@@ -267,6 +267,24 @@ pub trait Inode: Send + Sync + Any {
         Ok(Vec::new())
     }
 
+    /// Set (`Some`) or remove (`None`) an extended attribute; `flags` are
+    /// XATTR_CREATE / XATTR_REPLACE.
+    fn set_xattr(&self, _name: &[u8], _value: Option<&[u8]>, _flags: u32) -> KResult<()> {
+        Err(if self.read_only_fs() { EROFS } else { EOPNOTSUPP })
+    }
+
+    /// Procfs "magic links" (/proc/<pid>/fd/N, ns/*, exe, cwd): following
+    /// them reaches this target instead of resolving `readlink`'s text.
+    fn magic_link(&self) -> Option<KResult<MagicLink>> {
+        None
+    }
+
+    /// Extra mount options for /proc/mounts, asked of a mount's root inode
+    /// (cgroup controllers).
+    fn mount_options(&self) -> Option<alloc::string::String> {
+        None
+    }
+
     /// statfs numbers, asked of a mount's root inode (disk file systems).
     fn statfs(&self) -> Option<StatFs> {
         None
@@ -295,6 +313,13 @@ pub trait Inode: Send + Sync + Any {
     fn not_dir_or(&self, e: Errno) -> Errno {
         if self.meta().is_dir() { e } else { ENOTDIR }
     }
+}
+
+/// Where a magic link leads: a path, or an inode without one (memfd,
+/// pipe, socket, namespace file), which gets a fresh dentry.
+pub enum MagicLink {
+    Path(PathRef),
+    Inode(Arc<dyn Inode>),
 }
 
 /// An inode with no file system behind it (pipes, the boot console).
@@ -339,7 +364,7 @@ impl Dentry {
         Self::new(inode, b"/", None)
     }
 
-    fn new(inode: Arc<dyn Inode>, name: &[u8], parent: Option<Arc<Dentry>>) -> Arc<Dentry> {
+    pub fn new(inode: Arc<dyn Inode>, name: &[u8], parent: Option<Arc<Dentry>>) -> Arc<Dentry> {
         Arc::new(Dentry {
             inode,
             inner: Mutex::new(DentryInner {
@@ -439,8 +464,9 @@ impl Dentry {
 pub struct Mount {
     /// Root of what is mounted (a file system root, or a dentry for binds).
     pub root: Arc<Dentry>,
-    /// Where it is mounted; `None` for the root mount.
-    pub parent: Option<PathRef>,
+    /// Where it is mounted; `None` for the root mount. Changes with
+    /// MS_MOVE (see [`move_mount`]).
+    parent: Mutex<Option<PathRef>>,
     pub fstype: &'static str,
     pub source: Vec<u8>,
     /// MS_RDONLY (recorded, not enforced yet).
@@ -448,6 +474,38 @@ pub struct Mount {
 }
 
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
+/// Bumped on every change of the mount table (poll on /proc/mounts).
+static MOUNT_GEN: AtomicU64 = AtomicU64::new(0);
+static MOUNT_WQ: Once<Arc<crate::fs::poll::WaitQueue>> = Once::new();
+
+pub fn mount_generation() -> u64 {
+    MOUNT_GEN.load(Ordering::Relaxed)
+}
+
+pub fn mount_wait_queue() -> Arc<crate::fs::poll::WaitQueue> {
+    MOUNT_WQ.call_once(crate::fs::poll::WaitQueue::new).clone()
+}
+
+fn mounts_changed() {
+    MOUNT_GEN.fetch_add(1, Ordering::Relaxed);
+    if let Some(q) = MOUNT_WQ.get() {
+        q.wake(crate::fs::poll::POLLPRI | crate::fs::poll::POLLERR);
+    }
+}
+
+/// `p` is visible from `root` (its chain of mount points leads there).
+pub fn reachable(p: &PathRef, root: &PathRef) -> bool {
+    let mut m = p.mnt.clone();
+    loop {
+        if Arc::ptr_eq(&m, &root.mnt) {
+            return true;
+        }
+        match m.parent() {
+            Some(pp) => m = pp.mnt,
+            None => return false,
+        }
+    }
+}
 static ROOT: Once<PathRef> = Once::new();
 
 #[derive(Clone)]
@@ -469,8 +527,15 @@ impl PathRef {
         Arc::ptr_eq(&self.mnt, &other.mnt) && Arc::ptr_eq(&self.dentry, &other.dentry)
     }
 
-    fn is_mount_root(&self) -> bool {
+    pub fn is_mount_root(&self) -> bool {
         Arc::ptr_eq(&self.dentry, &self.mnt.root)
+    }
+}
+
+impl Mount {
+    /// The point this mount is attached to (`None` for the initial root).
+    pub fn parent(&self) -> Option<PathRef> {
+        self.parent.lock().clone()
     }
 }
 
@@ -478,7 +543,7 @@ impl PathRef {
 pub fn set_root(inode: Arc<dyn Inode>, fstype: &'static str) {
     let m = Arc::new(Mount {
         root: Dentry::new_root(inode),
-        parent: None,
+        parent: Mutex::new(None),
         fstype,
         source: b"rootfs".to_vec(),
         flags: 0,
@@ -487,8 +552,10 @@ pub fn set_root(inode: Arc<dyn Inode>, fstype: &'static str) {
     ROOT.call_once(|| PathRef { dentry: m.root.clone(), mnt: m });
 }
 
+/// The root directory: the initial root file system, or what was mounted
+/// (moved) on top of it, as after Android's switch_root.
 pub fn root() -> PathRef {
-    ROOT.get().expect("VFS root not mounted").clone()
+    cross_mounts(ROOT.get().expect("VFS root not mounted").clone())
 }
 
 /// Mount `root` on `at`.
@@ -498,12 +565,13 @@ pub fn mount(at: &PathRef, root: Arc<Dentry>, fstype: &'static str, source: &[u8
     }
     let m = Arc::new(Mount {
         root,
-        parent: Some(at.clone()),
+        parent: Mutex::new(Some(at.clone())),
         fstype,
         source: source.to_vec(),
         flags,
     });
     MOUNTS.lock().push(m);
+    mounts_changed();
     Ok(())
 }
 
@@ -513,16 +581,44 @@ pub fn umount(at: &PathRef) -> KResult<()> {
         return Err(EINVAL);
     }
     let mut mounts = MOUNTS.lock();
-    if at.mnt.parent.is_none() {
+    if at.mnt.parent().is_none() {
         return Err(EBUSY);
     }
     let busy = mounts
         .iter()
-        .any(|m| m.parent.as_ref().is_some_and(|p| Arc::ptr_eq(&p.mnt, &at.mnt)));
+        .any(|m| m.parent().is_some_and(|p| Arc::ptr_eq(&p.mnt, &at.mnt)));
     if busy {
         return Err(EBUSY);
     }
     mounts.retain(|m| !Arc::ptr_eq(m, &at.mnt));
+    drop(mounts);
+    mounts_changed();
+    Ok(())
+}
+
+/// MS_MOVE: attach the mount whose root is `from` at `to` instead. The
+/// mount keeps its identity (open files, cwds and mounts below it follow).
+/// Moving onto the root directory makes it the new root.
+pub fn move_mount(from: &PathRef, to: &PathRef) -> KResult<()> {
+    if !from.is_mount_root() || from.mnt.parent().is_none() {
+        return Err(EINVAL);
+    }
+    if !to.is_dir() {
+        return Err(ENOTDIR);
+    }
+    // Not below itself.
+    let mut cur = Some(to.clone());
+    while let Some(p) = cur {
+        if Arc::ptr_eq(&p.mnt, &from.mnt) {
+            return Err(ELOOP);
+        }
+        cur = p.mnt.parent();
+    }
+    {
+        let _g = MOUNTS.lock();
+        *from.mnt.parent.lock() = Some(to.clone());
+    }
+    mounts_changed();
     Ok(())
 }
 
@@ -537,7 +633,7 @@ fn mounted_on(p: &PathRef) -> Option<Arc<Mount>> {
         .lock()
         .iter()
         .rev()
-        .find(|m| m.parent.as_ref().is_some_and(|q| q.same(p)))
+        .find(|m| m.parent().is_some_and(|q| q.same(p)))
         .cloned()
 }
 
@@ -559,8 +655,8 @@ pub fn parent_of(root: &PathRef, p: &PathRef) -> PathRef {
         if !cur.is_mount_root() {
             break;
         }
-        match &cur.mnt.parent {
-            Some(mp) => cur = mp.clone(),
+        match cur.mnt.parent() {
+            Some(mp) => cur = mp,
             None => return cur,
         }
     }
@@ -584,9 +680,9 @@ pub fn path_of(p: &PathRef) -> Vec<u8> {
     let mut cur = p.clone();
     while !cur.same(&root) {
         if cur.is_mount_root() {
-            match &cur.mnt.parent {
+            match cur.mnt.parent() {
                 Some(mp) => {
-                    cur = mp.clone();
+                    cur = mp;
                     continue;
                 }
                 None => break,
@@ -651,7 +747,15 @@ fn walk(root: &PathRef, start: &PathRef, path: &[u8], follow: bool, depth: &mut 
                     return Err(ENAMETOOLONG);
                 }
                 let next = child_of(&cur, name)?;
-                if next.inode().meta().file_type() == S_IFLNK && (!last || follow || trailing_slash) {
+                if next.inode().meta().file_type() == S_IFLNK
+                    && (!last || follow || trailing_slash)
+                    && let Some(m) = next.inode().magic_link()
+                {
+                    cur = match m? {
+                        MagicLink::Path(p) => p,
+                        MagicLink::Inode(i) => PathRef { mnt: next.mnt.clone(), dentry: Dentry::new(i, name, Some(cur.dentry.clone())) },
+                    };
+                } else if next.inode().meta().file_type() == S_IFLNK && (!last || follow || trailing_slash) {
                     *depth += 1;
                     if *depth > MAX_SYMLINKS {
                         return Err(ELOOP);
@@ -717,6 +821,8 @@ fn check_name(name: &[u8]) -> KResult<()> {
 pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathRef> {
     check_name(name)?;
     let inode = dir.inode().create(name, mode, rdev)?;
+    crate::security::label_new_inode(&*inode, mode & S_IFMT == S_IFSOCK);
+    super::inotify::created(&**dir.inode(), name, &*inode);
     Ok(PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) })
 }
 
@@ -726,6 +832,8 @@ pub fn symlink(dir: &PathRef, name: &[u8], target: &[u8]) -> KResult<()> {
         return Err(ENOENT);
     }
     let inode = dir.inode().symlink(name, target)?;
+    crate::security::label_new_inode(&*inode, false);
+    super::inotify::created(&**dir.inode(), name, &*inode);
     dir.dentry.attach(name, inode);
     Ok(())
 }
@@ -739,6 +847,8 @@ pub fn link(old: &PathRef, dir: &PathRef, name: &[u8]) -> KResult<()> {
         return Err(EPERM);
     }
     dir.inode().link(name, old.inode())?;
+    super::inotify::created(&**dir.inode(), name, &**old.inode());
+    super::inotify::touched(&**old.inode(), None, super::inotify::IN_ATTRIB);
     dir.dentry.attach(name, old.inode().clone());
     Ok(())
 }
@@ -755,6 +865,7 @@ pub fn unlink(dir: &PathRef, name: &[u8], rmdir: bool) -> KResult<()> {
     }
     dir.inode().unlink(name, rmdir)?;
     dir.dentry.forget(name);
+    super::inotify::deleted(&**dir.inode(), name, &**target.inode());
     Ok(())
 }
 
@@ -799,6 +910,12 @@ pub fn rename(old_dir: &PathRef, old: &[u8], new_dir: &PathRef, new: &[u8], flag
         return Err(EINVAL);
     }
     old_dir.inode().rename(old, new_dir.inode(), new, flags)?;
+    if let Some(d) = &dst
+        && flags & RENAME_EXCHANGE == 0
+    {
+        super::inotify::deleted(&**new_dir.inode(), new, &**d.inode());
+    }
+    super::inotify::moved(&**old_dir.inode(), old, &**new_dir.inode(), new, &**src.inode());
     if flags & RENAME_EXCHANGE != 0 {
         // Swap the two cached dentries through a temporary name.
         let tmp = b"\0rename-exchange";

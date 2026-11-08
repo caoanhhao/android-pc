@@ -1,10 +1,13 @@
-//! Sockets. Only AF_UNIX exists so far (`unix`); every other address
-//! family is refused with EAFNOSUPPORT (AF_NETLINK for uevents comes in C3).
+//! Sockets: AF_UNIX (`unix`) and AF_NETLINK (`netlink`: kernel uevents,
+//! stubs for the other protocols); every other address family is refused
+//! with EAFNOSUPPORT.
 //!
-//! A socket is an open file whose `FileOps` is a [`unix::SocketFile`] and
+//! A socket is an open file whose `FileOps` is a [`unix::SocketFile`] (or
+//! [`netlink::NetlinkFile`]) and
 //! whose inode is an anonymous S_IFSOCK inode (`socket:[ino]` in
 //! /proc/<pid>/fd). The syscalls are in `syscall/net.rs`.
 
+pub mod netlink;
 pub mod unix;
 
 pub const AF_UNSPEC: u16 = 0;

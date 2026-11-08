@@ -163,6 +163,10 @@ pub struct Process {
     pub signalfd_wq: Arc<WaitQueue>,
     /// Resource limits, nice value, personality, ... (inherited by fork).
     pub attrs: Mutex<Attrs>,
+    /// SELinux contexts (/proc/<pid>/attr/*).
+    pub sec: Mutex<crate::security::SecAttrs>,
+    /// cgroup membership per hierarchy (`fs::cgroupfs`).
+    pub cgroups: Mutex<crate::fs::cgroupfs::Membership>,
 }
 
 pub const RLIM_NLIMITS: usize = 16;
@@ -181,6 +185,12 @@ pub struct Attrs {
     pub dumpable: bool,
     pub no_new_privs: bool,
     pub keepcaps: bool,
+    pub securebits: u32,
+    pub pdeathsig: i32,
+    pub timerslack: u64,
+    pub subreaper: bool,
+    pub ioprio: u32,
+    pub oom_score_adj: i32,
 }
 
 impl Default for Attrs {
@@ -190,13 +200,22 @@ impl Default for Attrs {
         rlimits[3] = (8 << 20, INF); // STACK
         rlimits[4] = (0, INF); // CORE
         rlimits[6] = (4096, 4096); // NPROC
-        rlimits[7] = (crate::fs::file::MAX_FDS as u64, crate::fs::file::MAX_FDS as u64); // NOFILE
+        rlimits[7] = (crate::fs::file::DEFAULT_NOFILE, crate::fs::file::DEFAULT_NOFILE); // NOFILE
         rlimits[8] = (8 << 20, 8 << 20); // MEMLOCK
         rlimits[11] = (4096, 4096); // SIGPENDING
         rlimits[12] = (819200, 819200); // MSGQUEUE
         rlimits[13] = (0, 0); // NICE
         rlimits[14] = (0, 0); // RTPRIO
-        Attrs { rlimits, nice: 0, personality: 0, policy: 0, rt_priority: 0, dumpable: true, no_new_privs: false, keepcaps: false }
+        Attrs { rlimits, nice: 0, personality: 0, policy: 0, rt_priority: 0, dumpable: true,
+            no_new_privs: false,
+            keepcaps: false,
+            securebits: 0,
+            pdeathsig: 0,
+            timerslack: 50_000,
+            subreaper: false,
+            ioprio: 4,
+            oom_score_adj: 0,
+        }
     }
 }
 
@@ -215,6 +234,8 @@ impl Process {
             comm: Mutex::new([0; 16]),
             signalfd_wq: WaitQueue::new(),
             attrs: Mutex::new(Attrs::default()),
+            sec: Mutex::new(crate::security::SecAttrs::default()),
+            cgroups: Mutex::new(Default::default()),
         })
     }
 

@@ -61,6 +61,8 @@ pub const ECONNREFUSED: Errno = Errno(111);
 pub const ETIMEDOUT: Errno = Errno(110);
 /// EFSCORRUPTED in Linux file systems.
 pub const EUCLEAN: Errno = Errno(117);
+pub const ENOKEY: Errno = Errno(126);
+pub const EKEYREVOKED: Errno = Errno(128);
 /// Internal: restart the syscall if the signal handler has SA_RESTART
 /// (otherwise the task sees EINTR). Never reaches user space.
 pub const ERESTARTSYS: Errno = Errno(512);

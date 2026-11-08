@@ -24,6 +24,17 @@
 #                                     image and every file's md5 is checked
 #                                     against the host (aosp-sh-test.py
 #                                     --suite disk)
+#   tools/run-qemu.sh --aosp-init     unmodified AOSP /init (init_boot.img's
+#                                     ramdisk + our first-stage fstab,
+#                                     tools/mkaosp-init-initramfs.py) with
+#                                     super.img as vda: first stage mounts
+#                                     system/vendor via dm-linear, second
+#                                     stage runs init.rc; interactive
+#   tools/run-qemu.sh --aosp-init-test
+#                                     the same, checked by
+#                                     tools/aosp-init-test.py: boot
+#                                     milestones on the serial log, then
+#                                     getprop/setprop in init's console shell
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Options: --release, --bios (legacy BIOS instead of UEFI), --no-kvm,
@@ -68,6 +79,8 @@ while [[ $# -gt 0 ]]; do
         --aosp-sh-test) mode=aosp-test ;;
         --aosp) mode=aosp ;;
         --aosp-disk-test) mode=aosp-disk-test ;;
+        --aosp-init) mode=aosp-init ;;
+        --aosp-init-test) mode=aosp-init-test ;;
         --ktest)
             mode=ktest
             while [[ $# -gt 1 && $2 != -* ]]; do ktest_filters+=("$2"); shift; done ;;
@@ -109,6 +122,39 @@ if [[ $mode == aosp-disk-test ]]; then
     [[ ${#disks[@]} -eq 0 ]] && disks=("$product/super.img")
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
+fi
+if [[ $mode == aosp-init || $mode == aosp-init-test ]]; then
+    aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
+    product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
+    python3 "$ROOT/tools/mkaosp-init-initramfs.py" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/aosp-init-initramfs.cpio"
+    # Read-only: first-stage init only reads the dynamic partitions.
+    [[ ${#disks[@]} -eq 0 ]] && disks=("$product/super.img")
+    # The disk is PCI 00:04.0 (see the -device loop below), so it is the
+    # boot device and vda is "super". Bootconfig values live on the
+    # command line; /proc/bootconfig shows the androidboot.* ones.
+    boot_args="init=/init androidboot.hardware=cutf_cvm androidboot.fstab_suffix=rustpc"
+    boot_args+=" androidboot.slot_suffix=_a androidboot.force_normal_boot=0"
+    boot_args+=" androidboot.boot_devices=pci0000:00/0000:00:04.0 androidboot.partition_map=vda,super"
+    boot_args+=" androidboot.selinux=permissive androidboot.verifiedbootstate=orange"
+    boot_args+=" androidboot.veritymode=disabled androidboot.dynamic_partitions=true"
+    boot_args+=" androidboot.serialno=RUSTPC000001 androidboot.console=ttyS0 printk.devkmsg=on"
+    boot_args+=" androidboot.hardware.gralloc=minigbm androidboot.hardware.hwcomposer=ranchu"
+    boot_args+=" androidboot.hardware.egl=angle androidboot.hardware.vulkan=pastel androidboot.lcd_density=320"
+    boot_args+=" androidboot.setupwizard_mode=DISABLED androidboot.hw_timeout_multiplier=3"
+    boot_args+=" androidboot.hypervisor.vm.supported=0 androidboot.hypervisor.protected_vm.supported=0"
+    # Cuttlefish picks one of several vendor APEX variants per module
+    # (the values cvd-1's bootconfig uses); apexd aborts on duplicates.
+    v="androidboot.vendor.apex"
+    boot_args+=" $v.com.android.hardware.gatekeeper=com.android.hardware.gatekeeper.nonsecure"
+    boot_args+=" $v.com.android.hardware.keymint=com.android.hardware.keymint.rust_nonsecure"
+    boot_args+=" $v.com.android.hardware.graphics.composer=com.android.hardware.graphics.composer.ranchu"
+    boot_args+=" $v.com.android.hardware.secure_element=com.android.hardware.secure_element"
+    boot_args+=" $v.com.android.hardware.strongbox=none $v.com.google.cf.disabled=none"
+    boot_args+=" $v.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal"
+    append="$boot_args $append"
+    [[ $timeout == 120 ]] && timeout=300
+    [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
     if [[ -z $initrd ]]; then
@@ -224,8 +270,10 @@ for i in "${!disks[@]}"; do
     [[ -f $file ]] || { echo "run-qemu.sh: no such disk image $file" >&2; exit 2; }
     # file.locking=off: images shared with a running VM (Cuttlefish) are
     # only ever opened read-only or through a snapshot here.
+    # Fixed PCI slots from 00:04.0 on, so sysfs paths (and Android's
+    # androidboot.boot_devices) are stable.
     args+=(-drive "file=$file,format=raw,if=none,id=disk$i,readonly=$ro,snapshot=$snap,file.locking=off"
-           -device "virtio-blk-pci,drive=disk$i$modern")
+           -device "virtio-blk-pci,drive=disk$i,addr=$(printf '0x%x' $((4 + i)))$modern")
 done
 
 if [[ $mode == ktest ]]; then
@@ -251,6 +299,15 @@ elif [[ $mode == aosp-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP shell test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-init-test ]]; then
+    log="$work/aosp-init-test.log"
+    args+=(-display none -serial stdio)
+    if timeout --foreground $((timeout + 60)) python3 "$ROOT/tools/aosp-init-test.py" --log "$log" \
+        --boot-timeout "$timeout" "${sh_args[@]}" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP init test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display none -serial stdio)

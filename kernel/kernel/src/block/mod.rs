@@ -11,9 +11,12 @@
 //!
 //! Registering a device creates its node in devtmpfs (`/dev/block/<name>`,
 //! plus `/dev/block/by-name/<partname>` for named GPT partitions) and its
-//! sysfs directory (`/sys/block/<disk>[/<part>]` with dev, size, ro, start,
-//! partition, uevent, queue/*; `/sys/class/block/<name>` and
-//! `/sys/dev/block/<maj>:<min>` symlinks).
+//! sysfs directory below /sys/devices (virtio disks under their PCI
+//! function, `.../virtioN/block/vda[/vda1]`; loop and dm under
+//! `virtual/block/`) with dev, size, ro, start, partition, uevent,
+//! queue/*, and the `/sys/block/<disk>`, `/sys/class/block/<name>` and
+//! `/sys/dev/block/<maj>:<min>` symlinks. Registering and removing a
+//! device sends "add"/"remove" uevents (`fs::sysfs`).
 //!
 //! Device numbers: virtio disks 254:(16 * disk + part) with partitions past
 //! 15 on 259:n (Linux's blkext), loop 7:n, device-mapper 253:n. Control
@@ -37,8 +40,9 @@ use spin::Mutex;
 
 use crate::errno::*;
 use crate::fs::file::{FileOps, OpenFile};
+use crate::fs::sysfs;
 use crate::fs::tmpfs::{Data, TmpInode};
-use crate::fs::vfs::{self, Inode, S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG, encode_dev};
+use crate::fs::vfs::{self, Inode, S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, encode_dev};
 
 pub const SECTOR: u64 = 512;
 
@@ -84,6 +88,8 @@ pub struct BlockDev {
     pub start_sector: u64,
     /// GPT partition name (PARTNAME).
     pub partname: Option<String>,
+    /// sysfs directory of the hardware device (disks), relative to /sys.
+    pub sysdev: Option<String>,
     /// Open file descriptions (BLKRRPART / LOOP_CLR_FD / DM remove checks).
     pub opens: AtomicU32,
     /// Holders: mounted file systems and dm tables using this device.
@@ -103,6 +109,7 @@ impl BlockDev {
             partno: 0,
             start_sector: 0,
             partname: None,
+            sysdev: None,
             opens: AtomicU32::new(0),
             holders: AtomicU32::new(0),
         }
@@ -153,9 +160,10 @@ impl BlockDev {
 
     /// The directory of this device below /sys (without the /sys).
     pub fn sysfs_path(&self) -> String {
-        match self.parent.as_ref().and_then(Weak::upgrade) {
-            Some(p) => format!("block/{}/{}", p.name, self.name),
-            None => format!("block/{}", self.name),
+        match (self.parent.as_ref().and_then(Weak::upgrade), &self.sysdev) {
+            (Some(p), _) => format!("{}/{}", p.sysfs_path(), self.name),
+            (None, Some(dev)) => format!("{dev}/block/{}", self.name),
+            (None, None) => format!("devices/virtual/block/{}", self.name),
         }
     }
 
@@ -238,7 +246,10 @@ pub fn register(dev: Arc<BlockDev>) {
     sysfs_set(&path, "dev", &format!("{}:{}\n", dev.major, dev.minor));
     sysfs_set(&path, "size", &format!("{}\n", dev.size() / SECTOR));
     sysfs_set(&path, "ro", &format!("{}\n", dev.read_only() as u8));
-    sysfs_set(&path, "uevent", &dev.uevent());
+    let _ = sysfs::dir(&format!("{path}/holders"));
+    if dev.parent.is_none() {
+        let _ = sysfs::dir(&format!("{path}/slaves"));
+    }
     if dev.parent.is_some() {
         sysfs_set(&path, "partition", &format!("{}\n", dev.partno));
         sysfs_set(&path, "start", &format!("{}\n", dev.start_sector));
@@ -255,13 +266,25 @@ pub fn register(dev: Arc<BlockDev>) {
             ("read_ahead_kb", "128"),
             ("discard_granularity", "0"),
             ("discard_max_bytes", "0"),
+            ("scheduler", "[none]"),
+            ("nr_requests", "128"),
+            ("max_sectors_kb", "1280"),
+            ("add_random", "0"),
+            ("iostats", "1"),
+            ("nomerges", "0"),
+            ("rq_affinity", "1"),
+            ("zoned", "none"),
         ] {
-            sysfs_set(&q, f, &format!("{v}\n"));
+            sysfs::set_rw(&q, f, &format!("{v}\n"));
         }
     }
-    let rel = format!("../../{path}");
-    sysfs_symlink("class/block", &dev.name, &rel);
-    sysfs_symlink("dev/block", &format!("{}:{}", dev.major, dev.minor), &rel);
+    sysfs::symlink("class/block", &dev.name, &sysfs::relative("class/block", &path));
+    sysfs::symlink("dev/block", &format!("{}:{}", dev.major, dev.minor), &sysfs::relative("dev/block", &path));
+    if dev.parent.is_none() {
+        sysfs::symlink("block", &dev.name, &sysfs::relative("block", &path));
+    }
+    // Last, so a listener that sees "add" finds the whole directory.
+    sysfs::add_device(&path, "block", "class/block", dev.uevent(), true);
     log::info!(
         "block: {} {}:{} {} MiB{}{}",
         dev.name,
@@ -284,9 +307,12 @@ pub fn unregister(dev: &BlockDev) {
             let _ = byname.unlink(n.as_bytes(), false);
         }
     }
-    sysfs_remove(&dev.sysfs_path());
-    sysfs_remove(&format!("class/block/{}", dev.name));
-    sysfs_remove(&format!("dev/block/{}:{}", dev.major, dev.minor));
+    sysfs::remove_device(&dev.sysfs_path());
+    sysfs::remove(&format!("class/block/{}", dev.name));
+    sysfs::remove(&format!("dev/block/{}:{}", dev.major, dev.minor));
+    if dev.parent.is_none() {
+        sysfs::remove(&format!("block/{}", dev.name));
+    }
 }
 
 /// The partitions registered on `disk`.
@@ -349,14 +375,6 @@ fn mkdir(dir: &Arc<TmpInode>, name: &[u8]) -> Option<Arc<TmpInode>> {
     }
 }
 
-/// Walk (creating) `path` below `root`.
-fn mkdir_p(root: &Arc<TmpInode>, path: &str) -> Option<Arc<TmpInode>> {
-    let mut d = root.clone();
-    for c in path.split('/').filter(|c| !c.is_empty()) {
-        d = mkdir(&d, c.as_bytes())?;
-    }
-    Some(d)
-}
 
 /// A directory in devtmpfs (created if needed).
 fn devtmpfs_dir(name: &[u8]) -> Option<Arc<TmpInode>> {
@@ -376,39 +394,12 @@ pub fn populate_devtmpfs(root: &Arc<TmpInode>) {
 
 /// Write the sysfs file `<dir>/<name>` (creating directories).
 pub fn sysfs_set(dir: &str, name: &str, contents: &str) {
-    if let Some(d) = mkdir_p(&crate::fs::sysfs_root(), dir) {
-        let _ = d.replace(name.as_bytes(), S_IFREG | 0o444, 0, Some(Data::Owned(contents.as_bytes().to_vec())));
-    }
-}
-
-fn sysfs_symlink(dir: &str, name: &str, target: &str) {
-    if let Some(d) = mkdir_p(&crate::fs::sysfs_root(), dir) {
-        let _ = d.replace(name.as_bytes(), S_IFLNK | 0o777, 0, Some(Data::Owned(target.as_bytes().to_vec())));
-    }
+    sysfs::set(dir, name, contents);
 }
 
 /// Remove a sysfs file or directory tree.
 pub fn sysfs_remove(path: &str) {
-    let root = crate::fs::sysfs_root();
-    let (dir, name) = match path.rsplit_once('/') {
-        Some((d, n)) => (mkdir_p(&root, d), n),
-        None => (Some(root), path),
-    };
-    let Some(dir) = dir else { return };
-    remove_tree(&dir, name.as_bytes());
-}
-
-fn remove_tree(dir: &Arc<TmpInode>, name: &[u8]) {
-    if let Some(child) = dir.get(name)
-        && child.meta().is_dir()
-        && let Ok(entries) = child.entries()
-    {
-        for e in entries {
-            remove_tree(&child, &e.name);
-        }
-    }
-    let is_dir = dir.get(name).is_some_and(|c| c.meta().is_dir());
-    let _ = dir.unlink(name, is_dir);
+    sysfs::remove(path);
 }
 
 /// /proc/partitions.

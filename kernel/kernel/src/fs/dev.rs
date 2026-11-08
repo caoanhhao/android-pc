@@ -14,6 +14,7 @@
 //! | /dev/tty        | 5:0         | the serial console                   |
 //! | /dev/console    | 5:1         | the serial console                   |
 //! | /dev/ttyS0      | 4:64        | the serial console                   |
+//! | /dev/ptmx, /dev/pts/N | 5:2, 136:N | pseudo-terminals (`fs::pty`)    |
 //! | binderfs nodes  | 244:n       | binder devices (`drivers::binder`)   |
 //! | /dev/device-mapper, /dev/mapper/control | 10:236 | dm control (`block::dm`) |
 //! | /dev/loop-control | 10:237    | loop control (`block::loop_dev`)     |
@@ -124,6 +125,8 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (1, 7) => Dev::Full,
         (1, 8) | (1, 9) => Dev::Random,
         (1, 11) => Dev::Kmsg,
+        (5, 2) => return super::pty::open_master(),
+        (super::pty::PTS_MAJOR, n) => return super::pty::open_slave(n),
         (5, 0) | (5, 1) | (4, _) => Dev::Console,
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
         (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
@@ -142,7 +145,7 @@ pub fn console() -> Arc<OpenFile> {
 /// A new devtmpfs instance with the standard nodes.
 pub fn new_devtmpfs() -> Arc<TmpInode> {
     let root = TmpInode::new_fs(0o755);
-    let nodes: [(&[u8], u32, u32, u32); 9] = [
+    let nodes: [(&[u8], u32, u32, u32); 10] = [
         (b"null", 0o666, 1, 3),
         (b"zero", 0o666, 1, 5),
         (b"full", 0o666, 1, 7),
@@ -152,6 +155,7 @@ pub fn new_devtmpfs() -> Arc<TmpInode> {
         (b"tty", 0o666, 5, 0),
         (b"console", 0o600, 5, 1),
         (b"ttyS0", 0o660, 4, 64),
+        (b"ptmx", 0o666, 5, 2),
     ];
     for (name, perm, major, minor) in nodes {
         let _ = root.add(name, S_IFCHR | perm, encode_dev(major, minor), None);

@@ -399,3 +399,124 @@ pub fn sys_rt_sigqueueinfo(tgid: i32, tid: i32, sig: u32, uinfo: u64) -> KResult
     }
     Ok(0)
 }
+
+// ---------------------------------------------------------------------------
+// Namespaces, host name, kernel log, I/O priority
+
+static HOSTNAME: spin::Mutex<alloc::vec::Vec<u8>> = spin::Mutex::new(alloc::vec::Vec::new());
+static DOMAINNAME: spin::Mutex<alloc::vec::Vec<u8>> = spin::Mutex::new(alloc::vec::Vec::new());
+
+/// uname's nodename and domainname ("android-pc" / "(none)" until set).
+pub fn uts_names() -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>) {
+    let h = HOSTNAME.lock().clone();
+    let d = DOMAINNAME.lock().clone();
+    (if h.is_empty() { b"android-pc".to_vec() } else { h }, if d.is_empty() { b"(none)".to_vec() } else { d })
+}
+
+/// Set the host (or domain) name; also what /proc/sys/kernel/{hostname,
+/// domainname} write.
+pub fn set_uts_name(name: &[u8], domain: bool) -> KResult<()> {
+    if name.len() > 64 {
+        return Err(EINVAL);
+    }
+    *(if domain { &DOMAINNAME } else { &HOSTNAME }).lock() = name.to_vec();
+    Ok(())
+}
+
+pub fn sys_sethostname(name: u64, len: u64, domain: bool) -> KResult<u64> {
+    if len > 64 {
+        return Err(EINVAL);
+    }
+    let mut b = alloc::vec![0u8; len as usize];
+    current().mm().copy_in(name, &mut b)?;
+    set_uts_name(&b, domain)?;
+    Ok(0)
+}
+
+const CLONE_FS: u64 = 0x200;
+const CLONE_FILES: u64 = 0x400;
+const CLONE_NEWNS: u64 = 0x2_0000;
+const CLONE_SYSVSEM: u64 = 0x4_0000;
+const CLONE_NEWCGROUP: u64 = 0x200_0000;
+const CLONE_NEWUTS: u64 = 0x400_0000;
+const CLONE_NEWIPC: u64 = 0x800_0000;
+const CLONE_NEWUSER: u64 = 0x1000_0000;
+const CLONE_NEWPID: u64 = 0x2000_0000;
+const CLONE_NEWNET: u64 = 0x4000_0000;
+const CLONE_NEWTIME: u64 = 0x80;
+
+/// unshare: CLONE_FILES gives the caller a private fd table; namespace
+/// flags are accepted but there is one global namespace of each kind.
+pub fn sys_unshare(flags: u64) -> KResult<u64> {
+    let ns = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME;
+    if flags & !(ns | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM) != 0 {
+        return Err(EINVAL);
+    }
+    if flags & CLONE_FILES != 0 {
+        let p = &current().process;
+        let dup = p.files().duplicate();
+        *p.files.lock() = dup;
+    }
+    Ok(0)
+}
+
+/// setns: one namespace of each kind, so joining one is a no-op (the fd
+/// must still be open).
+pub fn sys_setns(fd: i32, _nstype: u32) -> KResult<u64> {
+    current().process.files().get(fd)?;
+    Ok(0)
+}
+
+const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
+const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
+
+/// syslog (klogctl): the kernel log goes to the serial port only; reads
+/// return nothing, console level changes are accepted.
+pub fn sys_syslog(ty: i32, _buf: u64, len: i32) -> KResult<u64> {
+    match ty {
+        0 | 1 | 5 | 6 | 7 | 8 => Ok(0),
+        2..=4 => {
+            if len < 0 {
+                Err(EINVAL)
+            } else {
+                Ok(0)
+            }
+        }
+        SYSLOG_ACTION_SIZE_UNREAD => Ok(0),
+        SYSLOG_ACTION_SIZE_BUFFER => Ok(1 << 17),
+        _ => Err(EINVAL),
+    }
+}
+
+/// ioprio: stored per process (IOPRIO_WHO_PROCESS), not applied.
+pub fn sys_ioprio_set(which: i32, who: i32, prio: u32) -> KResult<u64> {
+    if !(1..=3).contains(&which) || prio >> 13 > 3 {
+        return Err(EINVAL);
+    }
+    if which == 1 {
+        let p = target_process(who)?;
+        p.attrs.lock().ioprio = prio;
+    }
+    Ok(0)
+}
+
+pub fn sys_ioprio_get(which: i32, who: i32) -> KResult<u64> {
+    if !(1..=3).contains(&which) {
+        return Err(EINVAL);
+    }
+    if which == 1 {
+        return Ok(target_process(who)?.attrs.lock().ioprio as u64);
+    }
+    Ok(4)
+}
+
+fn target_process(who: i32) -> KResult<alloc::sync::Arc<crate::process::Process>> {
+    if who == 0 {
+        return Ok(current().process.clone());
+    }
+    let t = TABLE.lock();
+    match t.procs.get(&(who as u32)) {
+        Some(n) => Ok(n.proc.clone()),
+        None => t.tasks.get(&(who as u32)).map(|x| x.process.clone()).ok_or(ESRCH),
+    }
+}

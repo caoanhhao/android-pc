@@ -47,6 +47,7 @@ fn main() {
         mount(c"proc", c"/proc", c"proc");
         mount(c"sysfs", c"/sys", c"sysfs");
         mount(c"devtmpfs", c"/dev", c"devtmpfs");
+        mount(c"devpts", c"/dev/pts", c"devpts");
         mount(c"tmpfs", c"/tmp", c"tmpfs");
     }
     let mut dir: &[u8] = b"/tests";

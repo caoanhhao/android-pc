@@ -191,6 +191,10 @@ needs init's property service (an error, not fatal). The binder protocol
 paths servicemanager relies on (context manager with security contexts,
 handle 0 lookups, BINDER_GET_NODE_INFO_FOR_REF, death notifications,
 epoll on the binder fd) are covered by `tests/src/bin/c1_binder.rs`.
+Since C3a this is resolved under real AOSP init: with the selinuxfs stub,
+/proc/<pid>/attr and the property service, servicemanager (and
+hwservicemanager, vold's binder service) run there; see
+[android-init.md](android-init.md).
 
 ## AOSP images on a disk (C2)
 
