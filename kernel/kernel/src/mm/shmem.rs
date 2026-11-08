@@ -13,6 +13,9 @@
 //!   write (the B3a COW rule: the cache's reference keeps the count > 1).
 //! - Files unpacked from the initramfs keep their contents in the boot
 //!   module (`backing`) until a page is first touched.
+//! - Files of disk file systems (erofs, ext4) fill missing pages from a
+//!   [`PageSource`] (the file system's read path); those objects are
+//!   read-only page caches.
 //! - The object remembers which address spaces map it (weak references) so
 //!   that truncate and hole punching can unmap the dropped pages, and
 //!   F_SEAL_WRITE can refuse while writable shared mappings exist.
@@ -56,6 +59,12 @@ fn page_ptr(f: PhysFrame) -> *mut u8 {
     phys_to_virt(f.start_address()).as_mut_ptr()
 }
 
+/// Where a disk file system's page cache gets its pages from.
+pub trait PageSource: Send + Sync {
+    /// Fill `buf` (one page, zeroed) with page `idx` of the file.
+    fn read_page(&self, idx: u64, buf: &mut [u8]) -> KResult<()>;
+}
+
 struct Inner {
     /// Page index -> frame (one reference each).
     pages: BTreeMap<u64, PhysFrame>,
@@ -64,6 +73,8 @@ struct Inner {
     /// Initramfs contents for the pages not yet in `pages` (never longer
     /// than `size`).
     backing: &'static [u8],
+    /// Disk file systems: fills missing pages (read-only objects).
+    source: Option<Arc<dyn PageSource>>,
 }
 
 impl Inner {
@@ -77,6 +88,15 @@ impl Inner {
             return Err(ENOSPC);
         }
         let f = frame::alloc_zeroed().ok_or(ENOSPC)?;
+        if let Some(src) = &self.source {
+            let buf = unsafe { core::slice::from_raw_parts_mut(page_ptr(f), PAGE) };
+            if let Err(e) = src.read_page(idx, buf) {
+                frame::free(f);
+                return Err(e);
+            }
+            self.pages.insert(idx, f);
+            return Ok(f);
+        }
         let start = (idx * PAGE_SIZE) as usize;
         if start < self.backing.len() {
             let n = (self.backing.len() - start).min(PAGE);
@@ -96,6 +116,9 @@ impl Inner {
     }
 
     fn write(&mut self, off: u64, data: &[u8]) -> KResult<usize> {
+        if self.source.is_some() {
+            return Err(EROFS);
+        }
         if self.seals & WRITE_SEALS != 0 {
             return Err(EPERM);
         }
@@ -141,11 +164,23 @@ impl Shmem {
         Self::with_backing(data.len() as u64, data)
     }
 
+    /// A read-only page cache of `size` bytes filled from `source`.
+    pub fn from_source(size: u64, source: Arc<dyn PageSource>) -> Arc<Shmem> {
+        let s = Self::with_backing(size, &[]);
+        s.inner.lock().source = Some(source);
+        s
+    }
+
     fn with_backing(size: u64, backing: &'static [u8]) -> Arc<Shmem> {
         Arc::new(Shmem {
-            inner: Mutex::new(Inner { pages: BTreeMap::new(), size, seals: F_SEAL_SEAL, backing }),
+            inner: Mutex::new(Inner { pages: BTreeMap::new(), size, seals: F_SEAL_SEAL, backing, source: None }),
             mappers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Whether this is a read-only disk file cache.
+    pub fn is_readonly(&self) -> bool {
+        self.inner.lock().source.is_some()
     }
 
     pub fn size(&self) -> u64 {
@@ -154,9 +189,15 @@ impl Shmem {
 
     /// Read at `off`; returns 0 at or past the end of the file.
     pub fn read(&self, off: u64, buf: &mut [u8]) -> usize {
-        let inner = self.inner.lock();
+        self.try_read(off, buf).unwrap_or(0)
+    }
+
+    /// Read at `off`; pages missing from a disk file's cache are read in
+    /// (EIO and the like only come from there).
+    pub fn try_read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut inner = self.inner.lock();
         if off >= inner.size {
-            return 0;
+            return Ok(0);
         }
         let len = (buf.len() as u64).min(inner.size - off) as usize;
         let mut done = 0;
@@ -165,7 +206,13 @@ impl Shmem {
             let in_page = (pos % PAGE_SIZE) as usize;
             let n = (PAGE - in_page).min(len - done);
             let dst = &mut buf[done..done + n];
-            if let Some(&f) = inner.pages.get(&(pos / PAGE_SIZE)) {
+            if inner.source.is_some() {
+                match inner.page(pos / PAGE_SIZE, false) {
+                    Ok(f) => unsafe { core::ptr::copy_nonoverlapping(page_ptr(f).add(in_page), dst.as_mut_ptr(), n) },
+                    Err(e) if done == 0 => return Err(e),
+                    Err(_) => return Ok(done),
+                }
+            } else if let Some(&f) = inner.pages.get(&(pos / PAGE_SIZE)) {
                 unsafe { core::ptr::copy_nonoverlapping(page_ptr(f).add(in_page), dst.as_mut_ptr(), n) };
             } else {
                 // A hole, or initramfs contents not copied yet.
@@ -176,7 +223,7 @@ impl Shmem {
             }
             done += n;
         }
-        len
+        Ok(len)
     }
 
     pub fn write(&self, off: u64, data: &[u8]) -> KResult<usize> {
@@ -200,6 +247,9 @@ impl Shmem {
         }
         let (dropped, first) = {
             let mut inner = self.inner.lock();
+            if inner.source.is_some() {
+                return Err(EROFS);
+            }
             if size < inner.size && inner.seals & F_SEAL_SHRINK != 0
                 || size > inner.size && inner.seals & F_SEAL_GROW != 0
             {
@@ -238,6 +288,9 @@ impl Shmem {
             return Err(EOPNOTSUPP);
         }
         let end = off.checked_add(len).filter(|&e| e <= MAX_SIZE).ok_or(EFBIG)?;
+        if self.is_readonly() {
+            return Err(EROFS);
+        }
         if mode & FALLOC_FL_PUNCH_HOLE != 0 {
             if mode & FALLOC_FL_KEEP_SIZE == 0 {
                 return Err(EOPNOTSUPP);
@@ -345,7 +398,7 @@ impl Shmem {
         if idx >= inner.size.div_ceil(PAGE_SIZE) {
             return Err(EFAULT);
         }
-        let f = inner.page(idx, false).map_err(|_| ENOMEM)?;
+        let f = inner.page(idx, false).map_err(|e| if e == EIO { EIO } else { ENOMEM })?;
         frame::get(f);
         Ok(f)
     }

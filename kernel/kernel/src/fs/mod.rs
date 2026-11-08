@@ -10,13 +10,19 @@
 //! File data of tmpfs (and memfd) lives in `mm::shmem` objects, the page
 //! cache that `mmap` maps.
 //!
+//! Disk file systems (read-only for now): `erofs` (with `lz4`) and `ext4`,
+//! mounted from block devices (`crate::block`).
+//!
 //! binderfs lives with the binder driver (`drivers::binder`).
 //!
-//! Planned: ext4/erofs (C2), devpts.
+//! Planned: ext4 writes, devpts.
 
 pub mod dev;
 pub mod epoll;
+pub mod erofs;
 pub mod eventfd;
+pub mod ext4;
+pub mod lz4;
 pub mod file;
 pub mod pipe;
 pub mod poll;
@@ -209,8 +215,12 @@ pub fn open_path(p: PathRef, flags: u32) -> KResult<Arc<OpenFile>> {
         }
         S_IFCHR => dev::open_chr(inode.meta().rdev)?,
         S_IFIFO => pipe::open_fifo(&inode, flags)?,
-        S_IFSOCK | vfs::S_IFBLK => return Err(ENXIO),
+        vfs::S_IFBLK => crate::block::open_blk(inode.meta().rdev, flags)?,
+        S_IFSOCK => return Err(ENXIO),
         _ => {
+            if acc != O_RDONLY && (inode.read_only_fs() || p.mnt.flags & MS_RDONLY != 0) {
+                return Err(EROFS);
+            }
             if flags & O_TRUNC != 0 && acc != O_RDONLY {
                 inode.truncate(0)?;
             }
@@ -246,6 +256,10 @@ pub fn file_path(f: &OpenFile) -> Vec<u8> {
         S_IFIFO => format!("pipe:[{}]", meta.ino).into_bytes(),
         S_IFSOCK => format!("socket:[{}]", meta.ino).into_bytes(),
         S_IFCHR => b"/dev/console".to_vec(),
+        vfs::S_IFBLK => match crate::block::lookup_rdev(meta.rdev) {
+            Some(d) => format!("/dev/block/{}", d.name).into_bytes(),
+            None => b"/dev/block/unknown".to_vec(),
+        },
         _ => format!("anon_inode:[{}]", meta.ino).into_bytes(),
     }
 }
@@ -258,8 +272,12 @@ pub const RAMFS_MAGIC: u64 = 0x8584_58f6;
 pub const PROC_SUPER_MAGIC: u64 = 0x9fa0;
 pub const SYSFS_MAGIC: u64 = 0x6265_6572;
 
+pub const MS_RDONLY: u64 = 1;
+
 pub fn fs_magic(fstype: &str) -> u64 {
     match fstype {
+        "erofs" => erofs::EROFS_SUPER_MAGIC as u64,
+        "ext4" | "ext3" | "ext2" => ext4::EXT4_SUPER_MAGIC as u64,
         "proc" => PROC_SUPER_MAGIC,
         "sysfs" => SYSFS_MAGIC,
         "ramfs" | "rootfs" => RAMFS_MAGIC,
@@ -269,15 +287,59 @@ pub fn fs_magic(fstype: &str) -> u64 {
 }
 
 static DEVTMPFS: Once<Arc<Dentry>> = Once::new();
+static DEVTMPFS_ROOT: Once<Arc<TmpInode>> = Once::new();
 static SYSFS: Once<Arc<Dentry>> = Once::new();
+static SYSFS_ROOT: Once<Arc<TmpInode>> = Once::new();
 
-/// The sysfs skeleton: the top-level directories, empty.
-fn new_sysfs() -> Arc<Dentry> {
-    let root = TmpInode::new_fs(0o555);
-    for d in ["block", "bus", "class", "dev", "devices", "firmware", "fs", "kernel", "module", "power"] {
-        let _ = root.add(d.as_bytes(), S_IFDIR | 0o755, 0, None);
+/// The shared devtmpfs instance (drivers add their nodes to it).
+pub fn devtmpfs_root() -> Arc<TmpInode> {
+    DEVTMPFS_ROOT
+        .call_once(|| {
+            let root = dev::new_devtmpfs();
+            crate::block::populate_devtmpfs(&root);
+            root
+        })
+        .clone()
+}
+
+/// The sysfs tree: the top-level directories, filled in by drivers
+/// (block devices).
+pub fn sysfs_root() -> Arc<TmpInode> {
+    SYSFS_ROOT
+        .call_once(|| {
+            let root = TmpInode::new_fs(0o555);
+            for d in ["block", "bus", "class", "dev", "devices", "firmware", "fs", "kernel", "module", "power"] {
+                let _ = root.add(d.as_bytes(), S_IFDIR | 0o755, 0, None);
+            }
+            root
+        })
+        .clone()
+}
+
+/// Mount a disk file system of type `fstype` from the block device (or
+/// "major:minor") `source`. Read-only file systems force MS_RDONLY.
+/// ENOTBLK when `source` is not a block device (toybox mount then sets up
+/// a loop device), ENODEV for unknown types.
+pub fn new_block_fs(fstype: &[u8], source: &[u8], flags: u64) -> KResult<Option<(Arc<Dentry>, &'static str, u64)>> {
+    let name = match fstype {
+        b"erofs" => "erofs",
+        b"ext4" => "ext4",
+        b"ext3" => "ext3",
+        b"ext2" => "ext2",
+        _ => return Ok(None),
+    };
+    let dev = crate::block::resolve(source)?;
+    if dev.size() == 0 {
+        return Err(ENXIO);
     }
-    Dentry::new_root(root)
+    let root = match name {
+        "erofs" => erofs::mount(dev)?,
+        _ => ext4::mount(dev)?,
+    };
+    if flags & MS_RDONLY == 0 {
+        log::warn!("mount: {name} is read-only for now; mounting {} ro", alloc::string::String::from_utf8_lossy(source));
+    }
+    Ok(Some((Dentry::new_root(root), name, flags | MS_RDONLY)))
 }
 
 /// A new instance of `fstype` (devtmpfs and sysfs are single shared
@@ -287,9 +349,9 @@ pub fn new_fs(fstype: &[u8], mode: Option<u32>) -> KResult<(Arc<Dentry>, &'stati
     let (root, name) = match fstype {
         b"tmpfs" => (fresh(TmpInode::new_fs(mode.unwrap_or(0o1777))), "tmpfs"),
         b"ramfs" => (fresh(TmpInode::new_fs(mode.unwrap_or(0o755))), "ramfs"),
-        b"devtmpfs" => (DEVTMPFS.call_once(|| Dentry::new_root(dev::new_devtmpfs())).clone(), "devtmpfs"),
+        b"devtmpfs" => (DEVTMPFS.call_once(|| Dentry::new_root(devtmpfs_root())).clone(), "devtmpfs"),
         b"proc" => (fresh(procfs::new_procfs()), "proc"),
-        b"sysfs" => (SYSFS.call_once(new_sysfs).clone(), "sysfs"),
+        b"sysfs" => (SYSFS.call_once(|| Dentry::new_root(sysfs_root())).clone(), "sysfs"),
         b"binder" => (fresh(crate::drivers::binder::new_binderfs(mode)), "binder"),
         _ => return Err(ENODEV),
     };

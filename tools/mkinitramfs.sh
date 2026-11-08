@@ -12,6 +12,9 @@
 #
 # Layout:  /init  /tests/<name>  /dev/{console,null,zero,random,urandom,tty}
 #          /proc /sys /tmp (empty mount points)
+#          /c2/tree  the source tree of the C2 test disk images
+#                    (tools/mkc2-images.py, also run here), which the c2_fs
+#                    test compares mounted images against
 # Output defaults to out/ktest-initramfs.cpio[.gz]. The archive is
 # reproducible: same binaries -> same bytes.
 set -euo pipefail
@@ -33,6 +36,8 @@ done
 
 (cd "$root/tests" && cargo build --release --quiet)
 bin="$root/tests/target/x86_64-unknown-linux-gnu/release"
+python3 "$root/tools/mkc2-images.py" --hello "$bin/b1_hello" >/dev/null
+c2tree="$root/out/c2/tree"
 grep -qx "$init" <(echo ktest-init; cat "$root/tests/tests.list") || { echo "no such test: $init" >&2; exit 1; }
 
 # Strip debug info for the guest (keep the symbol table for backtraces);
@@ -59,6 +64,19 @@ done
     echo "file /tests/ktest-init $stage/ktest-init 0755"
     grep -Ev '^\s*(#|$)' "$root/tests/tests.list" | while read -r name; do
         echo "file /tests/$name $stage/$name 0755"
+    done
+    echo "dir /c2 0755"
+    (cd "$c2tree" && find . | sort) | while read -r p; do
+        p="${p#./}"
+        [ "$p" = . ] && p=""
+        dst="/c2/tree${p:+/$p}" src="$c2tree${p:+/$p}"
+        if [ -L "$src" ]; then
+            echo "slink $dst $(readlink "$src") 0777"
+        elif [ -d "$src" ]; then
+            echo "dir $dst $(stat -c %a "$src")"
+        else
+            echo "file $dst $src $(stat -c %a "$src")"
+        fi
     done
 } >"$spec"
 

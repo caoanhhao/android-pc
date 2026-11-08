@@ -15,6 +15,7 @@ extern crate alloc;
 mod drivers;
 
 mod arch;
+mod block;
 mod boot;
 mod errno;
 mod fs;
@@ -54,6 +55,8 @@ extern "C" fn kmain() -> ! {
 
     log::info!("boot complete; {} CPU(s) online", arch::smp::online_cpus());
     fs::init(boot::initramfs());
+    block::init();
+    drivers::init();
     start_init(boot::cmdline());
     sched::idle()
 }

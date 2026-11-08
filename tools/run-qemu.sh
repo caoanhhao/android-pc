@@ -8,20 +8,36 @@
 #                                     build the test initramfs, boot it, run
 #                                     ktest-init (all tests, or FILTER prefixes
 #                                     such as b1) and exit 0 iff it reports
-#                                     "END ktest-init ... fail=0"
+#                                     "END ktest-init ... fail=0"; attaches
+#                                     the C2 test disk (out/c2/c2-disk.img)
 #   tools/run-qemu.sh --aosp-sh-test  build out/aosp-initramfs.cpio from the
 #                                     AOSP build (tools/mkaosp-initramfs.sh),
 #                                     boot it and run tools/aosp-sh-test.py:
 #                                     commands typed into the AOSP mksh on
 #                                     the serial console, output checked
 #   tools/run-qemu.sh --aosp          the same initramfs, interactive shell
+#   tools/run-qemu.sh --aosp-disk-test
+#                                     AOSP's super.img on a read-only virtio
+#                                     disk: dmctl maps system_a/vendor_a from
+#                                     the dynamic partition metadata, both are
+#                                     mounted (erofs), toybox runs from the
+#                                     image and every file's md5 is checked
+#                                     against the host (aosp-sh-test.py
+#                                     --suite disk)
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Options: --release, --bios (legacy BIOS instead of UEFI), --no-kvm,
 #          --smp N, --mem SIZE, --gdb (wait for gdb on :1234),
 #          --initrd FILE (boot module, "none" for no initramfs),
 #          --append "WORDS" (kernel cmdline: init=PATH, strace, -- init args),
-#          --timeout SECS (tests; default 120, --ktest 600).
+#          --timeout SECS (tests; default 120, --ktest 600),
+#          --disk FILE[,rw|,snapshot][,legacy] (repeatable): attach a raw
+#          image as a virtio-blk disk (vda, vdb, ... in order). Read-only
+#          unless ",rw" (writes reach FILE) or ",snapshot" (writes go to a
+#          throw-away overlay); ",legacy" makes the device legacy-only
+#          (virtio 0.9 I/O ports) instead of modern.
+#          --sh-arg ARG (repeatable): extra argument for aosp-sh-test.py,
+#          e.g. --sh-arg --run --sh-arg "ls /dev/block".
 #          Extra args after `--` go to QEMU.
 #
 # Inside `kernel/`, `cargo run` and `cargo test` use this script as runner.
@@ -32,7 +48,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel"
 
 mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
-initrd="" append="" ktest_filters=()
+initrd="" append="" ktest_filters=() disks=() sh_args=()
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,8 +63,11 @@ while [[ $# -gt 0 ]]; do
         --timeout) timeout="$2"; shift ;;
         --initrd) initrd="$2"; shift ;;
         --append) append="$2"; shift ;;
+        --disk) disks+=("$2"); shift ;;
+        --sh-arg) sh_args+=("$2"); shift ;;
         --aosp-sh-test) mode=aosp-test ;;
         --aosp) mode=aosp ;;
+        --aosp-disk-test) mode=aosp-disk-test ;;
         --ktest)
             mode=ktest
             while [[ $# -gt 1 && $2 != -* ]]; do ktest_filters+=("$2"); shift; done ;;
@@ -75,11 +94,27 @@ fi
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
+    # The C2 test disk (built by mkinitramfs.sh): vda modern and writable
+    # through an overlay, vdb the same image legacy-only and read-only.
+    if [[ ${#disks[@]} -eq 0 && -f $ROOT/out/c2/c2-disk.img ]]; then
+        disks=("$ROOT/out/c2/c2-disk.img,snapshot" "$ROOT/out/c2/c2-disk.img,legacy")
+    fi
     [[ ${#ktest_filters[@]} -gt 0 ]] && append="$append -- ${ktest_filters[*]}"
 fi
+if [[ $mode == aosp-disk-test ]]; then
+    aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
+    product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
+    "$ROOT/tools/mkaosp-initramfs.sh" --disk >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/aosp-disk-initramfs.cpio"
+    [[ ${#disks[@]} -eq 0 ]] && disks=("$product/super.img")
+    sh_args=(--suite disk "${sh_args[@]}")
+    mode=aosp-test
+fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
-    "$ROOT/tools/mkaosp-initramfs.sh" >/dev/null
-    [[ -z $initrd ]] && initrd="$ROOT/out/aosp-initramfs.cpio"
+    if [[ -z $initrd ]]; then
+        "$ROOT/tools/mkaosp-initramfs.sh" >/dev/null
+        initrd="$ROOT/out/aosp-initramfs.cpio"
+    fi
     [[ $append == *init=* ]] || append="init=/init $append"
     [[ $mode == aosp ]] && mode=run
 fi
@@ -175,6 +210,23 @@ if [[ $firmware == uefi ]]; then
            -drive "if=pflash,format=raw,file=$work/ovmf-vars.fd")
 fi
 [[ $gdb == 1 ]] && args+=(-s -S)
+for i in "${!disks[@]}"; do
+    IFS=, read -r -a d <<<"${disks[$i]}"
+    file="${d[0]}" ro=on snap=off modern=""
+    for o in "${d[@]:1}"; do
+        case "$o" in
+            rw) ro=off ;;
+            snapshot) ro=off snap=on ;;
+            legacy) modern=",disable-modern=on,disable-legacy=off" ;;
+            *) echo "run-qemu.sh: unknown disk option $o" >&2; exit 2 ;;
+        esac
+    done
+    [[ -f $file ]] || { echo "run-qemu.sh: no such disk image $file" >&2; exit 2; }
+    # file.locking=off: images shared with a running VM (Cuttlefish) are
+    # only ever opened read-only or through a snapshot here.
+    args+=(-drive "file=$file,format=raw,if=none,id=disk$i,readonly=$ro,snapshot=$snap,file.locking=off"
+           -device "virtio-blk-pci,drive=disk$i$modern")
+done
 
 if [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.
@@ -194,7 +246,7 @@ if [[ $mode == ktest ]]; then
 elif [[ $mode == aosp-test ]]; then
     log="$work/aosp-sh-test.log"
     args+=(-display none -serial stdio)
-    if timeout --foreground $((timeout * 3)) python3 "$ROOT/tools/aosp-sh-test.py" --log "$log" \
+    if timeout --foreground $((timeout * 3)) python3 "$ROOT/tools/aosp-sh-test.py" --log "$log" "${sh_args[@]}" \
         -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
         exit 0
     fi

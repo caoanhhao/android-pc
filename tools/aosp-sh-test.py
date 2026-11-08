@@ -9,7 +9,11 @@ never matches the marker; the output up to the marker must match the
 expected regexes and the exit status must be 0. Finally `exit` makes init
 exit and the kernel power off.
 
-Usage: aosp-sh-test.py [--timeout SECS] [--log FILE] -- qemu-system-x86_64 ARGS...
+Usage: aosp-sh-test.py [--timeout SECS] [--log FILE] [--suite shell|disk]
+                      [--run CMD]... -- qemu-system-x86_64 ARGS...
+--suite disk runs the checks in DISK_CHECKS instead (AOSP images on a
+virtio disk, see run-qemu.sh --aosp-disk-test); --run CMD only runs the
+given commands and prints their output (debugging).
 Exit status 0 iff every check passed.
 """
 import argparse
@@ -50,6 +54,52 @@ CHECKS = [
 # Interactive: ^C (the tty sends SIGINT to the foreground job) ends a
 # `sleep 600` long before it would finish; the shell survives.
 INTERRUPT = "sleep 600; echo not-interrupted"
+
+
+def md5_check(part):
+    """Every file of a mounted image against the host manifest."""
+    return (f"cd /mnt/{part} && toybox md5sum -c /aosp-disk/{part}.md5 > /tmp/{part}.r; cd /; "
+            f"ok=$(toybox grep -c ': OK$' /tmp/{part}.r); all=$(toybox wc -l < /aosp-disk/{part}.md5); "
+            f"echo {part}-md5 ok=$ok all=$all; [ $ok -eq $all ] && [ $all -gt 100 ]",
+            [rf"^{part}-md5 ok=(\d+) all=\1\r?$"], 600)
+
+
+def disk_checks(qemu_cmd):
+    """--suite disk: super.img is vda (read-only). dmctl (libdm + liblp)
+    maps the dynamic partitions from the super metadata through
+    /dev/block/by-name/super, as first-stage init does."""
+    size = None
+    for arg in qemu_cmd:
+        m = re.match(r"file=([^,]+),", arg)
+        if m:
+            size = os.path.getsize(m.group(1))
+            break
+    size_rx = str(size) if size else r"\d+"
+    return [
+        ("cat /sys/block/vda/ro; toybox blockdev --getro --getsize64 --getss /dev/block/vda",
+         [r"^1\r?$", r"^" + size_rx + r"\r?$", r"^512\r?$"]),
+        ("mkdir -p /dev/block/by-name && ln -s /dev/block/vda /dev/block/by-name/super && "
+         "dmctl create-from-super system_a system_a -ro && dmctl create-from-super vendor_a vendor_a -ro",
+         [r"Created logical partition system_a on device /dev/block/dm-0",
+          r"Created logical partition vendor_a on device /dev/block/dm-1"]),
+        ("dmctl list devices; dmctl table system_a; dmctl getpath vendor_a; cat /sys/block/dm-0/dm/name",
+         [r"^system_a +: 253:0\r?$", r"^vendor_a +: 253:1\r?$", r"^0-\d+: linear, 254:0 \d+\r?$",
+          r"^/dev/block/dm-1\r?$", r"^system_a\r?$"]),
+        ("mkdir -p /mnt/system /mnt/vendor && mount -t erofs -o ro /dev/block/dm-0 /mnt/system && "
+         "mount -t erofs -o ro $(dmctl getpath vendor_a) /mnt/vendor && toybox grep erofs /proc/mounts",
+         [r"^/dev/block/dm-0 /mnt/system erofs ro", r"^/dev/block/dm-1 /mnt/vendor erofs ro"]),
+        # A dynamically linked binary (and its mmap'ed pages) straight from erofs.
+        ("/mnt/system/system/bin/toybox ls /mnt/system/system",
+         [r"\bbin\b", r"\blib64\b", r"\bframework\b", r"\bbuild\.prop\b"]),
+        ("toybox grep -m1 '^ro.build.version.release=' /mnt/system/system/build.prop; "
+         "toybox ls /mnt/vendor/etc/init | toybox head -n 3",
+         [r"^ro\.build\.version\.release=\S+", r"\.rc\r?$"]),
+        md5_check("system"),
+        md5_check("vendor"),
+        ("umount /mnt/system /mnt/vendor && dmctl delete system_a && dmctl delete vendor_a && "
+         "dmctl list devices | toybox grep -c _a; toybox ls /dev/block",
+         [r"^0\r?$", r"\bvda\b"]),
+    ]
 
 
 class Console:
@@ -103,6 +153,8 @@ def main():
     ap.add_argument("--timeout", type=float, default=30, help="seconds per command")
     ap.add_argument("--boot-timeout", type=float, default=90)
     ap.add_argument("--log", default="/dev/null")
+    ap.add_argument("--suite", default="shell", choices=["shell", "disk"])
+    ap.add_argument("--run", action="append", default=[])
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
     a = ap.parse_args()
     cmd = a.qemu[1:] if a.qemu[:1] == ["--"] else a.qemu
@@ -118,23 +170,30 @@ def main():
         # Prompt of the interactive shell.
         con.expect(rb"# ", a.timeout)
         failed = 0
-        for n, (command, regexes) in enumerate(CHECKS, 1):
+        checks = CHECKS if a.suite == "shell" else disk_checks(cmd)
+        if a.run:
+            checks = [(c, []) for c in a.run]
+        for n, (command, regexes, *opt) in enumerate(checks, 1):
+            limit = max(a.timeout, opt[0]) if opt else a.timeout
             con.send(f'{command}; echo "@@END$(({n}))@@ rc=$?"\n')
-            r = con.expect(rb"@@END%d@@ rc=(\d+)" % n, a.timeout)
+            r = con.expect(rb"@@END%d@@ rc=(\d+)" % n, limit)
             if r is None:
-                print(f"aosp-sh-test: FAIL [{n}] {command}: no output marker within {a.timeout:.0f}s")
+                print(f"aosp-sh-test: FAIL [{n}] {command}: no output marker within {limit:.0f}s")
                 failed += 1
                 break
             out, m = r
             missing = [x for x in regexes if not re.search(x, out, re.M)]
             rc = int(m.group(1))
-            if missing or rc != 0:
+            if a.run:
+                print(f"aosp-sh-test: [{n}] {command} (rc={rc})")
+                print("    | " + "\n    | ".join(out.splitlines()))
+            elif missing or rc != 0:
                 failed += 1
                 print(f"aosp-sh-test: FAIL [{n}] {command}: rc={rc}, unmatched {missing}")
                 print("    | " + "\n    | ".join(out.splitlines()))
             else:
                 print(f"aosp-sh-test: ok   [{n}] {command}")
-        if not failed:
+        if not failed and a.suite == "shell" and not a.run:
             n = len(CHECKS) + 1
             con.send(INTERRUPT + "\n")
             time.sleep(2)
@@ -155,7 +214,7 @@ def main():
         if not failed and code is None:
             print("aosp-sh-test: FAIL: QEMU did not exit after the shell's exit")
             failed += 1
-        total = len(CHECKS) + 1
+        total = len(checks) + (1 if a.suite == "shell" and not a.run else 0)
         print(f"aosp-sh-test: {total - failed}/{total} passed" if failed else f"aosp-sh-test: PASS {total}/{total}")
         return 1 if failed else 0
 

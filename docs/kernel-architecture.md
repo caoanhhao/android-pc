@@ -1,4 +1,4 @@
-# Kernel architecture (phase C1 state: binder)
+# Kernel architecture (phase C2 state: block devices and disk file systems)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -19,6 +19,10 @@ tools/run-qemu.sh --ktest b1      # build the test initramfs, run ktest-init in 
 tools/run-qemu.sh --aosp          # AOSP mksh + toybox (dynamically linked against bionic) on the
                                   # serial console, see aosp-shell.md
 tools/run-qemu.sh --aosp-sh-test  # the same, with scripted commands; exit 0 iff all checks pass
+tools/run-qemu.sh --aosp-disk-test  # AOSP super.img as a read-only virtio disk: dmctl maps
+                                  # system_a/vendor_a, erofs mounts, toybox runs from the image,
+                                  # every file's md5 checked against the host
+tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes
 cd kernel && cargo run / cargo test                    # same, script is the cargo runner
@@ -62,6 +66,9 @@ kernel/
                        timer (kernel timer callbacks from the tick)
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
                        wait4), elf (loader + initial stack), signal, futex
+      block/           block devices: registry, /dev/block nodes, sysfs, block ioctls
+                       (mod), per-device page cache (cache), GPT partitions (gpt),
+                       loop devices (loop_dev), device mapper (dm)
       syscall/         dispatch table (Linux numbers), fs, time, poll (poll/select,
                        epoll, eventfd, timerfd, signalfd syscalls), net (socket
                        syscalls, msghdr/cmsg handling, socket options), sys
@@ -73,10 +80,12 @@ kernel/
                        dev (character devices), tty (console line discipline),
                        procfs, pipe (+ FIFOs), poll
                        (event bits, wait queues, poll loop), epoll, eventfd,
-                       timerfd, signalfd; mod.rs: cpio unpacking, open,
+                       timerfd, signalfd; erofs (+ lz4), ext4 (read-only disk
+                       file systems); mod.rs: cpio unpacking, open,
                        mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
-                       protocol, mod); later virtio, dma-buf, ...
+                       protocol, mod); pci (config space, enumeration); virtio/
+                       (transports + virtqueues, blk); later net, gpu, dma-buf, ...
 ```
 
 Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
@@ -98,7 +107,9 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
    installs GDT/TSS/GS/IDT, user-mode support, its LAPIC and timer, then
    enters the scheduler's idle loop. The BSP waits up to 1 s for all of them.
 7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module)
-   into a tmpfs that becomes the root mount, start `/init` as pid 1 (cwd
+   into a tmpfs that becomes the root mount, create loop0-7
+   (`block::init`), enumerate PCI and bring up virtio-blk disks with
+   their partitions (`drivers::init`), start `/init` as pid 1 (cwd
    `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
    loop. When init exits the kernel logs its status and powers off.
 
@@ -148,7 +159,9 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
     reference per page, each PTE another. `read`/`write` copy through the
     direct map, so they and every MAP_SHARED mapping see the same frames.
     Files from the initramfs keep pointing into the boot module until a page
-    is first touched. No size cap (sparse, up to 2^63-1); `write` and
+    is first touched. Files of disk file systems (erofs, ext4) get a
+    read-only object with a `PageSource` (the file system's read path) that
+    fills missing pages; write/truncate/fallocate on it give EROFS. No size cap (sparse, up to 2^63-1); `write` and
     `fallocate` return ENOSPC rather than use the last 16 MiB of RAM.
   - **File and shared mappings**: a fault in a backed VMA asks the object
     for page `pgoff + (va - start) / 4096` (EFAULT past EOF -> SIGBUS
@@ -373,6 +386,72 @@ One global mount namespace. The pieces:
 - Everything runs as root: no permission checks except the execute bit
   (execve, access X_OK). chown/chmod are stored; MS_RDONLY is recorded only.
 
+## Block devices and disk file systems (C2)
+
+- **PCI** (`drivers/pci.rs`): configuration space through ports
+  0xCF8/0xCFC, brute-force scan of all buses at boot, BAR sizing, capability
+  lists. Devices keep the BARs the firmware assigned.
+- **virtio** (`drivers/virtio/`): modern transport (vendor capabilities:
+  common/notify/ISR/device config in MMIO BARs, mapped with `map_mmio`)
+  with a fallback to the legacy I/O-port transport; split virtqueues in
+  physically contiguous frames (legacy 4 KiB layout, which modern devices
+  accept too). Requests are polled: VRING_AVAIL_F_NO_INTERRUPT, then the
+  caller spins on the used ring (no IOAPIC/MSI-X yet; QEMU completes
+  requests on its own threads). virtio-blk: one queue, one request in
+  flight under the device lock, data through a 128 KiB bounce buffer (so
+  any kernel buffer works), negotiates RO, BLK_SIZE, FLUSH, SEG_MAX,
+  SIZE_MAX, VERSION_1. Disks are vda, vdb, ... in PCI order.
+- **Block layer** (`block/mod.rs`): a `BlockDev` = name, device number,
+  BLKROSET flag, open/holder counts and a `Backend` (size, sector-aligned
+  read/write, flush, read-only, device ioctls). Backends: virtio-blk,
+  GPT partition (an offset into the disk's backend), loop, dm. Stacked
+  devices call the lower *backend*, not its cache, so every layer caches
+  its own view (as Linux's per-bdev page cache). `register` creates the
+  devtmpfs node (devtmpfs and sysfs are created on first use, so drivers
+  can register before user space mounts them), by-name links and the sysfs
+  directory; `open_blk` gives a `BlockFile` (byte-granular read/write via
+  the cache, block ioctls, device ioctls passed to the backend).
+  `resolve` turns a path or "major:minor" into a device (mount sources, dm
+  tables). Holders (mounted file systems via a `Holder` guard, dm tables
+  via their targets) and opens make dm/loop teardown return EBUSY or, for
+  AUTOCLEAR loops, defer it to the last release.
+- **Cache** (`block/cache.rs`): 4 KiB pages of the device in frames from
+  the frame allocator (the heap is too small for disk data), write-through
+  (partial sectors read-modify-written), so pages are never dirty and
+  uncached reads stay coherent. At most 8192 pages per device (fewer under
+  memory pressure); when full the least recently used quarter goes.
+  Metadata reads go through it; file data headed for a file's own page
+  cache uses `read_direct` (whole aligned blocks, no double caching).
+- **GPT** (`block/gpt.rs`): primary header and entry array (no CRC
+  checks), partition number = slot + 1, UTF-16 names become PARTNAME and
+  `/dev/block/by-name/` links (first disk wins on duplicates).
+- **Loop** (`block/loop_dev.rs`) reads and writes its backing `OpenFile`
+  (any file system or another block device) at the offset; **device
+  mapper** (`block/dm.rs`) keeps a live and an inactive table per device,
+  maps I/O by walking the live table, and implements the dm ioctl buffer
+  protocol (header + data area, BUFFER_FULL). Details of both in
+  [syscalls.md](syscalls.md#block-devices-c2).
+- **erofs** (`fs/erofs.rs`): superblock, compact/extended inodes (nid =
+  inode number, st_dev = the block device), FLAT_PLAIN and tail-packed
+  FLAT_INLINE data, directories (sorted dirent blocks), symlinks, device
+  nodes, inline and shared xattrs, and LZ4 files with full or compact
+  (4B/2B) lcluster indexes following Linux's zmap.c: an offset maps to its
+  extent (lookback through NONHEAD lclusters), whose single-block pcluster
+  is decompressed (`fs/lz4.rs`, partial decoding; 0-padded or not) or, for
+  plain pclusters, copied (interlaced or shifted). The last decompressed
+  pcluster is kept per inode for sequential reads. That covers AOSP's
+  system/vendor/product images (lz4hc, 4 KiB pclusters, compact indexes).
+- **ext4** (`fs/ext4.rs`, read-only): group descriptors (32/64 bytes),
+  inode table lookup, extent trees and indirect maps (holes and
+  uninitialised extents read as zeros), linear scan of directory blocks
+  (covers htree: index blocks look like empty entries), fast/slow
+  symlinks, inline data, xattrs (in-inode, block, EA inodes). No journal
+  replay, no writes yet.
+- Both file systems keep an inode cache (weak references by inode
+  number), give each regular file a read-only page cache (`Inode::shmem`,
+  so mmap and exec work) and refuse namespace changes with EROFS; mounts
+  are forced read-only.
+
 ## Readiness and event files (`fs/poll.rs`, `fs/epoll.rs`, ...)
 
 - **Wait queues** (`poll::WaitQueue`, always in an `Arc`): a unique sleep
@@ -548,7 +627,7 @@ IXON flow control, devpts.
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (25): int3
+fails the run; the script times out after 120 s. Current tests (27): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
@@ -567,7 +646,9 @@ mapping, AF_UNIX address parsing and socket queues (stream coalescing
 and peeking, message boundaries, hang-up on release), VFS
 (cpio unpack into tmpfs, path walk with `..` and symlinks, mounting a
 tmpfs and walking back out of it, rename/unlink keeping dentries in sync,
-umount), the binder buffer allocator (best fit, coalescing).
+umount), the binder buffer allocator (best fit, coalescing), LZ4
+decoding (literals, overlapping matches, partial output, bad offsets),
+GPT parsing and partition I/O through the block cache on a RAM disk.
 
 User-space conformance tests (`tests/`, see `tests/README.md`) run in the
 guest with `tools/run-qemu.sh --ktest [FILTER]`. Phase B2 state: all B1
@@ -601,6 +682,21 @@ it is skipped on the Linux host. One in-kernel test covers the buffer
 allocator (25 tests). The whole suite, `--test` and `--aosp-sh-test` pass.
 AOSP's servicemanager starts on the kernel and gets through its binder
 setup, then stops at SELinux (see [aosp-shell.md](aosp-shell.md)).
+Phase C2 (block devices): `--ktest` attaches the C2 test disk
+(`tools/mkc2-images.py`: a GPT disk with ext4 4 KiB, ext3 1 KiB/htree,
+erofs plain, erofs lz4hc compact and erofs lz4 legacy images of one source
+tree, plus a scratch partition) as vda (modern, writes to an overlay) and
+again as vdb (legacy-only, read-only). c2_block 19/19, c2_fs 59/59 (every
+image compared file by file with the host tree in /c2/tree; xattrs, mmap,
+exec from the image, EROFS, statfs), c2_loop 17/17 and c2_dm 20/20; all
+four skip on the Linux host (no disk, loop/dm need root). Two in-kernel
+tests were added (27). `--aosp-disk-test` maps system_a and vendor_a out
+of AOSP's super.img with dmctl create-from-super (AOSP's own liblp and
+libdm on these ioctls), mounts them and checks 9/9, including every file's
+md5 (2349 in system, plus vendor) against a host `fsck.erofs --extract`.
+Fixed on the way: every exiting process leaked its task (kernel stack,
+`Process`, executable path) because `exit_group` callers held an
+`Arc<Task>` in frames that never unwind; the exit paths now drop them.
 
 ## Known gaps / next steps
 
@@ -609,8 +705,14 @@ setup, then stops at SELinux (see [aosp-shell.md](aosp-shell.md)).
   links (so a memfd cannot be re-opened through /proc/self/fd/N yet),
   /proc/sys, a real sysfs, statfs block accounting.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
-  everything stays in RAM), mlock, a page cache for disk file systems (C2)
-  behind the same `Inode::shmem` hook.
+  file page caches stay in RAM while the inode lives; only the block caches
+  evict), mlock.
+- Block/FS follow-ups: ext4 writes and journal replay (/data), f2fs,
+  uevents for block devices (C3's ueventd / first-stage init), interrupt
+  (MSI-X) driven virtio with several requests in flight, dm targets for
+  /data (default-key, bow) and real dm-verity, erofs big pclusters /
+  ztailpacking / fragments, lazy umount semantics (Linux returns EBUSY
+  while files are open).
 - Binder: freezer, oneway spam reports, priority inheritance, SELinux
   contexts, binder_logs; one global lock (fine for now, a per-process
   split later). servicemanager needs an SELinux stub (selinuxfs status
@@ -619,8 +721,8 @@ setup, then stops at SELinux (see [aosp-shell.md](aosp-shell.md)).
   collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
 - ELF: map segments from the file's page cache (MAP_PRIVATE) instead of
   copying them, so text pages are shared between processes.
-- Interrupt routing (IOAPIC from the ACPI MADT) for UART RX and later
-  virtio devices, instead of polling the UART from the tick.
+- Interrupt routing (IOAPIC from the ACPI MADT) for UART RX, and MSI-X
+  for virtio, instead of polling.
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
   time accounting (CPU-time clocks currently report uptime; getrusage and
   times report 0), scheduling classes and affinity (stored only), sleep timers

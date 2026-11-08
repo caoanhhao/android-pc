@@ -54,15 +54,17 @@ enum Global {
     Version,
     Loadavg,
     Stat,
+    Partitions,
 }
 
-const GLOBALS: [(&[u8], Global); 9] = [
+const GLOBALS: [(&[u8], Global); 10] = [
     (b"cmdline", Global::Cmdline),
     (b"cpuinfo", Global::Cpuinfo),
     (b"filesystems", Global::Filesystems),
     (b"loadavg", Global::Loadavg),
     (b"meminfo", Global::Meminfo),
     (b"mounts", Global::Mounts),
+    (b"partitions", Global::Partitions),
     (b"stat", Global::Stat),
     (b"uptime", Global::Uptime),
     (b"version", Global::Version),
@@ -378,9 +380,13 @@ fn global(g: Global) -> String {
             let _ = writeln!(s, "{}.{:02} {}.{:02}", ms / 1000, ms % 1000 / 10, ms / 1000, ms % 1000 / 10);
         }
         Global::Mounts => mounts(&mut s),
+        Global::Partitions => s.push_str(&crate::block::proc_partitions()),
         Global::Filesystems => {
             for f in FILESYSTEMS {
                 let _ = writeln!(s, "nodev\t{f}");
+            }
+            for f in ["ext4", "ext3", "ext2", "erofs"] {
+                let _ = writeln!(s, "\t{f}");
             }
         }
         Global::Cmdline => {

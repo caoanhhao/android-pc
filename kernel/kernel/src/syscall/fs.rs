@@ -532,6 +532,26 @@ pub fn sys_faccessat(dirfd: i32, path: u64, mode: u32, flags: u32) -> KResult<u6
 const STATFS_SIZE: usize = 120;
 
 fn statfs_bytes(fstype: &str) -> [u8; STATFS_SIZE] {
+    statfs_of(fstype, None, 0)
+}
+
+/// statfs for a mount: disk file systems report their own numbers.
+fn statfs_mount(m: &vfs::Mount) -> [u8; STATFS_SIZE] {
+    statfs_of(m.fstype, m.root.inode.statfs(), m.flags)
+}
+
+fn statfs_of(fstype: &str, disk: Option<vfs::StatFs>, mnt_flags: u64) -> [u8; STATFS_SIZE] {
+    if let Some(d) = disk {
+        let mut b = [0u8; STATFS_SIZE];
+        let vals = [d.magic, d.bsize, d.blocks, d.bfree, d.bavail, d.files, d.ffree];
+        for (i, v) in vals.iter().enumerate() {
+            b[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        b[64..72].copy_from_slice(&d.namelen.to_le_bytes());
+        b[72..80].copy_from_slice(&d.bsize.to_le_bytes());
+        b[80..88].copy_from_slice(&(d.flags | (mnt_flags & 1)).to_le_bytes());
+        return b;
+    }
     let mut b = [0u8; STATFS_SIZE];
     let (total, free) = crate::mm::frame::stats();
     let vals: [u64; 7] = [
@@ -555,14 +575,17 @@ fn statfs_bytes(fstype: &str) -> [u8; STATFS_SIZE] {
 pub fn sys_statfs(path: u64, buf: u64) -> KResult<u64> {
     let p = user_path(path)?;
     let at = vfs::lookup(&current().process.cwd(), &p, true)?;
-    current().mm().copy_out(buf, &statfs_bytes(at.mnt.fstype))?;
+    current().mm().copy_out(buf, &statfs_mount(&at.mnt))?;
     Ok(0)
 }
 
 pub fn sys_fstatfs(fd: i32, buf: u64) -> KResult<u64> {
     let f = file(fd)?;
     let ty = f.path.as_ref().map_or("pipefs", |p| p.mnt.fstype);
-    let mut b = statfs_bytes(ty);
+    let mut b = match &f.path {
+        Some(p) => statfs_mount(&p.mnt),
+        None => statfs_bytes(ty),
+    };
     if ty == "pipefs" {
         b[..8].copy_from_slice(&0x5049_5045u64.to_le_bytes());
     }
@@ -913,6 +936,66 @@ pub fn sys_utimensat(dirfd: i32, path: u64, times: u64, flags: u32) -> KResult<u
 }
 
 // ---------------------------------------------------------------------------
+// Extended attributes (read-only: disk file systems report theirs)
+
+pub enum XattrTarget {
+    /// Path, follow the last symlink.
+    Path(u64, bool),
+    Fd(i32),
+}
+
+fn xattr_inode(t: XattrTarget) -> KResult<Arc<dyn Inode>> {
+    match t {
+        XattrTarget::Path(p, follow) => {
+            let path = user_path(p)?;
+            let flags = if follow { 0 } else { AT_SYMLINK_NOFOLLOW };
+            Ok(resolve_at(AT_FDCWD, &path, flags)?.0)
+        }
+        XattrTarget::Fd(fd) => Ok(file(fd)?.inode.clone()),
+    }
+}
+
+pub fn sys_getxattr(t: XattrTarget, name: u64, value: u64, size: u64) -> KResult<u64> {
+    let inode = xattr_inode(t)?;
+    let name = current().mm().read_cstr(name, 256)?;
+    if name.is_empty() || name.len() > 255 {
+        return Err(ERANGE);
+    }
+    let v = inode.xattrs()?.into_iter().find(|(n, _)| *n == name).ok_or(ENODATA)?.1;
+    if size == 0 {
+        return Ok(v.len() as u64);
+    }
+    if (size as usize) < v.len() {
+        return Err(ERANGE);
+    }
+    current().mm().copy_out(value, &v)?;
+    Ok(v.len() as u64)
+}
+
+pub fn sys_listxattr(t: XattrTarget, list: u64, size: u64) -> KResult<u64> {
+    let inode = xattr_inode(t)?;
+    let mut out = Vec::new();
+    for (n, _) in inode.xattrs()? {
+        out.extend_from_slice(&n);
+        out.push(0);
+    }
+    if size == 0 {
+        return Ok(out.len() as u64);
+    }
+    if (size as usize) < out.len() {
+        return Err(ERANGE);
+    }
+    current().mm().copy_out(list, &out)?;
+    Ok(out.len() as u64)
+}
+
+/// set/removexattr: nothing stores xattrs yet.
+pub fn sys_setxattr(t: XattrTarget) -> KResult<u64> {
+    let inode = xattr_inode(t)?;
+    Err(if inode.read_only_fs() { EROFS } else { EOPNOTSUPP })
+}
+
+// ---------------------------------------------------------------------------
 // Mounts
 
 const MS_RDONLY: u64 = 1;
@@ -955,6 +1038,10 @@ pub fn sys_mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -
     let ty = user_path(fstype)?;
     let src = if source == 0 { ty.clone() } else { user_path(source)? };
     let data = if data == 0 { Vec::new() } else { t.mm().read_cstr(data, 4096)? };
+    if let Some((root, name, flags)) = fs::new_block_fs(&ty, &src, flags)? {
+        vfs::mount(&at, root, name, &src, flags & MS_RDONLY)?;
+        return Ok(0);
+    }
     let (root, name) = fs::new_fs(&ty, mode_option(&data))?;
     vfs::mount(&at, root, name, &src, flags & MS_RDONLY)?;
     Ok(0)
