@@ -16,10 +16,14 @@ mod drivers;
 
 mod arch;
 mod boot;
+mod errno;
 mod fs;
 mod logger;
 mod mm;
+mod process;
+mod random;
 mod sched;
+mod sync;
 mod syscall;
 mod testing;
 mod time;
@@ -40,16 +44,38 @@ extern "C" fn kmain() -> ! {
     arch::init_bsp_late();
     arch::smp::start_aps();
 
+    if let Some(t) = boot::boot_time() {
+        time::set_boot_epoch(t);
+    }
+
     #[cfg(test)]
     test_main();
 
     log::info!("boot complete; {} CPU(s) online", arch::smp::online_cpus());
-    for second in 1..=3 {
-        time::sleep_ms(1000);
-        log::info!("timer: {} ticks after {second}s", time::ticks());
+    fs::init(boot::initramfs());
+    start_init(boot::cmdline());
+    sched::idle()
+}
+
+/// Parse the command line and start init. Recognised words: `init=PATH`,
+/// `strace` (log every syscall); words after `--` become init's arguments.
+fn start_init(cmdline: &str) {
+    let mut init = "/init";
+    let mut args = alloc::vec::Vec::new();
+    let mut words = cmdline.split_ascii_whitespace();
+    for w in words.by_ref() {
+        match w {
+            "--" => break,
+            "strace" => syscall::TRACE.store(true, core::sync::atomic::Ordering::Relaxed),
+            _ => {
+                if let Some(p) = w.strip_prefix("init=") {
+                    init = p;
+                }
+            }
+        }
     }
-    log::info!("idle");
-    arch::idle_loop()
+    args.extend(words.map(|w| w.as_bytes()));
+    process::start_init(init.as_bytes(), &args);
 }
 
 #[panic_handler]

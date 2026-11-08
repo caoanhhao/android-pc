@@ -1,8 +1,8 @@
 //! Application processor (AP) bring-up via the Limine MP response.
 //!
 //! APs get their own stack, GDT/TSS, per-CPU area and the shared IDT and
-//! kernel page tables, enable their LAPIC, then park in `hlt` until the
-//! scheduler (phase B1) gives them work.
+//! kernel page tables, enable their LAPIC and timer, then enter the
+//! scheduler's idle loop and run user tasks from the shared run queue.
 
 use alloc::boxed::Box;
 use core::arch::asm;
@@ -86,10 +86,12 @@ unsafe extern "C" fn ap_entry(info: &MpInfo) -> ! {
 extern "C" fn ap_main(pc: *mut PerCpu) -> ! {
     unsafe { PerCpu::install(pc) };
     idt::load();
+    cpu::init_user_support();
     apic::init_cpu();
+    apic::start_timer();
     log::debug!("AP online (LAPIC id {})", apic::id());
     ONLINE.fetch_add(1, Ordering::AcqRel);
-    crate::arch::idle_loop()
+    crate::sched::idle()
 }
 
 #[test_case]

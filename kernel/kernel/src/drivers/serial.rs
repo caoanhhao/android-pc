@@ -75,6 +75,19 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
+/// Write raw bytes (user `write` to the console). `\n` becomes `\r\n`.
+pub fn write_bytes(data: &[u8]) {
+    without_interrupts(|| {
+        let mut port = COM1_PORT.lock();
+        for &b in data {
+            if b == b'\n' {
+                port.write_byte(b'\r');
+            }
+            port.write_byte(b);
+        }
+    });
+}
+
 /// Print to the serial console.
 #[macro_export]
 macro_rules! kprint {

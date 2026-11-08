@@ -3,7 +3,9 @@
 
 pub mod x86_64;
 
+pub use self::x86_64::entry::TrapFrame;
+pub use self::x86_64::fpu::FpuState;
 pub use self::x86_64::{
-    cpu_index, halt_forever, idle_loop, init_bsp_early, init_bsp_late, interrupts_disable, smp,
-    wait_for_interrupt,
+    cpu_index, halt_forever, init_bsp_early, init_bsp_late, interrupts_disable, power_off,
+    reboot, smp, wait_for_interrupt,
 };
