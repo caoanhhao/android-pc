@@ -13,8 +13,13 @@
 //! Planned: ext4/erofs (C2), binderfs (C1), devpts.
 
 pub mod dev;
+pub mod epoll;
+pub mod eventfd;
 pub mod file;
 pub mod pipe;
+pub mod poll;
+pub mod signalfd;
+pub mod timerfd;
 pub mod procfs;
 pub mod tmpfs;
 pub mod vfs;
@@ -200,7 +205,8 @@ pub fn open_path(p: PathRef, flags: u32) -> KResult<Arc<OpenFile>> {
             inode.open(flags)?.unwrap_or_else(|| default_ops(ty))
         }
         S_IFCHR => dev::open_chr(inode.meta().rdev)?,
-        S_IFIFO | S_IFSOCK | vfs::S_IFBLK => return Err(ENXIO),
+        S_IFIFO => pipe::open_fifo(&inode, flags)?,
+        S_IFSOCK | vfs::S_IFBLK => return Err(ENXIO),
         _ => {
             if flags & O_TRUNC != 0 && acc != O_RDONLY {
                 inode.truncate(0)?;
@@ -211,10 +217,20 @@ pub fn open_path(p: PathRef, flags: u32) -> KResult<Arc<OpenFile>> {
     Ok(OpenFile::new(inode, Some(p), ops, flags))
 }
 
+/// The inode shared by every anonymous-inode file (eventfd, epoll,
+/// timerfd, signalfd): mode 0600 with no file type, like Linux's.
+pub fn anon_inode() -> Arc<dyn Inode> {
+    static ANON: Once<Arc<dyn Inode>> = Once::new();
+    ANON.call_once(|| vfs::AnonInode::new(0o600, 0)).clone()
+}
+
 /// The name /proc/<pid>/fd/N shows for an open file.
 pub fn file_path(f: &OpenFile) -> Vec<u8> {
     if let Some(p) = &f.path {
         return vfs::path_of(p);
+    }
+    if let Some(name) = f.ops.anon_name() {
+        return format!("anon_inode:{name}").into_bytes();
     }
     if let Some(name) = f.inode.as_any().downcast_ref::<TmpInode>().and_then(|t| t.memfd_name()) {
         let mut v = b"/memfd:".to_vec();

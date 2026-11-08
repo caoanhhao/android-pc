@@ -16,7 +16,9 @@
 //! | /dev/ttyS0      | 4:64        | the serial console                   |
 //!
 //! The console is a minimal tty: termios and window size ioctls work (so
-//! isatty() is true); there is no serial input yet, reads return EOF.
+//! isatty() is true); there is no serial input yet, reads return EOF, and
+//! poll reports it writable only (its wait queue is never woken). The
+//! memory devices have no poll method (always ready, not epoll-able).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -24,6 +26,7 @@ use core::any::Any;
 use spin::Mutex;
 
 use super::file::{FileOps, OpenFile};
+use super::poll::{WRITE_EVENTS, WaitQueue};
 use super::tmpfs::TmpInode;
 use super::vfs::{AnonInode, Inode, S_IFCHR, S_IFDIR, dev_major, dev_minor, encode_dev};
 use crate::errno::*;
@@ -78,6 +81,18 @@ impl FileOps for DevFile {
 
     fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
         if self.0 == Dev::Console { tty_ioctl(cmd, arg) } else { Err(ENOTTY) }
+    }
+
+    fn poll(&self, _: &OpenFile) -> u32 {
+        match self.0 {
+            Dev::Console => WRITE_EVENTS,
+            _ => super::poll::DEFAULT_POLLMASK,
+        }
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        static CONSOLE_WQ: spin::Once<Arc<WaitQueue>> = spin::Once::new();
+        (self.0 == Dev::Console).then(|| CONSOLE_WQ.call_once(WaitQueue::new).clone())
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -47,6 +47,7 @@ file này).
 | B4 | `b4_eventfd` | `eventfd2` bộ đếm, EFD_SEMAPHORE, NONBLOCK, tràn, epoll |
 | B4 | `b4_timerfd` | `timerfd_create/settime/gettime`, one-shot, periodic, ABSTIME, REALTIME/BOOTTIME |
 | B4 | `b4_signalfd` | `signalfd4`, `signalfd_siginfo`, đổi mask, SIGCHLD qua epoll |
+| B4 | `b4_poll` | `select/pselect6`, mask tạm của `ppoll` (EINTR, khôi phục mask), FIFO (luật open, O_NONBLOCK/ENXIO, POLLHUP), epoll EPERM/ELOOP, tên `anon_inode:[...]` trong /proc/self/fd và fdinfo |
 | B4 | `b4_unix` | AF_UNIX stream/dgram/seqpacket, socketpair, bind/listen/connect/accept4 (đường dẫn & abstract), `SO_PEERCRED`, **SCM_RIGHTS**, `SCM_CREDENTIALS`, MSG_PEEK/TRUNC/CTRUNC, shutdown |
 
 `ktest-init` không phải test mà là runner (xem dưới).

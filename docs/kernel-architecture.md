@@ -1,4 +1,4 @@
-# Kernel architecture (phase B2 state)
+# Kernel architecture (phase B4a state)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -55,14 +55,18 @@ kernel/
                        (shootdown/kick IPIs), pic, pit, apic, smp
       mm/              frame (bitmap allocator + refcounts), paging, heap, kstack (guarded
                        kernel stacks), user (address spaces, VMAs, user copies)
-      sched/           run queue, context switch, sleep/wake, idle loop
+      sched/           run queue, context switch, sleep/wake, idle loop;
+                       timer (kernel timer callbacks from the tick)
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
                        wait4), elf (loader + initial stack), signal, futex
-      syscall/         dispatch table (Linux numbers), fs, time
+      syscall/         dispatch table (Linux numbers), fs, time, poll (poll/select,
+                       epoll, eventfd, timerfd, signalfd syscalls)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
                        files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
-                       dev (character devices), procfs, pipe; mod.rs: cpio
-                       unpacking, open, mountable file system types
+                       dev (character devices), procfs, pipe (+ FIFOs), poll
+                       (event bits, wait queues, poll loop), epoll, eventfd,
+                       timerfd, signalfd; mod.rs: cpio unpacking, open,
+                       mountable file system types
       drivers/         serial (COM1); later virtio, binder, dma-buf, ...
 ```
 
@@ -241,6 +245,9 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   deliverable signal, killable ones only on SIGKILL. The BSP's timer tick
   expires deadlines (10 ms granularity; times are read from the TSC so sleeps
   never end early).
+- Kernel timers (`sched/timer.rs`): `arm(deadline, Weak<dyn TimerCallback>)`
+  / `cancel(id)`; the BSP's tick runs expired callbacks in interrupt
+  context (so they only take `IrqLock`s). timerfd uses them.
 
 ## Processes (`process/`)
 
@@ -305,7 +312,10 @@ One global mount namespace. The pieces:
   ENAMETOOLONG for components > 255 bytes or paths >= 4096.
 - **Open files** (`file::OpenFile`): inode, the `PathRef` it was opened
   by, status flags, position, and boxed `FileOps` (regular file, directory,
-  O_PATH, generated `SeqFile`, device, pipe end). `FdTable` holds
+  O_PATH, generated `SeqFile`, device, pipe end, epoll, eventfd, timerfd,
+  signalfd). `FileOps` also has `poll` (readiness bits; default "always
+  ready"), `wait_queue` (see Readiness below), `anon_name` (for
+  `anon_inode:[...]` names) and `fdinfo`. `FdTable` holds
   `(OpenFile, cloexec)` slots (1024 max); dup shares the description.
 - **File systems**:
   - `tmpfs`: directories as `BTreeMap`s (so getdents order is by name),
@@ -321,20 +331,65 @@ One global mount namespace. The pieces:
     works); it has no input yet (reads return EOF). /dev/kmsg writes go to
     the kernel log.
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
-    mounts,fd/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
+    mounts,fd/,fdinfo/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
     `filesystems`, `cmdline`, `version`, `loadavg`, `stat`. Contents are
     generated at open. `maps` shows `s`/`p`, file offset, device and inode,
     and names file mappings by path (`/dev/zero (deleted)` for anonymous
     shared memory). `maps`/`VmSize` are only filled in for the calling
     process (reading another task's address space pointer would race with
     its execve). `fd/N` are symlinks whose target is the open file's path
-    (`pipe:[ino]` for pipes); they are not "magic" links yet.
+    (`pipe:[ino]` for pipes, `anon_inode:[eventfd]`/`[eventpoll]`/
+    `[timerfd]`/`[signalfd]` for event files, which share one 0600
+    anonymous inode); they are not "magic" links yet. `fdinfo/N`: pos,
+    flags (with O_CLOEXEC), mnt_id (device), ino, then per-type lines.
   - sysfs: one shared tmpfs with the empty top-level directories (block,
     bus, class, dev, devices, firmware, fs, kernel, module, power).
   - pipes: 64 KiB, blocking and O_NONBLOCK, atomic writes up to PIPE_BUF,
     EOF when writers are gone, EPIPE + SIGPIPE when readers are gone.
+    FIFO nodes (mknod S_IFIFO on any file system) get a pipe on first open,
+    looked up by inode in a global table of weak references (dropped with
+    the last open end). Opening blocks for the other side unless O_NONBLOCK
+    (a nonblocking writer with no reader gets ENXIO); O_RDWR never blocks.
 - Everything runs as root: no permission checks except the execute bit
   (execve, access X_OK). chown/chmod are stored; MS_RDONLY is recorded only.
+
+## Readiness and event files (`fs/poll.rs`, `fs/epoll.rs`, ...)
+
+- **Wait queues** (`poll::WaitQueue`, always in an `Arc`): a unique sleep
+  key plus a list of `Waiter` callbacks. `wake(events)` wakes tasks
+  sleeping on the key (`sched::wait_until(queue.key(), ...)`: blocked
+  reads/writes on the object itself) and then calls each callback outside
+  the queue lock with a hint of what changed (0 = unknown). Callbacks can
+  run in interrupt context (timerfd expiry), so the queue and everything a
+  callback touches use `IrqLock`. Pipes, the console, eventfd, timerfd,
+  epoll and the per-process `signalfd_wq` (woken by every queued signal)
+  have one; files without one (regular files, memory devices) are always
+  ready and refused by epoll_ctl with EPERM.
+- **poll/select** (`poll::do_poll`): a `Poller` registers one callback that
+  wakes its own sleep key on every watched queue, then sleeps in
+  `wait_until` re-scanning all files' `poll` after each wake-up (register
+  then re-check, so no wake-up is lost). select is poll with the fd_set
+  bits mapped to POLLIN/POLLOUT/POLLPRI sets. ppoll/pselect6/epoll_pwait
+  install a temporary signal mask through `ThreadSignals::saved_mask` (the
+  rt_sigsuspend mechanism): on EINTR the handler frame gets the old mask,
+  on any other return it is restored at once.
+- **epoll**: items `(fd, file address) -> {Weak<OpenFile>, events, data}`,
+  a ready list, and an `ItemWaiter` callback on each file's queue that
+  queues the item (when its events match the hint) and wakes the epoll's
+  queue. `epoll_wait` drains the ready list, polls each file without the
+  epoll lock, reports up to maxevents, re-queues level-triggered items,
+  leaves EPOLLET items off until the next wake-up and disables EPOLLONESHOT
+  items. ADD/MOD queue an item that is already ready. Items hold files
+  weakly, so closing the last reference removes them (lazily: dead items
+  are purged on the next ctl/wait). The epoll fd polls readable when a
+  queued item has events; nesting is allowed up to 4 levels, loops are
+  ELOOP.
+- **eventfd**: a counter under a mutex with blocking/EAGAIN reads and
+  writes. **timerfd**: deadline on the monotonic clock (realtime absolute
+  times converted with the boot epoch), interval and unread expirations
+  are computed from the clock on every read/poll; a kernel timer per
+  expiry wakes the queue. **signalfd**: a mask; reads dequeue the reading
+  thread's pending signals in the mask (`signal::dequeue`).
 
 ## Tests
 
@@ -369,12 +424,15 @@ b1_tls 14, b2_files 92, b2_pipe 27, b2_getdents 13, b2_devproc 26); the
 B3/B4 tests fail cleanly (missing syscalls) without taking the kernel down.
 B2 was checked with 1, 4 and 8 CPUs, debug and release. Phase B3: b3_mmap
 40/40, b3_fork_cow 11/11, b3_memfd 35/35 and b3_shmem 35/35 (same counts as
-the Linux host).
+the Linux host). Phase B4a: b4_epoll 43/43, b4_eventfd 19/19, b4_timerfd
+18/18, b4_signalfd 16/16 and b4_poll 32/32 (select/pselect6, ppoll's
+mask, FIFOs, epoll EPERM/ELOOP, anon_inode names and fdinfo), same counts
+as the Linux host, with 1, 4 and 8 CPUs; b4_unix waits for B4b.
 
 ## Known gaps / next steps
 
 - VFS follow-ups: permission checks and credentials, read-only mounts,
-  FIFOs in the file system, devpts, console input, /proc/<pid>/fd magic
+  devpts, console input (and its poll), /proc/<pid>/fd magic
   links (so a memfd cannot be re-opened through /proc/self/fd/N yet),
   /proc/sys, a real sysfs, statfs block accounting.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:

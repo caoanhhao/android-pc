@@ -1,28 +1,38 @@
-//! Pipes: a 64 KiB ring shared by a read end and a write end. Readers
-//! block until data arrives or every writer is gone (EOF); writers block
-//! while the pipe is full and get EPIPE + SIGPIPE once every reader is
-//! gone. Writes of up to PIPE_BUF bytes are atomic.
+//! Pipes and FIFOs: a 64 KiB ring shared by read ends and write ends.
+//! Readers block until data arrives or every writer is gone (EOF); writers
+//! block while the pipe is full and get EPIPE + SIGPIPE once every reader
+//! is gone. Writes of up to PIPE_BUF bytes are atomic.
+//!
+//! A FIFO (mknod S_IFIFO) gets its pipe on first open; the pipe lives as
+//! long as some end is open (data is dropped when the last end closes).
+//! Opening for reading blocks until a writer opens and vice versa, unless
+//! O_NONBLOCK (a nonblocking writer with no reader gets ENXIO); O_RDWR
+//! never blocks.
 
 use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use super::file::{FileOps, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFile};
+use super::file::{FileOps, O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFile};
+use super::poll::{POLLERR, POLLHUP, READ_EVENTS, WRITE_EVENTS, WaitQueue};
 use super::vfs::{AnonInode, Inode, S_IFIFO};
 use crate::errno::*;
 use crate::sched::{self, Wake};
 
 pub const PIPE_CAPACITY: usize = 64 * 1024;
 pub const PIPE_BUF: usize = 4096;
-const WAIT_PIPE: u64 = 0x5049_5045_0000_0000;
 
 pub struct Pipe {
     buf: Mutex<VecDeque<u8>>,
     readers: AtomicUsize,
     writers: AtomicUsize,
+    /// Opens of each end so far (FIFO open waits for the other side).
+    r_opens: AtomicU64,
+    w_opens: AtomicU64,
+    wq: Arc<WaitQueue>,
 }
 
 impl Pipe {
@@ -31,11 +41,14 @@ impl Pipe {
             buf: Mutex::new(VecDeque::new()),
             readers: AtomicUsize::new(0),
             writers: AtomicUsize::new(0),
+            r_opens: AtomicU64::new(0),
+            w_opens: AtomicU64::new(0),
+            wq: WaitQueue::new(),
         })
     }
 
     fn key(&self) -> sched::WaitKey {
-        (WAIT_PIPE, self as *const Pipe as u64)
+        self.wq.key()
     }
 
     /// Bytes waiting to be read (FIONREAD).
@@ -70,7 +83,7 @@ impl Pipe {
         });
         match wake {
             Wake::Ready => {
-                sched::wake_all(self.key());
+                self.wq.wake(WRITE_EVENTS);
                 result
             }
             _ => Err(ERESTARTSYS),
@@ -103,7 +116,7 @@ impl Pipe {
                 }
                 false
             });
-            sched::wake_all(self.key());
+            self.wq.wake(READ_EVENTS);
             if let Some(e) = err {
                 if e == EPIPE {
                     crate::process::signal::send_to_current(crate::process::signal::SIGPIPE);
@@ -129,34 +142,60 @@ fn fionread(pipe: &Pipe, arg: u64) -> KResult<u64> {
     Ok(0)
 }
 
-pub struct PipeReader(pub Arc<Pipe>);
+/// A read end. `w_seen`: writer opens when it was opened; POLLHUP is only
+/// reported once a writer has come (and gone) since then (a FIFO reader
+/// opened with O_NONBLOCK and no writer is not "hung up").
+pub struct PipeReader(pub Arc<Pipe>, u64);
 pub struct PipeWriter(pub Arc<Pipe>);
 
 impl PipeReader {
     pub fn new(p: Arc<Pipe>) -> Self {
+        let seen = p.w_opens.load(Ordering::SeqCst);
         p.readers.fetch_add(1, Ordering::SeqCst);
-        PipeReader(p)
+        p.r_opens.fetch_add(1, Ordering::SeqCst);
+        p.wq.wake(0);
+        PipeReader(p, seen)
+    }
+
+    fn poll(&self) -> u32 {
+        let p = &self.0;
+        let mut m = if p.buf.lock().is_empty() { 0 } else { READ_EVENTS };
+        if p.writers.load(Ordering::SeqCst) == 0 && p.w_opens.load(Ordering::SeqCst) != self.1 {
+            m |= POLLHUP;
+        }
+        m
     }
 }
 
 impl PipeWriter {
     pub fn new(p: Arc<Pipe>) -> Self {
         p.writers.fetch_add(1, Ordering::SeqCst);
+        p.w_opens.fetch_add(1, Ordering::SeqCst);
+        p.wq.wake(0);
         PipeWriter(p)
+    }
+
+    fn poll(&self) -> u32 {
+        let p = &self.0;
+        let mut m = if p.buf.lock().len() < PIPE_CAPACITY { WRITE_EVENTS } else { 0 };
+        if p.readers.load(Ordering::SeqCst) == 0 {
+            m |= POLLERR;
+        }
+        m
     }
 }
 
 impl Drop for PipeReader {
     fn drop(&mut self) {
         self.0.readers.fetch_sub(1, Ordering::SeqCst);
-        sched::wake_all(self.0.key());
+        self.0.wq.wake(POLLERR | WRITE_EVENTS);
     }
 }
 
 impl Drop for PipeWriter {
     fn drop(&mut self) {
         self.0.writers.fetch_sub(1, Ordering::SeqCst);
-        sched::wake_all(self.0.key());
+        self.0.wq.wake(POLLHUP | READ_EVENTS);
     }
 }
 
@@ -171,6 +210,14 @@ impl FileOps for PipeReader {
 
     fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
         if cmd == FIONREAD { fionread(&self.0, arg) } else { Err(ENOTTY) }
+    }
+
+    fn poll(&self, _: &OpenFile) -> u32 {
+        PipeReader::poll(self)
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        Some(self.0.wq.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -191,6 +238,14 @@ impl FileOps for PipeWriter {
         if cmd == FIONREAD { fionread(&self.0, arg) } else { Err(ENOTTY) }
     }
 
+    fn poll(&self, _: &OpenFile) -> u32 {
+        PipeWriter::poll(self)
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        Some(self.0.wq.clone())
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -203,4 +258,87 @@ pub fn new_pipe(flags: u32) -> (Arc<OpenFile>, Arc<OpenFile>) {
     let r = OpenFile::new(inode.clone(), None, Box::new(PipeReader::new(p.clone())), O_RDONLY | (flags & O_NONBLOCK));
     let w = OpenFile::new(inode, None, Box::new(PipeWriter::new(p)), O_WRONLY | (flags & O_NONBLOCK));
     (r, w)
+}
+
+/// A FIFO opened O_RDWR: both ends in one description.
+pub struct FifoRdwr(PipeReader, PipeWriter);
+
+impl FileOps for FifoRdwr {
+    fn read(&self, f: &OpenFile, _: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        self.0.0.read(buf, f.nonblock())
+    }
+
+    fn write(&self, f: &OpenFile, _: &mut u64, data: &[u8]) -> KResult<usize> {
+        self.1.0.write(data, f.nonblock())
+    }
+
+    fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
+        if cmd == FIONREAD { fionread(&self.0.0, arg) } else { Err(ENOTTY) }
+    }
+
+    fn poll(&self, _: &OpenFile) -> u32 {
+        self.0.poll() | self.1.poll()
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        Some(self.0.0.wq.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// FIFO inode -> its pipe while some end is open (keyed by the inode's
+/// address, which cannot be reused while an open end holds the inode).
+static FIFOS: Mutex<BTreeMap<usize, Weak<Pipe>>> = Mutex::new(BTreeMap::new());
+
+fn fifo_pipe(inode: &Arc<dyn Inode>) -> Arc<Pipe> {
+    let key = Arc::as_ptr(inode) as *const () as usize;
+    let mut m = FIFOS.lock();
+    m.retain(|_, w| w.strong_count() > 0);
+    if let Some(p) = m.get(&key).and_then(Weak::upgrade) {
+        return p;
+    }
+    let p = Pipe::new();
+    m.insert(key, Arc::downgrade(&p));
+    p
+}
+
+/// Wait until `count` (the other side's opens) moves past `seen` or the
+/// other side is open.
+fn wait_peer(p: &Pipe, others: &AtomicUsize, opens: &AtomicU64, seen: u64) -> KResult<()> {
+    let w = sched::wait_until(p.key(), None, sched::WaitMode::Interruptible, || {
+        others.load(Ordering::SeqCst) > 0 || opens.load(Ordering::SeqCst) != seen
+    });
+    if w == Wake::Ready { Ok(()) } else { Err(ERESTARTSYS) }
+}
+
+/// Open a FIFO node.
+pub fn open_fifo(inode: &Arc<dyn Inode>, flags: u32) -> KResult<Box<dyn FileOps>> {
+    let p = fifo_pipe(inode);
+    let nonblock = flags & O_NONBLOCK != 0;
+    match flags & O_ACCMODE {
+        O_RDONLY => {
+            let seen = p.w_opens.load(Ordering::SeqCst);
+            let r = PipeReader::new(p.clone());
+            if !nonblock {
+                wait_peer(&p, &p.writers, &p.w_opens, seen)?;
+            }
+            Ok(Box::new(r))
+        }
+        O_WRONLY => {
+            if nonblock && p.readers.load(Ordering::SeqCst) == 0 {
+                return Err(ENXIO);
+            }
+            let seen = p.r_opens.load(Ordering::SeqCst);
+            let w = PipeWriter::new(p.clone());
+            if !nonblock {
+                wait_peer(&p, &p.readers, &p.r_opens, seen)?;
+            }
+            Ok(Box::new(w))
+        }
+        O_RDWR => Ok(Box::new(FifoRdwr(PipeReader::new(p.clone()), PipeWriter::new(p)))),
+        _ => Err(EINVAL),
+    }
 }
