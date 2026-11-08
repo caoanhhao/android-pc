@@ -75,6 +75,8 @@ pub struct SigInfo {
     pub addr: Option<u64>,
     /// si_status (SIGCHLD).
     pub status: Option<i32>,
+    /// si_value (sigqueue).
+    pub value: Option<u64>,
 }
 
 impl SigInfo {
@@ -99,6 +101,8 @@ impl SigInfo {
                 b[20..24].copy_from_slice(&self.uid.to_le_bytes());
                 if let Some(s) = self.status {
                     b[24..28].copy_from_slice(&s.to_le_bytes());
+                } else if let Some(v) = self.value {
+                    b[24..32].copy_from_slice(&v.to_le_bytes());
                 }
             }
         }

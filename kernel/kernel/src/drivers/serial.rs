@@ -75,17 +75,21 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
-/// Write raw bytes (user `write` to the console). `\n` becomes `\r\n`.
-pub fn write_bytes(data: &[u8]) {
+/// Write bytes as they are (the tty did the output processing).
+pub fn write_raw(data: &[u8]) {
     without_interrupts(|| {
         let mut port = COM1_PORT.lock();
         for &b in data {
-            if b == b'\n' {
-                port.write_byte(b'\r');
-            }
             port.write_byte(b);
         }
     });
+}
+
+/// A received byte, if any. Only the BSP's timer tick reads (no lock: the
+/// line status and receive registers are not touched by the writers).
+pub fn read_byte() -> Option<u8> {
+    let port = SerialPort::new(COM1);
+    (port.inb(5) & 1 != 0).then(|| port.inb(0))
 }
 
 /// Print to the serial console.

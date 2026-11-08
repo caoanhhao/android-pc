@@ -25,7 +25,7 @@ systemd-run --user --scope --quiet --unit="$unit" \
     -p AllowedCPUs="0-$((CORES - 1))" \
     -p CPUQuota="$((CORES * 100))%" \
     -p MemoryMax="$MEM" -p MemorySwapMax=4G \
-    "$@" &
+    "$@" <&0 &   # keep stdin (bash gives background jobs /dev/null)
 pid=$!
 
 # Disk guard: stop the whole scope if free space falls under the floor.

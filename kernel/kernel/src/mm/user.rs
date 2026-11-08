@@ -74,11 +74,13 @@ pub struct Vma {
     /// false for a read-only fd or a write-sealed memfd).
     pub maywrite: bool,
     pub backing: Option<Backing>,
+    /// MADV_WIPEONFORK (private anonymous only): a fork child sees zeroes.
+    pub wipeonfork: bool,
 }
 
 impl Vma {
     fn anon(end: u64, prot: u32) -> Vma {
-        Vma { end, prot, shared: false, maywrite: true, backing: None }
+        Vma { end, prot, shared: false, maywrite: true, backing: None, wipeonfork: false }
     }
 
     /// This VMA (starting at `start`) cut to begin at `at` instead.
@@ -92,7 +94,11 @@ impl Vma {
 
     /// Whether `next` (at `next_start`) continues this VMA (at `start`).
     fn continued_by(&self, start: u64, next_start: u64, next: &Vma) -> bool {
-        if self.end != next_start || self.prot != next.prot || self.shared != next.shared || self.maywrite != next.maywrite
+        if self.end != next_start
+            || self.prot != next.prot
+            || self.shared != next.shared
+            || self.maywrite != next.maywrite
+            || self.wipeonfork != next.wipeonfork
         {
             return false;
         }
@@ -146,6 +152,8 @@ pub const MADV_WILLNEED: u32 = 3;
 pub const MADV_DONTNEED: u32 = 4;
 pub const MADV_FREE: u32 = 8;
 pub const MADV_REMOVE: u32 = 9;
+pub const MADV_WIPEONFORK: u32 = 18;
+pub const MADV_KEEPONFORK: u32 = 19;
 
 pub const MS_ASYNC: u32 = 1;
 pub const MS_INVALIDATE: u32 = 2;
@@ -647,7 +655,7 @@ impl AddressSpace {
     /// Mapping of a shmem object (a file, or /dev/zero).
     #[allow(clippy::too_many_arguments)]
     pub fn mmap_object(&self, addr: u64, len: u64, prot: u32, shared: bool, maywrite: bool, backing: Backing, fixed: bool, noreplace: bool) -> KResult<u64> {
-        let vma = Vma { end: 0, prot, shared, maywrite: maywrite || !shared, backing: Some(backing) };
+        let vma = Vma { end: 0, prot, shared, maywrite: maywrite || !shared, backing: Some(backing), wipeonfork: false };
         self.map(addr, len, fixed, noreplace, vma)
     }
 
@@ -755,6 +763,9 @@ impl AddressSpace {
         if advice == MADV_REMOVE {
             return self.madvise_remove(addr, len);
         }
+        if advice == MADV_WIPEONFORK || advice == MADV_KEEPONFORK {
+            return self.set_wipeonfork(addr, len, advice == MADV_WIPEONFORK);
+        }
         let drop_pages = match advice {
             MADV_DONTNEED | MADV_FREE => true,
             MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED => false,
@@ -782,6 +793,31 @@ impl AddressSpace {
         }
         drop(inner);
         self.finish_unmap(frames);
+        Ok(())
+    }
+
+    /// MADV_WIPEONFORK / MADV_KEEPONFORK on private anonymous memory.
+    fn set_wipeonfork(&self, addr: u64, len: u64, on: bool) -> KResult<()> {
+        let end = page_up(addr.checked_add(len).ok_or(EINVAL)?).ok_or(EINVAL)?;
+        if end > USER_END {
+            return Err(ENOMEM);
+        }
+        let mut inner = self.inner.lock();
+        inner.require_mapped(addr, end, ENOMEM)?;
+        let mut a = addr;
+        while a < end {
+            let (_, v) = inner.find(a).unwrap();
+            if on && (v.shared || v.backing.is_some()) {
+                return Err(EINVAL);
+            }
+            a = v.end;
+        }
+        inner.split_at(addr);
+        inner.split_at(end);
+        let starts: Vec<u64> = inner.vmas.range(addr..end).map(|(&s, _)| s).collect();
+        for s in starts {
+            inner.vmas.get_mut(&s).unwrap().wipeonfork = on;
+        }
         Ok(())
     }
 
@@ -1077,11 +1113,15 @@ impl AddressSpace {
             if !ok {
                 return;
             }
+            let (shared, wipe) = inner.find(va).map_or((false, false), |(_, v)| (v.shared, v.wipeonfork));
+            if wipe {
+                // The child faults in zero pages.
+                return;
+            }
             let Some(ce) = child.walk(va, true) else {
                 ok = false;
                 return;
             };
-            let shared = inner.find(va).is_some_and(|(_, v)| v.shared);
             frame::get(PhysFrame::containing_address(e.addr()));
             if !shared && e.flags().contains(F::WRITABLE) {
                 e.set_flags(e.flags() - F::WRITABLE);

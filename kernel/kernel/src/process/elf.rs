@@ -1,9 +1,9 @@
 //! ELF64 loader for static executables and the initial user stack.
 //!
-//! Supported: ET_EXEC and static-PIE ET_DYN (loaded at a fixed base)
-//! without PT_INTERP. Dynamically linked programs (PT_INTERP, e.g. bionic's
-//! /system/bin/linker64) are refused with ENOEXEC and a log line until the
-//! interpreter loading lands.
+//! Supported: ET_EXEC and ET_DYN (PIE, loaded at a fixed base), static or
+//! dynamically linked. For PT_INTERP the caller passes the interpreter
+//! (e.g. bionic's /system/bin/linker64), which is loaded at INTERP_BASE and
+//! started with AT_BASE pointing at it, like Linux's binfmt_elf.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -19,8 +19,11 @@ const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
 const PHDR_SIZE: usize = 56;
-/// Load address of static-PIE executables.
+/// Load address of PIE executables.
 const PIE_BASE: u64 = 0x5555_5555_4000;
+/// Load address of the PT_INTERP program (bionic's linker64): between the
+/// top-down mmap area (below 0x7f00_0000_0000) and the stack.
+const INTERP_BASE: u64 = 0x7fc0_0000_0000;
 
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -51,6 +54,8 @@ pub struct Image {
     pub mm: Arc<AddressSpace>,
     pub entry: u64,
     pub sp: u64,
+    /// Where the PT_INTERP program was mapped (for /proc/<pid>/maps).
+    pub interp_range: Option<(u64, u64)>,
 }
 
 struct Phdr {
@@ -77,7 +82,15 @@ pub fn is_elf(data: &[u8]) -> bool {
     data.len() >= 4 && &data[..4] == b"\x7fELF"
 }
 
-pub fn load(data: &[u8], execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<Image> {
+struct Parsed {
+    ty: u16,
+    entry: u64,
+    phoff: usize,
+    phnum: usize,
+    phdrs: Vec<Phdr>,
+}
+
+fn parse(data: &[u8]) -> KResult<Parsed> {
     if data.len() < 64 || !is_elf(data) || data[4] != 2 || data[5] != 1 {
         return Err(ENOEXEC);
     }
@@ -96,7 +109,7 @@ pub fn load(data: &[u8], execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> K
     if ph_end > data.len() {
         return Err(ENOEXEC);
     }
-    let phdrs: Vec<Phdr> = (0..phnum)
+    let phdrs = (0..phnum)
         .map(|i| {
             let o = phoff + i * PHDR_SIZE;
             Phdr {
@@ -109,76 +122,115 @@ pub fn load(data: &[u8], execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> K
             }
         })
         .collect();
+    Ok(Parsed { ty, entry, phoff, phnum, phdrs })
+}
 
-    if let Some(interp) = phdrs.iter().find(|p| p.ty == PT_INTERP) {
-        let s = data
-            .get(interp.offset as usize..(interp.offset + interp.filesz) as usize)
-            .unwrap_or(b"?");
-        log::warn!(
-            "execve {}: dynamically linked (PT_INTERP {}), not supported yet",
-            core::str::from_utf8(execfn).unwrap_or("?"),
-            core::str::from_utf8(s.strip_suffix(b"\0").unwrap_or(s)).unwrap_or("?")
-        );
+/// The PT_INTERP path of a dynamically linked executable, if any.
+pub fn interp_path(data: &[u8]) -> KResult<Option<Vec<u8>>> {
+    let p = parse(data)?;
+    let Some(interp) = p.phdrs.iter().find(|p| p.ty == PT_INTERP) else {
+        return Ok(None);
+    };
+    let s = data
+        .get(interp.offset as usize..interp.offset.saturating_add(interp.filesz) as usize)
+        .ok_or(ENOEXEC)?;
+    let s = s.split(|&c| c == 0).next().unwrap_or(s);
+    if s.is_empty() || s.len() > 4096 {
         return Err(ENOEXEC);
     }
-    let bias = if ty == ET_DYN { PIE_BASE } else { 0 };
+    Ok(Some(s.to_vec()))
+}
 
-    let mm = AddressSpace::new().ok_or(ENOMEM)?;
-    let mut brk = 0u64;
+/// An ELF image mapped into an address space.
+struct Mapped {
+    entry: u64,
+    phdr: u64,
+    phnum: usize,
+    end: u64,
+}
+
+/// Copy the PT_LOAD segments of `p` into `mm` at `bias`.
+fn map_image(mm: &AddressSpace, data: &[u8], p: &Parsed, bias: u64) -> KResult<Mapped> {
+    let mut end_all = 0u64;
     let mut phdr_addr = None;
-    for p in phdrs.iter().filter(|p| p.ty == PT_LOAD && p.memsz > 0) {
-        if p.filesz > p.memsz || p.offset.checked_add(p.filesz).is_none_or(|e| e > data.len() as u64) {
+    for p_ in p.phdrs.iter().filter(|p| p.ty == PT_LOAD && p.memsz > 0) {
+        if p_.filesz > p_.memsz || p_.offset.checked_add(p_.filesz).is_none_or(|e| e > data.len() as u64) {
             return Err(ENOEXEC);
         }
-        let va = p.vaddr.checked_add(bias).ok_or(ENOEXEC)?;
-        let end = va.checked_add(p.memsz).ok_or(ENOEXEC)?;
+        let va = p_.vaddr.checked_add(bias).ok_or(ENOEXEC)?;
+        let end = va.checked_add(p_.memsz).ok_or(ENOEXEC)?;
         if end > crate::mm::user::USER_END || va < PAGE_SIZE {
             return Err(ENOEXEC);
         }
         let mut prot = 0;
-        if p.flags & 4 != 0 {
+        if p_.flags & 4 != 0 {
             prot |= PROT_READ;
         }
-        if p.flags & 2 != 0 {
+        if p_.flags & 2 != 0 {
             prot |= PROT_WRITE;
         }
-        if p.flags & 1 != 0 {
+        if p_.flags & 1 != 0 {
             prot |= PROT_EXEC;
         }
         let start_page = va & !(PAGE_SIZE - 1);
         let end_page = end.next_multiple_of(PAGE_SIZE);
         mm.map_segment(start_page, end_page, prot)?;
-        let file = &data[p.offset as usize..(p.offset + p.filesz) as usize];
+        let file = &data[p_.offset as usize..(p_.offset + p_.filesz) as usize];
         mm.copy_out_force(va, file)?;
         // Zero the bss part explicitly: the last file page may be shared.
-        let bss = (p.memsz - p.filesz) as usize;
+        let bss = (p_.memsz - p_.filesz) as usize;
         if bss > 0 {
-            let zeros = alloc::vec![0u8; bss.min((end_page - (va + p.filesz)) as usize)];
-            mm.copy_out_force(va + p.filesz, &zeros)?;
+            let zeros = alloc::vec![0u8; bss.min((end_page - (va + p_.filesz)) as usize)];
+            mm.copy_out_force(va + p_.filesz, &zeros)?;
         }
-        brk = brk.max(end_page);
-        if p.offset as usize <= phoff && phoff < (p.offset + p.filesz) as usize {
-            phdr_addr = Some(va + (phoff as u64 - p.offset));
+        end_all = end_all.max(end_page);
+        if p_.offset as usize <= p.phoff && p.phoff < (p_.offset + p_.filesz) as usize {
+            phdr_addr = Some(va + (p.phoff as u64 - p_.offset));
         }
     }
-    if brk == 0 {
+    if end_all == 0 {
         return Err(ENOEXEC);
     }
-    if let Some(p) = phdrs.iter().find(|p| p.ty == PT_PHDR) {
-        phdr_addr = Some(p.vaddr + bias);
+    if let Some(ph) = p.phdrs.iter().find(|p| p.ty == PT_PHDR) {
+        phdr_addr = Some(ph.vaddr + bias);
     }
-    mm.set_brk_start(brk);
+    Ok(Mapped { entry: p.entry + bias, phdr: phdr_addr.unwrap_or(0), phnum: p.phnum, end: end_all })
+}
+
+/// Load `data` into a new address space. `interp` is the contents of its
+/// PT_INTERP program (see [`interp_path`]), which then gets control first.
+pub fn load(data: &[u8], interp: Option<&[u8]>, execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> KResult<Image> {
+    let exe = parse(data)?;
+    let has_interp = exe.phdrs.iter().any(|p| p.ty == PT_INTERP);
+    if has_interp != interp.is_some() {
+        return Err(ENOEXEC);
+    }
+    let bias = if exe.ty == ET_DYN { PIE_BASE } else { 0 };
+
+    let mm = AddressSpace::new().ok_or(ENOMEM)?;
+    let main = map_image(&mm, data, &exe, bias)?;
+    let (entry, base, interp_range) = match interp {
+        Some(idata) => {
+            let ip = parse(idata)?;
+            if ip.ty != ET_DYN || ip.phdrs.iter().any(|p| p.ty == PT_INTERP) {
+                return Err(ELIBBAD);
+            }
+            let m = map_image(&mm, idata, &ip, INTERP_BASE)?;
+            (m.entry, INTERP_BASE, Some((INTERP_BASE, m.end)))
+        }
+        None => (main.entry, 0, None),
+    };
+    mm.set_brk_start(main.end);
     mm.add_vma(STACK_TOP - STACK_SIZE, STACK_TOP, PROT_READ | PROT_WRITE)?;
 
-    let entry = entry + bias;
     let auxv = [
-        (AT_PHDR, phdr_addr.unwrap_or(0)),
+        (AT_PHDR, main.phdr),
         (AT_PHENT, PHDR_SIZE as u64),
-        (AT_PHNUM, phnum as u64),
+        (AT_PHNUM, main.phnum as u64),
         (AT_PAGESZ, PAGE_SIZE),
-        (AT_BASE, 0),
+        (AT_BASE, base),
         (AT_FLAGS, 0),
-        (AT_ENTRY, entry),
+        (AT_ENTRY, main.entry),
         (AT_UID, 0),
         (AT_EUID, 0),
         (AT_GID, 0),
@@ -190,7 +242,7 @@ pub fn load(data: &[u8], execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u8>]) -> K
         (AT_MINSIGSTKSZ, crate::process::signal::MINSIGSTKSZ),
     ];
     let sp = build_stack(&mm, execfn, argv, envp, &auxv)?;
-    Ok(Image { mm, entry, sp })
+    Ok(Image { mm, entry, sp, interp_range })
 }
 
 /// Lay out argc, argv, envp, auxv and the strings they point to below
