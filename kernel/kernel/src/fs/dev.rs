@@ -10,7 +10,7 @@
 //! | /dev/full       | 1:7         | zeros / ENOSPC                       |
 //! | /dev/random     | 1:8         | random bytes (never blocks)          |
 //! | /dev/urandom    | 1:9         | random bytes                         |
-//! | /dev/kmsg       | 1:11        | writes go to the kernel log; reads EOF |
+//! | /dev/kmsg       | 1:11        | the kernel log buffer (`fs::kmsg`)   |
 //! | /dev/tty        | 5:0         | the serial console                   |
 //! | /dev/console    | 5:1         | the serial console                   |
 //! | /dev/ttyS0      | 4:64        | the serial console                   |
@@ -18,6 +18,7 @@
 //! | binderfs nodes  | 244:n       | binder devices (`drivers::binder`)   |
 //! | /dev/device-mapper, /dev/mapper/control | 10:236 | dm control (`block::dm`) |
 //! | /dev/loop-control | 10:237    | loop control (`block::loop_dev`)     |
+//! | /dev/hw_random  | 10:183      | random bytes (hw_random, for prng_seeder) |
 //!
 //! Block device nodes (/dev/block/*) open `block::open_blk`.
 //!
@@ -36,6 +37,8 @@ use super::vfs::{AnonInode, Inode, S_IFCHR, S_IFDIR, dev_major, dev_minor, encod
 use crate::errno::*;
 
 pub const CONSOLE_RDEV: (u32, u32) = (5, 1);
+/// The misc minor of /dev/hw_random.
+pub const HWRNG_MINOR: u32 = 183;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Dev {
@@ -43,7 +46,6 @@ enum Dev {
     Zero,
     Full,
     Random,
-    Kmsg,
     Console,
 }
 
@@ -53,7 +55,7 @@ impl FileOps for DevFile {
     fn read(&self, f: &OpenFile, _: &mut u64, buf: &mut [u8]) -> KResult<usize> {
         match self.0 {
             Dev::Console => super::tty::read(buf, f.nonblock()),
-            Dev::Null | Dev::Kmsg => Ok(0),
+            Dev::Null => Ok(0),
             Dev::Zero | Dev::Full => {
                 buf.fill(0);
                 Ok(buf.len())
@@ -69,10 +71,6 @@ impl FileOps for DevFile {
         match self.0 {
             Dev::Full => Err(ENOSPC),
             Dev::Console => Ok(super::tty::write(data)),
-            Dev::Kmsg => {
-                kmsg_write(data);
-                Ok(data.len())
-            }
             _ => Ok(data.len()),
         }
     }
@@ -101,20 +99,6 @@ impl FileOps for DevFile {
     }
 }
 
-/// /dev/kmsg write: "<prio>text" -> one kernel log line.
-fn kmsg_write(data: &[u8]) {
-    let mut s = data;
-    if s.first() == Some(&b'<')
-        && let Some(end) = s.iter().position(|&c| c == b'>')
-    {
-        s = &s[end + 1..];
-    }
-    while s.last() == Some(&b'\n') {
-        s = &s[..s.len() - 1];
-    }
-    log::info!("kmsg: {}", core::str::from_utf8(s).unwrap_or("<binary>"));
-}
-
 // ---------------------------------------------------------------------------
 
 /// File operations for opening a character device node.
@@ -124,11 +108,12 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (1, 5) => Dev::Zero,
         (1, 7) => Dev::Full,
         (1, 8) | (1, 9) => Dev::Random,
-        (1, 11) => Dev::Kmsg,
+        (1, 11) => return Ok(Box::new(super::kmsg::KmsgDev)),
         (5, 2) => return super::pty::open_master(),
         (super::pty::PTS_MAJOR, n) => return super::pty::open_slave(n),
         (5, 0) | (5, 1) | (4, _) => Dev::Console,
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
+        (crate::block::MISC_MAJOR, HWRNG_MINOR) => Dev::Random,
         (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
         _ => return Err(ENXIO),
     };

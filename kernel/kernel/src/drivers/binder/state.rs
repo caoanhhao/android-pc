@@ -148,6 +148,7 @@ pub struct Txn {
     /// replies, or once the sender is gone).
     pub from: Option<(Id, u32)>,
     pub sender_pid: u32,
+    pub sender_euid: u32,
     pub to_proc: Id,
     /// Thread processing it (set when a synchronous call is read).
     pub to_thread: Option<u32>,

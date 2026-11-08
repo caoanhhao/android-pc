@@ -471,6 +471,11 @@ pub struct Mount {
     pub source: Vec<u8>,
     /// MS_RDONLY (recorded, not enforced yet).
     pub flags: u64,
+    /// Peer group (MS_SHARED), 0 when private. Mounts and unmounts below
+    /// one member of a group propagate to the others, which is how a bind
+    /// mount of a shared mount sees what is mounted later below its source
+    /// (Android's /bootstrap-apex and /apex).
+    group: AtomicU64,
 }
 
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
@@ -506,7 +511,97 @@ pub fn reachable(p: &PathRef, root: &PathRef) -> bool {
         }
     }
 }
-static ROOT: Once<PathRef> = Once::new();
+
+/// A mount namespace: its copy of the initial root mount. Its mounts are
+/// those whose chain of mount points leads there (see [`reachable`]).
+/// unshare(CLONE_NEWNS) copies every mount of the caller's namespace;
+/// copies of shared mounts are peers of the originals, so later mounts
+/// below them propagate both ways ([`mount_in_group`]).
+pub struct MntNs {
+    /// The nsfs inode number (/proc/<pid>/ns/mnt reads "mnt:[id]").
+    pub id: u64,
+    root: Arc<Mount>,
+}
+
+/// The initial namespace keeps Linux's well-known id.
+const INIT_MNT_NS_ID: u64 = 4026531841;
+static NEXT_NS_ID: AtomicU64 = AtomicU64::new(4026532000);
+static INIT_NS: Once<Arc<MntNs>> = Once::new();
+
+/// The namespace the calling process lives in (the initial one in kernel
+/// context).
+pub fn current_ns() -> Arc<MntNs> {
+    if let Some(t) = crate::sched::try_current()
+        && let Some(ns) = t.process.mnt_ns.lock().clone()
+    {
+        return ns;
+    }
+    INIT_NS.get().expect("VFS root not mounted").clone()
+}
+
+/// The initial mount namespace.
+pub fn initial_ns() -> Arc<MntNs> {
+    INIT_NS.get().expect("VFS root not mounted").clone()
+}
+
+/// Copy the namespace `ns` (unshare/clone with CLONE_NEWNS). Returns the
+/// new namespace and the function mapping a path of the old one to the
+/// same place in the new one.
+pub fn copy_ns(ns: &Arc<MntNs>) -> (Arc<MntNs>, impl Fn(&PathRef) -> PathRef + use<>) {
+    let mut mounts = MOUNTS.lock();
+    let olds: Vec<Arc<Mount>> = mounts.iter().filter(|m| mount_reaches(m, &ns.root)).cloned().collect();
+    let news: Vec<Arc<Mount>> = olds
+        .iter()
+        .map(|m| {
+            Arc::new(Mount {
+                root: m.root.clone(),
+                parent: Mutex::new(None),
+                fstype: m.fstype,
+                source: m.source.clone(),
+                flags: m.flags,
+                group: AtomicU64::new(m.group()),
+            })
+        })
+        .collect();
+    let find = move |olds: &[Arc<Mount>], news: &[Arc<Mount>], m: &Arc<Mount>| {
+        olds.iter().position(|o| Arc::ptr_eq(o, m)).map(|i| news[i].clone())
+    };
+    for (o, n) in olds.iter().zip(&news) {
+        if let Some(p) = o.parent()
+            && let Some(pm) = find(&olds, &news, &p.mnt)
+        {
+            *n.parent.lock() = Some(PathRef { mnt: pm, dentry: p.dentry });
+        }
+    }
+    mounts.extend(news.iter().cloned());
+    drop(mounts);
+    let root = find(&olds, &news, &ns.root).expect("namespace root");
+    let new = Arc::new(MntNs { id: NEXT_NS_ID.fetch_add(1, Ordering::Relaxed), root });
+    let map = move |p: &PathRef| match find(&olds, &news, &p.mnt) {
+        Some(mnt) => PathRef { mnt, dentry: p.dentry.clone() },
+        None => p.clone(),
+    };
+    (new, map)
+}
+
+/// The root directory of namespace `ns`.
+pub fn ns_root(ns: &MntNs) -> PathRef {
+    cross_mounts(PathRef { dentry: ns.root.root.clone(), mnt: ns.root.clone() })
+}
+
+/// `m`'s chain of mount points ends at `root`.
+fn mount_reaches(m: &Arc<Mount>, root: &Arc<Mount>) -> bool {
+    let mut m = m.clone();
+    loop {
+        if Arc::ptr_eq(&m, root) {
+            return true;
+        }
+        match m.parent() {
+            Some(p) => m = p.mnt,
+            None => return false,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PathRef {
@@ -547,50 +642,154 @@ pub fn set_root(inode: Arc<dyn Inode>, fstype: &'static str) {
         fstype,
         source: b"rootfs".to_vec(),
         flags: 0,
+        group: AtomicU64::new(0),
     });
     MOUNTS.lock().push(m.clone());
-    ROOT.call_once(|| PathRef { dentry: m.root.clone(), mnt: m });
+    INIT_NS.call_once(|| Arc::new(MntNs { id: INIT_MNT_NS_ID, root: m }));
 }
 
-/// The root directory: the initial root file system, or what was mounted
-/// (moved) on top of it, as after Android's switch_root.
+/// The root directory of the caller's mount namespace: the root file
+/// system, or what was mounted (moved) on top of it, as after Android's
+/// switch_root.
 pub fn root() -> PathRef {
-    cross_mounts(ROOT.get().expect("VFS root not mounted").clone())
+    ns_root(&current_ns())
 }
 
-/// Mount `root` on `at`.
+static NEXT_GROUP: AtomicU64 = AtomicU64::new(1);
+
+impl Mount {
+    /// The peer group id (0: private).
+    pub fn group(&self) -> u64 {
+        self.group.load(Ordering::Relaxed)
+    }
+}
+
+/// MS_SHARED / MS_PRIVATE (MS_SLAVE and MS_UNBINDABLE are treated as
+/// private: nothing propagates into them) on the mount at `p`, and with
+/// `rec` on every mount below it.
+pub fn set_propagation(p: &PathRef, shared: bool, rec: bool) -> KResult<()> {
+    if !p.is_mount_root() {
+        return Err(EINVAL);
+    }
+    let mounts = MOUNTS.lock().clone();
+    let mut targets = alloc::vec![p.mnt.clone()];
+    if rec {
+        let mut i = 0;
+        while i < targets.len() {
+            let t = targets[i].clone();
+            targets.extend(mounts.iter().filter(|m| m.parent().is_some_and(|q| Arc::ptr_eq(&q.mnt, &t))).cloned());
+            i += 1;
+        }
+    }
+    for m in targets {
+        if !shared {
+            m.group.store(0, Ordering::Relaxed);
+        } else if m.group() == 0 {
+            m.group.store(NEXT_GROUP.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+        }
+    }
+    Ok(())
+}
+
+fn new_mount(at: PathRef, root: Arc<Dentry>, fstype: &'static str, source: &[u8], flags: u64, group: u64) -> Arc<Mount> {
+    Arc::new(Mount { root, parent: Mutex::new(Some(at)), fstype, source: source.to_vec(), flags, group: AtomicU64::new(group) })
+}
+
+/// The other members of `m`'s peer group that can see `d` (it is their
+/// root or below it), as mount points for a propagated copy.
+fn peer_points(mounts: &[Arc<Mount>], m: &Arc<Mount>, d: &Arc<Dentry>) -> Vec<PathRef> {
+    let g = m.group();
+    if g == 0 {
+        return Vec::new();
+    }
+    mounts
+        .iter()
+        .filter(|p| !Arc::ptr_eq(p, m) && p.group() == g && d.is_descendant_of(&p.root))
+        .map(|p| PathRef { mnt: p.clone(), dentry: d.clone() })
+        .collect()
+}
+
+/// Mount `root` on `at`. When `at` is in a shared mount, a copy is mounted
+/// at the same place in each of its peers (the copies form a new peer
+/// group with the original).
 pub fn mount(at: &PathRef, root: Arc<Dentry>, fstype: &'static str, source: &[u8], flags: u64) -> KResult<()> {
-    if !at.is_dir() {
+    mount_in_group(at, root, fstype, source, flags, 0).map(|_| ())
+}
+
+/// [`mount`], joining peer group `group` (a bind of a shared mount) unless
+/// it is 0. Returns the new mount.
+pub fn mount_in_group(at: &PathRef, root: Arc<Dentry>, fstype: &'static str, source: &[u8], flags: u64, group: u64) -> KResult<Arc<Mount>> {
+    if !at.is_dir() && root.inode.meta().file_type() != at.inode().meta().file_type() {
         return Err(ENOTDIR);
     }
-    let m = Arc::new(Mount {
-        root,
-        parent: Mutex::new(Some(at.clone())),
-        fstype,
-        source: source.to_vec(),
-        flags,
-    });
-    MOUNTS.lock().push(m);
+    let mut mounts = MOUNTS.lock();
+    let peers = peer_points(&mounts, &at.mnt, &at.dentry);
+    let group = if group == 0 && !peers.is_empty() { NEXT_GROUP.fetch_add(1, Ordering::Relaxed) } else { group };
+    let m = new_mount(at.clone(), root.clone(), fstype, source, flags, group);
+    mounts.push(m.clone());
+    for p in peers {
+        mounts.push(new_mount(p, root.clone(), fstype, source, flags, group));
+    }
+    drop(mounts);
+    mounts_changed();
+    Ok(m)
+}
+
+/// MS_BIND: mount what `src` shows on `at`; with `rec` also the mounts
+/// below `src` (MS_REC). The new mount joins `src`'s peer group.
+pub fn bind_mount(src: &PathRef, at: &PathRef, rec: bool) -> KResult<()> {
+    let top = mount_in_group(at, src.dentry.clone(), src.mnt.fstype, &src.mnt.source, src.mnt.flags, src.mnt.group())?;
+    if !rec {
+        return Ok(());
+    }
+    // (source mount, copy) pairs whose submounts still need copying.
+    let mut todo = alloc::vec![(src.mnt.clone(), top)];
+    while let Some((orig, copy)) = todo.pop() {
+        let subs: Vec<Arc<Mount>> = MOUNTS
+            .lock()
+            .iter()
+            .filter(|m| m.parent().is_some_and(|q| Arc::ptr_eq(&q.mnt, &orig) && q.dentry.is_descendant_of(&copy.root)))
+            .cloned()
+            .collect();
+        for sub in subs {
+            let point = PathRef { mnt: copy.clone(), dentry: sub.parent().unwrap().dentry };
+            let c = new_mount(point, sub.root.clone(), sub.fstype, &sub.source, sub.flags, sub.group());
+            MOUNTS.lock().push(c.clone());
+            todo.push((sub, c));
+        }
+    }
     mounts_changed();
     Ok(())
 }
 
-/// Unmount the mount whose root is `at`.
+/// Unmount the mount whose root is `at`, and the copies propagated to the
+/// peers of the mount it is attached to.
 pub fn umount(at: &PathRef) -> KResult<()> {
     if !at.is_mount_root() {
         return Err(EINVAL);
     }
     let mut mounts = MOUNTS.lock();
-    if at.mnt.parent().is_none() {
+    let Some(point) = at.mnt.parent() else {
+        return Err(EBUSY);
+    };
+    let has_children = |mounts: &Vec<Arc<Mount>>, x: &Arc<Mount>| {
+        mounts.iter().any(|m| m.parent().is_some_and(|p| Arc::ptr_eq(&p.mnt, x)))
+    };
+    if has_children(&mounts, &at.mnt) {
         return Err(EBUSY);
     }
-    let busy = mounts
+    let copies: Vec<Arc<Mount>> = peer_points(&mounts, &point.mnt, &point.dentry)
         .iter()
-        .any(|m| m.parent().is_some_and(|p| Arc::ptr_eq(&p.mnt, &at.mnt)));
-    if busy {
-        return Err(EBUSY);
-    }
-    mounts.retain(|m| !Arc::ptr_eq(m, &at.mnt));
+        .filter_map(|pp| {
+            mounts
+                .iter()
+                .rev()
+                .find(|m| m.parent().is_some_and(|q| q.same(pp)) && Arc::ptr_eq(&m.root, &at.mnt.root))
+                .cloned()
+        })
+        .filter(|c| !has_children(&mounts, c))
+        .collect();
+    mounts.retain(|m| !Arc::ptr_eq(m, &at.mnt) && !copies.iter().any(|c| Arc::ptr_eq(c, m)));
     drop(mounts);
     mounts_changed();
     Ok(())
@@ -818,9 +1017,39 @@ fn check_name(name: &[u8]) -> KResult<()> {
     }
 }
 
+/// A new file belongs to the caller's fs uid and fs gid, or to the
+/// directory's group when it is set-group-ID (new directories inherit
+/// the bit).
+fn set_new_owner(dir: &dyn Inode, inode: &dyn Inode) {
+    let Some(t) = crate::sched::try_current() else {
+        return;
+    };
+    let (uid, mut gid) = {
+        let c = t.creds.lock();
+        (c.fsuid, c.fsgid)
+    };
+    let d = dir.meta().attr();
+    let sgid_dir = d.mode & crate::process::S_ISGID != 0;
+    if sgid_dir {
+        gid = d.gid;
+    }
+    if uid == 0 && gid == 0 {
+        return;
+    }
+    let is_dir = inode.meta().is_dir();
+    inode.meta().update(|a| {
+        a.uid = uid;
+        a.gid = gid;
+        if sgid_dir && is_dir {
+            a.mode |= crate::process::S_ISGID;
+        }
+    });
+}
+
 pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathRef> {
     check_name(name)?;
     let inode = dir.inode().create(name, mode, rdev)?;
+    set_new_owner(&**dir.inode(), &*inode);
     crate::security::label_new_inode(&*inode, mode & S_IFMT == S_IFSOCK);
     super::inotify::created(&**dir.inode(), name, &*inode);
     Ok(PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) })
@@ -832,6 +1061,7 @@ pub fn symlink(dir: &PathRef, name: &[u8], target: &[u8]) -> KResult<()> {
         return Err(ENOENT);
     }
     let inode = dir.inode().symlink(name, target)?;
+    set_new_owner(&**dir.inode(), &*inode);
     crate::security::label_new_inode(&*inode, false);
     super::inotify::created(&**dir.inode(), name, &*inode);
     dir.dentry.attach(name, inode);

@@ -28,6 +28,7 @@ pub mod ext4;
 pub mod lz4;
 pub mod file;
 pub mod inotify;
+pub mod kmsg;
 pub mod pipe;
 pub mod poll;
 pub mod signalfd;

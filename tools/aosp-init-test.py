@@ -7,10 +7,14 @@ serial console (init writes it to /dev/kmsg, which the kernel prints as
 "kmsg: init: ..."). The boot milestones must appear in order: first stage,
 first-stage mount (dm-linear system/vendor), switch_root, SELinux policy
 load, second stage, property service, and the early-init, init and
-late-init triggers. Then init's `console` service (a shell on the serial
-console, started by "on init && property:ro.debuggable=1") must run
-getprop and setprop: commands are typed into it and checked like
-aosp-sh-test.py does.
+late-init triggers, post-fs-data with the switch to the default mount
+namespace and apexd's activation. Then init's `console` service (a shell
+on the serial console, started by "on init && property:ro.debuggable=1")
+must run getprop and setprop, and show the core daemons at work: coldboot
+done and ueventd's device permissions, servicemanager's services
+(`service list`), logd (`logcat -d`, the kernel log through klogd,
+`dmesg`), daemons under their own uids, keystore2 running, the tmpfs
+/data. Commands are typed into it and checked like aosp-sh-test.py does.
 
 Usage: aosp-init-test.py [--boot-timeout SECS] [--timeout SECS] [--log FILE]
                          [--run CMD]... -- qemu-system-x86_64 ARGS...
@@ -45,6 +49,9 @@ MILESTONES = [
     ("init", rb"init: processing action \(init\)"),
     ("console service", rb"init: \.\.\. started service 'console'"),
     ("late-init", rb"init: processing action \(late-init\)"),
+    ("post-fs-data", rb"init: processing action \(post-fs-data\)"),
+    ("default mount namespace", rb"init: Switched to default mount namespace"),
+    ("apexd activated", rb"init: Wait for property 'apexd.status=activated' took"),
 ]
 
 # Commands for init's console shell: (command, regexes).
@@ -57,6 +64,33 @@ CHECKS = [
     ("getprop ro.product.device; id -Z 2>/dev/null; cat /proc/self/attr/current; echo",
      [r"^vsoc_x86_64_only\r?$", r"u:r:shell:s0"]),
     ("toybox grep -E ' / | /vendor ' /proc/mounts", [r"/dev/block/dm-\d+ / erofs ro", r"/dev/block/dm-\d+ /vendor erofs ro"]),
+    # ueventd: coldboot finished (Android 16 sets ro.cold_boot_done instead
+    # of creating /dev/.coldboot_done) and nodes made with ueventd.rc's modes.
+    ("getprop ro.cold_boot_done; getprop init.svc.ueventd; ls -l /dev/hw_random",
+     [r"^true\r?$", r"^running\r?$", r"cr-------- +1 prng_seeder +prng_seeder +10, +183 .*/dev/hw_random"]),
+    # servicemanager: native services registered over binder. keystore2
+    # starts before post-fs-data makes /data/misc/keystore, exits once and
+    # is restarted 5 s later (like on a first boot): wait for it.
+    ("i=0; while [ $i -lt 40 ] && ! service check android.system.keystore2.IKeystoreService/default"
+     " | toybox grep -q ': found'; do sleep 0.5; i=$((i+1)); done; echo waited=$i",
+     [r"waited=([0-9]|[1-3][0-9])\r?$"]),
+    ("service list | toybox head -n 60",
+     [r"Found \d+ services", r"\tmanager: \[android\.os\.IServiceManager\]",
+      r"android\.system\.keystore2\.IKeystoreService/default",
+      r"android\.hardware\.security\.keymint\.IKeyMintDevice/default", r"\tvold: \[android\.os\.IVold\]"]),
+    ("for s in servicemanager hwservicemanager keystore2 logd; do echo $s=$(getprop init.svc.$s); done",
+     [r"servicemanager=running", r"hwservicemanager=running", r"keystore2=running", r"logd=running"]),
+    # logd: logs from services (logcat), init's kmsg lines through klogd
+    # (the kernel buffer), dmesg (syslog(2)).
+    ("logcat -d | toybox grep -cE ' (servicemanager|keystore2|vold|lowmemorykiller) *:'", [r"^\d{2,}\r?$"]),
+    ("logcat -d -b kernel | toybox grep -c ' init *: '", [r"^\d{2,}\r?$"]),
+    ("dmesg | toybox grep -c 'init: '", [r"^\d{2,}\r?$"]),
+    # Credentials: daemons run under their own uids.
+    ("ps -A -o USER,NAME | toybox grep -E ' (logd|servicemanager|keystore2)$'",
+     [r"^logd +logd\r?$", r"^system +servicemanager\r?$", r"^keystore +keystore2\r?$"]),
+    # /metadata and /data: tmpfs on the RAM disks, filled by post-fs-data.
+    ("toybox grep -E ' /data | /metadata ' /proc/mounts; ls -d /data/misc/keystore",
+     [r"/dev/block/ram0 /metadata tmpfs", r"/dev/block/ram1 /data tmpfs", r"^/data/misc/keystore\r?$"]),
 ]
 
 

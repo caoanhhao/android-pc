@@ -79,9 +79,10 @@ enum Global {
     Vmstat,
     Interrupts,
     SysrqTrigger,
+    Kmsg,
 }
 
-const GLOBALS: [(&[u8], Global); 18] = [
+const GLOBALS: [(&[u8], Global); 19] = [
     (b"bootconfig", Global::Bootconfig),
     (b"cgroups", Global::Cgroups),
     (b"cmdline", Global::Cmdline),
@@ -89,6 +90,7 @@ const GLOBALS: [(&[u8], Global); 18] = [
     (b"devices", Global::Devices),
     (b"filesystems", Global::Filesystems),
     (b"interrupts", Global::Interrupts),
+    (b"kmsg", Global::Kmsg),
     (b"loadavg", Global::Loadavg),
     (b"meminfo", Global::Meminfo),
     (b"modules", Global::Modules),
@@ -249,6 +251,7 @@ fn mode_of(node: Node) -> u32 {
         Node::Attr(_, _, Attr::Current | Attr::Prev) => S_IFREG | 0o444 | if matches!(node, Node::Attr(_, _, Attr::Current)) { 0o222 } else { 0 },
         Node::Attr(..) => S_IFREG | 0o666,
         Node::Global(Global::SysrqTrigger) => S_IFREG | 0o200,
+        Node::Global(Global::Kmsg) => S_IFREG | 0o400,
         Node::Global(Global::Bootconfig) => S_IFREG | 0o440,
         Node::Sys(i) => {
             if super::sysctl::nodes()[i as usize].file.is_some() {
@@ -262,8 +265,37 @@ fn mode_of(node: Node) -> u32 {
     }
 }
 
+/// The process a /proc/<pid>/... node belongs to.
+fn node_pid(node: Node) -> Option<u32> {
+    match node {
+        Node::PidDir(p)
+        | Node::PidFile(p, _)
+        | Node::FdDir(p)
+        | Node::FdLink(p, _)
+        | Node::FdInfoDir(p)
+        | Node::FdInfo(p, _)
+        | Node::AttrDir(p, _)
+        | Node::Attr(p, ..)
+        | Node::TaskDir(p)
+        | Node::TaskTid(p, _)
+        | Node::TaskFile(p, ..)
+        | Node::NsDir(p)
+        | Node::Ns(p, _) => Some(p),
+        _ => None,
+    }
+}
+
 fn make(node: Node) -> Arc<dyn Inode> {
-    Arc::new(ProcInode { meta: Meta::with_ino(ino_of(node), proc_dev(), mode_of(node), 0), node })
+    let meta = Meta::with_ino(ino_of(node), proc_dev(), mode_of(node), 0);
+    // /proc/<pid>/... belongs to the process's effective ids (ps reads
+    // the owner of /proc/<pid>).
+    if let Some(c) = node_pid(node).and_then(process::process_creds) {
+        meta.update(|a| {
+            a.uid = c.euid;
+            a.gid = c.egid;
+        });
+    }
+    Arc::new(ProcInode { meta, node })
 }
 
 /// A new procfs instance (its root directory).
@@ -305,6 +337,40 @@ fn ns_inode(n: Ns) -> Arc<dyn Inode> {
 
 struct NsInode {
     meta: Meta,
+}
+
+/// The mount namespace of the process owning node `node`.
+fn proc_mnt_ns(node: Node) -> KResult<Arc<vfs::MntNs>> {
+    let p = process(node_pid(node).ok_or(ENOENT)?)?;
+    let ns = p.mnt_ns.lock().clone();
+    Ok(ns.unwrap_or_else(vfs::initial_ns))
+}
+
+/// What opening /proc/<pid>/ns/mnt reaches: an nsfs inode numbered by the
+/// namespace id that setns() accepts.
+struct MntNsInode {
+    meta: Meta,
+    ns: Arc<vfs::MntNs>,
+}
+
+impl Inode for MntNsInode {
+    fn meta(&self) -> &Meta {
+        &self.meta
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn mnt_ns_inode(ns: Arc<vfs::MntNs>) -> Arc<dyn Inode> {
+    static DEV: Once<u64> = Once::new();
+    let dev = *DEV.call_once(vfs::alloc_dev);
+    Arc::new(MntNsInode { meta: Meta::with_ino(ns.id, dev, S_IFREG | 0o444, 0), ns })
+}
+
+/// The mount namespace an open /proc/<pid>/ns/mnt refers to (setns).
+pub fn mnt_ns_of(inode: &dyn Inode) -> Option<Arc<vfs::MntNs>> {
+    inode.as_any().downcast_ref::<MntNsInode>().map(|i| i.ns.clone())
 }
 
 impl Inode for NsInode {
@@ -519,7 +585,8 @@ impl Inode for ProcInode {
                     b"time_for_children" => &b"time"[..],
                     x => x,
                 };
-                Ok(format!("{}:[{}]", String::from_utf8_lossy(name), ns_id(n)).into_bytes())
+                let id = if n == Ns::Mnt { proc_mnt_ns(self.node)?.id } else { ns_id(n) };
+                Ok(format!("{}:[{}]", String::from_utf8_lossy(name), id).into_bytes())
             }
             _ => Err(EINVAL),
         }
@@ -534,6 +601,7 @@ impl Inode for ProcInode {
                     None => MagicLink::Inode(f.inode.clone()),
                 })
             })()),
+            Node::Ns(_, Ns::Mnt) => Some(proc_mnt_ns(self.node).map(|ns| MagicLink::Inode(mnt_ns_inode(ns)))),
             Node::Ns(_, n) => Some(Ok(MagicLink::Inode(ns_inode(n)))),
             Node::PidFile(pid, PidFile::Exe) => {
                 Some(process(pid).and_then(|p| p.exe.lock().clone().map(MagicLink::Path).ok_or(ENOENT)))
@@ -549,6 +617,7 @@ impl Inode for ProcInode {
                 return Ok(Some(Box::new(MountsFile::new(false))));
             }
             Node::PidFile(_, PidFile::Mountinfo) => return Ok(Some(Box::new(MountsFile::new(true)))),
+            Node::Global(Global::Kmsg) => return Ok(Some(super::kmsg::open_proc_kmsg())),
             Node::Global(Global::SysrqTrigger) | Node::Sys(_) | Node::Attr(..) | Node::Pressure(_) => {
                 return Ok(Some(Box::new(ProcRw { node: self.node, data: Mutex::new(rw_contents(self.node)?) })));
             }
@@ -731,6 +800,17 @@ impl FileOps for ProcRw {
         self.data.lock().len() as u64
     }
 
+    /// PSI files take triggers that never fire: epoll-able, never ready
+    /// (lmkd waits on them).
+    fn poll(&self, _: &OpenFile) -> u32 {
+        if matches!(self.node, Node::Pressure(_)) { 0 } else { super::poll::DEFAULT_POLLMASK }
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        static PSI_WQ: Once<Arc<WaitQueue>> = Once::new();
+        matches!(self.node, Node::Pressure(_)).then(|| PSI_WQ.call_once(WaitQueue::new).clone())
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -872,7 +952,7 @@ fn global(g: Global) -> String {
         Global::Devices => {
             s.push_str("Character devices:\n  1 mem\n  4 /dev/vc/0\n  4 tty\n  5 /dev/tty\n  5 /dev/console\n  5 /dev/ptmx\n  7 vcs\n 10 misc\n244 binder\n\nBlock devices:\n  7 loop\n253 device-mapper\n254 virtblk\n259 blkext\n");
         }
-        Global::Modules | Global::SysrqTrigger => {}
+        Global::Modules | Global::SysrqTrigger | Global::Kmsg => {}
         Global::Swaps => s.push_str("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"),
         Global::Vmstat => {
             let (total, free) = crate::mm::frame::stats();
@@ -956,14 +1036,14 @@ fn mounts_text(info: bool) -> String {
                 .and_then(|p| all.iter().position(|x| Arc::ptr_eq(x, &p.mnt)))
                 .map_or(i, |x| x);
             let dev = m.root.inode.meta().dev;
+            let shared = if m.group() != 0 { alloc::format!(" shared:{}", m.group()) } else { String::new() };
             let _ = writeln!(
                 s,
-                "{} {} {}:{} / {at} {opts} shared:{} - {} {src} {opts}",
+                "{} {} {}:{} / {at} {opts}{shared} - {} {src} {opts}",
                 i + 1,
                 parent + 1,
                 vfs::dev_major(dev),
                 vfs::dev_minor(dev),
-                i + 1,
                 m.fstype
             );
         } else {
@@ -1109,16 +1189,26 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
             );
         }
         PidFile::Status => {
+            let c = process::process_creds(pid).unwrap_or_default();
             let _ = write!(
                 s,
                 "Name:\t{}\nUmask:\t{:04o}\nState:\t{}\nTgid:\t{pid}\nNgid:\t0\nPid:\t{pid}\nPPid:\t{}\n\
-                 TracerPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t64\nGroups:\t\n\
+                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t64\nGroups:\t{}\n\
                  Threads:\t{}\nSigQ:\t0/0\nCapEff:\t000001ffffffffff\nSeccomp:\t0\n\
                  voluntary_ctxt_switches:\t0\nnonvoluntary_ctxt_switches:\t0\n",
                 comm(p),
                 p.fs.lock().umask,
                 state.1,
                 info.ppid,
+                c.uid,
+                c.euid,
+                c.suid,
+                c.fsuid,
+                c.gid,
+                c.egid,
+                c.sgid,
+                c.fsgid,
+                c.groups.iter().map(|g| format!("{g} ")).collect::<String>(),
                 info.threads,
             );
             if let Some(mm) = own_mm(pid) {

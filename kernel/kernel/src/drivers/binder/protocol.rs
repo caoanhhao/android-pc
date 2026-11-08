@@ -474,11 +474,13 @@ fn transact(s: &mut State, p: Id, tid: u32, tr: &TrData, prep: KResult<Prepared>
 
     let t = s.next_id();
     let sender_pid = s.proc(p).pid;
+    let sender_euid = crate::process::current_creds().euid;
     s.txns.insert(
         t,
         Txn {
             from: (!reply && !oneway).then_some((p, tid)),
             sender_pid,
+            sender_euid,
             to_proc: target_proc,
             to_thread: None,
             from_parent: None,
@@ -817,7 +819,7 @@ fn deliver_txn(s: &mut State, p: Id, tid: u32, t: Id, out: &mut Vec<u8>) -> bool
     wr32(&mut tr, 16, tx.code);
     wr32(&mut tr, 20, tx.flags);
     wr32(&mut tr, 24, if sync && tx.from.is_some() { tx.sender_pid } else { 0 });
-    wr32(&mut tr, 28, 0); // sender_euid: everything runs as root
+    wr32(&mut tr, 28, tx.sender_euid);
     wr64(&mut tr, 32, data_size);
     wr64(&mut tr, 40, offsets_size);
     wr64(&mut tr, 48, base + off);

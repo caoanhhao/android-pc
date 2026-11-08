@@ -51,9 +51,10 @@ pub struct Ucred {
 pub const NO_CRED: Ucred = Ucred { pid: 0, uid: 65534, gid: 65534 };
 
 impl Ucred {
-    /// The calling process (everything runs as root for now).
+    /// The calling process (its effective ids, as Linux reports them).
     pub fn current() -> Ucred {
-        Ucred { pid: crate::process::current().pid(), uid: 0, gid: 0 }
+        let c = crate::process::current_creds();
+        Ucred { pid: crate::process::current().pid(), uid: c.euid, gid: c.egid }
     }
 
     pub fn to_bytes(self) -> [u8; 12] {

@@ -271,6 +271,7 @@ pub fn timer_interrupt() {
     if cpu::index_fast() == 0 {
         crate::time::tick();
         crate::fs::tty::poll_input();
+        crate::fs::kmsg::tick();
         expire_sleepers();
         timer::run_expired();
     }

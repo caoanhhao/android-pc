@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phase C3a)
+# Android init on the Rust kernel (phases C3a, C3b)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -8,7 +8,12 @@ second stage starts the property service and ueventd, runs the rc files
 through the `early-init`, `init` and `late-init` triggers (and the
 `fs`/`post-fs`/`late-fs`/`post-fs-data` ones `late-init` queues), and
 starts the `console` service: an interactive `sh` on the serial port in
-which `getprop` and `setprop` work.
+which `getprop` and `setprop` work. Since C3b the core native daemons run
+for real (ueventd, servicemanager, hwservicemanager, logd, lmkd, vold,
+keystore2 with the keymint/gatekeeper HALs, apexd, tombstoned, ...):
+`service list`, `logcat`, `dmesg` and `ps` work from that shell, and boot
+continues through `post-fs-data` until netbpfload needs eBPF (see [How
+far the boot gets](#how-far-the-boot-gets-c3b)).
 
 ## Running it
 
@@ -34,6 +39,7 @@ from either place):
 | `androidboot.hardware=cutf_cvm` | Cuttlefish's vendor rc files and HAL choices |
 | `androidboot.vendor.apex.*=...` | which of Cuttlefish's alternative vendor APEXes apexd activates (the values cvd-1 uses); without them apexd-bootstrap aborts on duplicates |
 | `androidboot.console=ttyS0`, `serialno`, `hardware.*`, `lcd_density`, ... | what Cuttlefish's bootconfig sets, so `${ro.boot.*}` expansions in the rc files work |
+| `brd.rd_nr=2 brd.rd_size=4096` | two RAM disks, ram0 and ram1: the block devices first-stage init waits for before mounting the tmpfs /metadata and /data |
 
 `--aosp-init-test` (`tools/aosp-init-test.py`) follows init's log on the
 serial console (init writes it to /dev/kmsg, which the kernel prints as
@@ -41,12 +47,22 @@ serial console (init writes it to /dev/kmsg, which the kernel prints as
 dm-linear `system_a`/`vendor_a`, `/system` mounted, switch_root,
 `/vendor` mounted, `selinux_setup` opening the policy, the policy load,
 second stage, the property service socket, ueventd's coldboot,
-`early-init`, `init`, the `console` service, `late-init`. Then it types
-commands into the console shell: `getprop` of build, boot and product
-properties, `getprop | grep -c` (hundreds of properties), `setprop` +
-`getprop` of a new property, the shell's SELinux context
-(`u:r:shell:s0`, from the service's `seclabel`), and `/proc/mounts`
-showing `/` and `/vendor` on dm devices. 22 checks; the serial log is in
+`early-init`, `init`, the `console` service, `late-init`,
+`post-fs-data`, the switch to the default mount namespace and apexd's
+activation. Then it types commands into the console shell: `getprop` of
+build, boot and product properties, `getprop | grep -c` (hundreds of
+properties), `setprop` + `getprop` of a new property, the shell's SELinux
+context (`u:r:shell:s0`, from the service's `seclabel`), `/proc/mounts`
+showing `/` and `/vendor` on dm devices, and (C3b) the daemons:
+`ro.cold_boot_done` (Android 16 has no `/dev/.coldboot_done` file any
+more) and `/dev/hw_random` with ueventd.rc's owner and mode; keystore2
+registered and `service list` with servicemanager's own `manager`,
+keystore2, keymint and vold; servicemanager, hwservicemanager, keystore2
+and logd running; `logcat -d` with service logs, `logcat -b kernel` with
+init's kmsg lines (logd's klogd), `dmesg`; `ps` showing logd,
+servicemanager and keystore2 under their own users; tmpfs /metadata and
+/data with `/data/misc/keystore`. 34 checks, done about 25 s into the
+boot (before the netbpfload reboot); the serial log is in
 `kernel/target/x86_64-unknown-none/<profile>/qemu-kernel/aosp-init-test.log`.
 
 ## The ramdisk (`tools/mkaosp-init-initramfs.py`)
@@ -57,7 +73,11 @@ AOSP's own generic ramdisk, unchanged, taken out of `init_boot.img`
 file is added: `/fstab.rustpc`, the first-stage fstab. It lists the
 logical partitions (`system`, `vendor` required; `system_ext`, `product`,
 `odm`, `*_dlkm` with `nofail`), all erofs, read-only, `slotselect`,
-without AVB. Cuttlefish's `vendor_boot` ramdisk is not used: it adds
+without AVB, and (C3b) tmpfs on `/metadata` and `/data`
+(`/dev/block/ram0` and `ram1` as their nominal devices, which tmpfs
+ignores; first-stage init waits for a block device per non-logical
+entry). Both start empty on every boot: post-fs-data creates the
+directory tree, keystore2, tombstoned, apexd and vold use it. Cuttlefish's `vendor_boot` ramdisk is not used: it adds
 kernel modules (no module loader here) and an fstab whose `/data`,
 `/metadata` and AVB entries cannot be served yet.
 
@@ -127,29 +147,74 @@ early HALs, tombstoned, `console`.
 | keys | `syscall/keys.rs` | add_key, request_key, keyctl (session keyring, "fscrypt" keyring, logon keys) |
 | other syscalls | `syscall/*.rs`, `process/lifecycle.rs` | waitid (WNOWAIT), sendfile, copy_file_range, unshare/setns, syslog, sethostname, ioprio, reboot RESTART2 (with the reason), more prctl options; console tty: TIOCSCTTY makes the caller's group the foreground one |
 
-## What is stubbed or missing (C3b, C3c and later)
+## C3b: the core daemons
 
+What each daemon needed from the kernel:
+
+| daemon | needed | where |
+|--------|--------|-------|
+| ueventd | uevents and the sysfs tree (C3a); per-thread credentials: its threads switch egid around each `mknod`, so nodes get ueventd.rc's group (`/dev/hw_random` prng_seeder, `/dev/block/dm-*` system) | `process::Creds`, `vfs::create` |
+| prng_seeder | `/dev/hw_random` (misc 10:183, `devices/virtual/misc/hw_random`) | `fs/dev.rs`, `fs/sysfs.rs` |
+| servicemanager | the vendor APEX VINTF fragments under `/bootstrap-apex`: init binds `/bootstrap-apex` on `/apex` in the bootstrap mount namespace, apexd-bootstrap mounts the APEXes there and they must propagate to `/bootstrap-apex` (shared peer groups); without them keymint/gatekeeper cannot register and keystore2 aborts | `vfs` propagation |
+| init | real mount namespaces: `GetCurrentMountNamespace` compares `/proc/self/ns/mnt` with the ids it saved after `unshare(CLONE_NEWNS)`/`setns`; with one namespace it never sees itself in the default one, so `perform_apex_config` skips the APEX rc files (no derive_classpath, art_boot, ...) | `vfs::MntNs`, `unshare`, `setns`, `clone` |
+| logd | `/proc/kmsg` (klogd: `logcat -b kernel` has init's and the kernel's lines), syslog(2) READ_ALL/SIZE_BUFFER, `/dev/kmsg` writes (C3a); its sockets' SO_PEERCRED and SCM_CREDENTIALS now carry the clients' uids | `fs/kmsg.rs`, `Creds` |
+| lmkd | PSI triggers on `/proc/pressure/memory` that epoll accepts (it exited "does not support memory pressure events" and was restarted every 5 s; lmkd is `critical`) | `fs/procfs.rs` |
+| keystore2, keymint, gatekeeper | servicemanager's VINTF (above), a writable `/data/misc/keystore` (tmpfs /data) | |
+| tombstoned, odsign, vold's init_user0, apexd | a writable `/data` and `/metadata` | ramdisk fstab, `block/brd.rs` |
+| ps, logd's client checks, binder | credentials: `ps` shows logd, system, keystore, ... and binder's `sender_euid`, `SO_PEERCRED`, `SCM_CREDENTIALS` are the callers' real ids | `Creds` |
+
+Running after ~25 s: ueventd, prng_seeder, logd, lmkd, servicemanager
+(about 20 services: keystore2's, keymint, gatekeeper, secureclock,
+sharedsecret, vold, apexservice, suspend, ...), hwservicemanager (it
+logs "HIDL is not supported on this device" and waits, as on Cuttlefish),
+vold, keystore2, the keymint and gatekeeper HALs, system_suspend,
+tombstoned, apexd, aconfigd's socket service, the console shell.
+
+## How far the boot gets (C3b)
+
+`early-init`, `init`, `late-init`, `early-fs`, `fs`, `post-fs`, `late-fs`
+(class `early_hal`), `post-fs-data`: the switch to the default mount
+namespace, apexd's full activation (`apexd.status=activated`, every
+APEX in /apex), `perform_apex_config` (the APEX rc files parsed),
+`vdc cryptfs init_user0` (succeeds), the /data directory tree, then
+`load-bpf-programs`: netbpfload (from the tethering APEX) needs eBPF
+(`/proc/sys/net/core/bpf_jit_enable`, the bpf() syscall, maps,
+programs, bpffs pinning). It exits with status 24, its
+`reboot_on_failure` makes init reboot ("reboot,bpfloader-failed")
+about 30 s after boot, which ends the QEMU run. `zygote-start`,
+`early-boot`, `boot` (class `core`/`main`: vndservicemanager, netd,
+surfaceflinger, zygote, ...) and `sys.boot_completed` are not reached;
+without eBPF, networking (netd) and then graphics (SurfaceFlinger needs
+a DRM device) would be next.
+
+Failing but harmless before that: `vendor.boot-default` (the boot HAL
+finds no default fstab with `/misc`), `odsign` (needs ART's
+`odrefresh` artifacts), `dlkm_loader` and modprobe (no modules),
+`recovery-refresh`, aconfigd's platform init (no
+`/metadata/aconfig` content), crash_dump (no ptrace).
+
+## What is stubbed or missing (C3c and later)
+
+- **eBPF**: no bpf() syscall, maps or bpffs; netbpfload fails and init
+  reboots (above).
 - **SELinux** is not enforced: there is no policy engine. The policy is
   accepted, every access check allows, `enforce=1` is stored only. There
   is no `class/` tree in selinuxfs, so libselinux logs "Unknown class"
   for its checks (and allows them, `deny_unknown` is 0). Domain
   transitions on exec are guessed from the program's `*_exec` label for
   the kernel and init domains only; `seclabel` (setexeccon) works.
-- **/data and /metadata** do not exist (the read-only system image's
-  empty directories): nothing provides a writable userdata partition yet
-  (ext4 writes, f2fs, FBE), and `mount_all` finds no default fstab after
-  the ramdisk is freed. aconfigd, keystore2, tombstoned, vold's
-  checkpointing and the keymint/gatekeeper HALs fail; keystore2 is a
-  `critical` service, so after its fourth crash (about 20 s after
-  `late-init`) init reboots to the bootloader, which ends the QEMU run.
-  The test's checks finish well before that.
+- **/data and /metadata** are tmpfs: empty on every boot, no ext4 writes,
+  f2fs, file-based or metadata encryption (`mount_all` still finds no
+  default fstab: `ro.crypto.state` stays unset, so the
+  `zygote-start && ro.crypto.state=...` triggers would not fire either).
+- **Credentials** are tracked but never checked, and capabilities are not
+  modelled: a daemon that dropped to its uid can do what root can.
 - **ueventd** only sees the devices the kernel registers (block, mem,
-  tty, misc); there is no firmware loading, no modalias handling and no
-  input/graphics/net devices (`wait /dev/dri/card0` times out after 5 s).
-  `dlkm_loader` and modprobe fail: there are no loadable modules
-  (`finit_module` is ENOSYS).
-- **logd** runs without /proc/kmsg and audit netlink; **adbd** is not
-  reached (C3c).
+  tty, misc incl. hw_random, RAM disks); there is no firmware loading,
+  no modalias handling and no input/graphics/net/rtc devices (`wait
+  /dev/dri/card0` times out after 5 s). `dlkm_loader` and modprobe fail:
+  there are no loadable modules (`finit_module` is ENOSYS).
+- **logd** gets the netlink stub for NETLINK_AUDIT (no audit messages).
 - **cgroups** store limits but enforce nothing (no memory, cpu or cpuset
   control); PSI files exist but never trigger.
 - **keys** have no permission checks, quotas or expiry; one set of
@@ -157,7 +222,8 @@ early HALs, tombstoned, `console`.
 - **pseudo-terminals** have no line discipline (no echo, canonical mode
   or signals on the slave); good enough for logwrapper, not yet for an
   interactive `adb shell`.
-- **namespaces**: one mount namespace; `unshare`/`setns` succeed without
-  effect, chroot only to the current root.
-- `prng_seeder` waits forever for /dev/hw_random; `process_vm_readv` and
-  `ptrace` are missing, so crash_dump cannot unwind crashing services.
+- **namespaces**: mount namespaces are real; the other kinds are one
+  global instance each (unshare/setns accept them without effect); slave
+  and unbindable mounts act as private; chroot only to the current root.
+- `process_vm_readv` and `ptrace` are missing, so crash_dump cannot unwind
+  crashing services (tombstoned gets nothing).

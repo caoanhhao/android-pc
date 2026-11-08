@@ -262,7 +262,11 @@ pub fn init() {
     for (name, devname, minor) in [
         ("device-mapper", "mapper/control", crate::block::DM_CONTROL_MINOR),
         ("loop-control", "loop-control", crate::block::LOOP_CONTROL_MINOR),
+        ("hw_random", "hw_random", super::dev::HWRNG_MINOR),
     ] {
         add_char_device(&format!("devices/virtual/misc/{name}"), "misc", name, devname, crate::block::MISC_MAJOR, minor);
     }
+    // The hw_random class attributes prng_seeder and rngd look at.
+    set("devices/virtual/misc/hw_random", "rng_available", "rdrand\n");
+    set("devices/virtual/misc/hw_random", "rng_current", "rdrand\n");
 }

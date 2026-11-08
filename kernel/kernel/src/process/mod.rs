@@ -51,6 +51,10 @@ pub struct Task {
     pub sig: Mutex<ThreadSignals>,
     pub clear_child_tid: AtomicU64,
     pub robust_list: AtomicU64,
+    /// User and group ids. Per thread, like Linux: bionic's set*id change
+    /// only the calling thread (ueventd's threads each switch their egid
+    /// around a mknod).
+    pub creds: Mutex<Creds>,
 }
 
 unsafe impl Send for Task {}
@@ -76,6 +80,7 @@ impl Task {
             fpu: UnsafeCell::new(FpuState::initial()),
             mm: UnsafeCell::new(mm),
             sig: Mutex::new(ThreadSignals::default()),
+            creds: Mutex::new(Creds::default()),
             clear_child_tid: AtomicU64::new(0),
             robust_list: AtomicU64::new(0),
         }))
@@ -167,6 +172,67 @@ pub struct Process {
     pub sec: Mutex<crate::security::SecAttrs>,
     /// cgroup membership per hierarchy (`fs::cgroupfs`).
     pub cgroups: Mutex<crate::fs::cgroupfs::Membership>,
+    /// Mount namespace (None: the initial one).
+    pub mnt_ns: Mutex<Option<Arc<crate::fs::vfs::MntNs>>>,
+}
+
+/// Process credentials: the real, effective, saved and file-system user
+/// and group ids and the supplementary groups. They are reported
+/// (get*id, /proc, SO_PEERCRED, SCM_CREDENTIALS, binder's sender_euid,
+/// owners of new files) and changed with Linux's rules, but not used for
+/// permission checks; capabilities are not modelled (capget reports all).
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Creds {
+    pub uid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub fsuid: u32,
+    pub gid: u32,
+    pub egid: u32,
+    pub sgid: u32,
+    pub fsgid: u32,
+    pub groups: Vec<u32>,
+}
+
+pub const S_ISUID: u32 = 0o4000;
+pub const S_ISGID: u32 = 0o2000;
+
+impl Creds {
+    /// Privileged for id changes (CAP_SETUID/CAP_SETGID): euid 0.
+    pub fn privileged(&self) -> bool {
+        self.euid == 0
+    }
+
+    /// The credentials after executing a file with `mode`, owned by
+    /// `uid`:`gid` (set-user-ID / set-group-ID bits), and whether the exec
+    /// changed them (AT_SECURE).
+    pub fn after_exec(&self, mode: u32, uid: u32, gid: u32) -> (Creds, bool) {
+        let mut c = self.clone();
+        if mode & S_ISUID != 0 {
+            c.euid = uid;
+        }
+        if mode & S_ISGID != 0 && mode & 0o010 != 0 {
+            c.egid = gid;
+        }
+        c.suid = c.euid;
+        c.fsuid = c.euid;
+        c.sgid = c.egid;
+        c.fsgid = c.egid;
+        let secure = c.euid != c.uid || c.egid != c.gid;
+        (c, secure)
+    }
+}
+
+/// The calling task's credentials (root in kernel context).
+pub fn current_creds() -> Creds {
+    sched::try_current().map(|t| t.creds.lock().clone()).unwrap_or_default()
+}
+
+/// The credentials of process `pid` (its main thread, or any thread left).
+pub fn process_creds(pid: u32) -> Option<Creds> {
+    let t = TABLE.lock();
+    let task = t.tasks.get(&pid).or_else(|| t.procs.get(&pid)?.threads.iter().find_map(|tid| t.tasks.get(tid)))?;
+    Some(task.creds.lock().clone())
 }
 
 pub const RLIM_NLIMITS: usize = 16;
@@ -236,6 +302,7 @@ impl Process {
             attrs: Mutex::new(Attrs::default()),
             sec: Mutex::new(crate::security::SecAttrs::default()),
             cgroups: Mutex::new(Default::default()),
+            mnt_ns: Mutex::new(None),
         })
     }
 
@@ -327,7 +394,7 @@ pub fn start_init(path: &[u8], args: &[&[u8]]) {
         .map(|e| e.to_vec())
         .collect();
     let root = crate::fs::vfs::root();
-    let (image, exe, interp) = match lifecycle::load_executable(&root, path, &argv, &envp) {
+    let (image, exe, interp, _) = match lifecycle::load_executable(&root, path, &argv, &envp) {
         Ok(i) => i,
         Err(e) => {
             log::error!(

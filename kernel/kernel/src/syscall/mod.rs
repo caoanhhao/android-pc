@@ -411,7 +411,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::UMOUNT2 => fs::sys_umount2(a0, a1 as u32),
         nr::GETDENTS64 => fs::sys_getdents64(i0, a1, a2),
         nr::GETTIMEOFDAY => time::sys_gettimeofday(a0, a1),
-        nr::GETUID | nr::GETGID | nr::GETEUID | nr::GETEGID => Ok(0),
+        nr::GETUID | nr::GETGID | nr::GETEUID | nr::GETEGID => sys::sys_getid(n),
         nr::SETPGID => sys_setpgid(a0 as u32, a1 as u32),
         nr::GETPPID => Ok(TABLE.lock().procs.get(&current().pid()).map_or(0, |n| n.parent) as u64),
         nr::GETPGRP => sys_getpgid(0),
@@ -495,11 +495,12 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::GETRUSAGE => sys::sys_getrusage(i0, a1),
         nr::SYSINFO => sys::sys_sysinfo(a0),
         nr::TIMES => sys::sys_times(a0),
-        nr::SETUID | nr::SETGID | nr::SETREUID | nr::SETREGID | nr::SETRESUID | nr::SETRESGID | nr::SETGROUPS => {
-            sys::sys_setid()
-        }
-        nr::SETFSUID | nr::SETFSGID => sys::sys_setfsid(),
-        nr::GETRESUID | nr::GETRESGID => sys::sys_getresid(a0, a1, a2),
+        nr::SETUID | nr::SETGID => sys::sys_setid1(n == nr::SETGID, a0 as u32),
+        nr::SETREUID | nr::SETREGID => sys::sys_setresid(n == nr::SETREGID, a0 as i32, a1 as i32, -1, true),
+        nr::SETRESUID | nr::SETRESGID => sys::sys_setresid(n == nr::SETRESGID, a0 as i32, a1 as i32, a2 as i32, false),
+        nr::SETGROUPS => sys::sys_setgroups(i0, a1),
+        nr::SETFSUID | nr::SETFSGID => sys::sys_setfsid(n == nr::SETFSGID, a0 as u32),
+        nr::GETRESUID | nr::GETRESGID => sys::sys_getresid(n == nr::GETRESGID, a0, a1, a2),
         nr::GETGROUPS => sys::sys_getgroups(i0, a1),
         nr::CAPGET => sys::sys_capget(a0, a1),
         nr::CAPSET => sys::sys_capset(a0, a1),
@@ -729,7 +730,7 @@ fn sys_prctl(option: u32, arg: u64, arg3: u64) -> KResult<u64> {
             Ok(0)
         }
         PR_CAPBSET_READ if arg <= CAP_LAST_CAP => Ok(1),
-        // Capabilities are not modelled (everything is root): dropping
+        // Capabilities are not modelled (everything may do anything): dropping
         // from the bounding set and ambient changes succeed.
         24 /* PR_CAPBSET_DROP */ if arg <= CAP_LAST_CAP => Ok(0),
         PR_CAP_AMBIENT => match arg {

@@ -1,4 +1,4 @@
-# Kernel architecture (phase C3a state: AOSP init boots)
+# Kernel architecture (phase C3b state: AOSP init and its core daemons run)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -54,7 +54,8 @@ kernel/
       main.rs          kmain: boot sequence, cmdline, panic handler, test entry
       boot.rs          Limine requests (base revision 6, min 3): memmap, HHDM, MP,
                        modules (initramfs), cmdline, boot date
-      logger.rs        `log` backend -> serial, "[uptime] LEVEL cpuN msg"
+      logger.rs        `log` backend -> serial, "[uptime] LEVEL cpuN msg", and the
+                       kernel log buffer (fs/kmsg)
       time.rs          ticks (HZ = 100), TSC clock (monotonic/realtime ns)
       sync.rs          IrqLock (spinlock with local interrupts off)
       errno.rs         Errno / KResult
@@ -74,7 +75,7 @@ kernel/
                        wait4), elf (loader + initial stack), signal, futex
       block/           block devices: registry, /dev/block nodes, sysfs, block ioctls
                        (mod), per-device page cache (cache), GPT partitions (gpt),
-                       loop devices (loop_dev), device mapper (dm)
+                       loop devices (loop_dev), device mapper (dm), RAM disks (brd)
       syscall/         dispatch table (Linux numbers), fs, time, poll (poll/select,
                        epoll, eventfd, timerfd, signalfd syscalls), net (socket
                        syscalls, msghdr/cmsg handling, socket options), sys
@@ -91,7 +92,8 @@ kernel/
                        timerfd, signalfd; erofs (+ lz4), ext4 (read-only disk
                        file systems); sysfs (device tree, uevent files), sysctl
                        (/proc/sys table), selinuxfs, cgroupfs (cgroup v1/v2),
-                       inotify, pty (ptmx + devpts); mod.rs: cpio unpacking,
+                       inotify, pty (ptmx + devpts), kmsg (printk ring: /dev/kmsg,
+                       /proc/kmsg, syslog); mod.rs: cpio unpacking,
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); pci (config space, enumeration); virtio/
@@ -118,8 +120,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
    enters the scheduler's idle loop. The BSP waits up to 1 s for all of them.
 7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module)
    into a tmpfs that becomes the root mount, fill in sysfs (mount
-   points, memory/tty/misc character devices), create loop0-7
-   (`block::init`), enumerate PCI and bring up virtio-blk disks with
+   points, memory/tty/misc character devices), create loop0-7 and the
+   RAM disks asked for with `brd.rd_nr=` (`block::init`), enumerate PCI and bring up virtio-blk disks with
    their partitions (`drivers::init`), start `/init` as pid 1 (cwd
    `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
    loop. When init exits the kernel logs its status and powers off.
@@ -290,13 +292,18 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 - `Task` = a thread: tid, kernel stack, saved RSP, state
   (RUNNING/SLEEPING/DEAD), FS/GS bases, FPU area, address space
   (`Arc<AddressSpace>`, shared by CLONE_VM), per-thread signal state (mask,
-  pending, altstack), clear_child_tid, robust list.
+  pending, altstack), clear_child_tid, robust list, credentials (`Creds`:
+  real/effective/saved/fs uid and gid, supplementary groups; per thread
+  like Linux, copied by clone, set by the set*id calls and by exec of a
+  set-user/group-ID file; reported, never checked: see
+  [syscalls.md](syscalls.md#credentials-c3b)).
 - `Process` = thread group: pid (= leader tid), signal actions and
   process-wide pending signals, fd table (`Arc`, shared by CLONE_FILES),
   `FsContext` (cwd as a `PathRef`, umask; copied by fork), the executable
   and dynamic linker paths and argv (for /proc), exit signal, name, and
   `Attrs` (rlimits, nice, personality, sched policy, prctl flags; copied
-  by fork, reported back by their syscalls but not acted on).
+  by fork, reported back by their syscalls but not acted on), and the
+  mount namespace (`Option<Arc<MntNs>>`, None = the initial one).
 - `TABLE`: tid -> task map and pid -> node (parent, children, live threads,
   pgid/sid, zombie status, group exit status) under one lock. Orphans are
   reparented to pid 1; a parent with SIGCHLD set to SIG_IGN (or
@@ -331,7 +338,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 
 ## Files (`fs/`)
 
-One global mount namespace. The pieces:
+Mount namespaces share one global list of mounts; a namespace is the set
+of mounts whose mount-point chain leads to its root mount. The pieces:
 
 - **Inodes** (`vfs::Inode` trait): what a file system implements — lookup,
   create (file/dir/device node/FIFO by mode), symlink, link, unlink,
@@ -350,10 +358,19 @@ One global mount namespace. The pieces:
   mount on a dentry; `parent_of` handles `..` at a mount root and never goes
   above `/`. `path_of` builds absolute paths the same way. MS_MOVE
   changes a mount's mount point. The root directory is whatever is
-  mounted (moved) on top of the initial rootfs, so after Android's
-  switch_root every path walk starts in the system image; mounts not
-  reachable from it drop out of /proc/mounts. A generation counter and
-  wait queue let /proc/mounts readers poll for changes.
+  mounted (moved) on top of the namespace's root mount (the initial
+  rootfs or its copy), so after Android's switch_root every path walk
+  starts in the system image; mounts not reachable from it drop out of
+  /proc/mounts. A generation counter and wait queue let /proc/mounts
+  readers poll for changes.
+- **Namespaces and propagation** (`vfs::MntNs`, `copy_ns`,
+  `mount_in_group`): unshare/clone(CLONE_NEWNS) copy every mount of the
+  namespace (same root dentries, so the copies show the same trees);
+  setns switches through /proc/<pid>/ns/mnt. Each mount has a peer group
+  (0 = private; MS_SHARED, binds of shared mounts and namespace copies
+  share one): a new mount below one member is copied onto the same dentry
+  below the others (bind mounts share dentries, so the dentry is valid
+  there), an unmount removes the copies.
 - **Magic links**: an inode may name its target directly
   (`Inode::magic_link`: /proc/<pid>/fd/N, exe, cwd, ns/*); the walk
   follows that instead of the link text.
@@ -380,7 +397,10 @@ One global mount namespace. The pieces:
     kmsg, tty, console, ttyS0, ptmx nodes plus `pts/` and `shm/`. Device nodes
     on any file system open the driver in `dev.rs` by major:minor. The
     console (/dev/console, /dev/tty, /dev/ttyS0) is the tty in `tty.rs`,
-    below. /dev/kmsg writes go to the kernel log.
+    below. /dev/kmsg is the kernel log buffer (`fs/kmsg.rs`: a static ring
+    of 1024 records filled by the logger and by /dev/kmsg writes, read by
+    /dev/kmsg, /proc/kmsg and syslog; readers woken from the timer tick).
+    /dev/hw_random (misc 10:183) gives random bytes.
   - procfs: `self`, `thread-self`, `<pid>/{stat,status,cmdline,comm,maps,
     mounts,fd/,fdinfo/,exe,cwd,root}`, `meminfo`, `cpuinfo`, `uptime`, `mounts`,
     `filesystems`, `cmdline`, `version`, `loadavg`, `stat`, `net/unix`,
@@ -457,6 +477,10 @@ One global mount namespace. The pieces:
 - **GPT** (`block/gpt.rs`): primary header and entry array (no CRC
   checks), partition number = slot + 1, UTF-16 names become PARTNAME and
   `/dev/block/by-name/` links (first disk wins on duplicates).
+- **RAM disks** (`block/brd.rs`, Linux's brd): `ram0..N-1`, major 1, from
+  `brd.rd_nr=N brd.rd_size=KiB`; sparse pages allocated on first write.
+  The AOSP boot only uses them as the block devices of its tmpfs
+  /metadata and /data fstab entries.
 - **Loop** (`block/loop_dev.rs`) reads and writes its backing `OpenFile`
   (any file system or another block device) at the offset; **device
   mapper** (`block/dm.rs`) keeps a live and an inactive table per device,
@@ -748,15 +772,32 @@ cannot trigger uevents unprivileged), c3_misc 49 (36 on the host); the
 host oracle passes all of them. `--ktest` 32/32, `--test` 27/27,
 `--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9 still pass.
 
+Phase C3b (Android's core daemons, [android-init.md](android-init.md)):
+mount namespaces with shared-subtree propagation (init's bootstrap and
+default namespaces: servicemanager finds the vendor APEX VINTF fragments,
+init parses the APEX rc files), per-thread credentials, the kernel log
+buffer (/dev/kmsg reads, /proc/kmsg for logd's klogd, syslog),
+/dev/hw_random, epoll-able PSI files, RAM disks for a tmpfs /data and
+/metadata. The boot reaches `post-fs-data`, the default mount namespace,
+apexd's full activation and `load-bpf-programs`, with ueventd,
+servicemanager (20+ services: keystore2, keymint, gatekeeper, vold,
+apexservice, suspend), hwservicemanager, logd, lmkd, prng_seeder, vold,
+keystore2, tombstoned running; netbpfload then fails (no eBPF) and init
+reboots (~30 s). `--aosp-init-test` 34/34; new suites c3_kmsg 23,
+c3_creds 15, c3_sysfs 14 (9 on the host), c3_mntns 8 (8 on the host,
+in a user namespace); `--ktest` 36/36, `--test` 27/27, `--aosp-sh-test`
+15/15, `--aosp-disk-test` 9/9 pass.
+
 ## Known gaps / next steps
 
-- Android init (C3b/C3c): a writable /data (ext4 writes or f2fs, then
-  FBE), a real SELinux policy engine, cgroup resource control, a pty
-  line discipline for `adb shell`, logd's /proc/kmsg, adbd over
-  virtio-net or virtio-console, ptrace/process_vm_readv for crash_dump.
+- Android init (C3c and later): eBPF for netbpfload/netd (the next boot
+  blocker), a persistent /data (ext4 writes or f2fs, then FBE), a real
+  SELinux policy engine, cgroup resource control, a pty line discipline
+  for `adb shell`, adbd over virtio-net or virtio-console,
+  ptrace/process_vm_readv for crash_dump.
 
-- VFS follow-ups: permission checks and credentials, read-only mounts,
-  mount namespaces, statfs block accounting.
+- VFS follow-ups: permission checks and capabilities (ids are tracked),
+  read-only mounts, slave/unbindable mounts, statfs block accounting.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
   file page caches stay in RAM while the inode lives; only the block caches
   evict), mlock.
@@ -769,7 +810,7 @@ host oracle passes all of them. `--ktest` 32/32, `--test` 27/27,
   contexts, binder_logs; one global lock (fine for now, a per-process
   split later).
 - Sockets: AF_INET/INET6, netlink protocols other than uevents, in-flight fd garbage
-  collection, MSG_OOB, SO_PEEK_OFF, real credentials in SO_PEERCRED.
+  collection, MSG_OOB, SO_PEEK_OFF.
 - ELF: map segments from the file's page cache (MAP_PRIVATE) instead of
   copying them, so text pages are shared between processes.
 - Interrupt routing (IOAPIC from the ACPI MADT) for UART RX, and MSI-X
@@ -778,7 +819,7 @@ host oracle passes all of them. `--ktest` 32/32, `--test` 27/27,
   time accounting (CPU-time clocks currently report uptime; getrusage and
   times report 0), scheduling classes and affinity (stored only), sleep timers
   in a timer wheel instead of one list, real-time signal queueing, job
-  control (SIGSTOP/SIGCONT), credentials.
+  control (SIGSTOP/SIGCONT).
 - XSAVE (AVX) state, no ACPI parsing yet (power off uses the q35/PIIX PM1a
   port), bootloader-reclaimable memory not reclaimed, heap does not grow,
   panic does not stop other CPUs, getrandom is not a vetted CSPRNG.
