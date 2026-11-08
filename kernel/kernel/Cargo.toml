@@ -1,0 +1,18 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+description = "android-pc: a Rust kernel implementing the Linux x86_64 ABI for AOSP userspace"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "kernel"
+test = true
+bench = false
+
+[dependencies]
+limine = "0.6"
+x86_64 = "0.15"
+spin = "0.10"
+log = "0.4"
+linked_list_allocator = "0.10"
