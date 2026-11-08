@@ -1,13 +1,12 @@
 //! Memory management: physical frames, kernel page tables, kernel heap,
-//! kernel stacks and user address spaces.
-//!
-//! Planned (phase B3b): file-backed mappings, a shmem object for
-//! MAP_SHARED, memfd, page cache.
+//! kernel stacks, user address spaces and shmem objects (the page cache of
+//! RAM-backed files, also behind MAP_SHARED anonymous memory).
 
 pub mod frame;
 pub mod heap;
 pub mod kstack;
 pub mod paging;
+pub mod shmem;
 pub mod user;
 
 use crate::boot;

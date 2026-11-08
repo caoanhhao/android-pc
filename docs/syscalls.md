@@ -22,8 +22,8 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 5 | fstat | yes | any fd (pipes S_IFIFO, devices S_IFCHR with rdev); uid/gid/times stored |
 | 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
 | 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
-| 9 | mmap | partial | anonymous only, lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous is shared across fork (pages populated at fork, no shmem object yet); file mappings -> ENODEV (B3b), EBADF for a bad fd |
-| 10 | mprotect | yes | splits VMAs, updates PTEs (COW-shared pages stay read-only), TLB shootdown |
+| 9 | mmap | partial | anonymous memory lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous gets its own shmem object (shared across fork; growing it with mremap gives SIGBUS past the original size). File mappings of tmpfs/memfd files map the page cache: MAP_SHARED writes are seen by read() and every other mapping, MAP_PRIVATE is COW from the cache; pages past EOF raise SIGBUS (the tail of the last page reads zero). EACCES for a write-only fd, or PROT_WRITE + MAP_SHARED on a fd not open for writing (or O_APPEND); EPERM for PROT_WRITE + MAP_SHARED on a write-sealed memfd. /dev/zero: anonymous memory (shared or private). Other files ENODEV; EBADF for a bad or O_PATH fd |
+| 10 | mprotect | yes | splits VMAs, updates PTEs (COW-shared pages stay read-only), TLB shootdown; EACCES when adding PROT_WRITE to a shared mapping of a read-only fd or write-sealed memfd |
 | 11 | munmap | yes | frees pages, TLB shootdown IPI to CPUs using the address space |
 | 12 | brk | yes | lazy heap after the highest PT_LOAD |
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
@@ -37,8 +37,10 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 21 | access | yes | = faccessat; root: only X_OK can fail |
 | 22 | pipe | yes | = pipe2(0) |
 | 24 | sched_yield | yes | |
-| 25 | mremap | partial | anonymous mappings: shrink, grow in place, MREMAP_MAYMOVE, MREMAP_FIXED, MREMAP_DONTUNMAP; pages move by moving PTEs; the old range must lie in one VMA (EFAULT); old_size 0 -> EINVAL |
-| 28 | madvise | partial | MADV_DONTNEED / MADV_FREE drop private pages (next touch is zero-filled; shared pages are kept); NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTFORK..DODUMP, COLD, PAGEOUT accepted as no-ops; EINVAL for an unaligned address or unknown advice, ENOMEM for an unmapped range |
+| 25 | mremap | partial | anonymous, shared and file mappings: shrink, grow in place, MREMAP_MAYMOVE, MREMAP_FIXED, MREMAP_DONTUNMAP; pages move by moving PTEs, a file/shared VMA keeps its object and offset; old_size 0 on a shared mapping (with MAYMOVE) maps the same pages again, EINVAL otherwise; the old range must lie in one VMA (EFAULT) |
+| 26 | msync | yes | argument checks only (EINVAL: unaligned address, unknown flags, MS_SYNC with MS_ASYNC; ENOMEM: unmapped range); every file is RAM-backed |
+| 27 | mincore | yes | 1 per page that is mapped or in its object's page cache; EINVAL unaligned, ENOMEM unmapped |
+| 28 | madvise | partial | MADV_DONTNEED / MADV_FREE drop the pages of the range (private anonymous memory comes back zero-filled, file and shared mappings refault from their object); MADV_REMOVE punches a hole in the object behind a shared mapping (EINVAL for private, EACCES if not writable); NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTFORK..DODUMP, COLD, PAGEOUT accepted as no-ops; EINVAL for an unaligned address or unknown advice, ENOMEM for an unmapped range |
 | 32 | dup | yes | |
 | 33 | dup2 | yes | |
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
@@ -51,12 +53,12 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 61 | wait4 | yes | pid > 0, -1, 0, < -1; WNOHANG; ECHILD; rusage zeroed |
 | 62 | kill | yes | pid > 0, 0 (group), -1, < -1; sig 0 = existence check |
 | 63 | uname | yes | Linux / 6.6.0-android-pc / x86_64 |
-| 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed); record locks (F_SETLK*, F_OFD_*) always granted, F_GETLK says unlocked |
+| 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed), F_ADD_SEALS/F_GET_SEALS on tmpfs/memfd files (SEAL, SHRINK, GROW, WRITE, FUTURE_WRITE, EXEC; tmpfs files and memfds without MFD_ALLOW_SEALING start with F_SEAL_SEAL; EPERM for a read-only fd or after F_SEAL_SEAL, EBUSY for F_SEAL_WRITE while a shared mapping could write; EINVAL on other files); record locks (F_SETLK*, F_OFD_*) always granted, F_GETLK says unlocked |
 | 73 | flock | stub | 0 for a valid fd (no locking) |
 | 74 | fsync | stub | 0 (everything is in memory) |
 | 75 | fdatasync | stub | 0 |
 | 76 | truncate | yes | |
-| 77 | ftruncate | yes | EINVAL on read-only fds and non-regular files; files are capped at 64 MiB (EFBIG) until the page cache |
+| 77 | ftruncate | yes | EINVAL on read-only fds and non-regular files; files are sparse (up to 2^63-1 bytes); shrinking unmaps the dropped pages from every mapping (SIGBUS on access) and zeroes the tail of the last page; EPERM against F_SEAL_SHRINK/GROW |
 | 79 | getcwd | yes | ENOENT when the cwd was removed, ERANGE |
 | 80 | chdir | yes | |
 | 81 | fchdir | yes | |
@@ -101,7 +103,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 186 | gettid | yes | |
 | 200 | tkill | yes | |
 | 201 | time | yes | |
-| 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; keyed by (address space, address) so shared futexes across processes wait for MAP_SHARED (B3); PI futexes ENOSYS |
+| 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; in a MAP_SHARED mapping (without FUTEX_PRIVATE_FLAG) keyed by (shmem object, offset), so it works across processes and mappings; otherwise by (address space, address); PI futexes ENOSYS |
 | 217 | getdents64 | yes | ".", "..", then the entries with real d_type; position = entry index (lseek 0 rewinds); EINVAL if the first record does not fit |
 | 218 | set_tid_address | yes | |
 | 228 | clock_gettime | yes | REALTIME (Limine boot date + TSC), MONOTONIC/BOOTTIME/RAW/COARSE (TSC); CPU-time clocks report uptime |
@@ -124,6 +126,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 273 | set_robust_list | partial | stored; robust futexes are not walked at exit yet |
 | 274 | get_robust_list | yes | |
 | 280 | utimensat | yes | UTIME_NOW/UTIME_OMIT, NULL path = dirfd |
+| 285 | fallocate | partial | tmpfs/memfd: mode 0 allocates pages and grows the file, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE (with KEEP_SIZE; partial pages zeroed, whole pages freed and unmapped); other modes EOPNOTSUPP; EBADF read-only fd, EINVAL bad offset/length, ESPIPE pipes, ENODEV other files, EPERM against seals, ENOSPC near the end of RAM |
 | 292 | dup3 | yes | O_CLOEXEC |
 | 293 | pipe2 | yes | O_CLOEXEC, O_NONBLOCK, O_DIRECT accepted (not packet mode); 64 KiB buffer |
 | 295 | preadv | yes | |
@@ -131,6 +134,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 306 | syncfs | stub | 0 |
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
+| 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
 | 332 | statx | yes | basic stats (STATX_BASIC_STATS, no btime) |
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
 | 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
@@ -143,7 +147,8 @@ static programs use; **partial** = works for the common case, gaps listed;
   on Linux x86_64.
 - Faults: #PF outside a VMA or against its protection -> SIGSEGV (si_addr =
   CR2, SEGV_MAPERR/ACCERR), #GP -> SIGSEGV, #UD -> SIGILL, #DE -> SIGFPE,
-  #XM/#MF -> SIGFPE, `int3` -> SIGTRAP, #AC -> SIGBUS. A blocked or ignored
+  #XM/#MF -> SIGFPE, `int3` -> SIGTRAP, #AC -> SIGBUS, #PF past the end of
+  a file or shared mapping's object -> SIGBUS (BUS_ADRERR, si_addr = CR2). A blocked or ignored
   fault signal is forced to the default action.
 - Default actions terminate (no core files), ignore, or, for stop/continue
   signals, do nothing (no job control yet).
@@ -155,12 +160,12 @@ static programs use; **partial** = works for the common case, gaps listed;
 ## Not implemented yet (selection, by phase)
 
 - **B2 leftovers**: legacy getdents (78), chroot/pivot_root, sendfile,
-  copy_file_range, fallocate, fadvise, inotify, xattrs, FIFOs in the file
+  copy_file_range, fadvise, inotify, xattrs, FIFOs in the file
   system (mknod works, open is ENXIO), devpts, console input (reads EOF),
   permission checks (everything is root), read-only mounts (recorded only).
-- **B3b (memory)**: file mappings and a real shmem object for MAP_SHARED,
-  page cache, msync, memfd_create, mremap of file/shared mappings,
-  MAP_GROWSDOWN.
+- **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
+  without a page cache (procfs, devices other than /dev/zero), mlock family,
+  re-opening a memfd through /proc/<pid>/fd/N (not a magic link).
 - **B4 (IPC / multiplexing)**: poll/ppoll/select, epoll_*, eventfd2,
   timerfd_*, signalfd4, sockets (AF_UNIX), pidfd.
 - Later: credentials (setuid family, capabilities), rlimits, sched_*

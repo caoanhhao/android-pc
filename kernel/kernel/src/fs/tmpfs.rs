@@ -1,20 +1,20 @@
 //! tmpfs: a read-write file system in kernel memory. Also the root file
 //! system (the initramfs is unpacked into it), devtmpfs and sysfs.
 //!
-//! File data lives in a `Vec` on the kernel heap; files unpacked from the
-//! initramfs keep pointing into the boot module until first written.
+//! File data lives in a shmem object (`mm::shmem`, the page cache), which
+//! is also what `mmap` maps; files unpacked from the initramfs keep pointing
+//! into the boot module until a page is first touched. memfds are tmpfs
+//! files with no name.
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use super::vfs::*;
 use crate::errno::*;
-
-/// Largest tmpfs file (the kernel heap is small until B3's page cache).
-pub const MAX_FILE_SIZE: u64 = 64 << 20;
+use crate::mm::shmem::Shmem;
 
 pub enum Data {
     /// Contents still inside the initramfs module.
@@ -30,50 +30,21 @@ impl Data {
         }
     }
 
-    /// Writable contents (copies a static file on first write).
-    fn owned(&mut self) -> KResult<&mut Vec<u8>> {
-        if let Data::Static(s) = self {
-            let mut v = Vec::new();
-            v.try_reserve_exact(s.len()).map_err(|_| ENOSPC)?;
-            v.extend_from_slice(s);
-            *self = Data::Owned(v);
-        }
+    fn into_shmem(self) -> KResult<Arc<Shmem>> {
         match self {
-            Data::Owned(v) => Ok(v),
-            Data::Static(_) => unreachable!(),
+            Data::Static(s) => Ok(Shmem::from_static(s)),
+            Data::Owned(v) => {
+                let obj = Shmem::new(0);
+                obj.write(0, &v)?;
+                Ok(obj)
+            }
         }
-    }
-
-    fn resize(&mut self, len: u64) -> KResult<()> {
-        if len > MAX_FILE_SIZE {
-            return Err(EFBIG);
-        }
-        let v = self.owned()?;
-        let len = len as usize;
-        if len > v.len() {
-            v.try_reserve(len - v.len()).map_err(|_| ENOSPC)?;
-        }
-        v.resize(len, 0);
-        if v.capacity() > 2 * v.len() + 4096 {
-            v.shrink_to_fit();
-        }
-        Ok(())
-    }
-
-    fn write_at(&mut self, off: u64, data: &[u8]) -> KResult<usize> {
-        let end = off.checked_add(data.len() as u64).ok_or(EFBIG)?;
-        if end > self.bytes().len() as u64 {
-            self.resize(end)?;
-        }
-        let v = self.owned()?;
-        v[off as usize..end as usize].copy_from_slice(data);
-        Ok(data.len())
     }
 }
 
 enum Kind {
     Dir(Mutex<BTreeMap<Vec<u8>, Arc<TmpInode>>>),
-    File(Mutex<Data>),
+    File(Arc<Shmem>),
     Symlink(Vec<u8>),
     /// Device node, FIFO or socket: only metadata.
     Special,
@@ -82,11 +53,30 @@ enum Kind {
 pub struct TmpInode {
     meta: Meta,
     kind: Kind,
+    /// memfd_create name (the file has no path).
+    memfd_name: Option<Vec<u8>>,
 }
 
 impl TmpInode {
     fn new(dev: u64, mode: u32, rdev: u64, kind: Kind) -> Arc<TmpInode> {
-        Arc::new(TmpInode { meta: Meta::new(dev, mode, rdev), kind })
+        Arc::new(TmpInode { meta: Meta::new(dev, mode, rdev), kind, memfd_name: None })
+    }
+
+    /// An unnamed file for memfd_create, with seals `seals` (F_SEAL_SEAL
+    /// unless sealing is allowed).
+    pub fn new_memfd(name: &[u8], mode: u32, seals: u32) -> Arc<TmpInode> {
+        static MEMFD_DEV: Once<u64> = Once::new();
+        let obj = Shmem::new(0);
+        obj.set_initial_seals(seals);
+        Arc::new(TmpInode {
+            meta: Meta::new(*MEMFD_DEV.call_once(alloc_dev), S_IFREG | mode, 0),
+            kind: Kind::File(obj),
+            memfd_name: Some(name.to_vec()),
+        })
+    }
+
+    pub fn memfd_name(&self) -> Option<&[u8]> {
+        self.memfd_name.as_deref()
     }
 
     /// A new, empty tmpfs; returns its root directory.
@@ -120,7 +110,7 @@ impl TmpInode {
         }
         let kind = match mode & S_IFMT {
             S_IFDIR => Kind::Dir(Mutex::new(BTreeMap::new())),
-            S_IFREG => Kind::File(Mutex::new(data.unwrap_or(Data::Owned(Vec::new())))),
+            S_IFREG => Kind::File(data.map_or_else(|| Ok(Shmem::new(0)), Data::into_shmem)?),
             S_IFLNK => Kind::Symlink(data.map(|d| d.bytes().to_vec()).unwrap_or_default()),
             S_IFCHR | S_IFBLK | S_IFIFO | S_IFSOCK => Kind::Special,
             _ => return Err(EINVAL),
@@ -155,7 +145,7 @@ impl TmpInode {
         });
     }
 
-    fn data(&self) -> KResult<&Mutex<Data>> {
+    fn data(&self) -> KResult<&Arc<Shmem>> {
         match &self.kind {
             Kind::File(d) => Ok(d),
             Kind::Dir(_) => Err(EISDIR),
@@ -182,7 +172,7 @@ impl Inode for TmpInode {
 
     fn size(&self) -> u64 {
         match &self.kind {
-            Kind::File(d) => d.lock().bytes().len() as u64,
+            Kind::File(d) => d.size(),
             Kind::Symlink(t) => t.len() as u64,
             Kind::Dir(_) => 4096,
             Kind::Special => 0,
@@ -300,34 +290,29 @@ impl Inode for TmpInode {
     }
 
     fn read_at(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = self.data()?.lock();
-        let bytes = d.bytes();
-        let start = (off.min(bytes.len() as u64)) as usize;
-        let n = buf.len().min(bytes.len() - start);
-        buf[..n].copy_from_slice(&bytes[start..start + n]);
-        Ok(n)
+        Ok(self.data()?.read(off, buf))
     }
 
     fn write_at(&self, off: u64, data: &[u8]) -> KResult<usize> {
-        let n = self.data()?.lock().write_at(off, data)?;
+        let n = self.data()?.write(off, data)?;
         self.meta.touch_mtime();
         Ok(n)
     }
 
     fn append(&self, data: &[u8]) -> KResult<(usize, u64)> {
-        let mut d = self.data()?.lock();
-        let off = d.bytes().len() as u64;
-        let n = d.write_at(off, data)?;
-        let size = d.bytes().len() as u64;
-        drop(d);
+        let r = self.data()?.append(data)?;
         self.meta.touch_mtime();
-        Ok((n, size))
+        Ok(r)
     }
 
     fn truncate(&self, size: u64) -> KResult<()> {
-        self.data()?.lock().resize(size)?;
+        self.data()?.truncate(size)?;
         self.meta.touch_mtime();
         Ok(())
+    }
+
+    fn shmem(&self) -> Option<Arc<Shmem>> {
+        self.data().ok().cloned()
     }
 
     fn as_any(&self) -> &dyn Any {

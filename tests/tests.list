@@ -17,6 +17,7 @@ b2_devproc
 b3_mmap
 b3_fork_cow
 b3_memfd
+b3_shmem
 # B4: I/O multiplexing and IPC
 b4_epoll
 b4_eventfd

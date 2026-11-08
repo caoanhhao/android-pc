@@ -7,8 +7,10 @@
 //! - `dev`: character devices (null, zero, random, console, kmsg, ...) and
 //!   devtmpfs. `procfs`, sysfs (an empty tmpfs skeleton), `pipe`.
 //!
-//! Planned: ext4/erofs (C2), binderfs (C1), devpts, page cache and file
-//! mmap (B3).
+//! File data of tmpfs (and memfd) lives in `mm::shmem` objects, the page
+//! cache that `mmap` maps.
+//!
+//! Planned: ext4/erofs (C2), binderfs (C1), devpts.
 
 pub mod dev;
 pub mod file;
@@ -213,6 +215,12 @@ pub fn open_path(p: PathRef, flags: u32) -> KResult<Arc<OpenFile>> {
 pub fn file_path(f: &OpenFile) -> Vec<u8> {
     if let Some(p) = &f.path {
         return vfs::path_of(p);
+    }
+    if let Some(name) = f.inode.as_any().downcast_ref::<TmpInode>().and_then(|t| t.memfd_name()) {
+        let mut v = b"/memfd:".to_vec();
+        v.extend_from_slice(name);
+        v.extend_from_slice(b" (deleted)");
+        return v;
     }
     let meta = f.inode.meta();
     match meta.file_type() {

@@ -431,7 +431,7 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
     match f {
         PidFile::Stat => {
             let (vsize, brk) = own_mm(pid).map_or((0, (0, 0)), |mm| {
-                (mm.vma_list().iter().map(|(s, e, _)| e - s).sum::<u64>(), mm.brk_range())
+                (mm.total_size(), mm.brk_range())
             });
             let _ = write!(
                 s,
@@ -462,7 +462,7 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
                 info.threads,
             );
             if let Some(mm) = own_mm(pid) {
-                let kb: u64 = mm.vma_list().iter().map(|(s, e, _)| e - s).sum::<u64>() / 1024;
+                let kb: u64 = mm.total_size() / 1024;
                 let _ = writeln!(s, "VmSize:\t{kb:>8} kB");
             }
         }
@@ -485,15 +485,25 @@ fn maps(pid: u32, p: &Process, s: &mut String) {
         .map(|e| (vfs::path_string(&e), e.inode().meta().ino))
         .unwrap_or_default();
     let stack_top = crate::mm::user::STACK_TOP;
-    for (start, end, prot) in mm.vma_list() {
+    for v in mm.vma_list() {
+        let (start, end, prot) = (v.start, v.end, v.prot);
         let perms = [
             if prot & crate::mm::user::PROT_READ != 0 { 'r' } else { '-' },
             if prot & crate::mm::user::PROT_WRITE != 0 { 'w' } else { '-' },
             if prot & crate::mm::user::PROT_EXEC != 0 { 'x' } else { '-' },
-            'p',
+            if v.shared { 's' } else { 'p' },
         ];
         let perms: String = perms.iter().collect();
-        let (name, ino) = if start < brk_start && !exe_name.is_empty() {
+        let mut dev = 0;
+        let file_name;
+        let (name, ino) = if let Some(f) = &v.file {
+            file_name = String::from_utf8_lossy(&super::file_path(f)).into_owned();
+            dev = f.inode.meta().dev;
+            (file_name.as_str(), f.inode.meta().ino)
+        } else if v.backed {
+            // Anonymous shared memory, named like Linux's shmem file.
+            ("/dev/zero (deleted)", 0)
+        } else if start < brk_start && !exe_name.is_empty() {
             (exe_name.as_str(), exe_ino)
         } else if start >= brk_start && end <= brk.next_multiple_of(4096).max(brk_start) && start < brk {
             ("[heap]", 0)
@@ -502,7 +512,13 @@ fn maps(pid: u32, p: &Process, s: &mut String) {
         } else {
             ("", 0)
         };
-        let _ = write!(s, "{start:08x}-{end:08x} {perms} 00000000 00:00 {ino}");
+        let _ = write!(
+            s,
+            "{start:08x}-{end:08x} {perms} {:08x} {:02x}:{:02x} {ino}",
+            v.offset,
+            vfs::dev_major(dev),
+            vfs::dev_minor(dev)
+        );
         if !name.is_empty() {
             let _ = write!(s, "{:>width$}{name}", "", width = 26usize.saturating_sub(format!("{ino}").len()));
         }
