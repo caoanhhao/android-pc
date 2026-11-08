@@ -81,9 +81,14 @@ Chạy bằng `aosp/cvd-launch.sh`:
   Phải tắt modem simulator: trên host nó segfault liên tục, khiến `libcuttlefish-rild` trong
   guest spam log, đẩy logd/logcat lên 100% CPU và làm adb rớt kết nối.
 - **Cửa sổ desktop (mặc định):** `--qemu_binary_dir=aosp/cvd-qemu-window` dùng wrapper
-  chạy QEMU của Arch (`/usr/bin/qemu-system-x86_64`, có GTK) thay cho bản đi kèm. Wrapper đổi
-  `-vnc` thành `-display gtk` và thêm `usb-tablet` cùng `usb-kbd` trên `xhci`. Kết quả là một
-  cửa sổ "QEMU (cvd-1)" trên desktop, điều khiển được bằng chuột và bàn phím.
+  chạy QEMU của Arch (`/usr/bin/qemu-system-x86_64`) và thêm `usb-tablet` trên `xhci` để có
+  chuột tuyệt đối. Màn hình xuất qua VNC tại `127.0.0.1:6444`. Sau khi boot, `cvd-launch.sh`
+  mở `aosp/cvd-window.py`, một VNC viewer nhỏ viết bằng Python GTK3/cairo, thành cửa sổ
+  "Android (cvd-1)". Cửa sổ nhận chuột (cả cuộn) và bàn phím (đi vào bàn phím PS/2).
+  Đặt `NO_WINDOW=1` nếu không muốn mở cửa sổ.
+  Không dùng `-display gtk` của QEMU: GTK đẩy kích thước cửa sổ (ví dụ 1262×1058) vào
+  virtio-gpu, Android đổi màn hình theo, và system_server crash liên tục (lỗi scudo, GC,
+  bad_alloc). Hậu quả là cửa sổ báo "Display output is not active" hoặc nhấp nháy.
   WebRTC (https://localhost:8443) chỉ có hình khi chạy bằng crosvm; với QEMU thì màn hình đen.
 - adb: `out/host/linux-x86/bin/adb -s 0.0.0.0:6520`. Nếu trước đó đã có `adb connect
   127.0.0.1:6520` thì sẽ có hai transport cho cùng thiết bị, và `adb shell` có thể treo.
