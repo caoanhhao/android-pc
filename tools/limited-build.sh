@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run a build command under the project's resource limits:
-#   15 CPU cores, 25 GB RAM, abort if free space on / drops below 10 GB.
+#   12 CPU cores (CPUs 0-11: 8 P-cores + 4 E-cores, hyperthreading off), 25 GB RAM, abort if free space on / drops below 10 GB.
 # Usage: tools/limited-build.sh <command> [args...]
-# Example: tools/limited-build.sh m -j15 systemimage
+# Example: tools/limited-build.sh m -j12 systemimage
 set -euo pipefail
 
-CORES=${BUILD_CORES:-15}
+CORES=${BUILD_CORES:-12}
 MEM=${BUILD_MEM:-25G}
 DISK_FLOOR_GB=${BUILD_DISK_FLOOR_GB:-10}
 
