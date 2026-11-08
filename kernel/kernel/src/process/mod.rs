@@ -61,6 +61,7 @@ impl Task {
     pub fn new(tid: u32, process: Arc<Process>, mm: Arc<AddressSpace>, frame: &TrapFrame) -> Option<Arc<Task>> {
         let kstack = KernelStack::new()?;
         let rsp = unsafe { entry::prepare_new_stack(kstack.top(), frame) };
+        mm.users.fetch_add(1, Ordering::SeqCst);
         Some(Arc::new(Task {
             tid,
             process,
@@ -95,11 +96,13 @@ impl Task {
     /// Replace the address space (execve). Must be called by the task itself.
     pub fn set_mm(&self, mm: Arc<AddressSpace>) -> Arc<AddressSpace> {
         let me = crate::arch::x86_64::cpu::index_fast();
+        mm.users.fetch_add(1, Ordering::SeqCst);
         x86_64::instructions::interrupts::without_interrupts(|| {
             mm.active_cpus.fetch_or(1 << me, Ordering::SeqCst);
             mm.activate();
             let old = unsafe { core::mem::replace(&mut *self.mm.get(), mm) };
             old.active_cpus.fetch_and(!(1 << me), Ordering::SeqCst);
+            old.users.fetch_sub(1, Ordering::SeqCst);
             old
         })
     }

@@ -14,6 +14,7 @@
 //! | /dev/tty        | 5:0         | the serial console                   |
 //! | /dev/console    | 5:1         | the serial console                   |
 //! | /dev/ttyS0      | 4:64        | the serial console                   |
+//! | binderfs nodes  | 244:n       | binder devices (`drivers::binder`)   |
 //!
 //! The console is a tty with serial input and a line discipline (see
 //! `fs::tty`). The memory devices have no poll method (always ready, not
@@ -120,6 +121,7 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (1, 8) | (1, 9) => Dev::Random,
         (1, 11) => Dev::Kmsg,
         (5, 0) | (5, 1) | (4, _) => Dev::Console,
+        (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
         _ => return Err(ENXIO),
     };
     Ok(Box::new(DevFile(d)))

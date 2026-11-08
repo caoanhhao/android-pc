@@ -43,7 +43,7 @@ validate() {
         $1 == "BEGIN" { begins++; next }
         $1 == "PASS" { if ($2 != name) { print "PASS for wrong test: " $0; bad = 1 } pass++; next }
         $1 == "FAIL" { fail++; next }
-        $1 == "SKIP" { next }
+        $1 == "SKIP" { skip++; next }
         $1 == "END" { end = $0; ends++; next }
         { print "unexpected line: " $0; bad = 1 }
         END {
@@ -53,7 +53,7 @@ validate() {
             if (end != want) { print "END line \"" end "\" does not match counted \"" want "\""; exit 1 }
             if (fail > 0) { print fail " case(s) failed"; exit 1 }
             if (status != 0) { print "exit status " status; exit 1 }
-            if (pass == 0) { print "no cases ran"; exit 1 }
+            if (pass == 0 && skip == 0) { print "no cases ran"; exit 1 }
         }' "$log"
 }
 

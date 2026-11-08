@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -23,14 +23,14 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 6 | lstat | yes | = newfstatat(AT_SYMLINK_NOFOLLOW) |
 | 7 | poll | yes | POLLNVAL for bad fds, negative fds ignored, ERR/HUP always reported; timeout in ms (< 0 = forever); EINTR on a signal; EINVAL above 1024 fds |
 | 8 | lseek | yes | SEEK_SET/CUR/END; directories (getdents index); ESPIPE on pipes; devices accept and stay at 0 |
-| 9 | mmap | partial | anonymous memory lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous gets its own shmem object (shared across fork; growing it with mremap gives SIGBUS past the original size). File mappings of tmpfs/memfd files map the page cache: MAP_SHARED writes are seen by read() and every other mapping, MAP_PRIVATE is COW from the cache; pages past EOF raise SIGBUS (the tail of the last page reads zero). EACCES for a write-only fd, or PROT_WRITE + MAP_SHARED on a fd not open for writing (or O_APPEND); EPERM for PROT_WRITE + MAP_SHARED on a write-sealed memfd. /dev/zero: anonymous memory (shared or private). Other files ENODEV; EBADF for a bad or O_PATH fd |
+| 9 | mmap | partial | anonymous memory lazily zero-filled; MAP_FIXED, MAP_FIXED_NOREPLACE, hint; MAP_SHARED anonymous gets its own shmem object (shared across fork; growing it with mremap gives SIGBUS past the original size). File mappings of tmpfs/memfd files map the page cache: MAP_SHARED writes are seen by read() and every other mapping, MAP_PRIVATE is COW from the cache; pages past EOF raise SIGBUS (the tail of the last page reads zero). EACCES for a write-only fd, or PROT_WRITE + MAP_SHARED on a fd not open for writing (or O_APPEND); EPERM for PROT_WRITE + MAP_SHARED on a write-sealed memfd. /dev/zero: anonymous memory (shared or private). Binder devices: the binder buffer (see Binder below). Other files ENODEV; EBADF for a bad or O_PATH fd |
 | 10 | mprotect | yes | splits VMAs, updates PTEs (COW-shared pages stay read-only), TLB shootdown; EACCES when adding PROT_WRITE to a shared mapping of a read-only fd or write-sealed memfd |
 | 11 | munmap | yes | frees pages, TLB shootdown IPI to CPUs using the address space |
 | 12 | brk | yes | lazy heap after the highest PT_LOAD |
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TCSBRK/TCSBRKP/TCXONC/TIOCSCTTY/TIOCNOTTY (no-ops), TIOCGSID; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
@@ -135,7 +135,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
 | 160 | setrlimit | yes | = prlimit64(0) |
 | 162 | sync | stub | 0 |
-| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs; MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
+| 165 | mount | partial | tmpfs, ramfs (`mode=` option), proc, sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored); MS_BIND (also files); MS_REMOUNT and propagation-only calls accepted as no-ops; MS_MOVE EINVAL; other types ENODEV |
 | 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW |
 | 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART |
 | 186 | gettid | yes | |
@@ -255,6 +255,78 @@ static programs use; **partial** = works for the common case, gaps listed;
   epoll items (`tfd: ... events: ... data: ...`), eventfd count, timerfd
   clock/ticks/it_value/it_interval and signalfd mask.
 
+## Binder (C1)
+
+`drivers/binder/` implements Linux binder's user ABI (protocol version 8,
+64-bit; `include/uapi/linux/android/binder.h`, `binderfs.h`). Design notes
+are in [kernel-architecture.md](kernel-architecture.md#binder-driversbinder).
+
+- **Devices**: `binder`, `hwbinder`, `vndbinder` (major 244, minors 0-2),
+  each a separate context with its own context manager. They exist only
+  inside binderfs: `mount -t binder binder /dev/binderfs` (Android's init.rc
+  does this and symlinks `/dev/binder` etc. into it). binderfs also has
+  `binder-control` (244:1023; BINDER_CTL_ADD creates a device in that mount,
+  a new context, and returns its major/minor; EEXIST for a taken name,
+  EINVAL for a bad one) and an empty `binder_logs/`. Every mount shows the
+  three default devices (one IPC namespace).
+- **open**: a new binder process per open. **close** (last reference, so
+  also after munmap of the buffer and process exit) releases it: see
+  semantics below.
+- **mmap**: PROT_READ only (EPERM with PROT_WRITE, and mprotect cannot add
+  it: EACCES), offset 0, once per open (EBUSY); at most 4 MiB of the
+  mapping is used as buffer space. MAP_PRIVATE and MAP_SHARED behave the
+  same (the pages are the kernel's).
+- **poll/epoll**: POLLIN when the polling thread has work (its own, or the
+  process's when it is an idle looper); first poll by a new thread is
+  readable (as on Linux).
+- **ioctls**: BINDER_WRITE_READ; BINDER_SET_MAX_THREADS;
+  BINDER_SET_CONTEXT_MGR and _EXT (flags: FLAT_BINDER_FLAG_TXN_SECURITY_CTX;
+  EBUSY if the context has one); BINDER_THREAD_EXIT; BINDER_VERSION (8);
+  BINDER_GET_NODE_DEBUG_INFO; BINDER_GET_NODE_INFO_FOR_REF (context manager
+  only, EPERM otherwise; strong = local + internal strong refs, weak = local
+  weak refs); BINDER_GET_EXTENDED_ERROR (id, command, -errno of the
+  thread's last transaction, reset by reading); BINDER_ENABLE_ONEWAY_SPAM_DETECTION
+  (stored, never reports); BINDER_FREEZE, BINDER_SET_IDLE_TIMEOUT,
+  BINDER_SET_IDLE_PRIORITY (no-ops); BINDER_GET_FROZEN_INFO (nothing is
+  frozen). Others EINVAL.
+- **Commands** (write buffer): BC_TRANSACTION(_SG), BC_REPLY(_SG),
+  BC_FREE_BUFFER, BC_INCREFS/ACQUIRE/RELEASE/DECREFS (INCREFS/ACQUIRE on
+  handle 0 create the ref to the context manager), BC_INCREFS_DONE /
+  BC_ACQUIRE_DONE, BC_REGISTER_LOOPER, BC_ENTER_LOOPER, BC_EXIT_LOOPER,
+  BC_REQUEST_DEATH_NOTIFICATION, BC_CLEAR_DEATH_NOTIFICATION,
+  BC_DEAD_BINDER_DONE. BC_ATTEMPT_ACQUIRE, BC_ACQUIRE_RESULT, the freeze
+  notification commands and unknown commands fail the ioctl with EINVAL
+  (write_consumed stops before them). Bad handles/pointers in reference
+  commands are logged and ignored, as on Linux.
+- **Returns** (read buffer): BR_NOOP first, replaced by BR_SPAWN_LOOPER when
+  the pool should grow; BR_TRANSACTION, BR_TRANSACTION_SEC_CTX (context
+  string `u:r:kernel:s0` until SELinux exists), BR_REPLY,
+  BR_TRANSACTION_COMPLETE, BR_DEAD_REPLY, BR_FAILED_REPLY,
+  BR_INCREFS/ACQUIRE/RELEASE/DECREFS, BR_DEAD_BINDER,
+  BR_CLEAR_DEATH_NOTIFICATION_DONE. A read stops after a transaction or a
+  BR_DEAD_BINDER; it needs 76 free bytes per item; O_NONBLOCK gives EAGAIN
+  instead of waiting; a signal gives EINTR.
+- **Transactions**: data, offsets (multiple of 8, objects 4-aligned, in
+  order, not overlapping) and scatter-gather buffers are copied into a
+  buffer allocated in the receiver's mapping (best fit; oneway calls may use
+  half of it; ENOSPC otherwise). Objects: BINDER/WEAK_BINDER become
+  HANDLE/WEAK_HANDLE refs of the receiver (a node is created on first
+  send, with ACCEPTS_FDS and TXN_SECURITY_CTX from its flags), handles
+  become refs of the receiver or BINDER again for the node's owner; FD and
+  FDA files are installed (O_CLOEXEC) in the receiver when it reads the
+  transaction (EPERM unless the target node accepts fds, or the call had
+  TF_ACCEPT_FDS for a reply); PTR buffers are copied and their address
+  patched, with parent fixups; fds of fd arrays are closed by BC_FREE_BUFFER.
+  sender_pid is the caller's pid for synchronous calls, 0 for oneway calls
+  and replies; sender_euid is 0 (everything is root).
+- **Failures** go to user space as returns, not ioctl errors: no context
+  manager, a dead target node or process, or a dead caller (for a reply)
+  give BR_DEAD_REPLY; a bad handle, bad object layout, unknown fd, missing
+  mmap, no buffer space or calling oneself give BR_FAILED_REPLY. A failed
+  reply gives the replier BR_TRANSACTION_COMPLETE and its caller the error.
+  After an error the rest of the write buffer is not processed until the
+  error has been read (as on Linux).
+
 ## Signals: what is delivered how
 
 - Delivery happens on every return to user mode (syscall exit, interrupt,
@@ -296,4 +368,10 @@ static programs use; **partial** = works for the common case, gaps listed;
   report 0), scheduling classes/affinity/nice (stored only), SIGTTIN/SIGTTOU
   and stop/continue job control, PR_SET_PDEATHSIG, ELF segments are
   copied (not mapped from the file's page cache), waitid, membarrier.
+- **C1 leftovers (binder)**: the freezer (BINDER_FREEZE is a no-op, no
+  BR_FROZEN_REPLY / freeze notifications), oneway spam detection (never
+  reports BR_ONEWAY_SPAM_SUSPECT), priority inheritance and
+  FLAT_BINDER_FLAG_INHERIT_RT, real SELinux security contexts, the
+  binder_logs/ files, per-mount binderfs device sets, TF_CLEAR_BUF and
+  TF_UPDATE_TXN, BINDER_FLUSH on close of one of several fds.
 - Later: rseq, clone3, io_uring (not used by AOSP).

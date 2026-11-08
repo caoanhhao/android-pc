@@ -10,7 +10,9 @@
 //! File data of tmpfs (and memfd) lives in `mm::shmem` objects, the page
 //! cache that `mmap` maps.
 //!
-//! Planned: ext4/erofs (C2), binderfs (C1), devpts.
+//! binderfs lives with the binder driver (`drivers::binder`).
+//!
+//! Planned: ext4/erofs (C2), devpts.
 
 pub mod dev;
 pub mod epoll;
@@ -261,6 +263,7 @@ pub fn fs_magic(fstype: &str) -> u64 {
         "proc" => PROC_SUPER_MAGIC,
         "sysfs" => SYSFS_MAGIC,
         "ramfs" | "rootfs" => RAMFS_MAGIC,
+        "binder" => crate::drivers::binder::BINDERFS_SUPER_MAGIC,
         _ => TMPFS_MAGIC,
     }
 }
@@ -287,6 +290,7 @@ pub fn new_fs(fstype: &[u8], mode: Option<u32>) -> KResult<(Arc<Dentry>, &'stati
         b"devtmpfs" => (DEVTMPFS.call_once(|| Dentry::new_root(dev::new_devtmpfs())).clone(), "devtmpfs"),
         b"proc" => (fresh(procfs::new_procfs()), "proc"),
         b"sysfs" => (SYSFS.call_once(new_sysfs).clone(), "sysfs"),
+        b"binder" => (fresh(crate::drivers::binder::new_binderfs(mode)), "binder"),
         _ => return Err(ENODEV),
     };
     if let Some(m) = mode

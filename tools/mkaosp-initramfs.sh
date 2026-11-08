@@ -3,7 +3,12 @@
 # initramfs for the Rust kernel, from an existing AOSP build. Nothing is
 # rebuilt.
 #
-#   tools/mkaosp-initramfs.sh [-o OUT] [--product DIR]
+#   tools/mkaosp-initramfs.sh [-o OUT] [--product DIR] [--binder]
+#
+# --binder adds servicemanager and the `service` command (with their
+# libraries), and /init mounts binderfs at /dev/binderfs with the
+# /dev/{binder,hwbinder,vndbinder} symlinks, as init.rc does. Default
+# output then is out/aosp-binder-initramfs.cpio (see docs/aosp-shell.md).
 #
 # Source: aosp/out/target/product/vsoc_x86_64_only (override with --product
 # or $AOSP_PRODUCT_OUT). The runtime APEX (linker64, libc, libm, libdl) is
@@ -27,16 +32,21 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 aosp="$(cd "$root" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
 product="${AOSP_PRODUCT_OUT:-$aosp/out/target/product/vsoc_x86_64_only}"
 host_bin="$aosp/out/host/linux-x86/bin"
-out="$root/out/aosp-initramfs.cpio"
+out=""
+binder=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) out="$2"; shift 2 ;;
         --product) product="$2"; shift 2 ;;
-        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+        --binder) binder=1; shift ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+[ -n "$out" ] || out="$root/out/aosp$([ $binder -eq 1 ] && echo -binder || true)-initramfs.cpio"
 sys="$product/system"
+extra=()
+[ $binder -eq 1 ] && extra=(servicemanager service)
 for f in "$sys/bin/sh" "$sys/bin/toybox" "$sys/apex/com.android.runtime.apex" "$host_bin/fsck.erofs"; do
     [ -e "$f" ] || { echo "mkaosp-initramfs: missing $f (build AOSP first, see docs/aosp-build.md)" >&2; exit 1; }
 done
@@ -104,9 +114,18 @@ resolve_dev() { # follow on-device symlinks to the host file
 emit_file /system/bin/linker64
 emit_file /system/bin/sh
 emit_file /system/bin/toybox
+queue=("$sys/bin/sh" "$sys/bin/toybox")
+if [ $binder -eq 1 ]; then
+    # servicemanager is a bootstrap process (PT_INTERP bootstrap/linker64).
+    echo "dir /system/bin/bootstrap 0755" >>"$spec"
+    emit_file /system/bin/bootstrap/linker64
+fi
+for b in "${extra[@]}"; do
+    emit_file "/system/bin/$b"
+    queue+=("$sys/bin/$b")
+done
 # Shared-library closure, searched like the linker's default namespace
 # (/system/lib64; libc & co. are symlinks into the runtime APEX there).
-queue=("$sys/bin/sh" "$sys/bin/toybox")
 i=0
 while [ $i -lt ${#queue[@]} ]; do
     for lib in $(readelf -d "${queue[$i]}" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
@@ -150,6 +169,15 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mount -t tmpfs tmpfs /tmp
 mount -t tmpfs tmpfs /data
+if [ -x /system/bin/servicemanager ]; then
+    # As init.rc: binderfs, symlinks to its devices.
+    mkdir /dev/binderfs
+    mount -t binder binder /dev/binderfs -o stats=global
+    for d in binder hwbinder vndbinder; do
+        ln -s /dev/binderfs/$d /dev/$d
+        chmod 0666 /dev/binderfs/$d
+    done
+fi
 cd /
 echo "aosp-init: ready ($(uname -sr))"
 exec sh -i

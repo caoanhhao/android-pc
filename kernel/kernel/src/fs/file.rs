@@ -71,6 +71,13 @@ pub trait FileOps: Send + Sync + Any {
         Err(ENOTTY)
     }
 
+    /// mmap of a device with its own memory (binder); returns the address.
+    /// Regular files and /dev/zero are handled by the generic code.
+    #[allow(clippy::too_many_arguments)]
+    fn mmap(&self, _file: &Arc<OpenFile>, _addr: u64, _len: u64, _prot: u32, _fixed: bool, _noreplace: bool, _off: u64) -> KResult<u64> {
+        Err(ENODEV)
+    }
+
     /// Current readiness (POLLIN, POLLOUT, POLLHUP, ...). Files that never
     /// block are always ready.
     fn poll(&self, _file: &OpenFile) -> u32 {

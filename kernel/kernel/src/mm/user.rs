@@ -177,6 +177,9 @@ pub struct AddressSpace {
     me: Weak<AddressSpace>,
     /// CPUs (bit = index) that may have this address space loaded.
     pub active_cpus: AtomicU64,
+    /// Live tasks using it (Linux's mm_users). `Arc` references also come
+    /// from exited tasks not yet freed and from kernel code holding it.
+    pub users: AtomicU64,
 }
 
 fn table(phys: PhysAddr) -> &'static mut PageTable {
@@ -307,6 +310,7 @@ impl AddressSpace {
             }),
             me: me.clone(),
             active_cpus: AtomicU64::new(0),
+            users: AtomicU64::new(0),
         }))
     }
 
