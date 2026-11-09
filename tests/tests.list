@@ -43,3 +43,4 @@ c3_kmsg
 c3_creds
 c3_sysfs
 c3_mntns
+c3_bpf

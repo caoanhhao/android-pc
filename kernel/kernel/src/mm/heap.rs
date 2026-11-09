@@ -40,6 +40,14 @@ pub fn init() {
     log::info!("heap: {} MiB at {:#x}", size >> 20, virt.as_u64());
 }
 
+/// (bytes in use, heap size) of the kernel heap.
+pub fn stats() -> (usize, usize) {
+    without_interrupts(|| {
+        let h = ALLOCATOR.0.lock();
+        (h.used(), h.size())
+    })
+}
+
 #[test_case]
 fn box_and_vec() {
     use alloc::{boxed::Box, vec::Vec};

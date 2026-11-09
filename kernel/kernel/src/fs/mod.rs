@@ -25,6 +25,7 @@ pub mod epoll;
 pub mod erofs;
 pub mod eventfd;
 pub mod ext4;
+pub mod lock;
 pub mod lz4;
 pub mod file;
 pub mod inotify;
@@ -373,7 +374,7 @@ pub fn new_fs_opts(fstype: &[u8], mode: Option<u32>, data: &[u8]) -> KResult<(Ar
         b"tracefs" => (fresh(TmpInode::new_fs(0o700)), "tracefs"),
         b"debugfs" => (fresh(TmpInode::new_fs(0o700)), "debugfs"),
         b"pstore" => (fresh(TmpInode::new_fs(0o750)), "pstore"),
-        b"bpf" => (fresh(TmpInode::new_fs(0o700)), "bpf"),
+        b"bpf" => (fresh(crate::bpf::new_fs(mode.unwrap_or(0o1777))), "bpf"),
         b"configfs" => (fresh(TmpInode::new_fs(0o755)), "configfs"),
         b"fusectl" => (fresh(TmpInode::new_fs(0o755)), "fusectl"),
         b"functionfs" => (fresh(TmpInode::new_fs(0o755)), "functionfs"),

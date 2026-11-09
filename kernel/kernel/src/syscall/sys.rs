@@ -535,6 +535,11 @@ pub fn sys_rt_sigqueueinfo(tgid: i32, tid: i32, sig: u32, uinfo: u64) -> KResult
 static HOSTNAME: spin::Mutex<alloc::vec::Vec<u8>> = spin::Mutex::new(alloc::vec::Vec::new());
 static DOMAINNAME: spin::Mutex<alloc::vec::Vec<u8>> = spin::Mutex::new(alloc::vec::Vec::new());
 
+/// uname's release. Android 16's GKI is 6.12 (an LTS branch, so
+/// netbpfload's and libbpf's version checks enable every eBPF feature it
+/// expects); the suffix tells the tests they run on this kernel.
+pub const UTS_RELEASE: &str = "6.12.0-android-pc";
+
 /// uname's nodename and domainname ("android-pc" / "(none)" until set).
 pub fn uts_names() -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>) {
     let h = HOSTNAME.lock().clone();

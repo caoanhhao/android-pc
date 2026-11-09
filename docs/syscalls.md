@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a/C3b Android init and daemons)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a/C3b/C3c Android init, daemons and eBPF)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -71,8 +71,8 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 61 | wait4 | yes | pid > 0, -1, 0, < -1; WNOHANG; ECHILD; rusage zeroed |
 | 103 | syslog | yes | on the kernel log buffer (see [Kernel log](#kernel-log-c3b)): READ (destructive, blocking, shared with /proc/kmsg), READ_ALL and READ_CLEAR (`<N>[sec.usec] text` lines since the last CLEAR, newest that fit), CLEAR, SIZE_UNREAD, SIZE_BUFFER; CONSOLE_OFF/ON/LEVEL accepted |
 | 62 | kill | yes | pid > 0, 0 (group), -1, < -1; sig 0 = existence check |
-| 63 | uname | yes | Linux / 6.6.0-android-pc / x86_64 |
-| 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed), F_ADD_SEALS/F_GET_SEALS on tmpfs/memfd files (SEAL, SHRINK, GROW, WRITE, FUTURE_WRITE, EXEC; tmpfs files and memfds without MFD_ALLOW_SEALING start with F_SEAL_SEAL; EPERM for a read-only fd or after F_SEAL_SEAL, EBUSY for F_SEAL_WRITE while a shared mapping could write; EINVAL on other files); record locks (F_SETLK*, F_OFD_*) always granted, F_GETLK says unlocked |
+| 63 | uname | yes | Linux / 6.12.0-android-pc / x86_64 (6.12: Android 16's GKI, an LTS netbpfload accepts; also /proc/version and kernel.osrelease) |
+| 72 | fcntl | yes | F_DUPFD(_CLOEXEC), F_GETFD/SETFD, F_GETFL/SETFL (O_APPEND, O_NONBLOCK, O_DIRECT, O_NOATIME, O_ASYNC), F_GETPIPE_SZ/SETPIPE_SZ (64 KiB fixed), F_ADD_SEALS/F_GET_SEALS on tmpfs/memfd files (SEAL, SHRINK, GROW, WRITE, FUTURE_WRITE, EXEC; tmpfs files and memfds without MFD_ALLOW_SEALING start with F_SEAL_SEAL; EPERM for a read-only fd or after F_SEAL_SEAL, EBUSY for F_SEAL_WRITE while a shared mapping could write; EINVAL on other files); open file description locks (F_OFD_SETLK, F_OFD_SETLKW, F_OFD_GETLK: real byte-range read/write locks per inode, released when the description is closed; EAGAIN on conflict, EBADF for a read lock on a write-only fd or the reverse, l_pid must be 0); classic record locks (F_SETLK, F_SETLKW) always granted, F_GETLK says unlocked |
 | 73 | flock | stub | 0 for a valid fd (no locking) |
 | 74 | fsync | stub | 0 (everything is in memory) |
 | 75 | fdatasync | stub | 0 |
@@ -138,7 +138,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 160 | setrlimit | yes | = prlimit64(0) |
 | 161 | chroot | partial | one root for everybody: chroot to the current root succeeds (Android's switch_root does `chroot(".")` after moving a mount onto `/`), anything else EPERM |
 | 162 | sync | stub | 0 |
-| 165 | mount | partial | tmpfs, ramfs (`mode=` option; uid=/gid= ignored), proc (`hidepid=` ignored), sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored), selinuxfs, devpts and sysfs (single shared instances), cgroup2 and cgroup (v1, controllers from the options; see cgroups below), tracefs/debugfs/pstore/bpf/configfs/fusectl/functionfs (empty instances); erofs, ext4 (also ext2/ext3) from a block device path or "major:minor", always read-only (MS_RDONLY is forced, with a warning when not asked for), ENOTBLK for a source that is not a block device (toybox mount then sets up a loop device), EINVAL for a bad superblock or unsupported features; MS_BIND (also files; MS_REC copies the mounts below the source; the new mount joins a shared source's peer group); MS_MOVE of a mount root (also onto `/`: the moved mount becomes the namespace's root; ELOOP below itself); MS_SHARED and MS_PRIVATE (MS_SLAVE and MS_UNBINDABLE act as private), with MS_REC for the whole subtree: see [Mount namespaces](#mount-namespaces-and-propagation-c3b); MS_REMOUNT accepted as a no-op; other types ENODEV. Every change wakes pollers of /proc/mounts (POLLPRI\|POLLERR once) |
+| 165 | mount | partial | tmpfs, ramfs (`mode=` option; uid=/gid= ignored), proc (`hidepid=` ignored), sysfs, devtmpfs, binder (binderfs; options like `stats=global` ignored), selinuxfs, devpts and sysfs (single shared instances), cgroup2 and cgroup (v1, controllers from the options; see cgroups below), bpf (a bpffs for pinning, see [eBPF](#ebpf-c3c)), tracefs/debugfs/pstore/configfs/fusectl/functionfs (empty instances); erofs, ext4 (also ext2/ext3) from a block device path or "major:minor", always read-only (MS_RDONLY is forced, with a warning when not asked for), ENOTBLK for a source that is not a block device (toybox mount then sets up a loop device), EINVAL for a bad superblock or unsupported features; MS_BIND (also files; MS_REC copies the mounts below the source; the new mount joins a shared source's peer group); MS_MOVE of a mount root (also onto `/`: the moved mount becomes the namespace's root; ELOOP below itself); MS_SHARED and MS_PRIVATE (MS_SLAVE and MS_UNBINDABLE act as private), with MS_REC for the whole subtree: see [Mount namespaces](#mount-namespaces-and-propagation-c3b); MS_REMOUNT accepted as a no-op; other types ENODEV. Every change wakes pollers of /proc/mounts (POLLPRI\|POLLERR once) |
 | 166 | umount2 | yes | EBUSY with mounts below; EINVAL if not a mount root; UMOUNT_NOFOLLOW; propagates to the copies in peer mounts. Lazy: files still open keep the file system (and its device's holder count) alive |
 | 169 | reboot | yes | POWER_OFF/HALT (ACPI PM1a / isa-debug-exit), RESTART, RESTART2 (the reason string is logged) |
 | 170 | sethostname | yes | uname's nodename (default "android-pc"; also /proc/sys/kernel/hostname); setdomainname (171) likewise |
@@ -215,6 +215,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
 | 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
+| 321 | bpf | partial | maps, programs (stored, never run), BTF, links, pinning: see [eBPF](#ebpf-c3c) |
 | 326 | copy_file_range | yes | regular files (EINVAL otherwise, EISDIR for directories), optional offset pointers, flags must be 0 |
 | 332 | statx | yes | basic stats (STATX_BASIC_STATS, no btime) |
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
@@ -619,6 +620,59 @@ closed (after one was opened): master reads EIO, POLLHUP.
   [android-init.md](android-init.md)); kernel/uevent_seqnum, fs/selinux,
   fs/cgroup and the other mount points.
 
+## eBPF (C3c)
+
+bpf(2) takes `union bpf_attr` up to its `size` (zero-extended). Commands:
+
+- MAP_CREATE: HASH, ARRAY, PROG_ARRAY, PERF_EVENT_ARRAY, PERCPU_HASH,
+  PERCPU_ARRAY, STACK_TRACE, CGROUP_ARRAY, LRU_HASH, LRU_PERCPU_HASH,
+  LPM_TRIE (needs BPF_F_NO_PREALLOC), ARRAY_OF_MAPS / HASH_OF_MAPS (inner
+  map fd checked), DEVMAP / DEVMAP_HASH (BPF_F_RDONLY_PROG added, as
+  Linux does), SOCKMAP, CPUMAP, XSKMAP, SOCKHASH, CGROUP_STORAGE,
+  SK/INODE/TASK/CGRP_STORAGE (max_entries 0, NO_PREALLOC), RINGBUF
+  (key and value 0, max_entries a power-of-2 number of pages); other
+  types and unknown flags EINVAL. Array keys are 4 bytes. Names: up to
+  15 of [A-Za-z0-9_.]. btf_fd with key/value type ids must be a BTF fd.
+- MAP_LOOKUP_ELEM, UPDATE_ELEM (BPF_ANY / NOEXIST -> EEXIST / EXIST ->
+  ENOENT, BPF_F_LOCK accepted), DELETE_ELEM (EINVAL for arrays),
+  LOOKUP_AND_DELETE_ELEM, GET_NEXT_KEY (NULL or a missing key -> first
+  key; ENOENT after the last), MAP_FREEZE (then updates EPERM). Arrays:
+  ENOENT / E2BIG past max_entries; a full hash E2BIG, a full LRU map
+  evicts its least recently used key. Per-CPU values are
+  round_up(value_size, 8) times the number of possible CPUs. Lookups need
+  a readable fd, changes a writable one (EPERM). mmap: ARRAY with
+  BPF_F_MMAPABLE (shared with lookup/update; no PROT_WRITE MAP_SHARED
+  after freeze) and RINGBUF; other maps ENODEV.
+- PROG_LOAD: types 1..32, 1..2^20 instructions, license (GPL-compatible
+  ones set the gpl bit), name, prog_btf_fd; maps referenced by ld_imm64
+  BPF_PSEUDO_MAP_FD / MAP_VALUE are held by the program (EBADF for a bad
+  fd). No verification: every program loads, an empty log is returned.
+- OBJ_PIN / OBJ_GET (file_flags BPF_F_RDONLY / WRONLY / BPF_F_PATH_FD):
+  pinning only inside a bpffs (EPERM elsewhere).
+- PROG_ATTACH / PROG_DETACH (flags ALLOW_OVERRIDE, ALLOW_MULTI, REPLACE)
+  and PROG_QUERY (prog_cnt and ids; ENOSPC when the array is short) on
+  any fd (cgroup directories, sockets); LINK_CREATE, LINK_DETACH,
+  RAW_TRACEPOINT_OPEN: link fds. PROG_BIND_MAP. Nothing is ever run.
+- PROG/MAP/BTF/LINK_GET_NEXT_ID and _GET_FD_BY_ID (MAP: open_flags
+  RDONLY/WRONLY), ENOENT past the last id or for a freed object.
+- OBJ_GET_INFO_BY_FD: bpf_map_info, bpf_prog_info (type, id, tag, the
+  instructions as jited and xlated image with their lengths, load time,
+  uid, map ids, name, gpl, btf id, verified_insns), bpf_btf_info (blob,
+  size, id, empty name), bpf_link_info (type, id, prog id). A caller's
+  struct longer than the kernel's must be zero past it (E2BIG); info_len
+  is set to what was written.
+- BTF_LOAD: magic 0xeb9f, version 1, header and section bounds checked;
+  BTF_GET_FD_BY_ID, BTF_GET_NEXT_ID. ENABLE_STATS gives an fd (no stats).
+- PROG_TEST_RUN EOPNOTSUPP; batch operations, iterators, tokens, struct_ops
+  EINVAL.
+
+Files show as `anon_inode:bpf-map` / `bpf-prog` / `btf` / `bpf_link` with
+Linux-style fdinfo (map_type, key_size, ..., map_id; prog_type, prog_tag,
+prog_id). bpffs nodes are regular files (mode 0600 & ~umask) handled like
+tmpfs files by chmod, chown, rename and unlink; open(2) of one is EIO.
+/proc/sys/net/core/bpf_jit_enable (1), bpf_jit_harden, bpf_jit_kallsyms,
+bpf_jit_limit and kernel/unprivileged_bpf_disabled (2) are stored sysctls.
+
 ## Signals: what is delivered how
 
 - Delivery happens on every return to user mode (syscall exit, interrupt,
@@ -680,10 +734,16 @@ closed (after one was opened): master reads EIO, POLLHUP.
   ENOSYS), a pty line discipline, key permissions and quotas, seccomp
   filters (accepted, not applied), a persistent /data (see
   [android-init.md](android-init.md)).
-- **C3b leftovers**: eBPF (the bpf() syscall, maps, programs, bpffs
-  pinning: netbpfload fails and init reboots, see
-  [android-init.md](android-init.md)), NETLINK_AUDIT (logd's auditd
+- **C3b leftovers**: NETLINK_AUDIT (logd's auditd
   gets the stub), lmkd's process_mrelease (448), pidfd_open (434),
   timer_create (222), settimeofday (164), /dev/kmsg EPIPE on lost
   records, the mq/ and slaves/ entries of dm devices.
+- **C3c leftovers (eBPF)**: running programs (no verifier, JIT or
+  interpreter: socket filters, cgroup hooks, tracepoints and uprobes
+  never fire, ring buffers stay empty), kernel BTF
+  (/sys/kernel/btf/vmlinux: CO-RE objects such as timeInState.bpf fail),
+  fuse-bpf (/sys/fs/fuse/bpf_prog_type_fuse), map batch operations,
+  bpf iterators and tokens, permission checks (CAP_BPF,
+  unprivileged_bpf_disabled are not enforced). userfaultfd (323) is
+  missing (ART's GC).
 - Later: rseq, clone3, io_uring (not used by AOSP).

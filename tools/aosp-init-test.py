@@ -14,7 +14,10 @@ must run getprop and setprop, and show the core daemons at work: coldboot
 done and ueventd's device permissions, servicemanager's services
 (`service list`), logd (`logcat -d`, the kernel log through klogd,
 `dmesg`), daemons under their own uids, keystore2 running, the tmpfs
-/data. Commands are typed into it and checked like aosp-sh-test.py does.
+/data, and (C3c) eBPF: the bpf loaders finished (bpf.progs_loaded=1),
+their objects are pinned in bpffs, netd's bpf setup worked and init did
+not reboot. Commands are typed into it and checked like aosp-sh-test.py
+does.
 
 Usage: aosp-init-test.py [--boot-timeout SECS] [--timeout SECS] [--log FILE]
                          [--run CMD]... -- qemu-system-x86_64 ARGS...
@@ -52,6 +55,12 @@ MILESTONES = [
     ("post-fs-data", rb"init: processing action \(post-fs-data\)"),
     ("default mount namespace", rb"init: Switched to default mount namespace"),
     ("apexd activated", rb"init: Wait for property 'apexd.status=activated' took"),
+    # C3c: eBPF. netbpfload (tethering APEX, libbpf) loads the network
+    # programs, execs the platform bpfloader, which execs it back to set
+    # bpf.progs_loaded; init then starts netd.
+    ("load-bpf-programs", rb"init: processing action \(load-bpf-programs\)"),
+    ("netbpfload done", rb"NetBpfLoad: success\."),
+    ("bpf-progs-loaded", rb"init: processing action \(bpf-progs-loaded\)"),
 ]
 
 # Commands for init's console shell: (command, regexes).
@@ -91,6 +100,18 @@ CHECKS = [
     # /metadata and /data: tmpfs on the RAM disks, filled by post-fs-data.
     ("toybox grep -E ' /data | /metadata ' /proc/mounts; ls -d /data/misc/keystore",
      [r"/dev/block/ram0 /metadata tmpfs", r"/dev/block/ram1 /data tmpfs", r"^/data/misc/keystore\r?$"]),
+    # eBPF (C3c): the loaders finished, their maps and programs are pinned
+    # in bpffs, netd's bpf setup (libnetd_updatable) worked on them, and
+    # init did not reboot (no "reboot,bpfloader-failed"): still up 10 s on.
+    ("getprop bpf.progs_loaded; getprop init.svc.bpfloader; ls -d /sys/fs/bpf/netd_shared/mainline_done",
+     [r"^1\r?$", r"^stopped\r?$", r"^/sys/fs/bpf/netd_shared/mainline_done\r?$"]),
+    ("toybox grep -E ' /sys/fs/bpf ' /proc/mounts; ls /sys/fs/bpf/netd_shared | toybox grep -c '^map_netd_';"
+     " ls /sys/fs/bpf/netd_shared | toybox grep -c '^prog_netd_'; ls -l /sys/fs/bpf/netd_shared/map_netd_cookie_tag_map",
+     [r"^bpf /sys/fs/bpf bpf ", r"^[1-9]\d\r?$", r"^[1-9]\d?\r?$", r"^-rw-rw---- +1 root +net_bw_acct +0 .*map_netd_cookie_tag_map"]),
+    ("i=0; while [ $i -lt 40 ] && ! logcat -d | toybox grep -q 'libnetd_updatable_init success'; do sleep 0.5; i=$((i+1)); done;"
+     " logcat -d | toybox grep -c 'libnetd_updatable_init success'", [r"^[1-9]\d*\r?$"]),
+    ("sleep 10; echo powerctl=$(getprop sys.powerctl); echo still-up",
+     [r"^powerctl=\r?$", r"^still-up\r?$"]),
 ]
 
 

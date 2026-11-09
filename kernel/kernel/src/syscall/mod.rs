@@ -8,6 +8,7 @@
 //!
 //! Booting with `strace` on the kernel command line logs every syscall.
 
+pub mod bpf;
 pub mod fs;
 pub mod keys;
 pub mod net;
@@ -256,6 +257,7 @@ pub mod nr {
     pub const RENAMEAT2: u64 = 316;
     pub const GETRANDOM: u64 = 318;
     pub const MEMFD_CREATE: u64 = 319;
+    pub const BPF: u64 = 321;
     pub const MLOCK2: u64 = 325;
     pub const COPY_FILE_RANGE: u64 = 326;
     pub const STATX: u64 = 332;
@@ -489,6 +491,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::SIGNALFD => poll::sys_signalfd4(i0, a1, a2, 0),
         nr::SIGNALFD4 => poll::sys_signalfd4(i0, a1, a2, a3 as u32),
         nr::GETRANDOM => sys_getrandom(a0, a1, a2 as u32),
+        nr::BPF => bpf::sys_bpf(a0 as u32, a1, a2 as u32),
         nr::GETRLIMIT => sys::sys_getrlimit(a0 as u32, a1),
         nr::SETRLIMIT => sys::sys_setrlimit(a0 as u32, a1),
         nr::PRLIMIT64 => sys::sys_prlimit64(i0, a1 as u32, a2, a3),
@@ -600,6 +603,11 @@ fn mmap_file(f: &Arc<OpenFile>, addr: u64, len: u64, p: u32, shared: bool, fixed
         return Err(EACCES);
     }
     let meta = f.inode.meta();
+    let pgoff = off / crate::mm::PAGE_SIZE;
+    if let Some(obj) = f.ops.mmap_shmem(f, shared && p & PROT_WRITE != 0)? {
+        let backing = Backing { obj, pgoff, file: Some(f.clone()) };
+        return current().mm().mmap_object(addr, len, p, shared, f.writable(), backing, fixed, noreplace);
+    }
     let obj = match meta.mode() & S_IFMT {
         S_IFREG => f.inode.shmem().ok_or(ENODEV)?,
         S_IFCHR if (dev_major(meta.rdev), dev_minor(meta.rdev)) == (1, 5) => {
@@ -608,7 +616,6 @@ fn mmap_file(f: &Arc<OpenFile>, addr: u64, len: u64, p: u32, shared: bool, fixed
         S_IFCHR => return f.ops.mmap(f, addr, len, p, fixed, noreplace, off),
         _ => return Err(ENODEV),
     };
-    let pgoff = off / crate::mm::PAGE_SIZE;
     if pgoff.checked_add(len.div_ceil(crate::mm::PAGE_SIZE)).is_none_or(|e| e > i64::MAX as u64 / crate::mm::PAGE_SIZE) {
         return Err(EOVERFLOW);
     }
@@ -645,7 +652,7 @@ fn sys_uname(buf: u64) -> KResult<u64> {
     let fields: [&[u8]; 6] = [
         b"Linux",
         &host,
-        b"6.6.0-android-pc",
+        sys::UTS_RELEASE.as_bytes(),
         concat!("#1 SMP android-pc ", env!("CARGO_PKG_VERSION")).as_bytes(),
         b"x86_64",
         &domain,

@@ -67,6 +67,8 @@ enum Kind {
     /// Device node, FIFO or socket: only metadata.
     Special,
     Pseudo(Arc<dyn PseudoFile>),
+    /// A pinned kernel object (bpffs: a bpf map, program, link or BTF).
+    Object(Arc<dyn Any + Send + Sync>),
 }
 
 pub struct TmpInode {
@@ -93,6 +95,30 @@ impl TmpInode {
             old.meta.inc_nlink(-1);
         }
         Ok(node)
+    }
+
+    /// Add `name` holding the kernel object `obj` (bpffs pinning); the
+    /// node is a regular file with mode `perm`. EEXIST if `name` exists.
+    pub fn add_object(&self, name: &[u8], perm: u32, obj: Arc<dyn Any + Send + Sync>) -> KResult<Arc<TmpInode>> {
+        if name.len() > NAME_MAX {
+            return Err(ENAMETOOLONG);
+        }
+        let mut children = self.dir()?.lock();
+        if children.contains_key(name) {
+            return Err(EEXIST);
+        }
+        let node = Self::new(self.meta.dev, S_IFREG | (perm & 0o7777), 0, Kind::Object(obj));
+        children.insert(name.to_vec(), node.clone());
+        self.meta.touch_mtime();
+        Ok(node)
+    }
+
+    /// The object a bpffs node holds (see [`TmpInode::add_object`]).
+    pub fn object(&self) -> Option<&Arc<dyn Any + Send + Sync>> {
+        match &self.kind {
+            Kind::Object(o) => Some(o),
+            _ => None,
+        }
     }
 
     /// An unnamed file for memfd_create, with seals `seals` (F_SEAL_SEAL
@@ -209,7 +235,7 @@ impl Inode for TmpInode {
             Kind::File(d) => d.size(),
             Kind::Symlink(t) => t.len() as u64,
             Kind::Dir(_) | Kind::Pseudo(_) => 4096,
-            Kind::Special => 0,
+            Kind::Special | Kind::Object(_) => 0,
         }
     }
 
@@ -378,6 +404,8 @@ impl Inode for TmpInode {
     fn open(&self, _flags: u32) -> KResult<Option<alloc::boxed::Box<dyn super::file::FileOps>>> {
         match &self.kind {
             Kind::Pseudo(obj) => Ok(Some(alloc::boxed::Box::new(PseudoOps { obj: obj.clone(), buf: Mutex::new(obj.read()) }))),
+            // Pinned bpf objects are opened with BPF_OBJ_GET, not open(2).
+            Kind::Object(_) => Err(EIO),
             _ => Ok(None),
         }
     }

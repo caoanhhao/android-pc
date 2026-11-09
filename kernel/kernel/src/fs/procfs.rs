@@ -933,7 +933,7 @@ fn global(g: Global) -> String {
                 ("AnonPages", total - free),
                 ("Mapped", 0),
                 ("Shmem", 0),
-                ("Slab", 0),
+                ("Slab", crate::mm::heap::stats().0 / 1024),
                 ("CommitLimit", total),
                 ("VmallocTotal", 34359738367),
             ];
@@ -985,7 +985,8 @@ fn global(g: Global) -> String {
         Global::Version => {
             let _ = writeln!(
                 s,
-                "Linux version 6.6.0-android-pc (android-pc) #1 SMP android-pc {}",
+                "Linux version {} (android-pc) #1 SMP android-pc {}",
+                crate::syscall::sys::UTS_RELEASE,
                 env!("CARGO_PKG_VERSION")
             );
         }
