@@ -424,7 +424,7 @@ pub struct BpfFile {
 }
 
 impl FileOps for BpfFile {
-    fn mmap_shmem(&self, _file: &OpenFile, shared_write: bool) -> KResult<Option<Arc<Shmem>>> {
+    fn mmap_shmem(&self, _file: &OpenFile, shared_write: bool, pgoff: u64) -> KResult<Option<(Arc<Shmem>, u64)>> {
         let BpfObj::Map(m) = &self.obj else { return Err(ENODEV) };
         let mmapable = match m.ty {
             map::BPF_MAP_TYPE_ARRAY => m.flags & map::BPF_F_MMAPABLE != 0,
@@ -437,7 +437,7 @@ impl FileOps for BpfFile {
         if shared_write && (*m.frozen.lock() || m.flags & map::BPF_F_RDONLY_PROG != 0 && m.ty != map::BPF_MAP_TYPE_RINGBUF) {
             return Err(EPERM);
         }
-        Ok(m.data.lock().shmem().cloned())
+        Ok(m.data.lock().shmem().cloned().map(|s| (s, pgoff)))
     }
 
     fn poll(&self, _file: &OpenFile) -> u32 {

@@ -386,6 +386,15 @@ impl Shmem {
         Ok(())
     }
 
+    /// Allocate every page of the object and return their frames in
+    /// order (the object keeps its references: device buffers whose pages
+    /// a device reads, e.g. virtio-gpu backing).
+    pub fn populate(&self) -> KResult<Vec<PhysFrame>> {
+        let mut inner = self.inner.lock();
+        let n = inner.size.div_ceil(PAGE_SIZE);
+        (0..n).map(|i| inner.page(i, true)).collect()
+    }
+
     /// Whether page `idx` is in the cache (mincore).
     pub fn has_page(&self, idx: u64) -> bool {
         self.inner.lock().pages.contains_key(&idx)

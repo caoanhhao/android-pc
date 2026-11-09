@@ -253,6 +253,9 @@ pub fn file_path(f: &OpenFile) -> Vec<u8> {
     if let Some(p) = &f.path {
         return vfs::path_of(p);
     }
+    if let Some(name) = f.ops.link_name() {
+        return name;
+    }
     if let Some(name) = f.ops.anon_name() {
         return format!("anon_inode:{name}").into_bytes();
     }

@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -744,6 +744,70 @@ tmpfs files by chmod, chown, rename and unlink; open(2) of one is EIO.
 /proc/sys/net/core/bpf_jit_enable (1), bpf_jit_harden, bpf_jit_kallsyms,
 bpf_jit_limit and kernel/unprivileged_bpf_disabled (2) are stored sysctls.
 
+## Graphics (D1)
+
+Device nodes (ueventd creates them from the sysfs uevents; devtmpfs has
+them too): `/dev/dri/card0` (226:0), `/dev/dri/renderD128` (226:128),
+`/dev/dma_heap/system` (249:0); sw_sync at
+`/sys/kernel/debug/sync/sw_sync` (10:250). Design in
+[kernel-architecture.md](kernel-architecture.md#graphics-driversvirtiogpurs-driversdrm-driversdma_buf-d1).
+
+DRM (driver `virtio_gpu` 0.1.0, unique `0000:00:02.0`), ioctl structs as
+in `drm.h` / `drm_mode.h`, any struct size accepted (zero-padded):
+
+- Core: VERSION, GET_UNIQUE, GET_MAGIC / AUTH_MAGIC (always
+  authenticated), SET_VERSION (1.4), GET_CAP (DUMB_BUFFER 1, PRIME 3,
+  TIMESTAMP_MONOTONIC 1, PREFERRED_DEPTH 24, CURSOR 64x64,
+  CRTC_IN_VBLANK_EVENT 1, VBLANK_HIGH_CRTC 1, the rest 0; render nodes
+  only the non-KMS ones), SET_CLIENT_CAP (STEREO_3D, UNIVERSAL_PLANES,
+  ATOMIC 1/2 — implies universal planes —, ASPECT_RATIO; WRITEBACK and
+  CURSOR_PLANE_HOTSPOT EINVAL), SET/DROP_MASTER, WAIT_VBLANK (relative /
+  absolute, EVENT delivered at once), CRTC_GET_SEQUENCE.
+- GEM: CREATE_DUMB (8/16/24/32 bpp, pitch = width * bytes, up to
+  16384x16384 and 1 GiB), MAP_DUMB / VIRTGPU_MAP (fake offset from 4 GiB
+  up; mmap of the DRM fd at it, from any file holding a handle),
+  DESTROY_DUMB / GEM_CLOSE (EINVAL for unknown handles), PRIME
+  HANDLE_TO_FD (DRM_CLOEXEC | DRM_RDWR) and FD_TO_HANDLE (EINVAL for
+  non-dma-buf fds; the same buffer keeps its handle in a file). FLINK /
+  GEM_OPEN: ENODEV.
+- KMS (card0 only, else EACCES): GETRESOURCES (the file's framebuffers,
+  CRTC, connector, encoder), GETCRTC / SETCRTC, GETENCODER (VIRTUAL),
+  GETCONNECTOR (VIRTUAL-1, connected, one 60 Hz preferred mode of the
+  scanout size, size in mm from the EDID), GETPLANERESOURCES (the primary
+  plane with UNIVERSAL_PLANES), GETPLANE (formats XRGB/ARGB/XBGR/ABGR/
+  BGRX/BGRA/RGBX/RGBA8888), GETPROPERTY, OBJ_GETPROPERTIES /
+  OBJ_SETPROPERTY (atomic-only properties hidden without the ATOMIC
+  cap), SETPROPERTY (connector), GETPROPBLOB / CREATEPROPBLOB /
+  DESTROYPROPBLOB, ADDFB (32/24, 32/32) / ADDFB2 (linear only) / GETFB /
+  GETFB2 / RMFB (a shown framebuffer turns plane and CRTC off), DIRTYFB,
+  PAGE_FLIP (+ EVENT; ASYNC EINVAL), SETPLANE, ATOMIC (TEST_ONLY,
+  NONBLOCK, ALLOW_MODESET, PAGE_FLIP_EVENT; EINVAL without the ATOMIC
+  cap). Properties: plane `type` (Primary), FB_ID, IN_FENCE_FD, CRTC_ID,
+  CRTC_X/Y/W/H, SRC_X/Y/W/H; CRTC ACTIVE, MODE_ID, OUT_FENCE_PTR,
+  VRR_ENABLED; connector EDID, DPMS, link-status, non-desktop, CRTC_ID.
+  CURSOR / CURSOR2 ENXIO, gamma size 0.
+- virtgpu: GETPARAM (3D_FEATURES 0, CAPSET_QUERY_FIX 1, RESOURCE_BLOB /
+  HOST_VISIBLE / CROSS_DEVICE / CONTEXT_INIT / SUPPORTED_CAPSET_IDs 0,
+  others EINVAL), RESOURCE_INFO, WAIT (no-op), MAP; EXECBUFFER,
+  RESOURCE_CREATE(_BLOB), TRANSFER_*, GET_CAPS, CONTEXT_INIT: ENOSYS.
+- read() returns queued `drm_event_vblank`s (FLIP_COMPLETE, VBLANK);
+  poll POLLIN while events are queued.
+
+dma-buf fds: mmap (MAP_SHARED pages shared with every mapping and with
+the GPU), lseek SEEK_END = size, DMA_BUF_IOCTL_SYNC (flags checked),
+DMA_BUF_SET_NAME_A/B, EXPORT_SYNC_FILE (signalled) / IMPORT_SYNC_FILE,
+poll always ready, `/dmabuf:NAME` in /proc/<pid>/fd, fdinfo with
+`size`, `count`, `exp_name`, `name`. dma-heap: DMA_HEAP_IOCTL_ALLOC
+(fd_flags O_RDWR/O_CLOEXEC, heap_flags 0).
+
+sync_file fds (`anon_inode:sync_file`): SYNC_IOC_MERGE (one fence per
+context, the later point), SYNC_IOC_FILE_INFO (status 1 / 0 / -errno,
+per-fence obj/driver names, status, timestamp; num_fences smaller than
+the count is EINVAL), SYNC_IOC_SET_DEADLINE (accepted), poll/epoll
+POLLIN once signalled. sw_sync: SW_SYNC_IOC_CREATE_FENCE,
+SW_SYNC_IOC_INC; closing the timeline signals pending fences with
+-ENOENT.
+
 ## Signals: what is delivered how
 
 - Delivery happens on every return to user mode (syscall exit, interrupt,
@@ -817,4 +881,11 @@ bpf_jit_limit and kernel/unprivileged_bpf_disabled (2) are stored sysctls.
   bpf iterators and tokens, permission checks (CAP_BPF,
   unprivileged_bpf_disabled are not enforced). userfaultfd (323) is
   missing (ART's GC).
+- **D1 leftovers (graphics)**: virgl / 3D, blob resources and host-visible
+  memory, the cursor plane, interrupt-driven virtio-gpu (commands are
+  polled, commits synchronous, so fences are always signalled at once and
+  NONBLOCK commits block), real vblank interrupts (a 60 Hz counter is
+  emulated), DRM master enforcement, syncobj, multiple scanouts /
+  hotplug, other dma-heaps (system-uncached, CMA), dma-buf implicit
+  fences.
 - Later: rseq, clone3, io_uring (not used by AOSP).

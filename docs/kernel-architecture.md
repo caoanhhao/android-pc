@@ -1,4 +1,4 @@
-# Kernel architecture (phase C3d state: AOSP init, its core daemons, eBPF loading, netd and adbd over TCP run)
+# Kernel architecture (phase D1 state: AOSP init, its core daemons, netd and adbd run; SurfaceFlinger composites on virtio-gpu)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -25,6 +25,10 @@ tools/run-qemu.sh --aosp-disk-test  # AOSP super.img as a read-only virtio disk:
 tools/run-qemu.sh --aosp-init     # unmodified AOSP /init (init_boot ramdisk + super.img): first and
                                   # second stage, rc triggers, console shell; see android-init.md
 tools/run-qemu.sh --aosp-init-test  # the same, boot milestones and getprop/setprop checked
+tools/run-qemu.sh --aosp-gfx-test  # the same boot with a virtio-gpu: graphics HALs, surfaceflinger,
+                                  # adb screencap and a QEMU screendump checked (see android-init.md)
+tools/run-qemu.sh --gpu [--gpu-size WxH] [--display vnc=:1] [--monitor SOCK]
+                                  # virtio-gpu-pci at 00:02.0 (default for --ktest / --aosp-gfx-test)
 tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
                                   # (PCI slots 00:04.0, 00:05.0, ... in order)
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
@@ -105,7 +109,11 @@ kernel/
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); pci (config space, enumeration); virtio/
-                       (transports + virtqueues, blk, net); later gpu, dma-buf, ...
+                       (transports + virtqueues, blk, net, gpu); drm/ (DRM device
+                       on virtio-gpu: mod = files, GEM, ioctls; kms = mode
+                       objects, properties, atomic state); dma_buf/ (buffers,
+                       dma-buf files, the system dma-heap; sync_file = fences,
+                       sync files, sw_sync)
 ```
 
 Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
@@ -788,6 +796,72 @@ C and Rust drivers were semantic references; the code is new.
   delivery -> BR_CLEAR_DEATH_NOTIFICATION_DONE, on the clearing thread if it
   is a looper). They are process work, so only loopers receive them.
 
+## Graphics (`drivers/virtio/gpu.rs`, `drivers/drm/`, `drivers/dma_buf/`, D1)
+
+What AOSP's cuttlefish graphics stack in `guest_swiftshader` mode needs
+(minigbm's 2D virtio_gpu backend, the ranchu HWC3 composer on DRM,
+SurfaceFlinger with ANGLE over SwiftShader): the user-visible behaviour
+is in [syscalls.md](syscalls.md#graphics-d1).
+
+- **virtio-gpu** (`drivers/virtio/gpu.rs`): 2D only (no virgl, blobs or
+  cursor queue), F_EDID negotiated. One control queue, polled like
+  virtio-blk, one command at a time from a 16-page request buffer (header
+  + up to ~4000 backing entries; physically contiguous pages are merged
+  into one entry) and a response page. GET_DISPLAY_INFO and GET_EDID at
+  probe; RESOURCE_CREATE_2D + ATTACH_BACKING, SET_SCANOUT,
+  TRANSFER_TO_HOST_2D + RESOURCE_FLUSH, DETACH_BACKING + UNREF for the
+  DRM driver. The first device (PCI 00:02.0 from run-qemu.sh) is used.
+- **Buffers** (`dma_buf::Buffer`): a shmem object whose pages are all
+  allocated at creation (`Shmem::populate`, so the physical addresses
+  can go to the device), the size, exporter name, a dma-buf name, one
+  anonymous inode for every dma-buf file of it, a weak pointer to its
+  open dma-buf file (re-exporting returns it, as Linux's dma_buf->file)
+  and the DRM fake mmap offset. Dumb buffers, PRIME imports and dma-heap
+  allocations are all Buffers, so any of them can be a framebuffer.
+- **dma-buf files**: mmap maps the shmem object (`FileOps::mmap_shmem`
+  now gets the page offset and returns the object's page index, which is
+  how DRM resolves its fake offsets), lseek(SEEK_END) gives the size,
+  `/proc/<pid>/fd` says `/dmabuf:NAME` (`FileOps::link_name`), fdinfo
+  has size/count/exp_name/name. No caches or implicit fences: SYNC is
+  argument checking, EXPORT_SYNC_FILE returns a signalled fence.
+- **DRM** (`drivers/drm/mod.rs`): minors card0 (226:0) and renderD128
+  (226:128), sysfs class `drm` below the virtio device plus devtmpfs
+  nodes. A `DrmFile` per open: GEM handle table (handle -> `Arc<Buffer>`,
+  one handle per buffer per file), client caps, the event queue (read
+  returns whole `drm_event`s, poll POLLIN) and a wait queue. Ioctls take
+  the caller's struct size from the command and zero-pad / truncate,
+  like Linux's drm_ioctl. The first card0 opener is master
+  (SET/DROP_MASTER bookkeeping only; KMS ioctls do not check it). Render
+  nodes get EACCES for KMS ioctls except the dumb-buffer ones (minigbm
+  allocates through renderD128). The emulated vblank counter runs at 60 Hz
+  from the first query.
+- **KMS** (`drivers/drm/kms.rs`): fixed objects (plane 31, CRTC 32,
+  encoder 33, connector 34), properties 1-20 with Linux's names, flags
+  and ranges, framebuffers and blobs with ids from 40 up, all under one
+  lock with the committed `State` (plane fb/crtc/rects, CRTC active and
+  mode blob, connector CRTC, DPMS). Every path — atomic, SETCRTC,
+  SETPLANE, PAGE_FLIP, OBJ_SETPROPERTY, DIRTYFB, RMFB — builds a new
+  State, checks it (plane fb <-> crtc, source rectangle inside the fb,
+  the primary plane covering the CRTC unscaled, ALLOW_MODESET for
+  modesets, formats) and applies it: the shown framebuffer gets a
+  virtio-gpu resource on first use (width = pitch / 4, backed by the
+  buffer's pages, destroyed with the framebuffer), SET_SCANOUT when the
+  resource or rectangle changes, then TRANSFER_TO_HOST_2D + FLUSH of the
+  rectangle; no framebuffer -> scanout disabled. Commits are synchronous:
+  IN_FENCE_FD fences are waited for before the lock is taken,
+  OUT_FENCE_PTR gets an already signalled sync file, flip events are
+  queued at once. Closing a file removes its framebuffers and blobs (and
+  turns the display off if one was shown).
+- **sync_file** (`drivers/dma_buf/sync_file.rs`): `Fence` = (context,
+  seqno, driver, timeline name, status, timestamp), signalled once; a
+  sync file holds fences and polls POLLIN when all have signalled. Every
+  signal wakes one global wait queue (poll/epoll re-check). sw_sync
+  timelines (open of the misc node 10:250, placed at
+  /sys/kernel/debug/sync/sw_sync) make fences for future values; closing
+  a timeline fails its pending fences with -ENOENT.
+- **dma-heap**: /dev/dma_heap/system (249:0, sysfs class `dma_heap`):
+  DMA_HEAP_IOCTL_ALLOC returns a dma-buf of a new zeroed Buffer.
+
 ## Console tty (`fs/tty.rs`)
 
 A subset of Linux's N_TTY line discipline on COM1. There is no IOAPIC
@@ -939,8 +1013,25 @@ host, where rtnetlink changes, eth0 and iptables are skipped);
 `--ktest` 38/38, `--test` 27/27, `--aosp-sh-test` 15/15,
 `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41 (debug and release) pass.
 
+Phase D1 (graphics, [android-init.md](android-init.md#d1-graphics)):
+virtio-gpu (2D), a DRM device (card0 + renderD128: dumb buffers, PRIME,
+KMS with legacy and atomic modesetting, flip events, fences), dma-buf
+files, the system dma-heap, sync files and sw_sync. With a virtio-gpu,
+AOSP's minigbm allocator, the ranchu HWC3 composer and SurfaceFlinger
+(RenderEngine on ANGLE over SwiftShader) run; the boot animation reaches
+the scanout and `adb shell screencap -p` works. New suites d1_dumb 42,
+d1_kms 83, d1_prime 42 (9 on the host: the dma-heap part), d1_sync 26
+(skipped on the host: sw_sync is in debugfs); `--aosp-gfx-test` 21/21
+checks the stack end to end. `--ktest` 42/42, `--test` 27/27,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
+`--aosp-adb-test` 17/17 pass.
+
 ## Known gaps / next steps
 
+- Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
+  virtio-gpu with asynchronous commits (fences are signalled at once
+  now), a cursor plane, hotplug, `adb exec-out` returning no output
+  (adbd's raw exec service).
 - Android (phase D and later): userfaultfd (ART's GC, see
   android-init.md), kernel BTF for CO-RE bpf objects, a persistent /data
   (ext4 writes or f2fs, then FBE), a real SELinux policy engine, cgroup

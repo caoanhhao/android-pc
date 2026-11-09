@@ -3,13 +3,14 @@
 //! virtqueues.
 //!
 //! Drivers run their queues by polling: interrupts are suppressed
-//! (VRING_AVAIL_F_NO_INTERRUPT). virtio-blk spins on the used ring
-//! (`submit_and_wait`); virtio-net keeps buffers posted (`add`) and
-//! collects them later (`pop_used`).
+//! (VRING_AVAIL_F_NO_INTERRUPT). virtio-blk and virtio-gpu spin on the
+//! used ring (`submit_and_wait`); virtio-net keeps buffers posted (`add`)
+//! and collects them later (`pop_used`).
 //! Ring memory comes straight from the frame allocator (physically
 //! contiguous, reached through the direct map).
 
 pub mod blk;
+pub mod gpu;
 pub mod net;
 
 use core::sync::atomic::{Ordering, fence};
@@ -52,9 +53,10 @@ pub fn init() {
             _ => 0,
         };
         let sysdev = sysfs_device(&d, ty);
-        if ty == 1 || ty == 2 {
+        if ty == 1 || ty == 2 || ty == 16 {
             match Transport::new(&d) {
                 Some(t) if ty == 1 => net::probe(t, sysdev),
+                Some(t) if ty == 16 => gpu::probe(t, sysdev),
                 Some(t) => blk::probe(t, sysdev),
                 None => log::warn!("virtio {:?}: no usable transport", d.addr),
             }
@@ -86,6 +88,7 @@ fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
     let driver = match ty {
         1 => "net",
         2 => "blk",
+        16 => "gpu",
         _ => "unknown",
     };
     let vars = format!("DRIVER=virtio_{driver}\nVIRTIO_ID={ty}\n");

@@ -39,6 +39,13 @@
 #                                     to adbd: tools/aosp-adb-test.py waits
 #                                     for adbd, connects the host adb (its
 #                                     own server) and runs shell commands
+#   tools/run-qemu.sh --aosp-gfx-test the adb test's boot with a virtio-gpu
+#                                     display: tools/aosp-gfx-test.py checks
+#                                     the graphics HALs and surfaceflinger
+#                                     run, takes `adb shell screencap -p`
+#                                     and a QEMU screendump and checks both
+#                                     are not blank (zygote is stopped, it
+#                                     needs userfaultfd: phase D3)
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -54,6 +61,12 @@
 #          unless ",rw" (writes reach FILE) or ",snapshot" (writes go to a
 #          throw-away overlay); ",legacy" makes the device legacy-only
 #          (virtio 0.9 I/O ports) instead of modern.
+#          --gpu (virtio-gpu-pci at 00:02.0, no VGA; default for --ktest
+#          and --aosp-gfx-test), --no-gpu, --gpu-size WxH (scanout size,
+#          default 720x1280), --display none|vnc=:N|gtk|sdl (default none;
+#          the screen can always be saved with the monitor's screendump),
+#          --monitor PATH (QEMU monitor on a unix socket, e.g. for
+#          `echo "screendump out.ppm" | socat - UNIX:PATH`),
 #          --no-net (no network card), --adb-port PORT (forward host
 #          127.0.0.1:PORT to the guest's TCP 5555, adbd; default 15555
 #          for --aosp-init*/--aosp-adb-test, none otherwise),
@@ -70,6 +83,7 @@ KERNEL_DIR="$ROOT/kernel"
 
 mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
+gpu="" gpu_size=720x1280 display=none monitor=""
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -87,6 +101,12 @@ while [[ $# -gt 0 ]]; do
         --disk) disks+=("$2"); shift ;;
         --sh-arg) sh_args+=("$2"); shift ;;
         --no-net) net=0 ;;
+        --gpu) gpu=1 ;;
+        --no-gpu) gpu=0 ;;
+        --gpu-size) gpu_size="$2"; shift ;;
+        --display) display="$2"; shift ;;
+        --monitor) monitor="$2"; shift ;;
+        --aosp-gfx-test) mode=aosp-gfx-test ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -117,6 +137,7 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test ) ]] && gpu=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -136,7 +157,7 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -157,6 +178,14 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ]]
     boot_args+=" brd.rd_nr=2 brd.rd_size=4096"
     boot_args+=" androidboot.hardware.gralloc=minigbm androidboot.hardware.hwcomposer=ranchu"
     boot_args+=" androidboot.hardware.egl=angle androidboot.hardware.vulkan=pastel androidboot.lcd_density=320"
+    # The rest of cuttlefish's --gpu_mode=guest_swiftshader settings
+    # (ranchu composer on DRM, SwiftShader Vulkan under ANGLE).
+    boot_args+=" androidboot.hardware.hwcomposer.display_finder_mode=drm"
+    boot_args+=" androidboot.hardware.hwcomposer.display_framebuffer_format=rgba"
+    boot_args+=" androidboot.opengles.version=196609 androidboot.cpuvulkan.version=4202496"
+    boot_args+=" androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough"
+    boot_args+=" androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting"
+    boot_args+=" androidboot.enable_bootanimation=1"
     boot_args+=" androidboot.setupwizard_mode=DISABLED androidboot.hw_timeout_multiplier=3"
     boot_args+=" androidboot.hypervisor.vm.supported=0 androidboot.hypervisor.protected_vm.supported=0"
     # Cuttlefish picks one of several vendor APEX variants per module
@@ -170,6 +199,8 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ]]
     boot_args+=" $v.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal"
     append="$boot_args $append"
     [[ $timeout == 120 ]] && timeout=300
+    [[ $mode == aosp-gfx-test && $timeout == 300 ]] && timeout=420
+    [[ $mode == aosp-gfx-test && $mem == 2G ]] && mem=4G
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -292,6 +323,17 @@ for i in "${!disks[@]}"; do
            -device "virtio-blk-pci,drive=disk$i,addr=$(printf '0x%x' $((4 + i)))$modern")
 done
 
+if [[ $gpu == 1 ]]; then
+    IFS=x read -r gw gh <<<"$gpu_size"
+    args+=(-vga none -device "virtio-gpu-pci,addr=0x2,xres=$gw,yres=$gh")
+fi
+# Unix socket paths are limited to 107 bytes, too short for $work.
+[[ $mode == aosp-gfx-test && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+if [[ -n $monitor ]]; then
+    rm -f "$monitor"
+    args+=(-monitor "unix:$monitor,server,nowait")
+fi
+
 if [[ $net == 1 ]]; then
     fwd=""
     [[ -n $adb_port ]] && fwd=",hostfwd=tcp:127.0.0.1:$adb_port-:5555"
@@ -301,7 +343,7 @@ fi
 if [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.
     log="$work/ktest.log"
-    args+=(-display none -serial stdio)
+    args+=(-display "$display" -serial stdio)
     set +e
     timeout --foreground "$timeout" qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}" </dev/null | tee "$log"
     code=${PIPESTATUS[0]}
@@ -315,7 +357,7 @@ if [[ $mode == ktest ]]; then
     exit 1
 elif [[ $mode == aosp-test ]]; then
     log="$work/aosp-sh-test.log"
-    args+=(-display none -serial stdio)
+    args+=(-display "$display" -serial stdio)
     if timeout --foreground $((timeout * 3)) python3 "$ROOT/tools/aosp-sh-test.py" --log "$log" "${sh_args[@]}" \
         -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
         exit 0
@@ -324,7 +366,7 @@ elif [[ $mode == aosp-test ]]; then
     exit 1
 elif [[ $mode == aosp-init-test ]]; then
     log="$work/aosp-init-test.log"
-    args+=(-display none -serial stdio)
+    args+=(-display "$display" -serial stdio)
     if timeout --foreground $((timeout + 60)) python3 "$ROOT/tools/aosp-init-test.py" --log "$log" \
         --boot-timeout "$timeout" "${sh_args[@]}" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
         exit 0
@@ -333,15 +375,25 @@ elif [[ $mode == aosp-init-test ]]; then
     exit 1
 elif [[ $mode == aosp-adb-test ]]; then
     log="$work/aosp-adb-test.log"
-    args+=(-display none -serial stdio)
+    args+=(-display "$display" -serial stdio)
     if timeout --foreground $((timeout + 120)) python3 "$ROOT/tools/aosp-adb-test.py" --log "$log" \
         --boot-timeout "$timeout" --port "$adb_port" "${sh_args[@]}" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP adb test FAILED (serial log: $log)" >&2
     exit 1
+elif [[ $mode == aosp-gfx-test ]]; then
+    log="$work/aosp-gfx-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 240)) python3 "$ROOT/tools/aosp-gfx-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --monitor "$monitor" --out "$work/gfx" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP graphics test FAILED (serial log: $log, screenshots: $work/gfx)" >&2
+    exit 1
 elif [[ $mode == test ]]; then
-    args+=(-display none -serial stdio)
+    args+=(-display "$display" -serial stdio)
     set +e
     timeout --foreground "$timeout" qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"
     code=$?
@@ -353,6 +405,6 @@ elif [[ $mode == test ]]; then
         *) echo "run-qemu.sh: QEMU exited with status $code" >&2; exit 1 ;;
     esac
 else
-    args+=(-display none -serial mon:stdio)
+    args+=(-display "$display" -serial mon:stdio)
     exec qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"
 fi
