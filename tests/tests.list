@@ -45,3 +45,8 @@ c3_sysfs
 c3_mntns
 c3_bpf
 c3_net
+# D1: graphics kernel interfaces (DRM/KMS on virtio-gpu, dma-buf, sync_file; skipped without them)
+d1_dumb
+d1_kms
+d1_prime
+d1_sync

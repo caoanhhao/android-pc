@@ -604,7 +604,7 @@ fn mmap_file(f: &Arc<OpenFile>, addr: u64, len: u64, p: u32, shared: bool, fixed
     }
     let meta = f.inode.meta();
     let pgoff = off / crate::mm::PAGE_SIZE;
-    if let Some(obj) = f.ops.mmap_shmem(f, shared && p & PROT_WRITE != 0)? {
+    if let Some((obj, pgoff)) = f.ops.mmap_shmem(f, shared && p & PROT_WRITE != 0, pgoff)? {
         let backing = Backing { obj, pgoff, file: Some(f.clone()) };
         return current().mm().mmap_object(addr, len, p, shared, f.writable(), backing, fixed, noreplace);
     }

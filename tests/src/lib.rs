@@ -19,6 +19,7 @@ use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
+pub mod drm;
 pub mod nr;
 pub mod sys;
 

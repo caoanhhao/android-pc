@@ -19,6 +19,9 @@
 //! | /dev/device-mapper, /dev/mapper/control | 10:236 | dm control (`block::dm`) |
 //! | /dev/loop-control | 10:237    | loop control (`block::loop_dev`)     |
 //! | /dev/hw_random  | 10:183      | random bytes (hw_random, for prng_seeder) |
+//! | /dev/dri/card0, renderD128 | 226:0, 226:128 | DRM (`drivers::drm`) |
+//! | /dev/dma_heap/system | 249:0  | system dma-heap (`drivers::dma_buf`) |
+//! | /sys/kernel/debug/sync/sw_sync | 10:250 | sw_sync timelines (`drivers::dma_buf::sync_file`) |
 //!
 //! Block device nodes (/dev/block/*) open `block::open_blk`.
 //!
@@ -114,6 +117,11 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (5, 0) | (5, 1) | (4, _) => Dev::Console,
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
         (crate::block::MISC_MAJOR, HWRNG_MINOR) => Dev::Random,
+        (crate::block::MISC_MAJOR, crate::drivers::dma_buf::sync_file::SW_SYNC_MINOR) => {
+            return crate::drivers::dma_buf::sync_file::open_sw_sync();
+        }
+        (crate::drivers::drm::DRM_MAJOR, minor) => return crate::drivers::drm::open(minor),
+        (crate::drivers::dma_buf::HEAP_MAJOR, minor) => return crate::drivers::dma_buf::open_heap(minor),
         (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
         _ => return Err(ENXIO),
     };

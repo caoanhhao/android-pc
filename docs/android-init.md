@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d)
+# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -18,7 +18,10 @@ zygote and stays up. Since C3d there is a network (virtio-net, smoltcp's
 TCP/IP, rtnetlink, interface ioctls, stored netfilter tables): netd
 finishes its setup, and adbd listens on TCP port 5555, so `adb connect`
 and `adb shell` from the host work (see
-[How far the boot gets](#how-far-the-boot-gets-c3d)).
+[How far the boot gets](#how-far-the-boot-gets-c3d)). Since D1, with a
+virtio-gpu (`--gpu`), the graphics allocator, the composer and
+SurfaceFlinger run with software rendering and the boot animation is on
+the screen ([D1: graphics](#d1-graphics)).
 
 ## Running it
 
@@ -26,6 +29,8 @@ and `adb shell` from the host work (see
 tools/limited-build.sh tools/run-qemu.sh --aosp-init        # interactive; Ctrl-A X quits QEMU
 tools/limited-build.sh tools/run-qemu.sh --aosp-init-test   # scripted check, exit 0 iff it passes
 tools/limited-build.sh tools/run-qemu.sh --aosp-adb-test    # adb from the host (C3d), exit 0 iff it passes
+tools/limited-build.sh tools/run-qemu.sh --aosp-gfx-test    # graphics (D1), exit 0 iff it passes
+tools/limited-build.sh tools/run-qemu.sh --aosp-init --gpu --mem 4G --display gtk   # watch the screen
 ```
 
 With `--aosp-init` running, adb from the host (any adb; the build's is
@@ -289,6 +294,59 @@ and the services restarting in a loop, init's action queue fell minutes
 behind (adbd started about 4 minutes after `boot`). The file now reads
 the current state at offset 0 and signals POLLPRI|POLLERR when a process
 exits or changes group; adbd starts within about 10-60 s of `boot`.
+
+## D1: graphics
+
+`--gpu` adds `-vga none -device virtio-gpu-pci,addr=0x2,xres=720,yres=1280`
+(`--gpu-size`, `--display`, `--monitor SOCK` for `screendump`). The
+kernel side (virtio-gpu 2D, DRM/KMS, dma-buf, dma-heap, sync_file) is in
+[kernel-architecture.md](kernel-architecture.md#graphics-driversvirtiogpurs-driversdrm-driversdma_buf-d1)
+and [syscalls.md](syscalls.md#graphics-d1). The command line carries the
+androidboot properties cuttlefish's `--gpu_mode=guest_swiftshader` sets
+(read from cvd-1's launcher log): `hardware.gralloc=minigbm`,
+`hardware.hwcomposer=ranchu` with `hwcomposer.display_finder_mode=drm` and
+`display_framebuffer_format=rgba`, `hardware.egl=angle`,
+`hardware.vulkan=pastel` (SwiftShader), `opengles.version=196609`,
+`cpuvulkan.version`, the ANGLE feature overrides, and the ranchu composer
+APEX. What runs on that:
+
+- ueventd creates /dev/dri/card0, /dev/dri/renderD128 (0666 system
+  graphics) and /dev/dma_heap/system from the kernel's sysfs uevents.
+- `vendor.graphics.allocator` (minigbm, from the com.google.cf.gralloc
+  APEX) opens renderD128, sees driver `virtio_gpu` with GETPARAM saying
+  "no 3D, no blobs" and takes its 2D path: every buffer is a dumb buffer
+  (CREATE_DUMB on the render node), handed out as a PRIME dma-buf fd in
+  the gralloc handle; the mapper (in each client) imports it with
+  FD_TO_HANDLE and maps it with MAP_DUMB + mmap.
+- `vendor.hwcomposer-3` (ranchu HWC3) opens card0 (name contains
+  "virtio"), sets UNIVERSAL_PLANES + ATOMIC and master, reads planes,
+  CRTC, connector, EDID and the 720x1280@60 mode. `ro.hardware.vulkan=pastel`
+  selects its GuestFrameComposer: it composites the client target and
+  layers on the CPU (libyuv) into a 3-buffer DRM swapchain of minigbm
+  buffers (ADDFB2 ABGR8888) and shows each frame with an atomic commit
+  (FB_ID, CRTC rectangle, OUT_FENCE_PTR). Vsync comes from its own timer
+  thread. The pmem key-value store (/dev/block/pmem1) is missing, which
+  only means the default display config.
+- `surfaceflinger` runs RenderEngine (SkiaGL) on ANGLE over SwiftShader
+  Vulkan (LLVM JIT), connects the display, sets power mode ON and starts
+  `bootanim`, which draws the AOSP logo with GLES on the same stack.
+  `adb shell screencap -p` asks SurfaceFlinger for a capture (rendered by
+  RenderEngine into a minigbm buffer) and returns a PNG.
+- zygote still aborts (userfaultfd, D3); its `onrestart` list does not
+  include surfaceflinger in Android 16, so surfaceflinger is not
+  restarted. The gfx test stops zygote anyway to save CPU.
+
+`--aosp-gfx-test` (`tools/aosp-gfx-test.py`, 4 GiB RAM, a QEMU monitor
+socket in `$XDG_RUNTIME_DIR`) boots like `--aosp-adb-test`, connects adb
+and checks: the device nodes; the allocator, composer and surfaceflinger
+services running and registered with servicemanager; RenderEngine on
+SwiftShader, the display connected, the composer's 720x1280 config, the
+boot animation started and its layer in `dumpsys SurfaceFlinger --list`;
+surfaceflinger's pid stable; the `adb shell screencap -p` PNG is 720x1280
+and not blank (`adb exec-out` still returns no output here: adbd's raw
+exec service, a follow-up; the test only reports it); and QEMU's
+`screendump` of the scanout not blank. The images are kept in
+`kernel/target/.../qemu-kernel/gfx/`.
 
 ## How far the boot gets (C3d)
 

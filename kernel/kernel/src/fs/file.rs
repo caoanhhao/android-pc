@@ -83,10 +83,18 @@ pub trait FileOps: Send + Sync + Any {
     }
 
     /// The shmem object an mmap of this (non-regular) file maps (bpf array
-    /// and ring buffer maps); `shared_write` is a MAP_SHARED PROT_WRITE
-    /// request. None: not mappable this way.
-    fn mmap_shmem(&self, _file: &OpenFile, _shared_write: bool) -> KResult<Option<Arc<crate::mm::shmem::Shmem>>> {
+    /// and ring buffer maps, dma-bufs, DRM buffers) and the page index in
+    /// it of file page `pgoff` (DRM's fake offsets pick the buffer);
+    /// `shared_write` is a MAP_SHARED PROT_WRITE request. None: not
+    /// mappable this way.
+    fn mmap_shmem(&self, _file: &OpenFile, _shared_write: bool, _pgoff: u64) -> KResult<Option<(Arc<crate::mm::shmem::Shmem>, u64)>> {
         Ok(None)
+    }
+
+    /// The name /proc/<pid>/fd shows, when it is not `anon_inode:NAME`
+    /// (dma-bufs: `/dmabuf:NAME`).
+    fn link_name(&self) -> Option<alloc::vec::Vec<u8>> {
+        None
     }
 
     /// Current readiness (POLLIN, POLLOUT, POLLHUP, ...). Files that never
