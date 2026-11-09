@@ -64,6 +64,13 @@
 #                                     framework services (service list,
 #                                     dumpsys activity/window, pm path) and
 #                                     that system_server and zygote stay up
+#   tools/run-qemu.sh --aosp-apk-test the boot test's machine plus a monitor:
+#                                     builds apps/hello (apps/hello/build.sh)
+#                                     and tools/aosp-apk-test.py checks the
+#                                     launcher on screen, `adb install` of
+#                                     the APK (installd, dex2oat), `am start`
+#                                     of its activity, resumed, visible on
+#                                     screencap and the scanout (D3b)
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -132,6 +139,7 @@ while [[ $# -gt 0 ]]; do
         --aosp-gfx-test) mode=aosp-gfx-test ;;
         --aosp-input-test) mode=aosp-input-test ;;
         --aosp-boot-test) mode=aosp-boot-test ;;
+        --aosp-apk-test) mode=aosp-apk-test ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -162,8 +170,8 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ) ]] && input=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -183,7 +191,11 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ]]; then
+if [[ $mode == aosp-apk-test ]]; then
+    # The APK under test, built from source (reproducible, a few seconds).
+    "$ROOT/apps/hello/build.sh" >/dev/null
+fi
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -245,9 +257,9 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    [[ $mode == aosp-boot-test && $timeout == 300 ]] && timeout=900
-    [[ $mode == aosp-boot-test && $mem == 2G ]] && mem=6G
-    [[ $mode == aosp-boot-test && $smp == 4 ]] && smp=6
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $timeout == 300 ]] && timeout=900
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $mem == 2G ]] && mem=6G
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $smp == 4 ]] && smp=6
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -382,7 +394,7 @@ if [[ $input == 1 ]]; then
            -device virtio-multitouch-pci,addr=0x12,disable-legacy=on)
 fi
 # Unix socket paths are limited to 107 bytes, too short for $work.
-[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-apk-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 if [[ -n $monitor ]]; then
     rm -f "$monitor"
     args+=(-monitor "unix:$monitor,server,nowait")
@@ -465,6 +477,17 @@ elif [[ $mode == aosp-boot-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP boot test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-apk-test ]]; then
+    log="$work/aosp-apk-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 600)) python3 "$ROOT/tools/aosp-apk-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --monitor "$monitor" --out "$work/apk" \
+        --apk "$ROOT/apps/hello/build/hello.apk" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP APK test FAILED (serial log: $log, screenshots: $work/apk)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display "$display" -serial stdio)

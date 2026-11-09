@@ -58,3 +58,4 @@ d2_udp
 d3_uffd
 d3_proc
 d3_timers
+d3_splice

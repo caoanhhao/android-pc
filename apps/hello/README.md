@@ -37,6 +37,14 @@ nén `commandlinetools-linux-*.zip` vào `~/Android/Sdk/cmdline-tools/latest` r�
 - Build **tái lập**: cùng công cụ + cùng key → APK giống hệt từng byte (timestamp
   zip cố định, không đường dẫn/ build-id trong `.so`). `build.sh` in sha256.
 
+## Trên kernel Rust (D3b)
+
+`tools/limited-build.sh tools/run-qemu.sh --aosp-apk-test` build APK này, boot
+AOSP trên kernel Rust trong QEMU, `adb install` (installd, dex2oat), `am start`
+rồi kiểm tra Activity resumed và hiện trên màn hình (screencap và scanout
+virtio-gpu): **PASS**. Chạy tay: xem `docs/android-init.md` mục "D3b";
+`run-device.sh -s 127.0.0.1:15555` cũng chạy được (sau `wm dismiss-keyguard`).
+
 ## Kiểm tra trên Waydroid (Android 13 x86_64)
 
 - `--selftest`: **PASS** — `SelfTest.main()` trong APK chạy trên ART qua

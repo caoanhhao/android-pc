@@ -338,6 +338,7 @@ pub mod nr {
     pub const PROCESS_MRELEASE: u64 = 448;
     pub const MLOCK2: u64 = 325;
     pub const COPY_FILE_RANGE: u64 = 326;
+    pub const SPLICE: u64 = 275;
     pub const STATX: u64 = 332;
     pub const CLOSE_RANGE: u64 = 436;
     pub const FACCESSAT2: u64 = 439;
@@ -646,6 +647,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::FADVISE64 => fs::sys_fadvise64(i0, a3 as u32),
         nr::SENDFILE => fs::sys_sendfile(i0, i1, a2, a3),
         nr::COPY_FILE_RANGE => fs::sys_copy_file_range(i0, a1, a2 as i32, a3, a4, a5 as u32),
+        nr::SPLICE => fs::sys_splice(i0, a1, a2 as i32, a3, a4, a5 as u32),
         nr::INOTIFY_INIT => fs::sys_inotify_init1(0),
         nr::INOTIFY_INIT1 => fs::sys_inotify_init1(a0 as u32),
         nr::INOTIFY_ADD_WATCH => fs::sys_inotify_add_watch(i0, a1, a2 as u32),
