@@ -158,6 +158,12 @@ pub fn add_device(path: &str, subsystem: &str, subsys_dir: &str, vars: String, a
         let _ = d.replace(b"subsystem", S_IFLNK | 0o777, 0, Some(Data::Owned(relative(path, subsys_dir).into_bytes())));
     }
     let _ = dir(subsys_dir);
+    // A class device also appears as /sys/class/<class>/<name>.
+    if subsys_dir.starts_with("class/")
+        && let Some((_, name)) = path.rsplit_once('/')
+    {
+        symlink(subsys_dir, name, &relative(subsys_dir, path));
+    }
     DEVICES.lock().insert(path.into(), u.clone());
     if announce {
         u.emit("add");
@@ -174,6 +180,13 @@ pub fn device(path: &str) -> Option<Arc<Uevent>> {
 pub fn remove_device(path: &str) {
     if let Some(u) = device(path) {
         u.emit("remove");
+        let class = u.subsystem.clone();
+        if let Some((_, name)) = path.rsplit_once('/')
+            && dir(&format!("class/{class}")).and_then(|d| d.get(name.as_bytes())).is_some()
+        {
+            remove(&format!("class/{class}/{name}"));
+        }
+        DEVICES.lock().remove(path);
     }
     remove(path);
 }
@@ -256,6 +269,10 @@ pub fn init() {
     for (name, minor) in [("tty", 0), ("console", 1), ("ptmx", 2)] {
         add_char_device(&format!("devices/virtual/tty/{name}"), "tty", name, name, 5, minor);
     }
+    for n in 1..crate::drivers::hvc::HVC_PORTS {
+        let name = format!("hvc{n}");
+        add_char_device(&format!("devices/virtual/tty/{name}"), "tty", &name, &name, crate::drivers::hvc::HVC_MAJOR, n);
+    }
     let serial = "devices/platform/serial8250";
     add_device(serial, "platform", "bus/platform", String::from("DRIVER=serial8250\nMODALIAS=platform:serial8250\n"), false);
     symlink("bus/platform/devices", "serial8250", &relative("bus/platform/devices", serial));
@@ -265,10 +282,43 @@ pub fn init() {
         ("loop-control", "loop-control", crate::block::LOOP_CONTROL_MINOR),
         ("hw_random", "hw_random", super::dev::HWRNG_MINOR),
         ("uinput", "uinput", crate::drivers::input::uinput::UINPUT_MINOR),
+        ("userfaultfd", "userfaultfd", crate::mm::userfaultfd::USERFAULTFD_MINOR),
+        ("ashmem", "ashmem", crate::drivers::ashmem::ASHMEM_MINOR),
+        ("tun", "net/tun", crate::net::tun::TUN_MINOR),
     ] {
         add_char_device(&format!("devices/virtual/misc/{name}"), "misc", name, devname, crate::block::MISC_MAJOR, minor);
     }
+    device_tree_fstab();
     // The hw_random class attributes prng_seeder and rngd look at.
     set("devices/virtual/misc/hw_random", "rng_available", "rdrand\n");
     set("devices/virtual/misc/hw_random", "rng_current", "rdrand\n");
+}
+
+/// `dtfstab=NAME:DEV:MNT_POINT:TYPE:MNT_FLAGS:FSMGR_FLAGS[;...]` on the
+/// command line: fstab entries in Android's device-tree layout
+/// (firmware/devicetree/base/firmware/android/fstab/NAME/{dev,...}), what
+/// an ARM bootloader hands over in its device tree. x86 has no device
+/// tree; with androidboot.android_dt_dir pointing here, first stage mounts
+/// from these entries and fs_mgr's default fstab keeps them afterwards
+/// (the boot HAL finds /misc this way). Values end in NUL like
+/// device-tree properties.
+fn device_tree_fstab() {
+    let Some(spec) = crate::boot::cmdline().split_ascii_whitespace().find_map(|w| w.strip_prefix("dtfstab=")) else {
+        return;
+    };
+    let base = "firmware/devicetree/base/firmware/android";
+    set(base, "compatible", "android,firmware\0");
+    set(&format!("{base}/fstab"), "compatible", "android,fstab\0");
+    for e in spec.split(';') {
+        let f: Vec<&str> = e.split(':').collect();
+        if f.len() != 6 {
+            log::warn!("dtfstab: bad entry {e}");
+            continue;
+        }
+        let dir = format!("{base}/fstab/{}", f[0]);
+        set(&dir, "compatible", &format!("android,{}\0", f[0]));
+        for (name, v) in [("dev", f[1]), ("mnt_point", f[2]), ("type", f[3]), ("mnt_flags", f[4]), ("fsmgr_flags", f[5]), ("status", "okay")] {
+            set(&dir, name, &format!("{v}\0"));
+        }
+    }
 }

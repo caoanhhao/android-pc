@@ -54,6 +54,44 @@ fn traced() -> bool {
 }
 static WARNED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// `abortdump=COMM`: remember the last syscalls of every thread of the
+/// processes whose name starts with COMM, and log them when a thread
+/// aborts itself (SIGABRT to its own tid: bionic's abort()). A debugging
+/// aid for crashes that crash_dump cannot report (no ptrace).
+pub static ABORTDUMP_COMM: spin::Once<[u8; 16]> = spin::Once::new();
+const RECENT: usize = 48;
+static RECENT_CALLS: spin::Mutex<alloc::collections::BTreeMap<u32, alloc::collections::VecDeque<[u64; 5]>>> =
+    spin::Mutex::new(alloc::collections::BTreeMap::new());
+
+fn abortdump_wanted() -> bool {
+    let Some(want) = ABORTDUMP_COMM.get() else {
+        return false;
+    };
+    let n = want.iter().position(|&b| b == 0).unwrap_or(16);
+    current().process.comm.lock()[..n] == want[..n]
+}
+
+fn abortdump_record(n: u64, a0: u64, a1: u64, a2: u64, ret: u64) {
+    let tid = current().tid;
+    let mut m = RECENT_CALLS.lock();
+    let q = m.entry(tid).or_default();
+    if q.len() == RECENT {
+        q.pop_front();
+    }
+    q.push_back([n, a0, a1, a2, ret]);
+}
+
+fn abortdump_dump(sig: u64) {
+    let tid = current().tid;
+    let q = RECENT_CALLS.lock().remove(&tid).unwrap_or_default();
+    let comm = *current().process.comm.lock();
+    let name = core::str::from_utf8(&comm).unwrap_or("?").trim_end_matches('\0');
+    log::warn!("abortdump: tid {tid} ({name}) raises signal {sig}; its last {} syscalls:", q.len());
+    for [n, a0, a1, a2, r] in q {
+        log::warn!("abortdump:   {n} ({a0:#x}, {a1:#x}, {a2:#x}) -> {:#x} ({})", r, r as i64);
+    }
+}
+
 pub mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
@@ -282,6 +320,22 @@ pub mod nr {
     pub const GETRANDOM: u64 = 318;
     pub const MEMFD_CREATE: u64 = 319;
     pub const BPF: u64 = 321;
+    pub const USERFAULTFD: u64 = 323;
+    pub const MEMBARRIER: u64 = 324;
+    pub const GETITIMER: u64 = 36;
+    pub const ALARM: u64 = 37;
+    pub const SETITIMER: u64 = 38;
+    pub const TIMER_CREATE: u64 = 222;
+    pub const TIMER_SETTIME: u64 = 223;
+    pub const TIMER_GETTIME: u64 = 224;
+    pub const TIMER_GETOVERRUN: u64 = 225;
+    pub const TIMER_DELETE: u64 = 226;
+    pub const SETTIMEOFDAY: u64 = 164;
+    pub const PIDFD_SEND_SIGNAL: u64 = 424;
+    pub const PIDFD_OPEN: u64 = 434;
+    pub const PIDFD_GETFD: u64 = 438;
+    pub const PROCESS_MADVISE: u64 = 440;
+    pub const PROCESS_MRELEASE: u64 = 448;
     pub const MLOCK2: u64 = 325;
     pub const COPY_FILE_RANGE: u64 = 326;
     pub const STATX: u64 = 332;
@@ -505,6 +559,24 @@ pub fn dispatch(frame: &mut TrapFrame) {
         nr::UTIMENSAT => fs::sys_utimensat(i0, a1, a2, a3 as u32),
         nr::FALLOCATE => fs::sys_fallocate(i0, a1 as u32, a2 as i64, a3 as i64),
         nr::MEMFD_CREATE => fs::sys_memfd_create(a0, a1 as u32),
+        nr::MEMBARRIER => sys::sys_membarrier(a0 as u32, a1 as u32),
+        nr::TIMER_CREATE => crate::process::ptimer::sys_timer_create(a0 as u32, a1, a2),
+        nr::TIMER_SETTIME => crate::process::ptimer::sys_timer_settime(i0, a1 as u32, a2, a3),
+        nr::TIMER_GETTIME => crate::process::ptimer::sys_timer_gettime(i0, a1),
+        nr::TIMER_GETOVERRUN => crate::process::ptimer::sys_timer_getoverrun(i0),
+        nr::TIMER_DELETE => crate::process::ptimer::sys_timer_delete(i0),
+        nr::SETITIMER => crate::process::ptimer::sys_setitimer(a0 as u32, a1, a2),
+        nr::GETITIMER => crate::process::ptimer::sys_getitimer(a0 as u32, a1),
+        nr::ALARM => crate::process::ptimer::sys_alarm(a0 as u32),
+        nr::PIDFD_OPEN => crate::process::pidfd::sys_pidfd_open(i0, a1 as u32),
+        nr::PIDFD_SEND_SIGNAL => crate::process::pidfd::sys_pidfd_send_signal(i0, a1 as u32, a2, a3 as u32),
+        nr::PIDFD_GETFD => crate::process::pidfd::sys_pidfd_getfd(i0, i1, a2 as u32),
+        nr::PROCESS_MADVISE => crate::process::pidfd::sys_process_madvise(i0, a1, a2, a3 as u32, a4 as u32),
+        nr::PROCESS_MRELEASE => crate::process::pidfd::sys_process_mrelease(i0, a1 as u32),
+        // The clock is the host's: setting the time or time zone is accepted, ignored.
+        nr::SETTIMEOFDAY => Ok(0),
+        nr::USERFAULTFD => crate::mm::userfaultfd::new(a0 as u32)
+            .and_then(|f| Ok(current().process.files().alloc(f, a0 as u32 & crate::fs::file::O_CLOEXEC != 0, 0)? as u64)),
         nr::PREADV => fs::sys_preadv(i0, a1, a2, a3 as i64),
         nr::PWRITEV => fs::sys_pwritev(i0, a1, a2, a3 as i64),
         nr::RENAMEAT2 => fs::sys_renameat2(i0, a1, a2 as i32, a3, a4 as u32),
@@ -597,6 +669,18 @@ pub fn dispatch(frame: &mut TrapFrame) {
         }
     };
     frame.rax = encode(r);
+    if ABORTDUMP_COMM.get().is_some() && abortdump_wanted() {
+        let self_abort = match n {
+            nr::TGKILL | nr::RT_TGSIGQUEUEINFO => a1 as u32 == current().tid && a2 == 6,
+            nr::TKILL => a0 as u32 == current().tid && a1 == 6,
+            _ => false,
+        };
+        if self_abort {
+            abortdump_dump(6);
+        } else {
+            abortdump_record(n, a0, a1, a2, frame.rax);
+        }
+    }
     if trace {
         log::info!("[{}] syscall {} -> {:#x}", current().tid, n, frame.rax);
     }
@@ -837,11 +921,18 @@ fn sys_prctl(option: u32, arg: u64, arg3: u64) -> KResult<u64> {
         PR_SET_VMA if arg == 0 => Ok(0),
         PR_SET_NAME => {
             let name = t.mm().read_cstr(arg, 4096)?;
-            t.process.set_comm(&name);
+            let mut c = [0u8; 16];
+            let n = name.len().min(15);
+            c[..n].copy_from_slice(&name[..n]);
+            *t.comm.lock() = c;
+            // The leader's name is the process's (/proc/<pid>/comm).
+            if t.tid == t.pid() {
+                *t.process.comm.lock() = c;
+            }
             Ok(0)
         }
         PR_GET_NAME => {
-            let c = *t.process.comm.lock();
+            let c = *t.comm.lock();
             t.mm().copy_out(arg, &c)?;
             Ok(0)
         }

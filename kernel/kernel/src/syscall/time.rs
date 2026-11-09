@@ -125,7 +125,7 @@ pub fn sys_clock_nanosleep(clock: u32, flags: u32, req: u64, rem: u64) -> KResul
     let now = clock_ns(clock)?;
     let mm = current().mm();
     let (s, ns) = read_timespec(&mm, req)?;
-    let t = (s * NSEC_PER_SEC + ns) as i128;
+    let t = s.saturating_mul(NSEC_PER_SEC).saturating_add(ns) as i128;
     let delta = if flags & TIMER_ABSTIME != 0 { (t - now).max(0) } else { t };
     let deadline = time::monotonic_ns().saturating_add(delta as u64);
     match sleep_until(deadline) {

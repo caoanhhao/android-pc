@@ -263,6 +263,25 @@ impl Dev {
         }
     }
 
+    /// A frame from a packet socket out of the card that is link
+    /// `ifindex` (`fill_src`: put the card's address in the header).
+    pub fn send_raw(&mut self, ifindex: u32, mut frame: Vec<u8>, fill_src: bool) -> crate::errno::KResult<()> {
+        let port = self.ports.iter_mut().find(|p| p.link == ifindex).ok_or(crate::errno::ENXIO)?;
+        if !port.up {
+            return Err(crate::errno::ENETDOWN);
+        }
+        if fill_src {
+            frame[6..12].copy_from_slice(&port.mac);
+        }
+        if port.eth.send(&frame) {
+            port.stats.tx_packets += 1;
+            port.stats.tx_bytes += frame.len() as u64;
+        } else {
+            port.stats.tx_dropped += 1;
+        }
+        Ok(())
+    }
+
     fn send_frame(&mut self, i: usize, dst: [u8; 6], ty: u16, payload: &[u8]) {
 
         let port = &mut self.ports[i];
@@ -347,6 +366,7 @@ impl Dev {
                 }
                 port.stats.rx_packets += 1;
                 port.stats.rx_bytes += f.len() as u64;
+                crate::net::packet::deliver(port.link, &f);
                 match u16::from_be_bytes([f[12], f[13]]) {
                     ETHERTYPE_IPV4 => self.rx.push_back(f[ETH_HDR..].to_vec()),
                     ETHERTYPE_IPV6 => {

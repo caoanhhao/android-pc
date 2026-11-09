@@ -82,12 +82,14 @@ enum Global {
     Interrupts,
     SysrqTrigger,
     Kmsg,
+    ConfigGz,
 }
 
-const GLOBALS: [(&[u8], Global); 19] = [
+const GLOBALS: [(&[u8], Global); 20] = [
     (b"bootconfig", Global::Bootconfig),
     (b"cgroups", Global::Cgroups),
     (b"cmdline", Global::Cmdline),
+    (b"config.gz", Global::ConfigGz),
     (b"cpuinfo", Global::Cpuinfo),
     (b"devices", Global::Devices),
     (b"filesystems", Global::Filesystems),
@@ -152,13 +154,14 @@ const PID_FILES: [(&[u8], PidFile); 19] = [
 ];
 
 /// Files in /proc/<pid>/task/<tid>/.
-const TASK_FILES: [(&[u8], PidFile); 6] = [
+const TASK_FILES: [(&[u8], PidFile); 7] = [
     (b"cgroup", PidFile::Cgroup),
     (b"cmdline", PidFile::Cmdline),
     (b"comm", PidFile::Comm),
     (b"stat", PidFile::Stat),
     (b"status", PidFile::Status),
     (b"timerslack_ns", PidFile::TimerslackNs),
+    (b"wchan", PidFile::Wchan),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -629,8 +632,10 @@ impl Inode for ProcInode {
             Node::PidFile(_, PidFile::OomScoreAdj | PidFile::OomAdj | PidFile::TimerslackNs) => {
                 return Ok(Some(Box::new(ProcRw { node: self.node, data: Mutex::new(rw_contents(self.node)?) })));
             }
+            Node::Global(Global::ConfigGz) => return Ok(Some(Box::new(SeqFile { data: config_gz() }))),
             Node::Global(g) => global(g),
-            Node::PidFile(pid, f) | Node::TaskFile(pid, _, f) => pid_file(pid, f)?,
+            Node::PidFile(pid, f) => pid_file(pid, pid, f)?,
+            Node::TaskFile(pid, tid, f) => pid_file(pid, tid, f)?,
             Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
             Node::NetUnix => crate::net::unix::proc_net_unix(),
             Node::NetNetlink => crate::net::netlink::proc_net_netlink(),
@@ -760,6 +765,9 @@ fn proc_write(node: Node, data: &[u8]) -> KResult<usize> {
         }
         Node::Global(Global::SysrqTrigger) => {
             log::info!("sysrq: {}", String::from_utf8_lossy(data).trim());
+            if data.first() == Some(&b'p') {
+                crate::arch::x86_64::trap::profile_dump();
+            }
             Ok(data.len())
         }
         // PSI triggers ("some 150000 1000000"): accepted, never fire.
@@ -958,7 +966,7 @@ fn global(g: Global) -> String {
         Global::Devices => {
             s.push_str("Character devices:\n  1 mem\n  4 /dev/vc/0\n  4 tty\n  5 /dev/tty\n  5 /dev/console\n  5 /dev/ptmx\n  7 vcs\n 10 misc\n244 binder\n\nBlock devices:\n  7 loop\n253 device-mapper\n254 virtblk\n259 blkext\n");
         }
-        Global::Modules | Global::SysrqTrigger | Global::Kmsg => {}
+        Global::Modules | Global::SysrqTrigger | Global::Kmsg | Global::ConfigGz => {}
         Global::Swaps => s.push_str("Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"),
         Global::Vmstat => {
             let (total, free) = crate::mm::frame::stats();
@@ -1071,6 +1079,9 @@ fn bootconfig() -> String {
         if let Some((k, v)) = w.split_once('=')
             && k.starts_with("androidboot.")
         {
+            // Comma lists are bootconfig arrays: "a", "b" (fs_mgr splits
+            // boot_devices on the spaces of that form).
+            let v = v.split(',').collect::<Vec<_>>().join("\", \"");
             let _ = writeln!(s, "{k} = \"{v}\"");
         }
     }
@@ -1164,9 +1175,16 @@ fn own_mm(pid: u32) -> Option<Arc<crate::mm::user::AddressSpace>> {
     (t.pid() == pid).then(|| t.mm())
 }
 
-fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
+/// A /proc/<pid> file, or /proc/<pid>/task/<tid>'s (names and ids are
+/// the thread's there).
+fn pid_file(pid: u32, tid: u32, f: PidFile) -> KResult<String> {
     let info = pid_info(pid)?;
     let p = &info.proc;
+    let name = process::TABLE.lock().tasks.get(&tid).map_or_else(|| comm(p), |t| {
+        let c = *t.comm.lock();
+        let n = c.iter().position(|&b| b == 0).unwrap_or(c.len());
+        String::from_utf8_lossy(&c[..n]).into_owned()
+    });
     let mut s = String::new();
     let state = if info.zombie {
         ('Z', "Z (zombie)")
@@ -1177,14 +1195,23 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
     };
     match f {
         PidFile::Stat => {
-            let (vsize, brk) = own_mm(pid).map_or((0, (0, 0)), |mm| {
-                (mm.total_size(), mm.brk_range())
+            // CPU time in ticks: the thread's, or the sum over the live
+            // threads for the process.
+            let (utime, stime) = {
+                let t = process::TABLE.lock();
+                let tids: Vec<u32> = if tid != pid { alloc::vec![tid] } else { t.procs.get(&pid).map_or(Vec::new(), |n| n.threads.clone()) };
+                tids.iter().filter_map(|x| t.tasks.get(x)).fold((0u64, 0u64), |(u, s), task| {
+                    (u + task.utime.load(core::sync::atomic::Ordering::Relaxed), s + task.stime.load(core::sync::atomic::Ordering::Relaxed))
+                })
+            };
+            let (vsize, brk, stack) = own_mm(pid).map_or((0, (0, 0), 0), |mm| {
+                (mm.total_size(), mm.brk_range(), mm.start_stack.load(core::sync::atomic::Ordering::Relaxed))
             });
             let _ = write!(
                 s,
-                "{pid} ({}) {} {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 {} 0 0 {vsize} 0 \
-                 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 {} {} 0 0 0 0 0\n",
-                comm(p),
+                "{tid} ({}) {} {} {} {} 0 -1 4194560 0 0 0 0 {utime} {stime} 0 0 20 0 {} 0 0 {vsize} 0 \
+                 18446744073709551615 0 0 {stack} 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 {} {} 0 0 0 0 0\n",
+                name,
                 state.0,
                 info.ppid,
                 info.pgid,
@@ -1199,11 +1226,11 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
             let c = process::process_creds(pid).unwrap_or_default();
             let _ = write!(
                 s,
-                "Name:\t{}\nUmask:\t{:04o}\nState:\t{}\nTgid:\t{pid}\nNgid:\t0\nPid:\t{pid}\nPPid:\t{}\n\
+                "Name:\t{}\nUmask:\t{:04o}\nState:\t{}\nTgid:\t{pid}\nNgid:\t0\nPid:\t{tid}\nPPid:\t{}\n\
                  TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t64\nGroups:\t{}\n\
                  Threads:\t{}\nSigQ:\t0/0\nCapEff:\t000001ffffffffff\nSeccomp:\t0\n\
                  voluntary_ctxt_switches:\t0\nnonvoluntary_ctxt_switches:\t0\n",
-                comm(p),
+                name,
                 p.fs.lock().umask,
                 state.1,
                 info.ppid,
@@ -1223,9 +1250,24 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
                 let _ = writeln!(s, "VmSize:\t{kb:>8} kB");
             }
         }
-        PidFile::Cmdline => return Ok(String::from_utf8_lossy(&p.cmdline.lock()).into_owned()),
+        PidFile::Cmdline => {
+            // Like Linux: the argument area of the process's memory (what
+            // zygote's argv[0] rewrites show), the exec-time copy for a
+            // zombie or a kernel-started process.
+            if !info.zombie
+                && let Some(t) = process::TABLE.lock().tasks.get(&pid).cloned()
+            {
+                let mm = if t.tid == process::current().tid { t.mm() } else { t.mm_of_other() };
+                let (start, end) = *mm.arg_range.lock();
+                let mut b = alloc::vec![0u8; (end - start).min(4096) as usize];
+                if end > start && mm.copy_in(start, &mut b).is_ok() {
+                    return Ok(String::from_utf8_lossy(&b).into_owned());
+                }
+            }
+            return Ok(String::from_utf8_lossy(&p.cmdline.lock()).into_owned());
+        }
         PidFile::Comm => {
-            let _ = writeln!(s, "{}", comm(p));
+            let _ = writeln!(s, "{name}");
         }
         PidFile::Maps => maps(pid, p, &mut s),
         PidFile::Mounts => s = mounts_text(false),
@@ -1242,7 +1284,7 @@ fn pid_file(pid: u32, f: PidFile) -> KResult<String> {
             let _ = writeln!(s, "{pages} 0 0 0 0 0 0");
         }
         PidFile::Schedstat => s.push_str("0 0 0\n"),
-        PidFile::Wchan => s.push('0'),
+        PidFile::Wchan => s.push_str(crate::sched::sleep_key(tid).map_or("0", crate::sched::wait_name)),
         PidFile::Exe | PidFile::Cwd | PidFile::Root => return Err(EINVAL),
     }
     Ok(s)
@@ -1301,4 +1343,29 @@ fn maps(pid: u32, p: &Process, s: &mut String) {
         }
         s.push('\n');
     }
+}
+
+/// /proc/config.gz: the kernel configuration Android checks (VINTF, the
+/// framework's Debug.isVmapStack): Android 16's required options for a
+/// 6.12 kernel, gzip-encoded with stored (uncompressed) deflate blocks.
+fn config_gz() -> Vec<u8> {
+    let text = include_bytes!("kconfig.txt");
+    let mut out = alloc::vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+    let mut chunks = text.chunks(65535).peekable();
+    while let Some(c) = chunks.next() {
+        out.push(chunks.peek().is_none() as u8); // BFINAL, BTYPE 00
+        out.extend_from_slice(&(c.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(!(c.len() as u16)).to_le_bytes());
+        out.extend_from_slice(c);
+    }
+    let mut crc = 0xffff_ffffu32;
+    for &b in text.iter() {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    out.extend_from_slice(&(!crc).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out
 }

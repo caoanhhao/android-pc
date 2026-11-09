@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1, D2)
+# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1, D2, D3a)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -25,7 +25,11 @@ the screen ([D1: graphics](#d1-graphics)). Since D2, with `--input`,
 virtio keyboard, tablet and multitouch devices appear as
 /dev/input/event* (`getevent` sees keys typed into QEMU), `adb exec-out`
 returns command output, and IPv6 reaches QEMU's user network
-([D2: input and network](#d2-input-and-network)).
+([D2: input and network](#d2-input-and-network)). Since D3a, zygote runs
+ART with its userfaultfd-based GC, system_server starts every service,
+apps (Launcher3, SystemUI, Settings, Phone, ...) run, and the boot
+reaches `sys.boot_completed=1` in about 20-25 s
+([D3a: zygote and system_server](#d3a-zygote-and-system_server)).
 
 ## Running it
 
@@ -34,6 +38,7 @@ tools/limited-build.sh tools/run-qemu.sh --aosp-init        # interactive; Ctrl-
 tools/limited-build.sh tools/run-qemu.sh --aosp-init-test   # scripted check, exit 0 iff it passes
 tools/limited-build.sh tools/run-qemu.sh --aosp-adb-test    # adb from the host (C3d), exit 0 iff it passes
 tools/limited-build.sh tools/run-qemu.sh --aosp-gfx-test    # graphics (D1), exit 0 iff it passes
+tools/limited-build.sh tools/run-qemu.sh --aosp-boot-test   # zygote, system_server, boot_completed (D3a)
 tools/limited-build.sh tools/run-qemu.sh --aosp-init --gpu --mem 4G --display gtk   # watch the screen
 ```
 
@@ -65,6 +70,8 @@ from either place):
 | `androidboot.vendor.apex.*=...` | which of Cuttlefish's alternative vendor APEXes apexd activates (the values cvd-1 uses); without them apexd-bootstrap aborts on duplicates |
 | `androidboot.console=ttyS0`, `serialno`, `hardware.*`, `lcd_density`, ... | what Cuttlefish's bootconfig sets, so `${ro.boot.*}` expansions in the rc files work |
 | `brd.rd_nr=2 brd.rd_size=4096` | two RAM disks, ram0 and ram1: the block devices first-stage init waits for before mounting the tmpfs /metadata and /data |
+| `androidboot.partition_map=vda,super;vdb,frp;vdc,misc` and three `boot_devices` | since D3a two small writable disks (snapshots of out/aosp-frp.img and out/aosp-misc.img): the factory reset protection partition (`ro.frp.pst`) and misc (the boot HAL's A/B metadata) |
+| `dtfstab=...`, `androidboot.android_dt_dir=/sys/firmware/devicetree/base/firmware/android/` | since D3a the fstab (with `/misc`) as a device-tree fstab: first stage mounts from it, and fs_mgr's default fstab still has it after switch_root (see D3a) |
 
 `--aosp-init-test` (`tools/aosp-init-test.py`) follows init's log on the
 serial console (init writes it to /dev/kmsg, which the kernel prints as
@@ -396,6 +403,110 @@ checks the nodes, `getevent -lp`, `sendkey` and `mouse_button` through
 720x1280 `screencap -p` PNG). `--aosp-adb-test` now also checks exec-out
 (text, the pushed 300 kB file, 3 MB).
 
+## D3a: zygote and system_server
+
+`--aosp-boot-test` (`tools/aosp-boot-test.py`; 6 GiB, 6 CPUs, the
+graphics and input devices, up to 900 s) boots with zygote left running
+and checks: system_server forked, `sys.boot_completed=1` and
+`dev.bootcomplete=1`, ART on the CMC GC (its log lines or
+system_server's open `[userfaultfd]`), the boot animation exited
+(`service.bootanim.exit=1`), activity, package, window, input, power,
+user, display and SurfaceFlinger in `service list`, `dumpsys activity
+activities` with Launcher3 as the home activity, `dumpsys window
+displays`, `pm path android`, and system_server and zygote keeping
+their pids for 30 s (24 checks, boot complete after ~20-25 s). What it
+took, in boot order:
+
+- **userfaultfd** (syscall 323, /dev/userfaultfd): without it ART fell
+  back from the CMC to the CC collector, which the boot image was not
+  built for ("read barrier state mismatch"). ART probes
+  MREMAP_DONTUNMAP on shared anonymous memory, asks UFFDIO_API for
+  UFFD_FEATURE_SIGBUS, registers the moving space (and linear-alloc
+  arenas, registered first and then mremap()ed to a shadow with
+  DONTUNMAP), and fills pages with UFFDIO_COPY / ZEROPAGE from the
+  mutators' SIGBUS handler and the GC thread. `Using CollectorTypeCMC GC`;
+  "concurrent mark compact GC freed ..." lines follow.
+- bionic: `stack not found in /proc/self/maps` (pthread_getattr_np looks
+  up /proc/self/stat's startstack, which was 0) and `__cxa_atexit:
+  mremap failed` (its handler array is mprotect()ed page by page and
+  mremap()ed as one VMA: mprotect now re-merges VMAs).
+- zygote preloads, forks system_server and the app processes;
+  membarrier (ART's fault handler) and per-thread names (PR_SET_NAME used
+  to rename the whole process: system_server showed up as
+  "TextToSpeechMan") were added on the way, and /proc/<pid>/cmdline now
+  reads the process's memory, so zygote's argv[0] rewrites (`system_server`,
+  package names) show in `ps` and `pidof`.
+- system_server, service by service: ApplicationSharedMemory needs ashmem
+  (/dev/ashmem<boot_id>); LightsService and OemLockService wait for
+  Cuttlefish HALs that talk to the host over vsock (lights: AF_VSOCK is
+  now local-only stream sockets) and virtio-console ports (oemlock and
+  others: /dev/hvc1..17 open and accept raw termios but have no host
+  behind them); PersistentDataBlockService needs the frp partition
+  (`ro.frp.pst`, vdb); NetworkStatsService's ClatCoordinator checks the
+  SELinux labels of /sys/fs/bpf (genfscon labels for bpffs);
+  AudioService needs audioserver, which used priority-inheritance mutexes
+  (FUTEX_LOCK_PI/UNLOCK_PI); ThreadNetworkService creates a tun interface
+  (/dev/net/tun); PackageManagerService.systemReady asks vold, which waits
+  for the boot HAL, which needs /misc (vdc) in the default fstab; the
+  network stats map swap opens and closes an AF_KEY socket
+  (synchronizeKernelRCU); `Debug.isVmapStack` reads /proc/config.gz.
+- The default fstab after first stage: the ramdisk's /fstab.rustpc is
+  gone after switch_root, so the boot HAL found no /misc. run-qemu.sh
+  now also passes the fstab (`tools/mkaosp-init-initramfs.py --dtfstab`,
+  plus `/misc emmc`) as `dtfstab=`, which the kernel exposes as an
+  Android device-tree fstab under /sys/firmware/devicetree/base, and
+  `androidboot.android_dt_dir` points there: first stage mounts from it,
+  and fs_mgr keeps it afterwards. `mount_all` now finds a default fstab
+  (`ro.crypto.state=unsupported`, the `nonencrypted` trigger runs).
+- Apps: SystemUI and Provision died on "Writable dex file ... is not
+  allowed" (access(W_OK) on read-only erofs now gives EROFS); the
+  launcher (Launcher3), Settings, Phone, NFC, Bluetooth, SystemUI start.
+- After boot: EthernetService takes eth0 over, clears 10.0.2.15 and
+  runs NetworkStack's DHCP client, which needs AF_PACKET sockets (with
+  a classic BPF filter); QEMU's DHCP server gives the address back, so
+  adb keeps working (the kernel's static setup only covers the time
+  before). Cuttlefish's `rename_eth0` (to buried_eth0) still fails: it
+  only renames links that are down, and ours is up from boot.
+- Kernel time: once system_server ran, almost all CPU time was kernel
+  time (system_server's main thread: ~400 s of kernel time for 4 s of
+  user time; the boot took ~400 s and adbd starved after it). The
+  causes: every unshare(CLONE_NEWNS) (zygote makes one per app) copied
+  the whole mount table into one global list that was never cleaned
+  and that every path component scanned linearly under one lock; the
+  linked-list heap allocator (O(free blocks) per call, one lock); erofs
+  re-parsing a whole directory for every lookup of a missing name. Now
+  mounts are found through their mount-point dentry, a namespace's
+  mounts go when its last process does, small allocations come from
+  size classes (256 MiB heap on a 6 GiB guest) and erofs caches parsed
+  directories: zygote starts at ~5 s instead of ~20 s and the boot
+  completes in ~20-25 s. Per-task CPU accounting (utime/stime in
+  /proc/<pid>/stat: `top` works) and the kernel profile
+  (`echo p > /proc/sysrq-trigger` logs the most sampled kernel
+  addresses, for addr2line) found them.
+- With the fast boot, hwservicemanager stops itself early
+  (`hwservicemanager.disabled=true`: there are no HIDL services), as on
+  Cuttlefish; the init test accepts that.
+
+Debugging aids added on the way: `abortdump=COMM` on the kernel command
+line logs the last 48 syscalls of a thread of process COMM that aborts
+itself (crash_dump cannot attach without ptrace, so tombstones are
+empty); /proc/<pid>/task/<tid>/wchan names the wait a thread sleeps in
+(ANR traces include it); the ANR traces in /data/anr (system_server's
+watchdog) have Java stacks.
+
+## How far the boot gets (D3a)
+
+`sys.boot_completed=1` and `dev.bootcomplete=1` about 20-25 s after
+power-on; the boot animation exits; system_server keeps running with
+activity, package, window, input, power, display, ... registered;
+`dumpsys activity` shows Launcher3 as the home activity; `pm`, `dumpsys
+window` answer. Known noise: HALs that need a Cuttlefish host restart in
+loops (threadnetwork "node_id > 0", UWB, NFC, bluetooth's bt_hci, the
+sensors HAL), fs-verity ioctls fail (logged by system_server),
+crash_dump cannot write tombstones (no ptrace). Once in about 25 boots
+apexd-bootstrap died with SIGSEGV (and init rebooted to the bootloader);
+not reproduced since, cause unknown.
+
 ## How far the boot gets (C3d)
 
 Everything in [C3c](#how-far-the-boot-gets-c3c) below, plus: netd
@@ -498,4 +609,12 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
   global instance each (unshare/setns accept them without effect); slave
   and unbindable mounts act as private; chroot only to the current root.
 - `process_vm_readv` and `ptrace` are missing, so crash_dump cannot unwind
-  crashing services (tombstoned gets nothing).
+  crashing services (tombstoned gets nothing); `abortdump=COMM` on the
+  kernel command line is the stand-in for abort()s.
+- **Host-side stand-ins** (D3a): /dev/hvc1..17 have no Cuttlefish host
+  behind them (HALs register, requests to the host block), AF_VSOCK
+  only reaches the guest itself, /dev/net/tun links carry no traffic,
+  ashmem never purges, PI futexes do not boost priorities, the
+  device-tree fstab comes from the kernel command line.
+- **Permissions**: access() only refuses W_OK on read-only mounts and
+  X_OK without execute bits; nothing else checks credentials.

@@ -14,7 +14,12 @@ First-stage init wants a block device for each of those two entries:
 the kernel's RAM disks ram0 and ram1 (brd.rd_nr=2 on the command line),
 which tmpfs ignores.
 
-Usage: mkaosp-init-initramfs.py [-o OUT] [--product DIR]
+The same fstab (plus the raw /misc partition) also goes on the kernel
+command line as dtfstab= (`--dtfstab` prints it): the kernel presents it as
+a device-tree fstab, which first stage reads instead of /fstab.rustpc and
+which stays readable after switch_root.
+
+Usage: mkaosp-init-initramfs.py [-o OUT] [--product DIR] | --dtfstab
 
 Default output: out/aosp-init-initramfs.cpio. Needs AOSP's host tools
 unpack_bootimg and lz4 (aosp/out/host/linux-x86/bin).
@@ -46,7 +51,25 @@ odm         /odm         erofs ro wait,logical,first_stage_mount,slotselect,nofa
 vendor_dlkm /vendor_dlkm erofs ro wait,logical,first_stage_mount,slotselect,nofail
 odm_dlkm    /odm_dlkm    erofs ro wait,logical,first_stage_mount,slotselect,nofail
 system_dlkm /system_dlkm erofs ro wait,logical,first_stage_mount,slotselect,nofail
+# Raw partitions (skipped by first stage and mount_all): the boot HAL's misc.
+/dev/block/by-name/misc /misc emmc defaults defaults
 """
+
+
+def dtfstab():
+    """FSTAB as the kernel's dtfstab= parameter: NAME:DEV:MNT_POINT:TYPE:
+    MNT_FLAGS:FSMGR_FLAGS entries separated by ';'. The kernel shows them in
+    the device-tree fstab layout androidboot.android_dt_dir points to, so the
+    entries (/misc in particular) stay in fs_mgr's default fstab after first
+    stage, when the ramdisk's /fstab.rustpc is gone."""
+    out = []
+    for line in FSTAB.splitlines():
+        f = line.split()
+        if not f or f[0].startswith("#"):
+            continue
+        dev, mnt, ty, mnt_flags, fsmgr = f
+        out.append(":".join([mnt.strip("/").replace("/", "_"), dev, mnt, ty, mnt_flags, fsmgr]))
+    return ";".join(out)
 
 
 def aosp_dir():
@@ -87,7 +110,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", dest="out", default=os.path.join(ROOT, "out", "aosp-init-initramfs.cpio"))
     ap.add_argument("--product")
+    ap.add_argument("--dtfstab", action="store_true", help="print the kernel's dtfstab= value and exit")
     a = ap.parse_args()
+    if a.dtfstab:
+        print(dtfstab())
+        return
     aosp = aosp_dir()
     product = a.product or os.environ.get("AOSP_PRODUCT_OUT") or os.path.join(aosp, "out/target/product/vsoc_x86_64_only")
     host = os.path.join(aosp, "out/host/linux-x86/bin")

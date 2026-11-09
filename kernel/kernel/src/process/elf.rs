@@ -252,6 +252,7 @@ pub fn load(
         (AT_MINSIGSTKSZ, crate::process::signal::MINSIGSTKSZ),
     ];
     let sp = build_stack(&mm, execfn, argv, envp, &auxv)?;
+    mm.start_stack.store(sp, core::sync::atomic::Ordering::Relaxed);
     Ok(Image { mm, entry, sp, interp_range })
 }
 
@@ -271,6 +272,9 @@ fn build_stack(mm: &AddressSpace, execfn: &[u8], argv: &[Vec<u8>], envp: &[Vec<u
     let execfn_addr = push_str(execfn, &mut strings);
     let env_addrs: Vec<u64> = envp.iter().rev().map(|e| push_str(e, &mut strings)).collect();
     let arg_addrs: Vec<u64> = argv.iter().rev().map(|a| push_str(a, &mut strings)).collect();
+    let arg_start = arg_addrs.last().copied().unwrap_or(0);
+    let arg_end = arg_start + argv.iter().map(|a| a.len() as u64 + 1).sum::<u64>();
+    *mm.arg_range.lock() = (arg_start, arg_end);
     let platform = push_str(b"x86_64", &mut strings);
     let mut random = [0u8; 16];
     crate::random::fill(&mut random);

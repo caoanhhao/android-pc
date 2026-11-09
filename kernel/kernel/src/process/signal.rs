@@ -749,7 +749,7 @@ pub fn sys_rt_sigtimedwait(set: u64, info: u64, timeout: u64, size: u64) -> KRes
     let wanted = u64::from_le_bytes(b) & !UNBLOCKABLE;
     let deadline = if timeout != 0 {
         let (s, ns) = crate::syscall::time::read_timespec(&mm, timeout)?;
-        Some(crate::time::monotonic_ns().saturating_add(s * 1_000_000_000 + ns))
+        Some(crate::time::monotonic_ns().saturating_add(s.saturating_mul(1_000_000_000).saturating_add(ns)))
     } else {
         None
     };

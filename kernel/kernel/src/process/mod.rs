@@ -13,6 +13,8 @@
 pub mod elf;
 pub mod futex;
 pub mod lifecycle;
+pub mod pidfd;
+pub mod ptimer;
 pub mod signal;
 
 use alloc::collections::BTreeMap;
@@ -48,6 +50,9 @@ pub struct Task {
     fpu: UnsafeCell<FpuState>,
     /// Only touched by the task itself or by the scheduler on its CPU.
     mm: UnsafeCell<Arc<AddressSpace>>,
+    /// Held while `mm` is replaced (exec), so other tasks can take a
+    /// reference to it (`mm_of_other`).
+    mm_lock: Mutex<()>,
     pub sig: Mutex<ThreadSignals>,
     pub clear_child_tid: AtomicU64,
     pub robust_list: AtomicU64,
@@ -55,6 +60,12 @@ pub struct Task {
     /// only the calling thread (ueventd's threads each switch their egid
     /// around a mknod).
     pub creds: Mutex<Creds>,
+    /// The thread's name (prctl PR_SET_NAME, /proc/<pid>/task/<tid>/comm);
+    /// the leader's is also the process's `comm`.
+    pub comm: Mutex<[u8; 16]>,
+    /// Timer ticks (1/HZ s) spent in user mode and in the kernel.
+    pub utime: AtomicU64,
+    pub stime: AtomicU64,
 }
 
 unsafe impl Send for Task {}
@@ -66,6 +77,7 @@ impl Task {
         let kstack = KernelStack::new()?;
         let rsp = unsafe { entry::prepare_new_stack(kstack.top(), frame) };
         mm.users.fetch_add(1, Ordering::SeqCst);
+        let comm = *process.comm.lock();
         Some(Arc::new(Task {
             tid,
             process,
@@ -79,8 +91,12 @@ impl Task {
             gs_base: AtomicU64::new(0),
             fpu: UnsafeCell::new(FpuState::initial()),
             mm: UnsafeCell::new(mm),
+            mm_lock: Mutex::new(()),
             sig: Mutex::new(ThreadSignals::default()),
             creds: Mutex::new(Creds::default()),
+            comm: Mutex::new(comm),
+            utime: AtomicU64::new(0),
+            stime: AtomicU64::new(0),
             clear_child_tid: AtomicU64::new(0),
             robust_list: AtomicU64::new(0),
         }))
@@ -91,6 +107,13 @@ impl Task {
     }
 
     pub fn mm(&self) -> Arc<AddressSpace> {
+        unsafe { (*self.mm.get()).clone() }
+    }
+
+    /// The address space of a task other than the caller (/proc reads of
+    /// another process's memory), safe against its concurrent exec.
+    pub fn mm_of_other(&self) -> Arc<AddressSpace> {
+        let _g = self.mm_lock.lock();
         unsafe { (*self.mm.get()).clone() }
     }
 
@@ -105,7 +128,10 @@ impl Task {
         x86_64::instructions::interrupts::without_interrupts(|| {
             mm.active_cpus.fetch_or(1 << me, Ordering::SeqCst);
             mm.activate();
-            let old = unsafe { core::mem::replace(&mut *self.mm.get(), mm) };
+            let old = {
+                let _g = self.mm_lock.lock();
+                unsafe { core::mem::replace(&mut *self.mm.get(), mm) }
+            };
             old.active_cpus.fetch_and(!(1 << me), Ordering::SeqCst);
             old.users.fetch_sub(1, Ordering::SeqCst);
             old
@@ -329,6 +355,7 @@ impl Process {
         *self.cmdline.lock() = c;
     }
 
+    /// Rename the process (exec, init): its leader thread too.
     pub fn set_comm(&self, name: &[u8]) {
         let mut c = self.comm.lock();
         *c = [0; 16];

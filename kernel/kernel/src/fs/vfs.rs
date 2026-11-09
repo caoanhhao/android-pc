@@ -357,6 +357,10 @@ struct DentryInner {
 pub struct Dentry {
     pub inode: Arc<dyn Inode>,
     inner: Mutex<DentryInner>,
+    /// Mounts whose mount point is this dentry (in any mount of its file
+    /// system), oldest first: path walks look here instead of scanning
+    /// every mount (Linux's DCACHE_MOUNTED).
+    mounts: Mutex<Vec<Weak<Mount>>>,
 }
 
 impl Dentry {
@@ -367,6 +371,7 @@ impl Dentry {
     pub fn new(inode: Arc<dyn Inode>, name: &[u8], parent: Option<Arc<Dentry>>) -> Arc<Dentry> {
         Arc::new(Dentry {
             inode,
+            mounts: Mutex::new(Vec::new()),
             inner: Mutex::new(DentryInner {
                 name: name.to_vec(),
                 parent,
@@ -575,6 +580,9 @@ pub fn copy_ns(ns: &Arc<MntNs>) -> (Arc<MntNs>, impl Fn(&PathRef) -> PathRef + u
     }
     mounts.extend(news.iter().cloned());
     drop(mounts);
+    for n in &news {
+        attach(n);
+    }
     let root = find(&olds, &news, &ns.root).expect("namespace root");
     let new = Arc::new(MntNs { id: NEXT_NS_ID.fetch_add(1, Ordering::Relaxed), root });
     let map = move |p: &PathRef| match find(&olds, &news, &p.mnt) {
@@ -727,10 +735,16 @@ pub fn mount_in_group(at: &PathRef, root: Arc<Dentry>, fstype: &'static str, sou
     let group = if group == 0 && !peers.is_empty() { NEXT_GROUP.fetch_add(1, Ordering::Relaxed) } else { group };
     let m = new_mount(at.clone(), root.clone(), fstype, source, flags, group);
     mounts.push(m.clone());
+    let mut added = alloc::vec![m.clone()];
     for p in peers {
-        mounts.push(new_mount(p, root.clone(), fstype, source, flags, group));
+        let c = new_mount(p, root.clone(), fstype, source, flags, group);
+        mounts.push(c.clone());
+        added.push(c);
     }
     drop(mounts);
+    for a in &added {
+        attach(a);
+    }
     mounts_changed();
     Ok(m)
 }
@@ -755,6 +769,7 @@ pub fn bind_mount(src: &PathRef, at: &PathRef, rec: bool) -> KResult<()> {
             let point = PathRef { mnt: copy.clone(), dentry: sub.parent().unwrap().dentry };
             let c = new_mount(point, sub.root.clone(), sub.fstype, &sub.source, sub.flags, sub.group());
             MOUNTS.lock().push(c.clone());
+            attach(&c);
             todo.push((sub, c));
         }
     }
@@ -791,6 +806,10 @@ pub fn umount(at: &PathRef) -> KResult<()> {
         .collect();
     mounts.retain(|m| !Arc::ptr_eq(m, &at.mnt) && !copies.iter().any(|c| Arc::ptr_eq(c, m)));
     drop(mounts);
+    detach(&at.mnt);
+    for c in &copies {
+        detach(c);
+    }
     mounts_changed();
     Ok(())
 }
@@ -815,7 +834,9 @@ pub fn move_mount(from: &PathRef, to: &PathRef) -> KResult<()> {
     }
     {
         let _g = MOUNTS.lock();
+        detach(&from.mnt);
         *from.mnt.parent.lock() = Some(to.clone());
+        attach(&from.mnt);
     }
     mounts_changed();
     Ok(())
@@ -828,12 +849,48 @@ pub fn mounts() -> Vec<Arc<Mount>> {
 
 /// The mount stacked on `p`, if any (the most recent one).
 fn mounted_on(p: &PathRef) -> Option<Arc<Mount>> {
-    MOUNTS
-        .lock()
-        .iter()
-        .rev()
-        .find(|m| m.parent().is_some_and(|q| q.same(p)))
-        .cloned()
+    let ms = p.dentry.mounts.lock();
+    if ms.is_empty() {
+        return None;
+    }
+    ms.iter().rev().filter_map(Weak::upgrade).find(|m| m.parent().is_some_and(|q| q.same(p)))
+}
+
+/// Record `m` on its mount point's dentry (after it joined MOUNTS or got
+/// a new mount point).
+fn attach(m: &Arc<Mount>) {
+    if let Some(p) = m.parent() {
+        let mut ms = p.dentry.mounts.lock();
+        ms.retain(|w| w.strong_count() > 0);
+        ms.push(Arc::downgrade(m));
+    }
+}
+
+/// Forget `m` on its mount point's dentry (it left MOUNTS or moves).
+fn detach(m: &Arc<Mount>) {
+    if let Some(p) = m.parent() {
+        p.dentry.mounts.lock().retain(|w| w.strong_count() > 0 && !core::ptr::eq(w.as_ptr(), Arc::as_ptr(m)));
+    }
+}
+
+impl Drop for MntNs {
+    /// The last process left the namespace: its mounts leave the mount
+    /// table (zygote unshares one per app, so they would pile up).
+    /// Open files keep their own mounts alive.
+    fn drop(&mut self) {
+        let gone: Vec<Arc<Mount>> = {
+            let mut mounts = MOUNTS.lock();
+            let (gone, keep): (Vec<_>, Vec<_>) = mounts.drain(..).partition(|m| mount_reaches(m, &self.root));
+            *mounts = keep;
+            gone
+        };
+        for m in &gone {
+            detach(m);
+        }
+        if !gone.is_empty() {
+            mounts_changed();
+        }
+    }
 }
 
 /// Follow mounts stacked on `p`.
@@ -1051,6 +1108,7 @@ pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathR
     let inode = dir.inode().create(name, mode, rdev)?;
     set_new_owner(&**dir.inode(), &*inode);
     crate::security::label_new_inode(&*inode, mode & S_IFMT == S_IFSOCK);
+    crate::security::label_genfs(&**dir.inode(), name, &*inode);
     super::inotify::created(&**dir.inode(), name, &*inode);
     Ok(PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) })
 }
@@ -1061,6 +1119,7 @@ pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathR
 pub fn adopt(dir: &PathRef, name: &[u8], inode: Arc<dyn Inode>) -> PathRef {
     set_new_owner(&**dir.inode(), &*inode);
     crate::security::label_new_inode(&*inode, false);
+    crate::security::label_genfs(&**dir.inode(), name, &*inode);
     super::inotify::created(&**dir.inode(), name, &*inode);
     PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) }
 }

@@ -89,6 +89,34 @@ struct Sleeper {
 
 static SLEEPERS: IrqLock<Vec<Sleeper>> = IrqLock::new(Vec::new());
 
+/// The key task `tid` sleeps on, if it is in a wait (/proc wchan).
+pub fn sleep_key(tid: u32) -> Option<WaitKey> {
+    SLEEPERS.lock().iter().find(|s| s.task.tid == tid).map(|s| s.key)
+}
+
+/// A wchan-like name for what a task sleeps on (the ASCII tag in the
+/// key's namespace; futexes are keyed by kernel addresses).
+pub fn wait_name(key: WaitKey) -> &'static str {
+    let ns = key.0;
+    if ns >= 0xffff_8000_0000_0000 {
+        return "futex_wait_queue";
+    }
+    match (ns >> 32) as u32 {
+        0x4249_4e44 => "binder_wait_for_work",
+        0x5751_0000 => "wait_woken",
+        0x504f_4c4c => "do_sys_poll",
+        0x5741_4954 => "do_wait",
+        0x534c_4545 => "hrtimer_nanosleep",
+        0x5349_4753 => "sigsuspend",
+        0x5349_4754 => "do_sigtimedwait",
+        0x5546_4644 => "handle_userfault",
+        0x5642_4c4b => "drm_wait_vblank",
+        0x5646_4f52 => "wait_for_vfork_done",
+        0x4558_4543 => "de_thread",
+        _ => "schedule",
+    }
+}
+
 fn this_cpu() -> &'static CpuSched {
     &CPUS[cpu::index_fast()]
 }
@@ -260,6 +288,10 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::drivers::virtio::input::softirq();
         }
+        if process::ptimer::pending() {
+            interrupts::enable();
+            process::ptimer::run_due();
+        }
         interrupts::disable();
         IDLE_CPUS.fetch_or(bit, Ordering::SeqCst);
         if RQ_LEN.load(Ordering::SeqCst) > 0 {
@@ -275,7 +307,11 @@ pub fn idle() -> ! {
 
 /// Timer interrupt (every CPU): time keeping on the BSP, timeouts, and a
 /// preemption request when other tasks are waiting.
-pub fn timer_interrupt() {
+pub fn timer_interrupt(user: bool) {
+    // CPU time accounting: the tick goes to whoever it interrupted.
+    if let Some(t) = unsafe { (*this_cpu().current.get()).as_ref() } {
+        if user { &t.utime } else { &t.stime }.fetch_add(1, Ordering::Relaxed);
+    }
     if cpu::index_fast() == 0 {
         crate::time::tick();
         crate::fs::tty::poll_input();
@@ -301,6 +337,10 @@ pub fn exit_to_user(frame: &mut TrapFrame) {
     if crate::drivers::virtio::input::pending() {
         interrupts::enable();
         crate::drivers::virtio::input::softirq();
+    }
+    if process::ptimer::pending() {
+        interrupts::enable();
+        process::ptimer::run_due();
     }
     loop {
         interrupts::disable();

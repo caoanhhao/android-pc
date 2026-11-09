@@ -1,4 +1,4 @@
-# Kernel architecture (phase D2 state: AOSP init, its core daemons, netd and adbd run; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
+# Kernel architecture (phase D3a state: AOSP boots to sys.boot_completed=1: zygote runs ART's userfaultfd GC, system_server and apps run; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -41,7 +41,10 @@ Wrap every build or QEMU run in `tools/limited-build.sh` (see `CLAUDE.md`).
 Kernel command line (`--append`): `init=PATH` (default `/init`), `strace`
 (log every syscall), `strace=COMM` (only processes whose name starts with
 COMM once, and their later children; write/writev payloads are shown, e.g.
-`strace=adbd`), and everything after `--` becomes init's argv[1..]
+`strace=adbd`), `abortdump=COMM` (keep the last 48 syscalls of each thread
+of such processes and log them when a thread abort()s itself: SIGABRT to
+its own tid), `dtfstab=` (Android device-tree fstab entries, see
+android-init.md), and everything after `--` becomes init's argv[1..]
 (`--ktest b1` passes `-- b1`, so ktest-init only runs the B1 tests).
 
 `run-qemu.sh` builds a hybrid ISO (BIOS + UEFI) with xorriso and
@@ -73,12 +76,14 @@ kernel/
                        entry (syscall/trap asm, TrapFrame, context switch),
                        trap (exceptions -> signals), idt, fpu (FXSAVE), tlb
                        (shootdown/kick IPIs), pic, pit, apic, smp
-      mm/              frame (bitmap allocator + refcounts), paging, heap, kstack (guarded
-                       kernel stacks), user (address spaces, VMAs, user copies)
+      mm/              frame (bitmap allocator + refcounts), paging, heap (size
+                       classes + linked list), kstack (guarded kernel stacks), user
+                       (address spaces, VMAs, user copies), shmem, userfaultfd
       sched/           run queue, context switch, sleep/wake, idle loop;
                        timer (kernel timer callbacks from the tick)
       process/         Task/Process/process table, lifecycle (clone, exec, exit,
-                       wait4), elf (loader + initial stack), signal, futex
+                       wait4), elf (loader + initial stack), signal, futex (+ PI),
+                       pidfd, ptimer (POSIX timers, ITIMER_REAL)
       block/           block devices: registry, /dev/block nodes, sysfs, block ioctls
                        (mod), per-device page cache (cache), GPT partitions (gpt),
                        loop devices (loop_dev), device mapper (dm), RAM disks (brd)
@@ -92,7 +97,9 @@ kernel/
                        per-CPU, ring buffer storage), programs (kept, never run),
                        BTF, links, attachments, ids, bpffs pinning; syscall/bpf.rs
                        is the bpf(2) front end
-      net/             sockets: constants, credentials; unix (AF_UNIX sockets);
+      net/             sockets: constants, credentials; unix (AF_UNIX sockets,
+                       also behind local AF_VSOCK); packet (AF_PACKET + classic
+                       BPF); tun (/dev/net/tun);
                        netlink (AF_NETLINK: kernel uevents, stub protocols);
                        rtnetlink (NETLINK_ROUTE); ifreq (interface ioctls);
                        inet/ (AF_INET/AF_INET6: mod.rs the stack under smoltcp,
@@ -110,7 +117,8 @@ kernel/
                        /proc/kmsg, syslog), lock (OFD byte-range locks); mod.rs: cpio unpacking,
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
-                       protocol, mod); pci (config space, enumeration); virtio/
+                       protocol, mod); ashmem; hvc (host-less virtio-console
+                       ports); pci (config space, enumeration); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
                        on virtio-gpu: mod = files, GEM, ioctls; kms = mode
                        objects, properties, atomic state); dma_buf/ (buffers,
@@ -164,9 +172,14 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   - `0xffffffff80000000`: kernel image; requests RW-NX, text RX, rodata R-NX,
     data/bss RW-NX. CR0.WP, EFER.NXE, CR4.PGE are enabled.
   - The lower half is user space (one PML4 per process, see below).
-- **Heap**: `linked_list_allocator` on one contiguous block (1/8 of free RAM,
-  clamped to 4..64 MiB) reached via the direct map. Interrupts are off while
-  its lock is held, so interrupt handlers may allocate. Does not grow yet.
+- **Heap**: one contiguous block (1/8 of free RAM, clamped to 4..256 MiB)
+  reached via the direct map. Allocations up to 4 KiB come from nine
+  power-of-two size classes (free lists, one lock each, refilled with
+  16 KiB chunks that are never returned); larger ones from a
+  `linked_list_allocator` over the block (D3a: the linked list alone,
+  O(free blocks) per call under one lock, dominated kernel time once
+  system_server ran). Interrupts are off while a heap lock is held, so
+  interrupt handlers may allocate. Does not grow yet.
 - **User address spaces** (`mm/user.rs`): a PML4 whose entries 256..511 are
   copied from the kernel PML4 (shared kernel PDPTs). VMAs (start, end, prot,
   shared, maywrite, optional backing = shmem object + page offset + the
@@ -212,6 +225,28 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
     tasks using it (Linux's mm_users; exited tasks not yet freed still hold
     `Arc`s), and the last one to exit (or exec away) unmaps everything,
     closing mapped files such as a binder buffer's.
+  - **userfaultfd** (`mm/userfaultfd.rs`, D3a): a context (syscall 323
+    or /dev/userfaultfd's USERFAULTFD_IOC_NEW) belongs to the caller's
+    address space; UFFDIO_REGISTER puts a `UffdReg` (context + mode) on
+    the VMAs of the range (private anonymous memory, or writable shmem;
+    MINOR needs shmem). A fault on a registered page without a PTE
+    (MISSING: no page; MINOR: the object has it, this mapping not) either
+    returns `FaultError::Bus` (UFFD_FEATURE_SIGBUS: the trap handler
+    raises SIGBUS/BUS_ADRERR at the address, ART's mutators fill the page
+    from their handler) or `FaultError::Userfault`: the thread queues a
+    `uffd_msg` (read/poll on the fd) and sleeps until UFFDIO_COPY /
+    ZEROPAGE / CONTINUE / MOVE (unless DONTWAKE) / WAKE covers the page,
+    the range is unregistered or the fd closed, then retries the
+    instruction. Kernel copies to such a page wait the same way (or
+    EFAULT in SIGBUS and UFFD_USER_MODE_ONLY contexts). COPY/ZEROPAGE put
+    a fresh frame in the PTE (shared shmem: into the object), CONTINUE
+    maps the object's page, MOVE moves PTEs (a COW-shared source page is
+    copied); results follow Linux (bytes done, EEXIST/ENOENT, EAGAIN when
+    partial). Registrations are not inherited by fork children or by
+    the new range of an mremap; MREMAP_DONTUNMAP leaves the old range
+    registered (ART registers, then moves the pages to a shadow mapping).
+    Unregister, close and mprotect re-merge VMAs that match again
+    (`Inner::remerge`), so a later mremap sees one VMA.
   - **madvise** DONTNEED/FREE unmap the pages of the range (backed VMAs
     refault from their object), REMOVE punches a hole in the object;
     **mremap** shrinks, grows in place when the following range is free, or
@@ -276,6 +311,12 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   KERNEL_GS_BASE.
 
 ## Scheduler (`sched/`)
+
+- CPU time (D3a): every timer tick charges the task it interrupted, as
+  user or kernel time (`Task::utime`/`stime`, /proc/<pid>[/task/<tid>]/stat).
+  Ticks that interrupt kernel code also sample the RIP; `echo p >
+  /proc/sysrq-trigger` logs the 30 most frequent addresses ("profile:")
+  and starts over (resolve them with addr2line on the kernel ELF).
 
 - One global run queue (`IrqLock<VecDeque<Arc<Task>>>`) shared by all CPUs,
   FIFO round robin. The timer interrupt on each CPU requests a reschedule
@@ -352,7 +393,27 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
   AT_UID/EUID/GID/EGID, AT_HWCAP, AT_HWCAP2, AT_CLKTCK, AT_SECURE,
   AT_MINSIGSTKSZ, AT_RANDOM, AT_EXECFN, AT_PLATFORM), strings at the top,
   RSP 16-byte aligned at argc.
-- Signals and futexes: see [syscalls.md](syscalls.md).
+- Signals and futexes: see [syscalls.md](syscalls.md). PI futexes
+  (LOCK_PI, LOCK_PI2, TRYLOCK_PI, UNLOCK_PI, D3a) follow the futex word
+  protocol (owner tid, FUTEX_WAITERS, FUTEX_OWNER_DIED for a dead owner)
+  without boosting priorities; UNLOCK_PI frees the word and wakes one
+  waiter, which re-takes it with FUTEX_WAITERS while others sleep.
+- Thread names (D3a): each `Task` has its own `comm` (PR_SET_NAME,
+  /proc/<pid>/task/<tid>/comm and stat); the leader's is the process's.
+- pidfds (`process/pidfd.rs`, D3a): pidfd_open and CLONE_PIDFD give a
+  file naming a thread-group leader; POLLIN once it exited (a global wait
+  queue woken at every process exit), pidfd_send_signal, pidfd_getfd,
+  process_madvise (hints only) and process_mrelease (no-op) take one.
+- POSIX timers and ITIMER_REAL (`process/ptimer.rs`, D3a): kernel timers
+  fire in the timer interrupt, which cannot take the process table lock,
+  so an expired timer is queued and its signal (SI_TIMER with timer id,
+  overrun and sigev_value, or SIGEV_THREAD_ID to one thread) is sent from
+  task context: on the way back to user mode (`exit_to_user`) or from the
+  idle loop.
+- /proc/<pid>/cmdline reads the argument area from the process's memory
+  (Linux semantics: zygote's argv[0] rewrite to `system_server` or the
+  app's package shows); another task's address space is taken under its
+  `mm_lock`, which exec holds while swapping it.
 
 ## Files (`fs/`)
 
@@ -373,7 +434,8 @@ of mounts whose mount-point chain leads to its root mount. The pieces:
   right path. Dynamic directories (procfs) opt out of caching.
 - **Mounts** (`vfs::Mount`): root dentry, mount point (`PathRef` = mount +
   dentry), type, source, flags. `child_of` crosses into the most recent
-  mount on a dentry; `parent_of` handles `..` at a mount root and never goes
+  mount on a dentry (each dentry keeps weak references to the mounts on
+  it, so path walks never scan the mount list; D3a); `parent_of` handles `..` at a mount root and never goes
   above `/`. `path_of` builds absolute paths the same way. MS_MOVE
   changes a mount's mount point. The root directory is whatever is
   mounted (moved) on top of the namespace's root mount (the initial
@@ -383,7 +445,9 @@ of mounts whose mount-point chain leads to its root mount. The pieces:
   readers poll for changes.
 - **Namespaces and propagation** (`vfs::MntNs`, `copy_ns`,
   `mount_in_group`): unshare/clone(CLONE_NEWNS) copy every mount of the
-  namespace (same root dentries, so the copies show the same trees);
+  namespace (same root dentries, so the copies show the same trees); when
+  the last process leaves a namespace (`MntNs` dropped) its mounts leave
+  the list (zygote unshares one per app; D3a);
   setns switches through /proc/<pid>/ns/mnt. Each mount has a peer group
   (0 = private; MS_SHARED, binds of shared mounts and namespace copies
   share one): a new mount below one member is copied onto the same dentry
@@ -949,6 +1013,50 @@ is in [syscalls.md](syscalls.md#graphics-d1).
 - **dma-heap**: /dev/dma_heap/system (249:0, sysfs class `dma_heap`):
   DMA_HEAP_IOCTL_ALLOC returns a dma-buf of a new zeroed Buffer.
 
+## Android devices of D3a (`drivers/ashmem.rs`, `drivers/hvc.rs`, `net/tun.rs`)
+
+- **ashmem** (misc 10:126, uevent name `ashmem`; ueventd also makes
+  /dev/ashmem<boot_id>, the node libcutils opens): one region per open
+  file; SET_NAME / SET_SIZE until the first mmap, which creates a shmem
+  object of that size (shared by every mapping and fork); SET_PROT_MASK
+  only removes rights (a later shared writable mmap is EPERM); PIN/UNPIN
+  never purge.
+- **hvc1..hvc17** (229:N): Cuttlefish's virtio-console ports to its host
+  daemons, without a host: tty ioctls work (raw mode), writes are
+  discarded, reads wait forever (EAGAIN non-blocking). Enough for the
+  oemlock, bluetooth, NFC, UWB, ... HALs to start and register.
+- **/dev/net/tun** (10:200): TUNSETIFF (IFF_TUN, %d names) adds a link
+  (ARPHRD_NONE, POINTOPOINT|NOARP) to the rtnetlink link list and sysfs
+  for as long as the file is open; no traffic is routed to it, writes
+  are dropped. system_server's Thread network service creates
+  `thread-wpan` with it.
+- **AF_VSOCK** (`syscall/net.rs`): stream sockets on top of AF_UNIX's
+  abstract namespace (`\0vsock:PORT`), for the local CID (1, 3, ANY);
+  the host CID 2 refuses connections. Cuttlefish's lights HAL listens on
+  a vsock port.
+- **AF_KEY**: a socket that can be created and closed (libbpf's
+  synchronizeKernelRCU); no key management.
+- **AF_PACKET** (`net/packet.rs`): frames a card receives are copied to
+  the packet sockets bound to it (protocol or ETH_P_ALL, after their
+  classic BPF filter: a small interpreter with Linux's SKF_NET_OFF /
+  SKF_LL_OFF offsets) before the IP stack sees them; sendto puts a whole
+  frame (SOCK_RAW) or a payload behind a built header (SOCK_DGRAM) on the
+  card. NetworkStack's DHCP client gets eth0's address from QEMU's DHCP
+  server this way after EthernetService took the card over.
+- sysfs: class devices also appear as /sys/class/<class>/<name>
+  (net interfaces had no /sys/class/net links before D3a).
+- **/proc/config.gz**: Android 16's required options for a 6.12 kernel
+  (`fs/kconfig.txt`, from kernel/configs/b/android-6.12), gzip with stored
+  blocks (framework Debug.isVmapStack and VINTF read it).
+- **Device-tree fstab** (`fs/sysfs.rs`): `dtfstab=` on the command line
+  becomes /sys/firmware/devicetree/base/firmware/android/fstab/<name>/
+  {dev,mnt_point,type,mnt_flags,fsmgr_flags,status}; with
+  androidboot.android_dt_dir pointing there, first stage mounts from it
+  and fs_mgr's default fstab (boot HAL: /misc; vold; mount_all) still has
+  it after switch_root.
+- bpffs nodes get the policy's genfscon labels (fs_bpf, fs_bpf_net_shared,
+  ...) when nothing else labels them (ClatCoordinator checks them).
+
 ## Console tty (`fs/tty.rs`)
 
 A subset of Linux's N_TTY line discipline on COM1. There is no IOAPIC
@@ -1126,6 +1234,27 @@ new `--aosp-input-test` 17/17. `--test` 27/27, `--ktest` 45/45,
 `--aosp-adb-test` 21/21 (now with exec-out and `nc` to the host),
 `--aosp-gfx-test` 22/22 (now with `exec-out screencap`) pass.
 
+Phase D3a (zygote and system_server, [android-init.md](android-init.md#d3a-zygote-and-system_server)):
+userfaultfd for ART's concurrent mark-compact GC, then everything
+system_server and the apps needed: PI futexes, pidfds, POSIX timers,
+membarrier, per-thread names, ashmem, AF_VSOCK (local), AF_KEY,
+AF_PACKET with classic BPF filters, tun links, hvc stand-ins, bpffs
+genfscon labels, /proc/config.gz, /proc/<pid>/cmdline from memory, the
+frp and misc partitions and a device-tree fstab, EROFS from access(W_OK)
+on read-only mounts; and the kernel-time fixes (mount index and
+namespace cleanup, heap size classes, erofs directory cache) that took
+the boot from ~400 s to ~20-25 s. `--aosp-boot-test` 24/24
+(sys.boot_completed=1, Launcher3 home). New suites d3_uffd 83 (80 on the
+host), d3_proc 98 (on the host: AF_PACKET, AF_KEY, tun, hvc, ashmem and
+the read-only mount skipped), d3_timers 35 (35 on the host).
+`--test` 27/27, `--ktest` 48/48, `--aosp-sh-test` 15/15,
+`--aosp-disk-test` 9/9, `--aosp-init-test` 41/41 (hwservicemanager may
+have stopped itself), `--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22,
+`--aosp-input-test` 17/17 pass. Fixed on the way: a TLB shootdown that
+named offline CPUs spun forever, a shmem read of a hole past an empty
+initramfs backing panicked, timeouts with huge tv_sec overflowed (futex,
+sigtimedwait, clock_nanosleep, utimensat).
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
@@ -1135,20 +1264,25 @@ new `--aosp-input-test` 17/17. `--test` 27/27, `--ktest` 45/45,
   only stored), EVIOCREVOKE semantics, /proc/bus/input/devices, uhid,
   interrupt-driven virtio-input. `input keyevent` and InputFlinger run
   in system_server (D3).
-- Android (phase D and later): userfaultfd (ART's GC, see
-  android-init.md), kernel BTF for CO-RE bpf objects, a persistent /data
+- Android (phase D and later): kernel BTF for CO-RE bpf objects, a persistent /data
   (ext4 writes or f2fs, then FBE), a real SELinux policy engine, cgroup
   resource control, a pty line discipline for an interactive `adb shell`
   (commands work), ptrace/process_vm_readv for crash_dump.
 - Network follow-ups: IPv6 DAD, MLD, fragments and router lifetimes;
   reassembly of incoming IPv4 fragments; enforcing netfilter and policy
-  routing, packet sockets, tun/tap and virtual links, vsock,
+  routing, packet sockets, tun/tap traffic and virtual links, vsock to a host,
   interrupt-driven virtio-net, socket buffer sizes from
   SO_SNDBUF/SO_RCVBUF, ICMP errors to UDP sockets (ECONNREFUSED), TCP
   ETIMEDOUT, real /proc/net/snmp counters.
 
 - VFS follow-ups: permission checks and capabilities (ids are tracked),
-  read-only mounts, slave/unbindable mounts, statfs block accounting.
+  read-only mounts (only access(W_OK) and erofs/ext4 writes honour them),
+  slave/unbindable mounts, statfs block accounting, fs-verity.
+- D3a follow-ups (D3b): `adb install` needs a writable, persistent /data
+  (tmpfs today: installs and dexopt results vanish at reboot) and works
+  inside one boot; userfaultfd write-protect, ptrace / process_vm_readv
+  (tombstones), a real priority-inheritance scheduler, AF_PACKET rings,
+  vsock to a host, the apexd-bootstrap SIGSEGV seen once.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:
   file page caches stay in RAM while the inode lives; only the block caches
   evict), mlock.
@@ -1167,8 +1301,8 @@ new `--aosp-input-test` 17/17. `--test` 27/27, `--ktest` 45/45,
 - Interrupt routing (IOAPIC from the ACPI MADT) for UART RX, and MSI-X
   for virtio, instead of polling.
 - Scheduler: per-CPU run queues and load balancing, priorities/nice, CPU
-  time accounting (CPU-time clocks currently report uptime; getrusage and
-  times report 0), scheduling classes and affinity (stored only), sleep timers
+  time beyond /proc's tick counts (CPU-time clocks report uptime; getrusage
+  and times report 0), scheduling classes and affinity (stored only), sleep timers
   in a timer wheel instead of one list, real-time signal queueing, job
   control (SIGSTOP/SIGCONT).
 - XSAVE (AVX) state, no ACPI parsing yet (power off uses the q35/PIIX PM1a

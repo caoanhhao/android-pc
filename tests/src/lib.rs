@@ -602,6 +602,7 @@ pub fn errname(r: isize) -> &'static str {
         ESPIPE => "ESPIPE",
         EPIPE => "EPIPE",
         ERANGE => "ERANGE",
+        EDEADLK => "EDEADLK",
         ENOSYS => "ENOSYS",
         ENOTEMPTY => "ENOTEMPTY",
         ETIMEDOUT => "ETIMEDOUT",

@@ -8,6 +8,7 @@ pub mod kstack;
 pub mod paging;
 pub mod shmem;
 pub mod user;
+pub mod userfaultfd;
 
 use crate::boot;
 

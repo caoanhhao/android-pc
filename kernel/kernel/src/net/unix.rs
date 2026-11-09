@@ -169,6 +169,9 @@ struct Inner {
 
 pub struct UnixSocket {
     pub ty: u32,
+    /// An AF_VSOCK socket (see `syscall::net`'s vsock helpers): local
+    /// vsock connections are unix stream connections on abstract names.
+    pub vsock: core::sync::atomic::AtomicBool,
     pub inode: Arc<dyn Inode>,
     pub wq: Arc<WaitQueue>,
     inner: Mutex<Inner>,
@@ -203,6 +206,7 @@ impl UnixSocket {
     pub fn new(ty: u32) -> Arc<UnixSocket> {
         let s = Arc::new(UnixSocket {
             ty,
+            vsock: core::sync::atomic::AtomicBool::new(false),
             inode: AnonInode::new(S_IFSOCK | 0o777, 0),
             wq: WaitQueue::new(),
             inner: Mutex::new(Inner {

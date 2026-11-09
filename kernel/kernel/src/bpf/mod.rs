@@ -519,20 +519,56 @@ pub fn file_obj(f: &OpenFile) -> KResult<BpfObj> {
 // ---------------------------------------------------------------------------
 // bpffs
 
-/// Devices of the bpffs instances (pinning works only inside one).
-static BPFFS_DEVS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// Devices of the bpffs instances (pinning works only inside one), with
+/// the inode number of each root.
+static BPFFS_DEVS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+/// The policy's `genfscon bpf` rules (AOSP system/sepolicy genfs_contexts):
+/// "/" is fs_bpf, these top-level directories have their own types, and
+/// everything below takes its top-level directory's label.
+const GENFS_DIRS: [(&[u8], &str); 10] = [
+    (b"cputimeinstate", "fs_bpf_cputimeinstate"),
+    (b"loader", "fs_bpf_loader"),
+    (b"memevents", "fs_bpf_memevents"),
+    (b"net_private", "fs_bpf_net_private"),
+    (b"net_shared", "fs_bpf_net_shared"),
+    (b"netd_readonly", "fs_bpf_netd_readonly"),
+    (b"netd_shared", "fs_bpf_netd_shared"),
+    (b"tethering", "fs_bpf_tethering"),
+    (b"vendor", "fs_bpf_vendor"),
+    (b"uprobestats", "fs_bpf_uprobestats"),
+];
+
+fn context(ty: &str) -> Vec<u8> {
+    alloc::format!("u:object_r:{ty}:s0\0").into_bytes()
+}
+
+/// The genfscon label of a new node `name` in bpffs directory `parent`
+/// (None outside bpffs).
+pub fn genfs_label(parent: &dyn crate::fs::vfs::Inode, name: &[u8]) -> Option<Vec<u8>> {
+    let m = parent.meta();
+    let root = BPFFS_DEVS.lock().iter().find(|(d, _)| *d == m.dev)?.1;
+    if m.ino == root {
+        let ty = GENFS_DIRS.iter().find(|(n, _)| *n == name).map_or("fs_bpf", |(_, t)| t);
+        return Some(context(ty));
+    }
+    let label = parent.xattrs().ok()?.into_iter().find(|(n, _)| n == crate::security::XATTR_SELINUX)?.1;
+    Some(label)
+}
 
 /// A new bpffs instance: an empty tmpfs whose directories can hold
 /// pinned objects (BPF_OBJ_PIN); mkdir, rename, unlink, chmod and chown
 /// work as on tmpfs. Returns its root.
 pub fn new_fs(mode: u32) -> Arc<TmpInode> {
     let root = TmpInode::new_fs(mode);
-    BPFFS_DEVS.lock().push(crate::fs::vfs::Inode::meta(&*root).dev);
+    let m = crate::fs::vfs::Inode::meta(&*root);
+    BPFFS_DEVS.lock().push((m.dev, m.ino));
+    let _ = crate::fs::vfs::Inode::set_xattr(&*root, crate::security::XATTR_SELINUX, Some(&context("fs_bpf")), 0);
     root
 }
 
 pub fn is_bpffs(dev: u64) -> bool {
-    BPFFS_DEVS.lock().contains(&dev)
+    BPFFS_DEVS.lock().iter().any(|(d, _)| *d == dev)
 }
 
 /// Pinned node -> object.

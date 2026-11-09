@@ -16,8 +16,8 @@ aosp-adb-test.py does (own server, throw-away HOME). Then:
 - QEMU's `screendump` of the virtio-gpu scanout (what the composer put on
   the screen through DRM) is not blank either.
 
-zygote is stopped first: it aborts without userfaultfd (phase D3) and its
-restarts only cost CPU here.
+zygote is stopped first: the graphics checks do not need the framework
+(--aosp-boot-test boots it), and it would only cost CPU here.
 
 Usage: aosp-gfx-test.py [--boot-timeout SECS] [--log FILE] [--port PORT]
                         [--monitor SOCKET] [--out DIR] -- qemu-system-x86_64 ...

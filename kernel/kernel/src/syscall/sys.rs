@@ -685,3 +685,53 @@ fn target_process(who: i32) -> KResult<alloc::sync::Arc<crate::process::Process>
         None => t.tasks.get(&(who as u32)).map(|x| x.process.clone()).ok_or(ESRCH),
     }
 }
+
+const MEMBARRIER_CMD_GLOBAL: u32 = 1;
+const MEMBARRIER_CMD_GLOBAL_EXPEDITED: u32 = 2;
+const MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED: u32 = 4;
+const MEMBARRIER_CMD_PRIVATE_EXPEDITED: u32 = 8;
+const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED: u32 = 16;
+const MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE: u32 = 32;
+const MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE: u32 = 64;
+const MEMBARRIER_CMD_GET_REGISTRATIONS: u32 = 512;
+
+/// membarrier(2): the barriers are IPIs to the CPUs running the address
+/// space (the TLB shootdown IPI, acknowledged by each CPU), or to every
+/// CPU for the global commands. Registrations are kept per address space.
+pub fn sys_membarrier(cmd: u32, flags: u32) -> KResult<u64> {
+    use core::sync::atomic::Ordering::SeqCst;
+    const SUPPORTED: u32 = MEMBARRIER_CMD_GLOBAL
+        | MEMBARRIER_CMD_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE
+        | MEMBARRIER_CMD_GET_REGISTRATIONS;
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    let mm = current().mm();
+    match cmd {
+        0 => Ok(SUPPORTED as u64),
+        MEMBARRIER_CMD_GET_REGISTRATIONS => Ok(mm.membarrier.load(SeqCst) as u64),
+        MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED
+        | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE => {
+            mm.membarrier.fetch_or(cmd, SeqCst);
+            Ok(0)
+        }
+        MEMBARRIER_CMD_GLOBAL | MEMBARRIER_CMD_GLOBAL_EXPEDITED => {
+            crate::arch::x86_64::tlb::shootdown(u64::MAX);
+            Ok(0)
+        }
+        MEMBARRIER_CMD_PRIVATE_EXPEDITED | MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE => {
+            if mm.membarrier.load(SeqCst) & (cmd << 1) == 0 {
+                return Err(EPERM);
+            }
+            crate::arch::x86_64::tlb::shootdown(mm.active_cpus.load(SeqCst));
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
+}

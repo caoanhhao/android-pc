@@ -37,7 +37,10 @@ pub extern "C" fn trap_handler(frame: &mut TrapFrame) {
     match frame.vector {
         TIMER_VECTOR => {
             apic::eoi();
-            crate::sched::timer_interrupt();
+            if !frame.user_mode() {
+                profile_sample(frame.rip);
+            }
+            crate::sched::timer_interrupt(frame.user_mode());
         }
         TLB_VECTOR => {
             tlb::handle_ipi();
@@ -66,6 +69,30 @@ pub extern "C" fn trap_handler(frame: &mut TrapFrame) {
     }
 }
 
+/// Kernel RIPs seen by the timer tick (a sampling profile of where the
+/// kernel spends its time; `echo p > /proc/sysrq-trigger` logs the top).
+static PROFILE: crate::sync::IrqLock<alloc::collections::BTreeMap<u64, u32>> =
+    crate::sync::IrqLock::new(alloc::collections::BTreeMap::new());
+
+fn profile_sample(rip: u64) {
+    let mut p = PROFILE.lock();
+    if p.len() < 4096 || p.contains_key(&rip) {
+        *p.entry(rip).or_insert(0) += 1;
+    }
+}
+
+/// Log the 30 most sampled kernel addresses and clear the profile.
+pub fn profile_dump() {
+    let p = core::mem::take(&mut *PROFILE.lock());
+    let mut v: alloc::vec::Vec<(u64, u32)> = p.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    let total: u32 = v.iter().map(|x| x.1).sum();
+    log::info!("profile: {total} kernel samples");
+    for (rip, n) in v.iter().take(30) {
+        log::info!("profile: {rip:#x} {n}");
+    }
+}
+
 fn user_exception(frame: &mut TrapFrame) {
     let cr2 = Cr2::read_raw();
     interrupts::enable();
@@ -88,8 +115,15 @@ fn user_exception(frame: &mut TrapFrame) {
             let write = frame.error_code & PF_WRITE != 0;
             let exec = frame.error_code & PF_INSN != 0;
             // Not present: demand paging; present: copy-on-write.
-            match crate::process::current().mm().handle_fault(cr2, write, exec) {
+            let mm = crate::process::current().mm();
+            match mm.handle_fault(cr2, write, exec) {
                 Ok(()) => return,
+                Err(crate::mm::user::FaultError::Userfault(ctx, flags)) => {
+                    // Wait for the userfaultfd monitor, then retry the
+                    // instruction (or take a signal first).
+                    ctx.wait_fault(cr2, flags, || mm.page_present(cr2));
+                    return;
+                }
                 Err(crate::mm::user::FaultError::Bus) => {
                     signal::force_fault(fault(signal::SIGBUS, BUS_ADRERR, cr2));
                     return;

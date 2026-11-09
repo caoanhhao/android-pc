@@ -108,8 +108,9 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
     if flags & CLONE_SIGHAND != 0 && flags & CLONE_VM == 0 {
         return Err(EINVAL);
     }
-    if flags & CLONE_PIDFD != 0 {
-        return Err(EINVAL); // TODO: pidfd (B4)
+    // CLONE_PIDFD returns the pidfd through the parent_tid pointer.
+    if flags & CLONE_PIDFD != 0 && flags & (CLONE_THREAD | CLONE_PARENT_SETTID) != 0 {
+        return Err(EINVAL);
     }
     let cur = current();
     let mm = if flags & CLONE_VM != 0 {
@@ -145,7 +146,7 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         };
         let fs = cur.process.fs.lock().clone();
         let p = Process::new(tid, files, fs, cur.process.sig.lock().fork(), (flags & CSIGNAL) as u32);
-        *p.comm.lock() = *cur.process.comm.lock();
+        *p.comm.lock() = *cur.comm.lock();
         *p.exe.lock() = cur.process.exe.lock().clone();
         *p.interp.lock() = cur.process.interp.lock().clone();
         *p.cmdline.lock() = cur.process.cmdline.lock().clone();
@@ -161,6 +162,7 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
     };
     let task = Task::new(tid, process.clone(), mm.clone(), &child_frame).ok_or(ENOMEM)?;
     *task.creds.lock() = cur.creds.lock().clone();
+    *task.comm.lock() = *cur.comm.lock();
     let mut fpu = FpuState::initial();
     fpu.save();
     task.set_fpu(&fpu);
@@ -220,6 +222,16 @@ pub fn sys_clone(frame: &TrapFrame, flags: u64, newsp: u64, ptid: u64, ctid: u64
         }
     }
     drop(table);
+    if flags & CLONE_PIDFD != 0 {
+        match super::pidfd::install_for_child(tid).and_then(|fd| cur.mm().copy_out(ptid, &fd.to_le_bytes())) {
+            Ok(()) => {}
+            Err(e) => {
+                // Too late to undo the clone cleanly: let the child run,
+                // report the failure like Linux would before creating it.
+                log::warn!("clone: CLONE_PIDFD for {tid} failed: {e:?}");
+            }
+        }
+    }
     sched::spawn(task);
 
     if flags & CLONE_VFORK != 0 {
@@ -347,6 +359,8 @@ pub fn exit_thread(status: i32) -> ! {
     if !last {
         sched::wake_all((WAIT_EXEC, pid as u64));
     } else {
+        super::pidfd::notify_exit();
+        super::ptimer::exit(pid);
         // The process left its cgroups (cgroup.events "populated").
         crate::fs::cgroupfs::notify_events();
     }
@@ -602,6 +616,7 @@ pub fn sys_execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KRe
     }
     t.process.files().close_on_exec();
     t.process.set_comm(basename(&path));
+    *t.comm.lock() = *t.process.comm.lock();
     let label = exe.inode().xattrs().ok().and_then(|x| {
         x.into_iter().find(|(n, _)| n == crate::security::XATTR_SELINUX).map(|(_, v)| v)
     });
