@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b, C3c)
+# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -14,13 +14,28 @@ keystore2 with the keymint/gatekeeper HALs, apexd, tombstoned, ...):
 `service list`, `logcat`, `dmesg` and `ps` work from that shell. Since
 C3c the kernel has eBPF maps, programs (stored, not run) and bpffs:
 `load-bpf-programs` succeeds (`bpf.progs_loaded=1`), init starts netd and
-zygote and stays up (see [How far the boot gets](#how-far-the-boot-gets-c3c)).
+zygote and stays up. Since C3d there is a network (virtio-net, smoltcp's
+TCP/IP, rtnetlink, interface ioctls, stored netfilter tables): netd
+finishes its setup, and adbd listens on TCP port 5555, so `adb connect`
+and `adb shell` from the host work (see
+[How far the boot gets](#how-far-the-boot-gets-c3d)).
 
 ## Running it
 
 ```
 tools/limited-build.sh tools/run-qemu.sh --aosp-init        # interactive; Ctrl-A X quits QEMU
 tools/limited-build.sh tools/run-qemu.sh --aosp-init-test   # scripted check, exit 0 iff it passes
+tools/limited-build.sh tools/run-qemu.sh --aosp-adb-test    # adb from the host (C3d), exit 0 iff it passes
+```
+
+With `--aosp-init` running, adb from the host (any adb; the build's is
+`aosp/out/host/linux-x86/bin/adb`) reaches the guest through QEMU's
+user network, which forwards host 127.0.0.1:15555 (`--adb-port PORT`
+to change it) to the guest's port 5555:
+
+```
+adb connect 127.0.0.1:15555
+adb -s 127.0.0.1:15555 shell
 ```
 
 Both build the kernel and `out/aosp-init-initramfs.cpio`
@@ -218,6 +233,78 @@ buffer of up to 64 KiB per open compressed inode. That is now a small
 global cache, and the heap stays at about 18 MB (`Slab` in
 /proc/meminfo is the kernel heap in use).
 
+## C3d: network and adbd
+
+Every VM has a virtio-net card on QEMU's user-mode network (`-netdev
+user`; the guest is 10.0.2.15, the gateway 10.0.2.2); for the AOSP boots
+the host's 127.0.0.1:15555 is forwarded to the guest's port 5555. The
+kernel side is described in
+[kernel-architecture.md](kernel-architecture.md#network-netinet-c3d) and
+[syscalls.md](syscalls.md#network-c3d). What the boot does with it:
+
+- The card is `eth0`, configured by the kernel like Linux's `ip=`
+  autoconfiguration: up, 10.0.2.15/24, default route via 10.0.2.2.
+  Cuttlefish's vendor init runs `rename_netiface eth0 buried_eth0`
+  (RTM_SETLINK: name plus "down"); as on Linux, renaming an up link is
+  EBUSY and the request changes nothing, so eth0 stays up (Cuttlefish
+  itself reaches adbd over vsock and has more cards).
+- netd: `iptables-restore` / `ip6tables-restore` (legacy iptables,
+  libiptc) read the built-in tables with IPT_SO_GET_INFO/GET_ENTRIES
+  and install netd's chains with IPT_SO_SET_REPLACE; the kernel stores
+  the rule blobs without enforcing them (`iptables -S` lists netd's
+  `bw_*`, `fw_*`, `st_*`, `tetherctrl_*` chains). RouteController's
+  policy rules and routes go through rtnetlink (stored; `ip rule`, `ip
+  route show table all`), XfrmController's flushes get the netlink stub's
+  acks. netd logs "Netd started" (about 2 s of setup) and stays up; it is
+  only restarted when zygote aborts (zygote's `onrestart restart netd`).
+- adbd: `persist.sys.usb.config=adb` in the build's props makes
+  `init.usb.rc` start adbd at `boot` (`sys.usb.configfs` is 0, the
+  /sys/class/android_usb writes fail harmlessly). There is no FunctionFS
+  (`/dev/usb-ffs/adb/ep0` is absent), so adbd uses only the network:
+  `persist.adb.tcp.port=5555` (also in the build) makes it listen on
+  `tcp:5555` (an AF_INET6 dual-stack socket) and `vsock:5555` (refused:
+  no AF_VSOCK). userdebug without `ro.adb.secure` needs no host key. The
+  host's adb connects through the port forward; `adb shell` runs
+  commands over the shell protocol (pipes, exit status), `adb push` /
+  `pull` use the sync service.
+
+`--aosp-adb-test` (`tools/aosp-adb-test.py`) boots like
+`--aosp-init-test`, follows the serial log to `boot` and "started service
+'adbd'", then runs the host adb with a server of its own (port 15037, a
+throw-away HOME; other adb servers and Cuttlefish's cvd-1 are left
+alone): `adb connect`, `adb devices -l` (product
+`aosp_cf_x86_64_only_phone`), and through `adb shell`: `getprop
+ro.build.version.sdk`, `ls /system`, `id`, adbd's properties, `ip addr`
+/ `ip route` (rtnetlink from the shell), adbd's socket in
+/proc/net/tcp6, netd's "Netd started" without "Failed to initialize
+BandwidthController", netd's chains in `iptables -S` / `ip6tables -S`,
+an exit status (`exit 3`), and `adb push` / `md5sum` / `adb pull` of a
+300 kB file.
+
+Fixed on the way: `cgroup.events` never notified pollers and kept the
+content it had at open. libprocessgroup's KillProcessGroup re-reads it
+with pread and polls it for POLLPRI until the killed group is empty, so
+every `restart` of a service took the full 2.2 s timeout; with zygote
+and the services restarting in a loop, init's action queue fell minutes
+behind (adbd started about 4 minutes after `boot`). The file now reads
+the current state at offset 0 and signals POLLPRI|POLLERR when a process
+exits or changes group; adbd starts within about 10-60 s of `boot`.
+
+## How far the boot gets (C3d)
+
+Everything in [C3c](#how-far-the-boot-gets-c3c) below, plus: netd
+completes its initialisation (bandwidth control, firewall, tethering,
+strict mode and connmark iptables hooks, RouteController, XfrmController,
+the NetdNativeService and MDnsService binder services); adbd starts at
+`boot` and serves `adb shell`, `push` and `pull` over TCP. Remaining
+failures: zygote still aborts (ART needs userfaultfd, phase D), and with
+it its `onrestart` list (netd, audioserver, cameraserver, media,
+surfaceflinger, wificond) restarts every few seconds; the graphics
+allocator, hwcomposer and other HALs needing DRM or other devices keep
+failing; `sys.boot_completed` is not reached. netd logs "cannot find
+interface dummy0" (no dummy links) and "Unable to start HIDL
+NetdHwService" (no hwservice for it), both harmless.
+
 ## How far the boot gets (C3c)
 
 Everything in [C3b](#how-far-the-boot-gets-c3b) below, then
@@ -234,7 +321,7 @@ HALs (graphics allocator, hwcomposer, health, camera provider, ...).
   (no netfilter: "Failed to initialize BandwidthController") and netd
   exits; init restarts it every few seconds, and its `onrestart`
   restarts zygote each time. Netfilter, the network stack and
-  virtio-net are C3d.
+  virtio-net are C3d (fixed there).
 - **zygote** (`app_process64`) starts the runtime
   (`ZygoteInit` begins), but ART rejects `/system/framework/boot.art`
   ("read barrier state mismatch"): without userfaultfd (syscall 323) ART
@@ -264,12 +351,18 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
 `recovery-refresh`, aconfigd's platform init (no
 `/metadata/aconfig` content), crash_dump (no ptrace).
 
-## What is stubbed or missing (C3c and later)
+## What is stubbed or missing (C3d and later)
 
 - **eBPF** (C3c): programs are never run (no verifier, JIT or
   interpreter): socket filters, cgroup hooks, tracepoints and uprobes do
   nothing, ring buffers stay empty, traffic accounting maps stay as user
   space left them. No kernel BTF (CO-RE objects fail), no fuse-bpf.
+- **Network** (C3d): IPv6 never leaves the machine (no neighbour
+  discovery, no SLAAC; ::1 works), no IP forwarding, packet sockets,
+  tun/tap, dummy/veth links or vsock; netfilter tables and policy rules
+  are stored, never applied; raw and ICMP sockets carry no traffic; no
+  DHCP client in the kernel (the address is static), and no IP
+  fragmentation (datagrams must fit the 1500-byte MTU).
 - **SELinux** is not enforced: there is no policy engine. The policy is
   accepted, every access check allows, `enforce=1` is stored only. There
   is no `class/` tree in selinuxfs, so libselinux logs "Unknown class"

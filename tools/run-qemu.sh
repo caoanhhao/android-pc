@@ -35,7 +35,14 @@
 #                                     tools/aosp-init-test.py: boot
 #                                     milestones on the serial log, then
 #                                     getprop/setprop in init's console shell
+#   tools/run-qemu.sh --aosp-adb-test the same boot with the host port forwarded
+#                                     to adbd: tools/aosp-adb-test.py waits
+#                                     for adbd, connects the host adb (its
+#                                     own server) and runs shell commands
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
+#
+# Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
+# the guest is 10.0.2.15, the gateway 10.0.2.2.
 #
 # Options: --release, --bios (legacy BIOS instead of UEFI), --no-kvm,
 #          --smp N, --mem SIZE, --gdb (wait for gdb on :1234),
@@ -47,6 +54,9 @@
 #          unless ",rw" (writes reach FILE) or ",snapshot" (writes go to a
 #          throw-away overlay); ",legacy" makes the device legacy-only
 #          (virtio 0.9 I/O ports) instead of modern.
+#          --no-net (no network card), --adb-port PORT (forward host
+#          127.0.0.1:PORT to the guest's TCP 5555, adbd; default 15555
+#          for --aosp-init*/--aosp-adb-test, none otherwise),
 #          --sh-arg ARG (repeatable): extra argument for aosp-sh-test.py,
 #          e.g. --sh-arg --run --sh-arg "ls /dev/block".
 #          Extra args after `--` go to QEMU.
@@ -59,7 +69,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel"
 
 mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
-initrd="" append="" ktest_filters=() disks=() sh_args=()
+initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -76,6 +86,9 @@ while [[ $# -gt 0 ]]; do
         --append) append="$2"; shift ;;
         --disk) disks+=("$2"); shift ;;
         --sh-arg) sh_args+=("$2"); shift ;;
+        --no-net) net=0 ;;
+        --adb-port) adb_port="$2"; shift ;;
+        --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
         --aosp) mode=aosp ;;
         --aosp-disk-test) mode=aosp-disk-test ;;
@@ -123,7 +136,8 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ]]; then
+    [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
     python3 "$ROOT/tools/mkaosp-init-initramfs.py" >/dev/null
@@ -278,6 +292,12 @@ for i in "${!disks[@]}"; do
            -device "virtio-blk-pci,drive=disk$i,addr=$(printf '0x%x' $((4 + i)))$modern")
 done
 
+if [[ $net == 1 ]]; then
+    fwd=""
+    [[ -n $adb_port ]] && fwd=",hostfwd=tcp:127.0.0.1:$adb_port-:5555"
+    args+=(-netdev "user,id=net0$fwd" -device "virtio-net-pci,netdev=net0,addr=0x3")
+fi
+
 if [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.
     log="$work/ktest.log"
@@ -310,6 +330,15 @@ elif [[ $mode == aosp-init-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP init test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-adb-test ]]; then
+    log="$work/aosp-adb-test.log"
+    args+=(-display none -serial stdio)
+    if timeout --foreground $((timeout + 120)) python3 "$ROOT/tools/aosp-adb-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" "${sh_args[@]}" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP adb test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display none -serial stdio)

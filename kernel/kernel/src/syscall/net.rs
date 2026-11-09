@@ -1,6 +1,8 @@
 //! Socket syscalls (`crate::net`): socket/socketpair, bind/listen/connect/
 //! accept, the send/recv family with ancillary data (SCM_RIGHTS,
 //! SCM_CREDENTIALS), shutdown, get/setsockopt, getsockname/getpeername.
+//! Each syscall first routes netlink and inet sockets to their modules;
+//! the rest is AF_UNIX.
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -10,6 +12,8 @@ use super::fs::iovecs;
 use crate::errno::*;
 use crate::fs::file::OpenFile;
 use crate::fs::vfs::PathRef;
+use crate::net::inet::netfilter;
+use crate::net::inet::socket::{IPPROTO_TCP, InetSocket, inet_of, is_inet};
 use crate::net::netlink::{self, AF_NETLINK, NetlinkSocket, netlink_of};
 use crate::net::unix::{Addr, Opt, Received, SCM_MAX_FD, SOCKADDR_UN_LEN, UnixSocket, socket_of};
 use crate::net::*;
@@ -65,6 +69,22 @@ fn sock(fd: i32) -> KResult<(Arc<OpenFile>, Arc<UnixSocket>)> {
 fn nl(fd: i32) -> KResult<Option<(Arc<OpenFile>, Arc<NetlinkSocket>)>> {
     let f = current().process.files().get(fd)?;
     Ok(netlink_of(&f).map(|s| (f, s)))
+}
+
+/// The inet socket behind `fd`, if it is one.
+fn inet(fd: i32) -> KResult<Option<(Arc<OpenFile>, Arc<InetSocket>)>> {
+    let f = current().process.files().get(fd)?;
+    Ok(inet_of(&f).map(|s| (f, s)))
+}
+
+/// A user sockaddr_in / sockaddr_in6 (raw bytes).
+fn read_inet_addr(ptr: u64, len: u32) -> KResult<Vec<u8>> {
+    if (len as i32) < 0 || len > 128 {
+        return Err(EINVAL);
+    }
+    let mut b = vec![0u8; len as usize];
+    current().mm().copy_in(ptr, &mut b)?;
+    Ok(b)
 }
 
 fn read_nl_addr(ptr: u64, len: u32) -> KResult<(u32, u32)> {
@@ -145,12 +165,22 @@ pub fn sys_socket(domain: u32, ty: u32, protocol: u32) -> KResult<u64> {
         let f = NetlinkSocket::new(base, protocol)?.open_file(ty & SOCK_NONBLOCK != 0);
         return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
     }
+    if is_inet(domain) {
+        if ty & !(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+            return Err(EINVAL);
+        }
+        let f = InetSocket::new(domain as u16, ty & SOCK_TYPE_MASK, protocol)?.open_file(ty & SOCK_NONBLOCK != 0);
+        return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
     let (base, nonblock, cloexec) = new_socket_args(domain, ty, protocol)?;
     let f = UnixSocket::new(base).open_file(nonblock);
     Ok(current().process.files().alloc(f, cloexec, 0)? as u64)
 }
 
 pub fn sys_socketpair(domain: u32, ty: u32, protocol: u32, sv: u64) -> KResult<u64> {
+    if is_inet(domain) {
+        return Err(EOPNOTSUPP);
+    }
     let (base, nonblock, cloexec) = new_socket_args(domain, ty, protocol)?;
     let (a, b) = UnixSocket::pair(base, Ucred::current());
     let files = current().process.files();
@@ -179,6 +209,10 @@ pub fn sys_bind(fd: i32, addr: u64, len: u32) -> KResult<u64> {
         n.bind(port, groups)?;
         return Ok(0);
     }
+    if let Some((_, s)) = inet(fd)? {
+        s.bind(&read_inet_addr(addr, len)?)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     let a = read_addr(addr, len)?;
     let umask = current().process.fs.lock().umask;
@@ -190,6 +224,10 @@ pub fn sys_listen(fd: i32, backlog: i32) -> KResult<u64> {
     if nl(fd)?.is_some() {
         return Err(EOPNOTSUPP);
     }
+    if let Some((_, s)) = inet(fd)? {
+        s.listen(backlog)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     s.listen(backlog, Ucred::current())?;
     Ok(0)
@@ -200,6 +238,10 @@ pub fn sys_connect(fd: i32, addr: u64, len: u32) -> KResult<u64> {
         // Only the kernel (port 0) is a supported default destination.
         read_nl_addr(addr, len)?;
         n.bind(0, n.groups())?;
+        return Ok(0);
+    }
+    if let Some((f, s)) = inet(fd)? {
+        s.connect(&read_inet_addr(addr, len)?, f.nonblock())?;
         return Ok(0);
     }
     let (f, s) = sock(fd)?;
@@ -227,6 +269,12 @@ pub fn sys_accept4(fd: i32, addr: u64, lenp: u64, flags: u32) -> KResult<u64> {
     if nl(fd)?.is_some() {
         return Err(EOPNOTSUPP);
     }
+    if let Some((f, s)) = inet(fd)? {
+        let (c, peer) = s.accept(f.nonblock())?;
+        let nf = c.open_file(flags & SOCK_NONBLOCK != 0);
+        write_addr(&peer, addr, lenp)?;
+        return Ok(current().process.files().alloc(nf, flags & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
     let (f, s) = sock(fd)?;
     let c = s.accept(f.nonblock())?;
     let peer = c.peer_addr().unwrap_or(Addr::Unnamed).to_sockaddr();
@@ -240,6 +288,10 @@ pub fn sys_getsockname(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
         write_addr(&n.local_addr(), addr, lenp)?;
         return Ok(0);
     }
+    if let Some((_, s)) = inet(fd)? {
+        write_addr(&s.local_name(), addr, lenp)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     write_addr(&s.local_addr().to_sockaddr(), addr, lenp)?;
     Ok(0)
@@ -250,6 +302,10 @@ pub fn sys_getpeername(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
         write_addr(&netlink::sockaddr(0, 0), addr, lenp)?;
         return Ok(0);
     }
+    if let Some((_, s)) = inet(fd)? {
+        write_addr(&s.peer_name()?, addr, lenp)?;
+        return Ok(0);
+    }
     let (_, s) = sock(fd)?;
     write_addr(&s.peer_addr()?.to_sockaddr(), addr, lenp)?;
     Ok(0)
@@ -258,6 +314,10 @@ pub fn sys_getpeername(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
 pub fn sys_shutdown(fd: i32, how: u32) -> KResult<u64> {
     if nl(fd)?.is_some() {
         return if how <= 2 { Ok(0) } else { Err(EINVAL) };
+    }
+    if let Some((_, s)) = inet(fd)? {
+        s.shutdown(how)?;
+        return Ok(0);
     }
     let (_, s) = sock(fd)?;
     s.shutdown(how)?;
@@ -355,6 +415,12 @@ pub fn sys_sendto(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u32)
         current().mm().copy_in(buf, &mut data)?;
         return Ok(n.send(&data, to)? as u64);
     }
+    if let Some((f, s)) = inet(fd)? {
+        let to = if addr != 0 && alen != 0 { Some(read_inet_addr(addr, alen)?) } else { None };
+        let mut data = vec![0u8; (len as usize).min(RECV_MAX)];
+        current().mm().copy_in(buf, &mut data)?;
+        return inet_send(&f, &s, &data, flags, to.as_deref());
+    }
     sock(fd)?;
     let to = if addr != 0 && alen != 0 { Some(read_addr(addr, alen)?) } else { None };
     let len = (len as usize).min(i32::MAX as usize);
@@ -376,6 +442,12 @@ fn sendmsg_one(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
         let to = if name != 0 && namelen != 0 { Some(read_nl_addr(name, namelen)?) } else { None };
         let data = gather(iov, iovlen)?;
         return Ok(n.send(&data, to)? as u64);
+    }
+    if let Some((f, s)) = inet(fd)? {
+        let to = if name != 0 && namelen != 0 { Some(read_inet_addr(name, namelen)?) } else { None };
+        let data = gather(iov, iovlen)?;
+        let _ = (control, controllen);
+        return inet_send(&f, &s, &data, flags, to.as_deref());
     }
     sock(fd)?;
     let to = if name != 0 && namelen != 0 { Some(read_addr(name, namelen)?) } else { None };
@@ -413,6 +485,30 @@ pub fn sys_sendmmsg(fd: i32, vec: u64, vlen: u32, flags: u32) -> KResult<u64> {
     Ok(n)
 }
 
+fn inet_send(f: &OpenFile, s: &InetSocket, data: &[u8], flags: u32, to: Option<&[u8]>) -> KResult<u64> {
+    if flags & MSG_OOB != 0 {
+        return Err(EOPNOTSUPP);
+    }
+    let r = s.send(data, flags, to, f.nonblock());
+    if r == Err(EPIPE) && flags & MSG_NOSIGNAL == 0 {
+        signal::send_to_current(signal::SIGPIPE);
+    }
+    Ok(r? as u64)
+}
+
+/// The result of an inet receive: the real datagram size with MSG_TRUNC.
+fn inet_result(s: &InetSocket, r: &crate::net::inet::socket::Received, flags: u32) -> u64 {
+    if flags & MSG_TRUNC != 0 && s.ty != SOCK_STREAM { r.len as u64 } else { r.data.len() as u64 }
+}
+
+/// read/readv on an inet socket: one receive scattered over the iovecs.
+pub fn inet_readv(f: &OpenFile, s: &InetSocket, iov: &[(u64, u64)]) -> KResult<u64> {
+    let total: u64 = iov.iter().map(|&(_, l)| l).sum();
+    let r = s.recv((total as usize).min(RECV_MAX), 0, f.nonblock())?;
+    scatter(iov, &r.data)?;
+    Ok(r.data.len() as u64)
+}
+
 fn do_recv(fd: i32, len: usize, flags: u32) -> KResult<(Arc<UnixSocket>, Vec<u8>, Received)> {
     let (f, s) = sock(fd)?;
     if flags & MSG_OOB != 0 {
@@ -441,6 +537,17 @@ pub fn sys_recvfrom(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u6
             write_addr(&r.addr, addr, alen)?;
         }
         return Ok(if flags & MSG_TRUNC != 0 { r.len } else { r.data.len() } as u64);
+    }
+    if let Some((f, s)) = inet(fd)? {
+        if flags & MSG_OOB != 0 {
+            return Err(EINVAL);
+        }
+        let r = s.recv((len as usize).min(RECV_MAX), flags, f.nonblock())?;
+        current().mm().copy_out(buf, &r.data)?;
+        if addr != 0 {
+            write_addr(r.from.as_deref().unwrap_or(&[]), addr, alen)?;
+        }
+        return Ok(inet_result(&s, &r, flags));
     }
     let (s, data, r) = do_recv(fd, len as usize, flags)?;
     current().mm().copy_out(buf, &data[..r.n])?;
@@ -513,6 +620,26 @@ fn recvmsg_one(fd: i32, msg: u64, flags: u32) -> KResult<u64> {
     let total: u64 = iov.iter().map(|&(_, l)| l).sum();
     if let Some((f, n)) = nl(fd)? {
         return nl_recvmsg(msg, &f, &n, &iov, total, name, namelen, control, controllen, flags);
+    }
+    if let Some((f, s)) = inet(fd)? {
+        if flags & MSG_OOB != 0 {
+            return Err(EINVAL);
+        }
+        let r = s.recv((total as usize).min(RECV_MAX), flags, f.nonblock())?;
+        scatter(&iov, &r.data)?;
+        let mflags = if s.ty != SOCK_STREAM && r.len > r.data.len() { MSG_TRUNC } else { 0 };
+        let a = r.from.clone().unwrap_or_default();
+        if name != 0 && namelen >= 0 && !a.is_empty() {
+            let k = (namelen as usize).min(a.len());
+            mm.copy_out(name, &a[..k])?;
+            mm.copy_out(msg + 8, &(a.len() as u32).to_le_bytes())?;
+        } else {
+            mm.copy_out(msg + 8, &0u32.to_le_bytes())?;
+        }
+        let _ = control;
+        mm.copy_out(msg + 40, &0u64.to_le_bytes())?;
+        mm.copy_out(msg + 48, &mflags.to_le_bytes())?;
+        return Ok(inet_result(&s, &r, flags));
     }
     let (s, data, r) = do_recv(fd, total.min(isize::MAX as u64) as usize, flags)?;
     scatter(&iov, &data[..r.n])?;
@@ -677,6 +804,15 @@ fn nl_setsockopt(n: &NetlinkSocket, level: i32, name: i32, b: &[u8]) -> KResult<
 }
 
 pub fn sys_setsockopt(fd: i32, level: i32, name: i32, val: u64, len: u32) -> KResult<u64> {
+    if let Some((_, s)) = inet(fd)? {
+        let max = if netfilter::is_netfilter_opt(level, name) { 16 << 20 } else { 256 };
+        if (len as i32) < 0 || len as usize > max {
+            return Err(EINVAL);
+        }
+        let mut b = vec![0u8; len as usize];
+        current().mm().copy_in(val, &mut b)?;
+        return inet_setsockopt(&s, level, name, &b);
+    }
     let mut b = vec![0u8; (len as usize).min(64)];
     if let Some((_, n)) = nl(fd)? {
         current().mm().copy_in(val, &mut b)?;
@@ -722,6 +858,19 @@ pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KR
         return Err(EINVAL);
     }
     let int = |v: i64| (v as i32).to_le_bytes().to_vec();
+    if let Some((_, s)) = inet(fd)? {
+        let (v, ret) = if netfilter::is_netfilter_opt(level, name) {
+            let mut input = vec![0u8; (len as usize).min(16 << 20)];
+            mm.copy_in(val, &mut input)?;
+            netfilter::getsockopt(level == netfilter::SOL_IPV6, name, &input)?
+        } else {
+            (inet_getsockopt(&s, level, name)?, 0)
+        };
+        let n = (len as usize).min(v.len());
+        mm.copy_out(val, &v[..n])?;
+        mm.copy_out(lenp, &(n as u32).to_le_bytes())?;
+        return Ok(ret);
+    }
     let v: Vec<u8> = if let Some((_, n)) = nl(fd)? {
         match (level, name) {
             (SOL_SOCKET, SO_TYPE) => int(n.ty as i64),
@@ -742,6 +891,78 @@ pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KR
     mm.copy_out(val, &v[..n])?;
     mm.copy_out(lenp, &(n as u32).to_le_bytes())?;
     Ok(0)
+}
+
+const SO_BINDTODEVICE: i32 = 25;
+const SO_MARK: i32 = 36;
+const SO_COOKIE: i32 = 57;
+const TCP_NODELAY: i32 = 1;
+const TCP_MAXSEG: i32 = 2;
+const TCP_INFO: i32 = 11;
+const IP_TTL: i32 = 2;
+const IPV6_UNICAST_HOPS: i32 = 16;
+
+/// Options on AF_INET/AF_INET6 sockets: the few that matter act, the rest
+/// are stored and read back.
+fn inet_setsockopt(s: &InetSocket, level: i32, name: i32, b: &[u8]) -> KResult<u64> {
+    if netfilter::is_netfilter_opt(level, name) {
+        netfilter::setsockopt(level == netfilter::SOL_IPV6, name, b)?;
+        return Ok(0);
+    }
+    let int = || -> KResult<i32> {
+        if b.len() < 4 {
+            return Err(EINVAL);
+        }
+        Ok(i32::from_le_bytes(b[..4].try_into().unwrap()))
+    };
+    match (level, name) {
+        (SOL_SOCKET, SO_REUSEADDR) => s.set_reuse(int()? != 0),
+        (SOL_SOCKET, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) => s.set_timeouts(Some(timeval_ns(b)?), None),
+        (SOL_SOCKET, SO_SNDTIMEO_OLD | SO_SNDTIMEO_NEW) => s.set_timeouts(None, Some(timeval_ns(b)?)),
+        (SOL_SOCKET, SO_KEEPALIVE) => s.tcp_tune(None, Some(int()? != 0)),
+        (SOL_SOCKET, SO_LINGER) if b.len() < 8 => return Err(EINVAL),
+        (SOL_SOCKET, SO_BINDTODEVICE) => {}
+        (SOL_SOCKET, _) => {
+            int()?;
+        }
+        (6, TCP_NODELAY) if s.protocol == IPPROTO_TCP => s.tcp_tune(Some(int()? != 0), None),
+        _ => {}
+    }
+    s.store_opt(level, name, b);
+    Ok(0)
+}
+
+fn inet_getsockopt(s: &InetSocket, level: i32, name: i32) -> KResult<Vec<u8>> {
+    let int = |v: i64| (v as i32).to_le_bytes().to_vec();
+    if let Some(v) = s.stored_opt(level, name)
+        && !(level == SOL_SOCKET && matches!(name, SO_ERROR | SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW | SO_SNDTIMEO_OLD | SO_SNDTIMEO_NEW))
+    {
+        return Ok(v);
+    }
+    Ok(match (level, name) {
+        (SOL_SOCKET, SO_TYPE) => int(s.ty as i64),
+        (SOL_SOCKET, SO_DOMAIN) => int(s.family as i64),
+        (SOL_SOCKET, SO_PROTOCOL) => int(s.protocol as i64),
+        (SOL_SOCKET, SO_ERROR) => int(s.take_error().map_or(0, |e| e.0 as i64)),
+        (SOL_SOCKET, SO_ACCEPTCONN) => int(s.listening() as i64),
+        (SOL_SOCKET, SO_SNDBUF) => int(212_992),
+        (SOL_SOCKET, SO_RCVBUF) => int(131_072),
+        (SOL_SOCKET, SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW) => ns_timeval(s.timeouts().0).to_vec(),
+        (SOL_SOCKET, SO_SNDTIMEO_OLD | SO_SNDTIMEO_NEW) => ns_timeval(s.timeouts().1).to_vec(),
+        (SOL_SOCKET, SO_LINGER) => vec![0u8; 8],
+        (SOL_SOCKET, SO_PEERCRED) => NO_CRED.to_bytes().to_vec(),
+        (SOL_SOCKET, SO_COOKIE) => s.id.to_le_bytes().to_vec(),
+        (SOL_SOCKET, SO_RCVLOWAT | SO_SNDLOWAT) => int(1),
+        (SOL_SOCKET, SO_MARK) => int(0),
+        (6, TCP_MAXSEG) => int(1460),
+        (6, TCP_INFO) => {
+            let mut v = vec![0u8; 232];
+            v[0] = s.tcp_state();
+            v
+        }
+        (0, IP_TTL) | (41, IPV6_UNICAST_HOPS) => int(64),
+        _ => int(0),
+    })
 }
 
 fn sockopt_unix(fd: i32, level: i32, name: i32) -> KResult<Vec<u8>> {

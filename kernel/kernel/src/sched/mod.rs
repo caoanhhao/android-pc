@@ -252,6 +252,10 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::fs::tty::deliver_signals();
         }
+        if crate::net::inet::pending() {
+            interrupts::enable();
+            crate::net::inet::softirq();
+        }
         interrupts::disable();
         IDLE_CPUS.fetch_or(bit, Ordering::SeqCst);
         if RQ_LEN.load(Ordering::SeqCst) > 0 {
@@ -272,6 +276,7 @@ pub fn timer_interrupt() {
         crate::time::tick();
         crate::fs::tty::poll_input();
         crate::fs::kmsg::tick();
+        crate::net::inet::tick();
         expire_sleepers();
         timer::run_expired();
     }
@@ -283,6 +288,11 @@ pub fn timer_interrupt() {
 /// Work to do before returning to user mode: reschedule, deliver signals,
 /// finish an interrupted syscall. Returns with interrupts disabled.
 pub fn exit_to_user(frame: &mut TrapFrame) {
+    // Network soft interrupt work (see net::inet), once per return.
+    if crate::net::inet::pending() {
+        interrupts::enable();
+        crate::net::inet::softirq();
+    }
     loop {
         interrupts::disable();
         if crate::fs::tty::signals_pending() {

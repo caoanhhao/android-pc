@@ -93,8 +93,36 @@ const ENTRIES: &[(&str, &str)] = &[
     ("net/core/somaxconn", "4096"),
     ("net/core/wmem_default", "212992"),
     ("net/core/wmem_max", "212992"),
+    ("net/ipv4/fwmark_reflect", "0"),
+    ("net/ipv4/icmp_echo_ignore_broadcasts", "1"),
+    ("net/ipv4/igmp_max_memberships", "20"),
+    ("net/ipv4/ip_default_ttl", "64"),
+    ("net/ipv4/ip_dynaddr", "0"),
+    ("net/ipv4/ip_forward", "0"),
+    ("net/ipv4/ip_local_port_range", "32768\t60999"),
+    ("net/ipv4/ip_local_reserved_ports", ""),
+    ("net/ipv4/ip_no_pmtu_disc", "0"),
     ("net/ipv4/ping_group_range", "1\t0"),
+    ("net/ipv4/tcp_congestion_control", "cubic"),
     ("net/ipv4/tcp_default_init_rwnd", "60"),
+    ("net/ipv4/tcp_fwmark_accept", "0"),
+    ("net/ipv4/tcp_keepalive_intvl", "75"),
+    ("net/ipv4/tcp_keepalive_probes", "9"),
+    ("net/ipv4/tcp_keepalive_time", "7200"),
+    ("net/ipv4/tcp_mtu_probing", "0"),
+    ("net/ipv4/tcp_no_metrics_save", "0"),
+    ("net/ipv4/tcp_rmem", "4096\t131072\t6291456"),
+    ("net/ipv4/tcp_sack", "1"),
+    ("net/ipv4/tcp_syncookies", "1"),
+    ("net/ipv4/tcp_timestamps", "1"),
+    ("net/ipv4/tcp_window_scaling", "1"),
+    ("net/ipv4/tcp_wmem", "4096\t16384\t4194304"),
+    ("net/ipv6/bindv6only", "0"),
+    ("net/ipv6/fwmark_reflect", "0"),
+    ("net/ipv6/ip6frag_high_thresh", "4194304"),
+    ("net/ipv6/ip6frag_low_thresh", "3145728"),
+    ("net/ipv6/ip6frag_time", "60"),
+    ("net/ipv6/route/flush", "0"),
     ("net/unix/max_dgram_qlen", "600"),
     ("vm/compaction_proactiveness", "20"),
     ("vm/dirty_background_ratio", "10"),
@@ -122,6 +150,107 @@ const ENTRIES: &[(&str, &str)] = &[
     ("vm/watermark_scale_factor", "10"),
 ];
 
+/// Per-interface IPv4 and IPv6 settings (net/ipv{4,6}/conf/<if>/ and
+/// neigh/<if>/), for "all", "default" and every link; (key, value).
+const CONF4: &[(&str, &str)] = &[
+    ("accept_local", "0"),
+    ("accept_redirects", "1"),
+    ("accept_source_route", "0"),
+    ("arp_accept", "0"),
+    ("arp_announce", "0"),
+    ("arp_filter", "0"),
+    ("arp_ignore", "0"),
+    ("arp_notify", "0"),
+    ("bootp_relay", "0"),
+    ("disable_policy", "0"),
+    ("disable_xfrm", "0"),
+    ("forwarding", "0"),
+    ("log_martians", "0"),
+    ("mc_forwarding", "0"),
+    ("promote_secondaries", "1"),
+    ("proxy_arp", "0"),
+    ("route_localnet", "0"),
+    ("rp_filter", "0"),
+    ("secure_redirects", "1"),
+    ("send_redirects", "1"),
+    ("shared_media", "1"),
+    ("src_valid_mark", "0"),
+    ("tag", "0"),
+];
+const CONF6: &[(&str, &str)] = &[
+    ("accept_dad", "1"),
+    ("accept_ra", "1"),
+    ("accept_ra_defrtr", "1"),
+    ("accept_ra_from_local", "0"),
+    ("accept_ra_min_hop_limit", "1"),
+    ("accept_ra_mtu", "1"),
+    ("accept_ra_pinfo", "1"),
+    ("accept_ra_rt_info_max_plen", "0"),
+    ("accept_ra_rt_info_min_plen", "0"),
+    ("accept_ra_rt_table", "0"),
+    ("accept_redirects", "1"),
+    ("accept_source_route", "0"),
+    ("addr_gen_mode", "0"),
+    ("autoconf", "1"),
+    ("dad_transmits", "1"),
+    ("disable_ipv6", "0"),
+    ("drop_unsolicited_na", "0"),
+    ("enhanced_dad", "1"),
+    ("forwarding", "0"),
+    ("hop_limit", "64"),
+    ("ignore_routes_with_linkdown", "0"),
+    ("keep_addr_on_down", "0"),
+    ("max_addresses", "16"),
+    ("mldv1_unsolicited_report_interval", "10000"),
+    ("mtu", "1500"),
+    ("ndisc_notify", "0"),
+    ("optimistic_dad", "0"),
+    ("proxy_ndp", "0"),
+    ("router_solicitation_delay", "1"),
+    ("router_solicitation_interval", "4"),
+    ("router_solicitation_max_interval", "3600"),
+    ("router_solicitations", "-1"),
+    ("stable_secret", ""),
+    ("temp_prefered_lft", "86400"),
+    ("temp_valid_lft", "604800"),
+    ("use_oif_addrs_only", "0"),
+    ("use_optimistic", "0"),
+    ("use_tempaddr", "0"),
+];
+const NEIGH: &[(&str, &str)] = &[
+    ("app_solicit", "0"),
+    ("base_reachable_time_ms", "30000"),
+    ("delay_first_probe_time", "5"),
+    ("gc_stale_time", "60"),
+    ("locktime", "100"),
+    ("mcast_resolicit", "0"),
+    ("mcast_solicit", "3"),
+    ("retrans_time_ms", "1000"),
+    ("ucast_solicit", "3"),
+];
+const NET_IFS: &[&str] = &["all", "default", "lo", "eth0"];
+
+/// ENTRIES plus the per-interface ones.
+fn all_entries() -> Vec<(String, String)> {
+    use alloc::format;
+    let mut v: Vec<(String, String)> = ENTRIES.iter().map(|(p, x)| ((*p).into(), (*x).into())).collect();
+    for ifname in NET_IFS {
+        for (k, x) in CONF4 {
+            v.push((format!("net/ipv4/conf/{ifname}/{k}"), (*x).into()));
+        }
+        for (k, x) in CONF6 {
+            v.push((format!("net/ipv6/conf/{ifname}/{k}"), (*x).into()));
+        }
+        if *ifname != "all" {
+            for (k, x) in NEIGH {
+                v.push((format!("net/ipv4/neigh/{ifname}/{k}"), (*x).into()));
+                v.push((format!("net/ipv6/neigh/{ifname}/{k}"), (*x).into()));
+            }
+        }
+    }
+    v
+}
+
 pub struct Node {
     pub path: String,
     /// Index of the value for files, `None` for directories.
@@ -136,7 +265,7 @@ pub fn nodes() -> &'static [Node] {
     NODES.call_once(|| {
         let mut v = alloc::vec![Node { path: String::new(), file: None }];
         let mut vals = VALUES.lock();
-        for (i, (path, init)) in ENTRIES.iter().enumerate() {
+        for (i, (path, init)) in all_entries().into_iter().enumerate() {
             let mut prefix = String::new();
             let comps: Vec<&str> = path.split('/').collect();
             for c in &comps[..comps.len() - 1] {
@@ -148,7 +277,7 @@ pub fn nodes() -> &'static [Node] {
                     v.push(Node { path: prefix.clone(), file: None });
                 }
             }
-            v.push(Node { path: (*path).into(), file: Some(i) });
+            v.push(Node { path, file: Some(i) });
             vals.push(init.as_bytes().to_vec());
         }
         v

@@ -6,7 +6,9 @@
 //!   ueventd and first-stage init "regenerate" events for existing
 //!   devices). The payload is Linux's: "ACTION@DEVPATH\0ACTION=...\0
 //!   DEVPATH=...\0SUBSYSTEM=...\0<uevent file lines>\0SEQNUM=n\0".
-//! - Every other protocol (ROUTE, SELINUX, AUDIT, ...) is a stub: binds
+//! - NETLINK_ROUTE requests are answered by `net::rtnetlink`.
+//! - NETLINK_NETFILTER requests succeed silently (an ack when asked).
+//! - Every other protocol (SELINUX, AUDIT, ...) is a stub: binds
 //!   work, requests to the kernel are answered with NLMSG_DONE (dumps) or
 //!   an NLMSG_ERROR ack (error 0 when NLM_F_ACK is set, else EOPNOTSUPP),
 //!   and nothing is ever multicast.
@@ -35,16 +37,17 @@ use crate::sched::{self, Wake, WaitMode};
 
 pub const AF_NETLINK: u16 = 16;
 pub const NETLINK_KOBJECT_UEVENT: u32 = 15;
+pub const NETLINK_NETFILTER: u32 = 12;
 /// Highest protocol number + 1 (Linux MAX_LINKS).
 const MAX_LINKS: u32 = 32;
 pub const SOCKADDR_NL_LEN: usize = 12;
 
-const NLMSG_HDRLEN: usize = 16;
+pub const NLMSG_HDRLEN: usize = 16;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_REQUEST: u16 = 1;
-const NLM_F_ACK: u16 = 4;
-const NLM_F_DUMP: u16 = 0x300;
+pub const NLM_F_ACK: u16 = 4;
+pub const NLM_F_DUMP: u16 = 0x300;
 const NLM_F_MULTI: u16 = 2;
 
 /// Default receive buffer (bytes queued before messages are dropped).
@@ -283,7 +286,19 @@ impl NetlinkSocket {
                 break;
             }
             let me = self.inner.lock().portid;
-            if flags & NLM_F_REQUEST != 0 {
+            if flags & NLM_F_REQUEST != 0
+                && self.protocol == super::rtnetlink::NETLINK_ROUTE
+                && let Some(replies) = super::rtnetlink::request(&data[off..off + len], me)
+            {
+                for r in replies {
+                    self.deliver(Msg { data: r, portid: 0, groups: 0, cred: KERNEL_CRED });
+                }
+            } else if flags & NLM_F_REQUEST != 0
+                && self.protocol == NETLINK_NETFILTER
+                && flags & (NLM_F_ACK | NLM_F_DUMP) == 0
+            {
+                // Accepted without an answer, as Linux does without NLM_F_ACK.
+            } else if flags & NLM_F_REQUEST != 0 {
                 let reply = if flags & NLM_F_DUMP == NLM_F_DUMP {
                     nlmsg(NLMSG_DONE, NLM_F_MULTI, seq, me, &0i32.to_le_bytes())
                 } else {
@@ -353,7 +368,7 @@ impl NetlinkSocket {
 
 const KERNEL_CRED: Ucred = Ucred { pid: 0, uid: 0, gid: 0 };
 
-fn nlmsg(ty: u16, flags: u16, seq: u32, pid: u32, payload: &[u8]) -> Vec<u8> {
+pub fn nlmsg(ty: u16, flags: u16, seq: u32, pid: u32, payload: &[u8]) -> Vec<u8> {
     let len = NLMSG_HDRLEN + payload.len();
     let mut v = Vec::with_capacity(len);
     v.extend_from_slice(&(len as u32).to_le_bytes());
@@ -363,6 +378,15 @@ fn nlmsg(ty: u16, flags: u16, seq: u32, pid: u32, payload: &[u8]) -> Vec<u8> {
     v.extend_from_slice(&pid.to_le_bytes());
     v.extend_from_slice(payload);
     v
+}
+
+/// Send a kernel message to every socket of `protocol` in `groups`.
+pub fn multicast(protocol: u32, groups: u32, msg: &[u8]) {
+    for s in live() {
+        if s.protocol == protocol && s.groups() & groups != 0 {
+            s.deliver(Msg { data: msg.to_vec(), portid: 0, groups, cred: KERNEL_CRED });
+        }
+    }
 }
 
 fn live() -> Vec<Arc<NetlinkSocket>> {
@@ -408,7 +432,7 @@ impl FileOps for NetlinkFile {
 
     fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
         if cmd != FIONREAD {
-            return Err(ENOTTY);
+            return super::ifreq::ioctl(cmd, arg);
         }
         crate::process::current().mm().copy_out(arg, &(self.0.inq() as i32).to_le_bytes())?;
         Ok(0)
