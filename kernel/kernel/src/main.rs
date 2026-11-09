@@ -65,7 +65,9 @@ extern "C" fn kmain() -> ! {
 
 /// Parse the command line and start init. Recognised words: `init=PATH`,
 /// `strace` (log every syscall), `strace=COMM` (only processes whose
-/// name starts with COMM); words after `--` become init's arguments.
+/// name starts with COMM), `abortdump=COMM` (log the last syscalls of a
+/// thread of such a process that aborts); words after `--` become init's
+/// arguments.
 fn start_init(cmdline: &str) {
     let mut init = "/init";
     let mut args = alloc::vec::Vec::new();
@@ -81,6 +83,12 @@ fn start_init(cmdline: &str) {
                     b[..n].copy_from_slice(&c.as_bytes()[..n]);
                     syscall::TRACE_COMM.call_once(|| b);
                     syscall::TRACE.store(true, core::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(c) = w.strip_prefix("abortdump=") {
+                    let mut b = [0u8; 16];
+                    let n = c.len().min(15);
+                    b[..n].copy_from_slice(&c.as_bytes()[..n]);
+                    syscall::ABORTDUMP_COMM.call_once(|| b);
                 }
                 if let Some(p) = w.strip_prefix("init=") {
                     init = p;

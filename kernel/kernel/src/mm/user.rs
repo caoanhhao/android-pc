@@ -38,6 +38,7 @@ use x86_64::structures::paging::{PageTable, PageTableFlags as F, PhysFrame};
 
 use super::paging::{kernel_pml4, phys_to_virt};
 use super::shmem::Shmem;
+use super::userfaultfd::{self as uffd, UffdCtx};
 use super::{PAGE_SIZE, frame};
 use crate::errno::*;
 use crate::fs::file::OpenFile;
@@ -76,11 +77,31 @@ pub struct Vma {
     pub backing: Option<Backing>,
     /// MADV_WIPEONFORK (private anonymous only): a fork child sees zeroes.
     pub wipeonfork: bool,
+    /// userfaultfd registration (not inherited by fork or mremap).
+    pub uffd: Option<UffdReg>,
+}
+
+/// A VMA's userfaultfd registration: the context and the
+/// UFFDIO_REGISTER_MODE_* bits.
+#[derive(Clone)]
+pub struct UffdReg {
+    pub ctx: Arc<UffdCtx>,
+    pub mode: u32,
+}
+
+impl UffdReg {
+    fn same(a: &Option<UffdReg>, b: &Option<UffdReg>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(x), Some(y)) => Arc::ptr_eq(&x.ctx, &y.ctx) && x.mode == y.mode,
+            _ => false,
+        }
+    }
 }
 
 impl Vma {
     fn anon(end: u64, prot: u32) -> Vma {
-        Vma { end, prot, shared: false, maywrite: true, backing: None, wipeonfork: false }
+        Vma { end, prot, shared: false, maywrite: true, backing: None, wipeonfork: false, uffd: None }
     }
 
     /// This VMA (starting at `start`) cut to begin at `at` instead.
@@ -99,6 +120,7 @@ impl Vma {
             || self.shared != next.shared
             || self.maywrite != next.maywrite
             || self.wipeonfork != next.wipeonfork
+            || !UffdReg::same(&self.uffd, &next.uffd)
         {
             return false;
         }
@@ -137,12 +159,36 @@ pub struct VmaInfo {
 }
 
 /// Why a user page fault could not be resolved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum FaultError {
     /// No mapping or not allowed: SIGSEGV.
     Segv,
-    /// Past the end of the backing object (or out of memory): SIGBUS.
+    /// Past the end of the backing object (or out of memory), or a
+    /// userfault in UFFD_FEATURE_SIGBUS mode: SIGBUS.
     Bus,
+    /// A missing or minor fault in a userfaultfd-registered range: the
+    /// thread waits for the monitor (UFFD_PAGEFAULT_FLAG_* in `.1`).
+    Userfault(Arc<UffdCtx>, u64),
+}
+
+impl PartialEq for FaultError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Segv, Self::Segv) | (Self::Bus, Self::Bus) => true,
+            (Self::Userfault(a, x), Self::Userfault(b, y)) => Arc::ptr_eq(a, b) && x == y,
+            _ => false,
+        }
+    }
+}
+
+impl core::fmt::Debug for FaultError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            Self::Segv => f.write_str("Segv"),
+            Self::Bus => f.write_str("Bus"),
+            Self::Userfault(_, fl) => write!(f, "Userfault({fl:#x})"),
+        }
+    }
 }
 
 pub const MADV_NORMAL: u32 = 0;
@@ -180,6 +226,14 @@ pub struct AddressSpace {
     /// Live tasks using it (Linux's mm_users). `Arc` references also come
     /// from exited tasks not yet freed and from kernel code holding it.
     pub users: AtomicU64,
+    /// Initial stack pointer (/proc/<pid>/stat startstack, which bionic's
+    /// pthread_getattr_np looks up in /proc/self/maps).
+    pub start_stack: AtomicU64,
+    /// Where exec put the argument strings (/proc/<pid>/cmdline reads
+    /// them from memory, so argv[0] rewrites such as zygote's show).
+    pub arg_range: Mutex<(u64, u64)>,
+    /// membarrier(2) registrations (MEMBARRIER_CMD_REGISTER_* bits).
+    pub membarrier: core::sync::atomic::AtomicU32,
 }
 
 fn table(phys: PhysAddr) -> &'static mut PageTable {
@@ -270,6 +324,18 @@ impl Inner {
         self.vmas.insert(start, vma);
     }
 
+    /// Merge the VMAs touching `[start, end)` with neighbours they
+    /// continue (after their attributes changed).
+    fn remerge(&mut self, start: u64, end: u64) {
+        let lo = self.vmas.range(..start).next_back().map_or(start, |(&s, _)| s);
+        let keys: Vec<u64> = self.vmas.range(lo..=end).map(|(&s, _)| s).collect();
+        for k in keys {
+            if let Some(v) = self.vmas.remove(&k) {
+                self.insert(k, v);
+            }
+        }
+    }
+
     /// Fail with `err` unless every page of `[start, end)` is in a VMA.
     fn require_mapped(&self, start: u64, end: u64, err: Errno) -> KResult<()> {
         let mut a = start;
@@ -311,6 +377,9 @@ impl AddressSpace {
             me: me.clone(),
             active_cpus: AtomicU64::new(0),
             users: AtomicU64::new(0),
+            start_stack: AtomicU64::new(0),
+            arg_range: Mutex::new((0, 0)),
+            membarrier: core::sync::atomic::AtomicU32::new(0),
         }))
     }
 
@@ -393,7 +462,7 @@ impl AddressSpace {
     /// Physical address backing user page `va`, faulting it in when the VMA
     /// allows. `write` requires a writable mapping unless `force`; a COW
     /// page is copied first, its old frame pushed to `release`.
-    fn user_page(&self, inner: &Inner, va: u64, write: bool, force: bool, release: &mut Vec<PhysFrame>) -> KResult<PhysAddr> {
+    fn user_page(&self, inner: &Inner, va: u64, write: bool, force: bool, release: &mut Vec<PhysFrame>, wait: &mut Option<(Arc<UffdCtx>, u64)>) -> KResult<PhysAddr> {
         if va >= USER_END {
             return Err(EFAULT);
         }
@@ -420,7 +489,30 @@ impl AddressSpace {
         if !force && (vma.prot == 0 || (write && vma.prot & PROT_WRITE == 0)) {
             return Err(EFAULT);
         }
+        if let Some((ctx, flags)) = self.userfault(start, &vma, page) {
+            if ctx.kernel_faults_fail() {
+                return Err(EFAULT);
+            }
+            *wait = Some((ctx, flags | if write { uffd::PAGEFAULT_FLAG_WRITE } else { 0 }));
+            return Err(EAGAIN);
+        }
         self.fault_missing(start, &vma, page, write)
+    }
+
+    /// The userfault a missing PTE at `page` of `vma` (at `start`) raises,
+    /// if the VMA is registered for it: the context and
+    /// UFFD_PAGEFAULT_FLAG_MINOR when the shmem object has the page.
+    fn userfault(&self, start: u64, vma: &Vma, page: u64) -> Option<(Arc<UffdCtx>, u64)> {
+        let reg = vma.uffd.as_ref()?;
+        let cached = vma.object_page(start, page).is_some_and(|(obj, idx)| obj.has_page(idx));
+        let (mode, flags) = if cached { (uffd::MODE_MINOR, uffd::PAGEFAULT_FLAG_MINOR) } else { (uffd::MODE_MISSING, 0) };
+        (reg.mode & mode != 0).then(|| (reg.ctx.clone(), flags))
+    }
+
+    /// Whether `va` has a present PTE (a userfault was resolved).
+    pub fn page_present(&self, va: u64) -> bool {
+        let _inner = self.inner.lock();
+        self.walk(page_down(va), false).is_some_and(|e| e.flags().contains(F::PRESENT))
     }
 
     fn copy(&self, va: u64, len: usize, write: bool, force: bool, mut f: impl FnMut(*mut u8, usize, usize)) -> KResult<()> {
@@ -428,26 +520,36 @@ impl AddressSpace {
         if end > USER_END {
             return Err(EFAULT);
         }
-        let inner = self.inner.lock();
-        let mut release = Vec::new();
         let mut done = 0usize;
-        let mut result = Ok(());
-        while done < len {
-            let a = va + done as u64;
-            let off = (a % PAGE_SIZE) as usize;
-            let n = (PAGE_SIZE as usize - off).min(len - done);
-            match self.user_page(&inner, a, write, force, &mut release) {
-                Ok(phys) => f(phys_to_virt(phys + off as u64).as_mut_ptr::<u8>(), done, n),
-                Err(e) => {
-                    result = Err(e);
-                    break;
+        loop {
+            let inner = self.inner.lock();
+            let mut release = Vec::new();
+            let mut wait = None;
+            let mut result = Ok(());
+            while done < len {
+                let a = va + done as u64;
+                let off = (a % PAGE_SIZE) as usize;
+                let n = (PAGE_SIZE as usize - off).min(len - done);
+                match self.user_page(&inner, a, write, force, &mut release, &mut wait) {
+                    Ok(phys) => f(phys_to_virt(phys + off as u64).as_mut_ptr::<u8>(), done, n),
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
                 }
+                done += n;
             }
-            done += n;
+            drop(inner);
+            self.finish_unmap(release);
+            // A userfault: wait for the monitor to fill the page, then go on.
+            let Some((ctx, flags)) = wait else {
+                return result;
+            };
+            let a = va + done as u64;
+            if !ctx.wait_fault(a, flags, || self.page_present(a)) {
+                return Err(EINTR);
+            }
         }
-        drop(inner);
-        self.finish_unmap(release);
-        result
     }
 
     /// Read user memory into `buf`.
@@ -470,6 +572,22 @@ impl AddressSpace {
         self.copy(va, data.len(), true, true, |p, done, n| unsafe {
             core::ptr::copy_nonoverlapping(data.as_ptr().add(done), p, n)
         })
+    }
+
+    /// Atomically replace the u32 at `va` (4-byte aligned) with `new` if
+    /// it holds `old`; returns the value found (PI futex words).
+    pub fn cmpxchg_u32(&self, va: u64, old: u32, new: u32) -> KResult<u32> {
+        if !va.is_multiple_of(4) {
+            return Err(EINVAL);
+        }
+        let mut found = 0;
+        self.copy(va, 4, true, false, |p, _, _| {
+            let a = unsafe { &*(p as *const core::sync::atomic::AtomicU32) };
+            found = match a.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(v) | Err(v) => v,
+            };
+        })?;
+        Ok(found)
     }
 
     /// Read a NUL-terminated string of at most `max` bytes (without NUL).
@@ -514,6 +632,12 @@ impl AddressSpace {
         }
         let page = page_down(va);
         let Some(e) = self.walk(page, false).filter(|e| e.flags().contains(F::PRESENT)) else {
+            if let Some((ctx, flags)) = self.userfault(start, &vma, page) {
+                if ctx.sigbus() {
+                    return Err(Bus);
+                }
+                return Err(Userfault(ctx, flags | if write { uffd::PAGEFAULT_FLAG_WRITE } else { 0 }));
+            }
             return match self.fault_missing(start, &vma, page, write) {
                 Ok(_) => Ok(()),
                 Err(_) if vma.backing.is_some() => Err(Bus),
@@ -659,7 +783,7 @@ impl AddressSpace {
     /// Mapping of a shmem object (a file, or /dev/zero).
     #[allow(clippy::too_many_arguments)]
     pub fn mmap_object(&self, addr: u64, len: u64, prot: u32, shared: bool, maywrite: bool, backing: Backing, fixed: bool, noreplace: bool) -> KResult<u64> {
-        let vma = Vma { end: 0, prot, shared, maywrite: maywrite || !shared, backing: Some(backing), wipeonfork: false };
+        let vma = Vma { end: 0, prot, shared, maywrite: maywrite || !shared, backing: Some(backing), wipeonfork: false, uffd: None };
         self.map(addr, len, fixed, noreplace, vma)
     }
 
@@ -737,6 +861,9 @@ impl AddressSpace {
         for s in starts {
             inner.vmas.get_mut(&s).unwrap().prot = prot;
         }
+        // Rejoin pieces that match again (bionic's atexit array is
+        // mprotect()ed page by page and later mremap()ed as one VMA).
+        inner.remerge(addr, end);
         for p in (addr..end).step_by(PAGE_SIZE as usize) {
             if let Some(e) = self.walk(p, false)
                 && has_frame(e)
@@ -822,6 +949,7 @@ impl AddressSpace {
         for s in starts {
             inner.vmas.get_mut(&s).unwrap().wipeonfork = on;
         }
+        inner.remerge(addr, end);
         Ok(())
     }
 
@@ -982,7 +1110,7 @@ impl AddressSpace {
             } else {
                 inner.find_free(new_len).ok_or(ENOMEM)?
             };
-            inner.insert(dest, Vma { end: dest + new_len, ..vma });
+            inner.insert(dest, Vma { end: dest + new_len, uffd: None, ..vma });
             return Ok(dest);
         }
         let mut release = Vec::new();
@@ -1048,7 +1176,7 @@ impl AddressSpace {
         if !dontunmap {
             release.extend(self.unmap_locked(inner, old, old + old_len));
         }
-        inner.insert(dest, Vma { end: dest + new_len, ..vma.clone() });
+        inner.insert(dest, Vma { end: dest + new_len, uffd: None, ..vma.clone() });
         Ok(())
     }
 
@@ -1099,15 +1227,215 @@ impl AddressSpace {
         self.finish_unmap(frames);
     }
 
+    /// UFFDIO_REGISTER of `[start, end)` with `ctx`: private anonymous
+    /// memory, or writable shmem objects (MINOR needs shmem). Returns
+    /// whether the whole range is private anonymous (UFFDIO_MOVE works).
+    pub fn uffd_register(&self, ctx: &Arc<UffdCtx>, start: u64, end: u64, mode: u32) -> KResult<bool> {
+        let mut inner = self.inner.lock();
+        if inner.find(start).is_none() && !inner.overlaps(start, end) {
+            return Err(ENOMEM);
+        }
+        inner.require_mapped(start, end, EINVAL)?;
+        let mut all_anon = true;
+        let mut a = start;
+        while a < end {
+            let (_, v) = inner.find(a).unwrap();
+            let anon = v.backing.is_none() && !v.shared;
+            let shmem = v.backing.as_ref().is_some_and(|b| !b.obj.is_readonly());
+            if !(anon || shmem) || (mode & uffd::MODE_MINOR != 0 && !shmem) {
+                return Err(EINVAL);
+            }
+            if v.uffd.as_ref().is_some_and(|r| !Arc::ptr_eq(&r.ctx, ctx)) {
+                return Err(EBUSY);
+            }
+            all_anon &= anon;
+            a = v.end;
+        }
+        inner.split_at(start);
+        inner.split_at(end);
+        for v in inner.vmas.range_mut(start..end).map(|(_, v)| v) {
+            v.uffd = Some(UffdReg { ctx: ctx.clone(), mode });
+        }
+        inner.remerge(start, end);
+        Ok(all_anon)
+    }
+
+    /// UFFDIO_UNREGISTER: drop `ctx`'s registrations in `[start, end)`.
+    pub fn uffd_unregister(&self, ctx: &Arc<UffdCtx>, start: u64, end: u64) -> KResult<()> {
+        let mut inner = self.inner.lock();
+        if inner.find(start).is_none() && !inner.overlaps(start, end) {
+            return Err(ENOMEM);
+        }
+        inner.split_at(start);
+        inner.split_at(end);
+        for v in inner.vmas.range_mut(start..end).map(|(_, v)| v) {
+            if v.uffd.as_ref().is_some_and(|r| Arc::ptr_eq(&r.ctx, ctx)) {
+                v.uffd = None;
+            }
+        }
+        inner.remerge(start, end);
+        Ok(())
+    }
+
+    /// The userfaultfd was closed: drop every registration of `ctx`.
+    pub fn uffd_release(&self, ctx: &UffdCtx) {
+        let mut inner = self.inner.lock();
+        let mut any = false;
+        for v in inner.vmas.values_mut() {
+            if v.uffd.as_ref().is_some_and(|r| core::ptr::eq(Arc::as_ptr(&r.ctx), ctx)) {
+                v.uffd = None;
+                any = true;
+            }
+        }
+        if any {
+            inner.remerge(0, USER_END);
+        }
+    }
+
+    /// Fill the missing page `va` of a range registered with `ctx`
+    /// (UFFDIO_COPY, ZEROPAGE, CONTINUE). ENOENT outside such a range,
+    /// EEXIST if the page is already mapped (or, for shmem, already in
+    /// the object), EFAULT for CONTINUE without an object page.
+    pub fn uffd_fill(&self, ctx: &Arc<UffdCtx>, va: u64, fill: uffd::Fill) -> KResult<()> {
+        let owned = match &fill {
+            uffd::Fill::Frame(f) => Some(*f),
+            _ => None,
+        };
+        let r = self.uffd_fill_inner(ctx, va, fill);
+        if r.is_err()
+            && let Some(f) = owned
+        {
+            frame::free(f);
+        }
+        r
+    }
+
+    fn uffd_fill_inner(&self, ctx: &Arc<UffdCtx>, va: u64, fill: uffd::Fill) -> KResult<()> {
+        let inner = self.inner.lock();
+        let (start, vma) = inner.find(va).ok_or(ENOENT)?;
+        if !vma.uffd.as_ref().is_some_and(|r| Arc::ptr_eq(&r.ctx, ctx)) {
+            return Err(ENOENT);
+        }
+        if self.walk(va, false).is_some_and(|e| has_frame(e)) {
+            return Err(EEXIST);
+        }
+        let e = self.walk(va, true).ok_or(ENOMEM)?;
+        let mut flags = pte_flags(vma.prot);
+        let frame = match (fill, vma.object_page(start, va)) {
+            (uffd::Fill::Continue, None) => return Err(EINVAL),
+            (uffd::Fill::Continue, Some((obj, idx))) => {
+                if !obj.has_page(idx) {
+                    return Err(EFAULT);
+                }
+                if !vma.shared {
+                    flags -= F::WRITABLE;
+                }
+                obj.fault_page(idx).map_err(|_| EFAULT)?
+            }
+            (fill, obj) => {
+                let owned_here = !matches!(fill, uffd::Fill::Frame(_));
+                let f = match fill {
+                    uffd::Fill::Frame(f) => f,
+                    _ => frame::alloc_zeroed().ok_or(ENOMEM)?,
+                };
+                match obj {
+                    // Shared shmem: the page goes into the object.
+                    Some((obj, idx)) if vma.shared => {
+                        if let Err(e) = obj.insert_page(idx, f) {
+                            // A zero page we allocated here; a copied one
+                            // is freed by the caller.
+                            if owned_here {
+                                frame::free(f);
+                            }
+                            return Err(e);
+                        }
+                        frame::get(f);
+                    }
+                    _ => {}
+                }
+                f
+            }
+        };
+        if vma.prot == 0 {
+            flags = PARKED_FLAGS;
+        }
+        e.set_frame(frame, flags);
+        Ok(())
+    }
+
+    /// UFFDIO_MOVE: move the pages of `[src, src + len)` (private
+    /// anonymous) to the missing pages at `dst` (registered with `ctx`).
+    /// Returns the bytes moved and the error that stopped it, if any.
+    pub fn uffd_move(&self, ctx: &Arc<UffdCtx>, dst: u64, src: u64, len: u64, allow_holes: bool) -> (u64, Option<Errno>) {
+        let inner = self.inner.lock();
+        let mut done = 0;
+        let mut err = None;
+        let mut release = Vec::new();
+        while done < len {
+            let (d, s) = (dst + done, src + done);
+            let r = (|| {
+                let (_, dv) = inner.find(d).ok_or(ENOENT)?;
+                let (_, sv) = inner.find(s).ok_or(ENOENT)?;
+                if !dv.uffd.as_ref().is_some_and(|r| Arc::ptr_eq(&r.ctx, ctx))
+                    || dv.backing.is_some()
+                    || dv.shared
+                    || sv.backing.is_some()
+                    || sv.shared
+                {
+                    return Err(EINVAL);
+                }
+                if self.walk(d, false).is_some_and(|e| has_frame(e)) {
+                    return Err(EEXIST);
+                }
+                let Some(se) = self.walk(s, false).filter(|e| e.flags().contains(F::PRESENT)) else {
+                    return if allow_holes { Ok(()) } else { Err(ENOENT) };
+                };
+                let de = self.walk(d, true).ok_or(ENOMEM)?;
+                let old = PhysFrame::containing_address(se.addr());
+                // A page still shared with a fork child (COW) is copied.
+                let f = if frame::refcount(old) == 1 {
+                    old
+                } else {
+                    let copy = copy_frame(old)?;
+                    release.push(old);
+                    copy
+                };
+                se.set_unused();
+                de.set_frame(f, if dv.prot == 0 { PARKED_FLAGS } else { pte_flags(dv.prot) });
+                Ok(())
+            })();
+            if let Err(e) = r {
+                err = Some(e);
+                break;
+            }
+            done += PAGE_SIZE;
+        }
+        drop(inner);
+        self.flush_tlb();
+        for f in release {
+            frame::free(f);
+        }
+        (done, err)
+    }
+
     /// Copy-on-write copy of the address space (`fork` without CLONE_VM).
     pub fn fork(&self) -> Option<Arc<AddressSpace>> {
         let child = AddressSpace::new()?;
+        child.start_stack.store(self.start_stack.load(Ordering::Relaxed), Ordering::Relaxed);
+        *child.arg_range.lock() = *self.arg_range.lock();
         let inner = self.inner.lock();
         {
             let mut ci = child.inner.lock();
             ci.vmas = inner.vmas.clone();
             ci.brk_start = inner.brk_start;
             ci.brk = inner.brk;
+            // userfaultfd registrations stay with the parent (no EVENT_FORK).
+            if ci.vmas.values().any(|v| v.uffd.is_some()) {
+                for v in ci.vmas.values_mut() {
+                    v.uffd = None;
+                }
+                ci.remerge(0, USER_END);
+            }
         }
         for b in inner.vmas.values().filter_map(|v| v.backing.as_ref()) {
             b.obj.register(&child.me);

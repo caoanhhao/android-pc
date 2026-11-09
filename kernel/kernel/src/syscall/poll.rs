@@ -348,7 +348,7 @@ fn timerfd_of(fd: i32) -> KResult<Arc<timerfd::TimerFd>> {
 }
 
 /// struct itimerspec { it_interval, it_value } as (interval, value) ns.
-fn write_itimerspec(mm: &AddressSpace, addr: u64, value: u64, interval: u64) -> KResult<()> {
+pub fn write_itimerspec(mm: &AddressSpace, addr: u64, value: u64, interval: u64) -> KResult<()> {
     write_ns(mm, addr, interval, false)?;
     write_ns(mm, addr + 16, value, false)
 }

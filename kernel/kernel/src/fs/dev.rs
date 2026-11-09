@@ -23,6 +23,10 @@
 //! | /dev/dma_heap/system | 249:0  | system dma-heap (`drivers::dma_buf`) |
 //! | /dev/input/eventN | 13:64+N   | evdev (`drivers::input`)             |
 //! | /dev/uinput     | 10:223      | uinput (`drivers::input::uinput`)    |
+//! | /dev/net/tun    | 10:200      | tun links without traffic (`net::tun`) |
+//! | /dev/hvc1..17   | 229:N       | host-less virtio-console stand-ins (`drivers::hvc`) |
+//! | /dev/ashmem<boot_id> | 10:126 | ashmem regions (`drivers::ashmem`) |
+//! | /dev/userfaultfd | 10:124     | USERFAULTFD_IOC_NEW (`mm::userfaultfd`) |
 //! | /sys/kernel/debug/sync/sw_sync | 10:250 | sw_sync timelines (`drivers::dma_buf::sync_file`) |
 //!
 //! Block device nodes (/dev/block/*) open `block::open_blk`.
@@ -124,8 +128,12 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (crate::block::MISC_MAJOR, crate::drivers::dma_buf::sync_file::SW_SYNC_MINOR) => {
             return crate::drivers::dma_buf::sync_file::open_sw_sync();
         }
+        (crate::drivers::hvc::HVC_MAJOR, minor) => return crate::drivers::hvc::open(minor),
         (crate::drivers::drm::DRM_MAJOR, minor) => return crate::drivers::drm::open(minor),
         (crate::drivers::dma_buf::HEAP_MAJOR, minor) => return crate::drivers::dma_buf::open_heap(minor),
+        (crate::block::MISC_MAJOR, crate::net::tun::TUN_MINOR) => return crate::net::tun::open(),
+        (crate::block::MISC_MAJOR, crate::drivers::ashmem::ASHMEM_MINOR) => return crate::drivers::ashmem::open(),
+        (crate::block::MISC_MAJOR, crate::mm::userfaultfd::USERFAULTFD_MINOR) => return crate::mm::userfaultfd::open_dev(),
         (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
         _ => return Err(ENXIO),
     };
@@ -142,7 +150,7 @@ pub fn console() -> Arc<OpenFile> {
 /// A new devtmpfs instance with the standard nodes.
 pub fn new_devtmpfs() -> Arc<TmpInode> {
     let root = TmpInode::new_fs(0o755);
-    let nodes: [(&[u8], u32, u32, u32); 11] = [
+    let nodes: [(&[u8], u32, u32, u32); 14] = [
         (b"null", 0o666, 1, 3),
         (b"zero", 0o666, 1, 5),
         (b"full", 0o666, 1, 7),
@@ -154,11 +162,19 @@ pub fn new_devtmpfs() -> Arc<TmpInode> {
         (b"ttyS0", 0o660, 4, 64),
         (b"ptmx", 0o666, 5, 2),
         (b"uinput", 0o660, 10, 223),
+        (b"userfaultfd", 0o600, 10, 124),
+        (b"ashmem", 0o666, 10, 126),
+        (b"hvc1", 0o600, 229, 1),
     ];
     for (name, perm, major, minor) in nodes {
         let _ = root.add(name, S_IFCHR | perm, encode_dev(major, minor), None);
     }
     let _ = root.add(b"pts", S_IFDIR | 0o755, 0, None);
+    if let Ok(net) = root.add(b"net", S_IFDIR | 0o755, 0, None)
+        && let Some(net) = net.as_any().downcast_ref::<TmpInode>()
+    {
+        let _ = net.add(b"tun", S_IFCHR | 0o666, encode_dev(10, 200), None);
+    }
     let _ = root.add(b"shm", S_IFDIR | 0o1777, 0, None);
     root
 }

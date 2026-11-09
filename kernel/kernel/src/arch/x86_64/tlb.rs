@@ -23,7 +23,11 @@ pub fn flush_local() {
 /// user TLB entries. Must be called with interrupts enabled.
 pub fn shootdown(cpus: u64) {
     let me = cpu::index_fast();
-    let targets = cpus & !(1u64 << me);
+    // Only CPUs that are up acknowledge (membarrier's global barrier
+    // passes every bit).
+    let n = super::smp::online_cpus();
+    let online = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+    let targets = cpus & online & !(1u64 << me);
     if targets == 0 {
         return;
     }

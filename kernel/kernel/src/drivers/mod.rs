@@ -7,9 +7,11 @@
 
 #[macro_use]
 pub mod serial;
+pub mod ashmem;
 pub mod binder;
 pub mod dma_buf;
 pub mod drm;
+pub mod hvc;
 pub mod input;
 pub mod pci;
 pub mod virtio;

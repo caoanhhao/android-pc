@@ -44,8 +44,8 @@
 #                                     the graphics HALs and surfaceflinger
 #                                     run, takes `adb shell screencap -p`
 #                                     and a QEMU screendump and checks both
-#                                     are not blank (zygote is stopped, it
-#                                     needs userfaultfd: phase D3)
+#                                     are not blank (zygote is stopped:
+#                                     --aosp-boot-test covers the framework)
 #   tools/run-qemu.sh --aosp-input-test
 #                                     the graphics test's boot (virtio-gpu,
 #                                     virtio-input devices, monitor):
@@ -55,6 +55,15 @@
 #                                     `mouse_button` reaching getevent, and
 #                                     `adb exec-out` (text, 2 MB, a
 #                                     `screencap -p` PNG)
+#   tools/run-qemu.sh --aosp-boot-test
+#                                     the graphics test's boot with zygote
+#                                     left running (6 GiB, 6 CPUs):
+#                                     tools/aosp-boot-test.py waits for
+#                                     system_server and sys.boot_completed=1,
+#                                     checks the boot animation exited, the
+#                                     framework services (service list,
+#                                     dumpsys activity/window, pm path) and
+#                                     that system_server and zygote stay up
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -122,6 +131,7 @@ while [[ $# -gt 0 ]]; do
         --monitor) monitor="$2"; shift ;;
         --aosp-gfx-test) mode=aosp-gfx-test ;;
         --aosp-input-test) mode=aosp-input-test ;;
+        --aosp-boot-test) mode=aosp-boot-test ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -152,8 +162,8 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test ) ]] && input=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -173,20 +183,37 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
     python3 "$ROOT/tools/mkaosp-init-initramfs.py" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/aosp-init-initramfs.cpio"
     # Read-only: first-stage init only reads the dynamic partitions.
-    [[ ${#disks[@]} -eq 0 ]] && disks=("$product/super.img")
+    # Two small partitions Cuttlefish keeps on its persistent disk, as
+    # empty 1 MiB images written through snapshots: vdb (00:05.0) is the
+    # factory reset protection partition ro.frp.pst names (system_server's
+    # PersistentDataBlockService formats it), vdc (00:06.0) is misc (the
+    # boot HAL keeps its A/B slot metadata there; vold waits for that HAL).
+    if [[ ${#disks[@]} -eq 0 ]]; then
+        mkdir -p "$ROOT/out"
+        for p in frp misc; do
+            [[ -f $ROOT/out/aosp-$p.img ]] || truncate -s 1M "$ROOT/out/aosp-$p.img"
+        done
+        disks=("$product/super.img" "$ROOT/out/aosp-frp.img,snapshot" "$ROOT/out/aosp-misc.img,snapshot")
+    fi
     # The disk is PCI 00:04.0 (see the -device loop below), so it is the
     # boot device and vda is "super". Bootconfig values live on the
     # command line; /proc/bootconfig shows the androidboot.* ones.
     boot_args="init=/init androidboot.hardware=cutf_cvm androidboot.fstab_suffix=rustpc"
     boot_args+=" androidboot.slot_suffix=_a androidboot.force_normal_boot=0"
-    boot_args+=" androidboot.boot_devices=pci0000:00/0000:00:04.0 androidboot.partition_map=vda,super"
+    boot_args+=" androidboot.boot_devices=pci0000:00/0000:00:04.0,pci0000:00/0000:00:05.0,pci0000:00/0000:00:06.0"
+    boot_args+=" androidboot.partition_map=vda,super;vdb,frp;vdc,misc"
+    # The fstab (with /misc) as a device-tree style fstab node: first
+    # stage mounts from it, and fs_mgr's default fstab keeps it afterwards
+    # (androidboot.android_dt_dir), see tools/mkaosp-init-initramfs.py.
+    boot_args+=" dtfstab=$(python3 "$ROOT/tools/mkaosp-init-initramfs.py" --dtfstab)"
+    boot_args+=" androidboot.android_dt_dir=/sys/firmware/devicetree/base/firmware/android/"
     boot_args+=" androidboot.selinux=permissive androidboot.verifiedbootstate=orange"
     boot_args+=" androidboot.veritymode=disabled androidboot.dynamic_partitions=true"
     boot_args+=" androidboot.serialno=RUSTPC000001 androidboot.console=ttyS0 printk.devkmsg=on"
@@ -217,6 +244,10 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ $timeout == 120 ]] && timeout=300
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
+    # zygote, system_server and ART's compiler need room and CPUs.
+    [[ $mode == aosp-boot-test && $timeout == 300 ]] && timeout=900
+    [[ $mode == aosp-boot-test && $mem == 2G ]] && mem=6G
+    [[ $mode == aosp-boot-test && $smp == 4 ]] && smp=6
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -424,6 +455,16 @@ elif [[ $mode == aosp-input-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP input test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-boot-test ]]; then
+    log="$work/aosp-boot-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 300)) python3 "$ROOT/tools/aosp-boot-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP boot test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display "$display" -serial stdio)

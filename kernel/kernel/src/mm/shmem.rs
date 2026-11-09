@@ -218,7 +218,9 @@ impl Shmem {
                 // A hole, or initramfs contents not copied yet.
                 let b = inner.backing;
                 let from_backing = b.len().saturating_sub(pos as usize).min(n);
-                dst[..from_backing].copy_from_slice(&b[pos as usize..pos as usize + from_backing]);
+                if from_backing > 0 {
+                    dst[..from_backing].copy_from_slice(&b[pos as usize..pos as usize + from_backing]);
+                }
                 dst[from_backing..].fill(0);
             }
             done += n;
@@ -410,6 +412,24 @@ impl Shmem {
         let f = inner.page(idx, false).map_err(|e| if e == EIO { EIO } else { ENOMEM })?;
         frame::get(f);
         Ok(f)
+    }
+
+    /// Put `f` in as page `idx` (UFFDIO_COPY / ZEROPAGE on shmem): the
+    /// object takes the caller's reference. EEXIST if the page is there,
+    /// EFAULT past the end.
+    pub fn insert_page(&self, idx: u64, f: PhysFrame) -> KResult<()> {
+        let mut inner = self.inner.lock();
+        if idx >= inner.size.div_ceil(PAGE_SIZE) {
+            return Err(EFAULT);
+        }
+        if inner.source.is_some() {
+            return Err(EROFS);
+        }
+        if inner.pages.contains_key(&idx) || (idx * PAGE_SIZE) < inner.backing.len() as u64 {
+            return Err(EEXIST);
+        }
+        inner.pages.insert(idx, f);
+        Ok(())
     }
 
     /// Record that `mm` maps this object.

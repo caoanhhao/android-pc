@@ -157,6 +157,17 @@ pub fn access_reply() -> String {
 /// file system's initial SID): reads of security.selinux never fail.
 pub const UNLABELED: &[u8] = b"u:object_r:unlabeled:s0\0";
 
+/// Label a new node `name` of `parent` that got no label from fscreate
+/// the way the policy's genfscon rules would (bpffs).
+pub fn label_genfs(parent: &dyn crate::fs::vfs::Inode, name: &[u8], inode: &dyn crate::fs::vfs::Inode) {
+    if inode.xattrs().is_ok_and(|x| x.iter().any(|(n, _)| n == XATTR_SELINUX)) {
+        return;
+    }
+    if let Some(l) = crate::bpf::genfs_label(parent, name) {
+        let _ = inode.set_xattr(XATTR_SELINUX, Some(&l), 0);
+    }
+}
+
 /// Label a newly created inode with the creator's fscreate context.
 pub fn label_new_inode(inode: &dyn crate::fs::vfs::Inode, sock: bool) {
     // Kernel-internal creations (in-kernel tests) have no process.

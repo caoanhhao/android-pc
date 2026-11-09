@@ -549,11 +549,19 @@ pub fn sys_faccessat(dirfd: i32, path: u64, mode: u32, flags: u32) -> KResult<u6
         return Err(EINVAL);
     }
     let p = user_path(path)?;
-    let (inode, _) = resolve_at(dirfd, &p, flags)?;
-    // Permissions are not checked (credentials are only tracked): only
-    // execute permission can be missing.
+    let (inode, pref) = resolve_at(dirfd, &p, flags)?;
     let a = inode.meta().attr();
-    if mode & 1 != 0 && a.mode & S_IFMT != S_IFDIR && a.mode & 0o111 == 0 {
+    let ty = a.mode & S_IFMT;
+    // Writing a file of a read-only mount or file system (ART refuses to
+    // load dex files that look writable).
+    let special = matches!(ty, vfs::S_IFCHR | vfs::S_IFBLK | vfs::S_IFIFO | vfs::S_IFSOCK);
+    let ro_mount = pref.as_ref().is_some_and(|p| p.mnt.flags & MS_RDONLY != 0 || matches!(p.mnt.fstype, "erofs"));
+    if mode & 2 != 0 && !special && ro_mount {
+        return Err(EROFS);
+    }
+    // Permission bits are not checked (credentials are only tracked, and
+    // capabilities not modelled): only execute permission can be missing.
+    if mode & 1 != 0 && ty != S_IFDIR && a.mode & 0o111 == 0 {
         return Err(EACCES);
     }
     Ok(0)
@@ -952,7 +960,7 @@ pub fn sys_utimensat(dirfd: i32, path: u64, times: u64, flags: u32) -> KResult<u
             *t = match nsec {
                 UTIME_NOW => (now, false),
                 UTIME_OMIT => (0, true),
-                0..=999_999_999 => (sec * 1_000_000_000 + nsec, false),
+                0..=999_999_999 => (sec.saturating_mul(1_000_000_000).saturating_add(nsec), false),
                 _ => return Err(EINVAL),
             };
         }

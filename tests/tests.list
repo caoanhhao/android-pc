@@ -54,3 +54,7 @@ d1_sync
 d2_evdev
 d2_tcp
 d2_udp
+# D3: zygote and system_server's kernel interfaces (userfaultfd for ART's CMC GC, ...)
+d3_uffd
+d3_proc
+d3_timers

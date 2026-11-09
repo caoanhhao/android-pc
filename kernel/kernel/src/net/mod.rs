@@ -12,7 +12,9 @@
 pub mod ifreq;
 pub mod inet;
 pub mod netlink;
+pub mod packet;
 pub mod rtnetlink;
+pub mod tun;
 pub mod unix;
 
 pub const AF_UNSPEC: u16 = 0;

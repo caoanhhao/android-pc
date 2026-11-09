@@ -12,7 +12,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics, D2 input and network)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics, D2 input and network, D3a zygote and system_server)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -37,7 +37,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
 | 20 | writev | yes | gathered into one write |
-| 21 | access | yes | = faccessat; root: only X_OK can fail |
+| 21 | access | yes | = faccessat: W_OK on a read-only mount (MS_RDONLY, erofs) is EROFS (ART refuses dex files that look writable); permission bits are not checked, only X_OK can fail |
 | 22 | pipe | yes | = pipe2(0) |
 | 23 | select | yes | fd_sets up to 1024 fds; EBADF for a closed fd in a set; the timeval is updated with the time left |
 | 24 | sched_yield | yes | |
@@ -135,7 +135,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 145 | sched_getscheduler | yes | stored policy (default SCHED_OTHER) |
 | 146 | sched_get_priority_max | yes | 99 for FIFO/RR, 0 otherwise; sched_get_priority_min (147): 1 / 0 |
 | 149 | mlock | stub | all memory is resident: 0; also munlock (150), mlockall (151), munlockall (152), mlock2 (325) |
-| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME, PR_GET/SET_DUMPABLE, PR_GET/SET_KEEPCAPS, PR_GET/SET_NO_NEW_PRIVS (stored, not enforced), PR_CAPBSET_READ (1 for caps 0-40), PR_CAPBSET_DROP and PR_CAP_AMBIENT (accepted: no capability model), PR_GET/SET_SECUREBITS, PR_GET/SET_PDEATHSIG, PR_GET/SET_TIMERSLACK, PR_GET/SET_CHILD_SUBREAPER (stored, not acted on), PR_GET/SET_SECCOMP and THP_DISABLE (accepted, filters not applied), PR_SET_VMA (anon names accepted, not kept); others EINVAL |
+| 157 | prctl | partial | PR_SET_NAME, PR_GET_NAME (per thread since D3a: the leader's is the process name), PR_GET/SET_DUMPABLE, PR_GET/SET_KEEPCAPS, PR_GET/SET_NO_NEW_PRIVS (stored, not enforced), PR_CAPBSET_READ (1 for caps 0-40), PR_CAPBSET_DROP and PR_CAP_AMBIENT (accepted: no capability model), PR_GET/SET_SECUREBITS, PR_GET/SET_PDEATHSIG, PR_GET/SET_TIMERSLACK, PR_GET/SET_CHILD_SUBREAPER (stored, not acted on), PR_GET/SET_SECCOMP and THP_DISABLE (accepted, filters not applied), PR_SET_VMA (anon names accepted, not kept); others EINVAL |
 | 158 | arch_prctl | yes | ARCH_SET/GET_FS/GS (EPERM above TASK_SIZE_MAX); RDFSBASE/WRFSBASE enabled and advertised in AT_HWCAP2 |
 | 160 | setrlimit | yes | = prlimit64(0) |
 | 161 | chroot | partial | one root for everybody: chroot to the current root succeeds (Android's switch_root does `chroot(".")` after moving a mount onto `/`), anything else EPERM |
@@ -151,7 +151,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 194 | listxattr | partial | as getxattr; also llistxattr (195), flistxattr (196) |
 | 200 | tkill | yes | |
 | 201 | time | yes | |
-| 202 | futex | partial | WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; in a MAP_SHARED mapping (without FUTEX_PRIVATE_FLAG) keyed by (shmem object, offset), so it works across processes and mappings; otherwise by (address space, address); PI futexes ENOSYS |
+| 202 | futex | partial | D3a: LOCK_PI, LOCK_PI2 (CLOCK_MONOTONIC unless FUTEX_CLOCK_REALTIME), TRYLOCK_PI, UNLOCK_PI: the PI word protocol (owner tid, FUTEX_WAITERS, FUTEX_OWNER_DIED when the owner is gone) without priority boosting (audioserver's PTHREAD_PRIO_INHERIT mutexes); WAIT, WAKE, WAIT_BITSET (absolute, FUTEX_CLOCK_REALTIME), WAKE_BITSET, REQUEUE, CMP_REQUEUE; in a MAP_SHARED mapping (without FUTEX_PRIVATE_FLAG) keyed by (shmem object, offset), so it works across processes and mappings; otherwise by (address space, address); PI futexes ENOSYS |
 | 203 | sched_setaffinity | partial | accepted when the mask names an online CPU (else EINVAL); threads still run anywhere |
 | 204 | sched_getaffinity | yes | all online CPUs; returns the mask size in bytes (EINVAL when `len` is too small or not a multiple of 8) |
 | 213 | epoll_create | yes | size must be > 0 |
@@ -184,7 +184,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 266 | symlinkat | yes | |
 | 267 | readlinkat | yes | AT_EMPTY_PATH-style empty path on an O_PATH symlink fd |
 | 268 | fchmodat | yes | |
-| 269 | faccessat | yes | |
+| 269 | faccessat | yes | see access |
 | 270 | pselect6 | yes | select with a timespec and the { sigset, size } argument (temporary signal mask) |
 | 271 | ppoll | yes | poll with a timespec (updated) and a temporary signal mask: kept until the handler runs on EINTR, restored on any other return |
 | 272 | unshare | partial | CLONE_FILES gives a private fd table; CLONE_NEWNS a copy of the mount namespace; the other namespace flags (NEWUTS, NEWIPC, NEWNET, NEWPID, NEWUSER, NEWCGROUP, NEWTIME), CLONE_FS, SYSVSEM accepted without effect (one namespace of each other kind); others EINVAL |
@@ -217,12 +217,83 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 316 | renameat2 | yes | RENAME_NOREPLACE, RENAME_EXCHANGE; EXDEV across mounts, EINVAL moving a directory below itself |
 | 318 | getrandom | yes | RDRAND + xorshift, not a vetted CSPRNG yet |
 | 319 | memfd_create | yes | MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_NOEXEC_SEAL (mode 0666 + F_SEAL_EXEC), MFD_EXEC; MFD_HUGETLB and unknown flags EINVAL; names up to 249 bytes; shown as `/memfd:NAME (deleted)` in /proc/<pid>/fd and maps |
+| 323 | userfaultfd | yes | D3a, see [userfaultfd](#userfaultfd-d3a); also /dev/userfaultfd (USERFAULTFD_IOC_NEW) |
+| 324 | membarrier | yes | D3a: QUERY, (REGISTER_)PRIVATE_EXPEDITED(_SYNC_CORE), GLOBAL(_EXPEDITED), REGISTER_GLOBAL_EXPEDITED, GET_REGISTRATIONS; barriers are IPIs to the CPUs running the address space (or all); EPERM before registering |
 | 321 | bpf | partial | maps, programs (stored, never run), BTF, links, pinning: see [eBPF](#ebpf-c3c) |
 | 326 | copy_file_range | yes | regular files (EINVAL otherwise, EISDIR for directories), optional offset pointers, flags must be 0 |
 | 332 | statx | yes | basic stats (STATX_BASIC_STATS, no btime) |
+| 424 | pidfd_send_signal | yes | D3a: a pidfd's process; info NULL (SI_USER) or a siginfo (code < 0 unless to self); ESRCH after exit, EBADF on other fds |
+| 434 | pidfd_open | yes | D3a: thread-group leaders, PIDFD_NONBLOCK; close-on-exec; POLLIN once the process exited (also CLONE_PIDFD) |
+| 438 | pidfd_getfd | yes | D3a: dup of the target's fd (close-on-exec); permission checks absent |
+| 440 | process_madvise | partial | D3a: MADV_COLD/PAGEOUT/WILLNEED/COLLAPSE are hints (returns the bytes), others EINVAL |
+| 448 | process_mrelease | stub | D3a: argument checks; the memory is freed at exit anyway |
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
 | 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
 | 441 | epoll_pwait2 | yes | epoll_pwait with a timespec timeout |
+
+## D3a additions
+
+| Nr | Name | Status | Notes |
+|---:|------|--------|-------|
+| 36 | getitimer | yes | ITIMER_REAL; VIRTUAL/PROF stored values (never fire: no CPU-time timers) |
+| 37 | alarm | yes | ITIMER_REAL, returns the seconds left (rounded up) |
+| 38 | setitimer | yes | ITIMER_REAL raises SIGALRM (periodic with an interval); VIRTUAL/PROF stored |
+| 164 | settimeofday | stub | accepted, ignored (the clock is the host's) |
+| 222 | timer_create | yes | CLOCK_REALTIME/MONOTONIC/BOOTTIME (+ALARM, CPU-time clocks as MONOTONIC); SIGEV_SIGNAL, SIGEV_THREAD_ID, SIGEV_NONE; default sigevent = SIGALRM with the timer id |
+| 223 | timer_settime | yes | relative or TIMER_ABSTIME, periodic; old value |
+| 224 | timer_gettime | yes | |
+| 225 | timer_getoverrun | yes | expiries while the signal was queued |
+| 226 | timer_delete | yes | timers also go at process exit |
+
+Expired POSIX timers are queued by the timer interrupt and their signals
+(si_code SI_TIMER, si_timerid, si_overrun, si_value) sent from task context
+on the way back to user mode or from the idle loop.
+
+### userfaultfd (D3a)
+
+`userfaultfd(flags)`: O_CLOEXEC, O_NONBLOCK, UFFD_USER_MODE_ONLY (EINVAL
+otherwise). ioctls:
+
+- UFFDIO_API: api 0xAA; offers MISSING_SHMEM, MINOR_SHMEM, SIGBUS,
+  THREAD_ID, EXACT_ADDRESS, MOVE (EINVAL for others, and for a second
+  call); returns the REGISTER/UNREGISTER/API ioctl bits.
+- UFFDIO_REGISTER: page-aligned range of private anonymous memory, or
+  writable shmem (tmpfs/memfd/shared anonymous) for MISSING and MINOR;
+  EBUSY when another context registered it, EINVAL for other mappings
+  and for MODE_WP (write-protect is not implemented). Returns WAKE, COPY,
+  ZEROPAGE, CONTINUE (+MOVE for anonymous ranges).
+- UFFDIO_UNREGISTER, UFFDIO_WAKE.
+- UFFDIO_COPY / ZEROPAGE / CONTINUE / MOVE (DONTWAKE, ALLOW_SRC_HOLES):
+  Linux results: bytes done in `.copy` etc., EEXIST for a mapped page,
+  ENOENT outside a registered range (COPY) or for a source hole (MOVE),
+  EAGAIN with a positive count when a later page failed.
+- read: 32-byte uffd_msg (UFFD_EVENT_PAGEFAULT, flags WRITE/MINOR,
+  address page-aligned unless EXACT_ADDRESS, ptid with THREAD_ID);
+  EAGAIN when non-blocking; poll POLLIN with unread faults, POLLERR
+  before UFFDIO_API.
+
+Faults in a registered range raise SIGBUS (BUS_ADRERR, si_addr = the
+address) in SIGBUS mode, else wait for a fill or wake; kernel accesses to
+such a page wait too, or give EFAULT in SIGBUS mode and for
+UFFD_USER_MODE_ONLY contexts. Fork children do not inherit registrations,
+nor does the new range of an mremap (MREMAP_DONTUNMAP keeps the old one
+registered). No events (EVENT_FORK/REMAP/REMOVE/UNMAP).
+
+### Sockets added in D3a
+
+- **AF_PACKET** SOCK_RAW / SOCK_DGRAM: bind(sockaddr_ll protocol,
+  ifindex), sendto (a whole frame, or a payload with the header from
+  sockaddr_ll), recvfrom/read (sockaddr_ll with pkttype), SO_ATTACH_FILTER
+  (classic BPF interpreter, SKF_NET_OFF/SKF_LL_OFF offsets) and
+  SO_DETACH_FILTER; poll. Frames the cards receive are copied to matching
+  sockets before the IP stack; outgoing stack traffic is not looped back;
+  no PACKET_MMAP, fanout or PACKET_* options. NetworkStack's DHCP and ARP
+  use it.
+- **AF_VSOCK** SOCK_STREAM / SOCK_SEQPACKET to the local CID (1, 3 or
+  ANY), implemented as AF_UNIX streams on abstract names; the host CID (2)
+  refuses connections (ECONNREFUSED); SO_DOMAIN says AF_VSOCK.
+- **AF_KEY** (SOCK_RAW, PF_KEY_V2): a socket that can be created and
+  closed (libbpf's synchronizeKernelRCU); no key management.
 
 ## Sockets (AF_UNIX)
 
@@ -902,7 +973,7 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
 - **B3 leftovers (memory)**: MAP_GROWSDOWN, mmap of files on file systems
   without a page cache (procfs, devices other than /dev/zero),
   process_vm_readv/writev.
-- **B4 leftovers**: pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
+- **B4 leftovers**: TFD_IOC_SET_TICKS, timerfd clock-set
   cancellation, SIGIO/O_ASYNC. Sockets: netlink protocols other than
   uevents and NETLINK_ROUTE, MSG_OOB, SO_PEEK_OFF,
   SO_PEERGROUPS, SCM_SECURITY, garbage collection of in-flight fd cycles
@@ -913,7 +984,7 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
   report 0), scheduling classes/affinity/nice (stored only), SIGTTIN/SIGTTOU
   and stop/continue job control, PR_SET_PDEATHSIG (stored, never sent),
   ELF segments are copied (not mapped from the file's page cache),
-  membarrier, ptrace.
+  ptrace.
 - **C1 leftovers (binder)**: the freezer (BINDER_FREEZE is a no-op, no
   BR_FROZEN_REPLY / freeze notifications), oneway spam detection (never
   reports BR_ONEWAY_SPAM_SUSPECT), priority inheritance and
@@ -926,17 +997,15 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
   filters (accepted, not applied), a persistent /data (see
   [android-init.md](android-init.md)).
 - **C3b leftovers**: NETLINK_AUDIT (logd's auditd
-  gets the stub), lmkd's process_mrelease (448), pidfd_open (434),
-  timer_create (222), settimeofday (164), /dev/kmsg EPIPE on lost
-  records, the mq/ and slaves/ entries of dm devices.
+  gets the stub), /dev/kmsg EPIPE on lost records, the mq/ and slaves/
+  entries of dm devices.
 - **C3c leftovers (eBPF)**: running programs (no verifier, JIT or
   interpreter: socket filters, cgroup hooks, tracepoints and uprobes
   never fire, ring buffers stay empty), kernel BTF
   (/sys/kernel/btf/vmlinux: CO-RE objects such as timeInState.bpf fail),
   fuse-bpf (/sys/fs/fuse/bpf_prog_type_fuse), map batch operations,
   bpf iterators and tokens, permission checks (CAP_BPF,
-  unprivileged_bpf_disabled are not enforced). userfaultfd (323) is
-  missing (ART's GC).
+  unprivileged_bpf_disabled are not enforced).
 - **D1 leftovers (graphics)**: virgl / 3D, blob resources and host-visible
   memory, the cursor plane, interrupt-driven virtio-gpu (commands are
   polled, commits synchronous, so fences are always signalled at once and
@@ -944,4 +1013,11 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
   emulated), DRM master enforcement, syncobj, multiple scanouts /
   hotplug, other dma-heaps (system-uncached, CMA), dma-buf implicit
   fences.
+- **D3a leftovers**: userfaultfd write-protect (UFFDIO_WRITEPROTECT,
+  MODE_WP) and events; priority inheritance itself (PI futexes only
+  implement the lock word protocol), FUTEX_WAIT_REQUEUE_PI /
+  CMP_REQUEUE_PI, robust-list walking at exit; ITIMER_VIRTUAL/PROF;
+  quotactl (179, installd), process_vm_readv (310), ptrace (101): no
+  tombstones (crash_dump cannot attach); fs-verity ioctls (system_server
+  logs "Failed to enable fs-verity"), sched_setattr.
 - Later: rseq, clone3, io_uring (not used by AOSP).

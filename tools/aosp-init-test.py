@@ -91,8 +91,11 @@ CHECKS = [
      [r"Found \d+ services", r"\tmanager: \[android\.os\.IServiceManager\]",
       r"android\.system\.keystore2\.IKeystoreService/default",
       r"android\.hardware\.security\.keymint\.IKeyMintDevice/default", r"\tvold: \[android\.os\.IVold\]"]),
-    ("for s in servicemanager hwservicemanager keystore2 logd; do echo $s=$(getprop init.svc.$s); done",
-     [r"servicemanager=running", r"hwservicemanager=running", r"keystore2=running", r"logd=running"]),
+    # hwservicemanager stops itself once it finds no HIDL services
+    # (hwservicemanager.disabled=true), which a fast boot reaches early.
+    ("for s in servicemanager hwservicemanager keystore2 logd; do echo $s=$(getprop init.svc.$s); done; "
+     "echo hwsm-disabled=$(getprop hwservicemanager.disabled)",
+     [r"servicemanager=running", r"hwservicemanager=running|hwsm-disabled=true", r"keystore2=running", r"logd=running"]),
     # logd: logs from services (logcat), init's kmsg lines through klogd
     # (the kernel buffer), dmesg (syslog(2)).
     ("logcat -d | toybox grep -cE ' (servicemanager|keystore2|vold|lowmemorykiller) *:'", [r"^\d{2,}\r?$"]),

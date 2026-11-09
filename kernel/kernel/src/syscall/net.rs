@@ -71,6 +71,18 @@ fn nl(fd: i32) -> KResult<Option<(Arc<OpenFile>, Arc<NetlinkSocket>)>> {
     Ok(netlink_of(&f).map(|s| (f, s)))
 }
 
+/// The packet socket behind `fd`, if it is one.
+fn pkt(fd: i32) -> KResult<Option<Arc<crate::net::packet::PacketSocket>>> {
+    let f = current().process.files().get(fd)?;
+    Ok(crate::net::packet::packet_of(&f))
+}
+
+fn read_ll_addr(addr: u64, len: u32) -> KResult<(u16, u32, [u8; 6])> {
+    let mut b = vec![0u8; (len as usize).min(32)];
+    current().mm().copy_in(addr, &mut b)?;
+    crate::net::packet::parse_sockaddr_ll(&b)
+}
+
 /// The inet socket behind `fd`, if it is one.
 fn inet(fd: i32) -> KResult<Option<(Arc<OpenFile>, Arc<InetSocket>)>> {
     let f = current().process.files().get(fd)?;
@@ -172,9 +184,111 @@ pub fn sys_socket(domain: u32, ty: u32, protocol: u32) -> KResult<u64> {
         let f = InetSocket::new(domain as u16, ty & SOCK_TYPE_MASK, protocol)?.open_file(ty & SOCK_NONBLOCK != 0);
         return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
     }
+    if domain == crate::net::packet::AF_PACKET as u32 {
+        let base = ty & SOCK_TYPE_MASK;
+        if ty & !(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 || (base != SOCK_RAW && base != SOCK_DGRAM) {
+            return Err(ESOCKTNOSUPPORT);
+        }
+        let f = crate::net::packet::PacketSocket::new(base, protocol as u16).open_file(ty & SOCK_NONBLOCK != 0);
+        return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
+    if domain == AF_KEY {
+        // PF_KEY sockets carry no key management (netd uses NETLINK_XFRM);
+        // they exist so that libbpf's synchronizeKernelRCU (open + close
+        // of one, Linux runs synchronize_rcu on release) succeeds. The
+        // socket is an unconnected datagram socket: sends fail.
+        if ty & SOCK_TYPE_MASK != SOCK_RAW || protocol != PF_KEY_V2 {
+            return Err(EPROTONOSUPPORT);
+        }
+        let f = UnixSocket::new(SOCK_DGRAM).open_file(ty & SOCK_NONBLOCK != 0);
+        return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
+    if domain == AF_VSOCK {
+        if ty & !(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+            return Err(EINVAL);
+        }
+        let base = ty & SOCK_TYPE_MASK;
+        if base != SOCK_STREAM && base != SOCK_SEQPACKET {
+            return Err(ESOCKTNOSUPPORT);
+        }
+        let s = UnixSocket::new(base);
+        s.vsock.store(true, core::sync::atomic::Ordering::Relaxed);
+        let f = s.open_file(ty & SOCK_NONBLOCK != 0);
+        return Ok(current().process.files().alloc(f, ty & SOCK_CLOEXEC != 0, 0)? as u64);
+    }
     let (base, nonblock, cloexec) = new_socket_args(domain, ty, protocol)?;
     let f = UnixSocket::new(base).open_file(nonblock);
     Ok(current().process.files().alloc(f, cloexec, 0)? as u64)
+}
+
+// AF_VSOCK without a hypervisor transport: the guest talks to itself only.
+// A vsock socket is a unix socket whose address (cid, port) maps to the
+// abstract name "\0vsock:PORT"; connections to the host (CID 2) are
+// refused. Cuttlefish's HALs listen on vsock ports for the host side.
+const AF_VSOCK: u32 = 40;
+const AF_KEY: u32 = 15;
+const PF_KEY_V2: u32 = 2;
+const VMADDR_CID_ANY: u32 = u32::MAX;
+const VMADDR_CID_LOCAL: u32 = 1;
+const VMADDR_CID_HOST: u32 = 2;
+/// The guest's own CID (Cuttlefish uses 3).
+const VSOCK_LOCAL_CID: u32 = 3;
+const VMADDR_PORT_ANY: u32 = u32::MAX;
+const SOCKADDR_VM_LEN: usize = 16;
+
+fn is_vsock(s: &UnixSocket) -> bool {
+    s.vsock.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// A sockaddr_vm as the unix address it stands for. `connect`: the
+/// destination must be this guest.
+fn read_vsock_addr(ptr: u64, len: u32, connect: bool) -> KResult<Addr> {
+    static NEXT_PORT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0x4000_0000);
+    if (len as usize) < SOCKADDR_VM_LEN {
+        return Err(EINVAL);
+    }
+    let mut b = [0u8; SOCKADDR_VM_LEN];
+    current().mm().copy_in(ptr, &mut b)?;
+    if u16::from_le_bytes([b[0], b[1]]) as u32 != AF_VSOCK {
+        return Err(EAFNOSUPPORT);
+    }
+    let mut port = u32::from_le_bytes(b[4..8].try_into().unwrap());
+    let cid = u32::from_le_bytes(b[8..12].try_into().unwrap());
+    if connect {
+        if cid == VMADDR_CID_HOST {
+            return Err(ECONNREFUSED);
+        }
+        if ![VMADDR_CID_LOCAL, VSOCK_LOCAL_CID, VMADDR_CID_ANY].contains(&cid) {
+            return Err(ENETUNREACH);
+        }
+    } else if ![VMADDR_CID_LOCAL, VSOCK_LOCAL_CID, VMADDR_CID_ANY].contains(&cid) {
+        return Err(EADDRNOTAVAIL);
+    }
+    if port == VMADDR_PORT_ANY {
+        port = NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(Addr::Abstract(alloc::format!("\0vsock:{port}").into_bytes()))
+}
+
+/// The sockaddr_vm for a vsock socket's unix address.
+fn vsock_sockaddr(a: &Addr) -> Vec<u8> {
+    let port = match a {
+        Addr::Abstract(n) => core::str::from_utf8(&n[1..])
+            .ok()
+            .and_then(|s| s.strip_prefix("vsock:"))
+            .and_then(|p| p.parse::<u32>().ok())
+            .unwrap_or(VMADDR_PORT_ANY),
+        _ => VMADDR_PORT_ANY,
+    };
+    let mut b = vec![0u8; SOCKADDR_VM_LEN];
+    b[..2].copy_from_slice(&(AF_VSOCK as u16).to_le_bytes());
+    b[4..8].copy_from_slice(&port.to_le_bytes());
+    b[8..12].copy_from_slice(&VSOCK_LOCAL_CID.to_le_bytes());
+    b
+}
+
+fn sock_addr_bytes(s: &UnixSocket, a: &Addr) -> Vec<u8> {
+    if is_vsock(s) { vsock_sockaddr(a) } else { a.to_sockaddr() }
 }
 
 pub fn sys_socketpair(domain: u32, ty: u32, protocol: u32, sv: u64) -> KResult<u64> {
@@ -204,6 +318,11 @@ pub fn sys_socketpair(domain: u32, ty: u32, protocol: u32, sv: u64) -> KResult<u
 }
 
 pub fn sys_bind(fd: i32, addr: u64, len: u32) -> KResult<u64> {
+    if let Some(p) = pkt(fd)? {
+        let (proto, ifindex, _) = read_ll_addr(addr, len)?;
+        p.bind(proto, ifindex);
+        return Ok(0);
+    }
     if let Some((_, n)) = nl(fd)? {
         let (port, groups) = read_nl_addr(addr, len)?;
         n.bind(port, groups)?;
@@ -214,7 +333,7 @@ pub fn sys_bind(fd: i32, addr: u64, len: u32) -> KResult<u64> {
         return Ok(0);
     }
     let (_, s) = sock(fd)?;
-    let a = read_addr(addr, len)?;
+    let a = if is_vsock(&s) { read_vsock_addr(addr, len, false)? } else { read_addr(addr, len)? };
     let umask = current().process.fs.lock().umask;
     s.bind(a, &base(), umask)?;
     Ok(0)
@@ -254,7 +373,7 @@ pub fn sys_connect(fd: i32, addr: u64, len: u32) -> KResult<u64> {
             return Ok(0);
         }
     }
-    let a = read_addr(addr, len)?;
+    let a = if is_vsock(&s) { read_vsock_addr(addr, len, true)? } else { read_addr(addr, len)? };
     if a == Addr::Unnamed {
         return Err(EINVAL);
     }
@@ -277,13 +396,18 @@ pub fn sys_accept4(fd: i32, addr: u64, lenp: u64, flags: u32) -> KResult<u64> {
     }
     let (f, s) = sock(fd)?;
     let c = s.accept(f.nonblock())?;
-    let peer = c.peer_addr().unwrap_or(Addr::Unnamed).to_sockaddr();
+    let peer = sock_addr_bytes(&s, &c.peer_addr().unwrap_or(Addr::Unnamed));
+    c.vsock.store(is_vsock(&s), core::sync::atomic::Ordering::Relaxed);
     let nf = c.open_file(flags & SOCK_NONBLOCK != 0);
     write_addr(&peer, addr, lenp)?;
     Ok(current().process.files().alloc(nf, flags & SOCK_CLOEXEC != 0, 0)? as u64)
 }
 
 pub fn sys_getsockname(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
+    if let Some(p) = pkt(fd)? {
+        write_addr(&p.local_addr(), addr, lenp)?;
+        return Ok(0);
+    }
     if let Some((_, n)) = nl(fd)? {
         write_addr(&n.local_addr(), addr, lenp)?;
         return Ok(0);
@@ -293,7 +417,7 @@ pub fn sys_getsockname(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
         return Ok(0);
     }
     let (_, s) = sock(fd)?;
-    write_addr(&s.local_addr().to_sockaddr(), addr, lenp)?;
+    write_addr(&sock_addr_bytes(&s, &s.local_addr()), addr, lenp)?;
     Ok(0)
 }
 
@@ -307,7 +431,7 @@ pub fn sys_getpeername(fd: i32, addr: u64, lenp: u64) -> KResult<u64> {
         return Ok(0);
     }
     let (_, s) = sock(fd)?;
-    write_addr(&s.peer_addr()?.to_sockaddr(), addr, lenp)?;
+    write_addr(&sock_addr_bytes(&s, &s.peer_addr()?), addr, lenp)?;
     Ok(0)
 }
 
@@ -409,6 +533,12 @@ fn do_send(fd: i32, data: &[u8], flags: u32, to: Option<Addr>, fds: Vec<Arc<Open
 }
 
 pub fn sys_sendto(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u32) -> KResult<u64> {
+    if let Some(p) = pkt(fd)? {
+        let to = if addr != 0 && alen != 0 { Some(read_ll_addr(addr, alen)?) } else { None };
+        let mut data = vec![0u8; (len as usize).min(RECV_MAX)];
+        current().mm().copy_in(buf, &mut data)?;
+        return Ok(p.send(&data, to)? as u64);
+    }
     if let Some((_, n)) = nl(fd)? {
         let to = if addr != 0 && alen != 0 { Some(read_nl_addr(addr, alen)?) } else { None };
         let mut data = vec![0u8; (len as usize).min(RECV_MAX)];
@@ -530,6 +660,16 @@ fn nl_recv(f: &OpenFile, n: &NetlinkSocket, len: usize, flags: u32) -> KResult<n
 }
 
 pub fn sys_recvfrom(fd: i32, buf: u64, len: u64, flags: u32, addr: u64, alen: u64) -> KResult<u64> {
+    if let Some(p) = pkt(fd)? {
+        let f = current().process.files().get(fd)?;
+        let mut data = vec![0u8; (len as usize).min(RECV_MAX)];
+        let (n, full, from) = p.recv(&mut data, f.nonblock() || flags & MSG_DONTWAIT != 0, flags & MSG_PEEK != 0)?;
+        current().mm().copy_out(buf, &data[..n])?;
+        if addr != 0 {
+            write_addr(&from, addr, alen)?;
+        }
+        return Ok(if flags & MSG_TRUNC != 0 { full } else { n } as u64);
+    }
     if let Some((f, n)) = nl(fd)? {
         let r = nl_recv(&f, &n, len as usize, flags)?;
         current().mm().copy_out(buf, &r.data)?;
@@ -804,6 +944,29 @@ fn nl_setsockopt(n: &NetlinkSocket, level: i32, name: i32, b: &[u8]) -> KResult<
 }
 
 pub fn sys_setsockopt(fd: i32, level: i32, name: i32, val: u64, len: u32) -> KResult<u64> {
+    if let Some(p) = pkt(fd)? {
+        // SO_ATTACH_FILTER: struct sock_fprog { u16 len; sock_filter *filter }.
+        if level == SOL_SOCKET && name == 26 {
+            let mm = current().mm();
+            let mut h = [0u8; 16];
+            mm.copy_in(val, &mut h)?;
+            let n = u16::from_le_bytes([h[0], h[1]]) as usize;
+            if n == 0 || n > 4096 {
+                return Err(EINVAL);
+            }
+            let mut code = vec![0u8; n * 8];
+            mm.copy_in(u64::from_le_bytes(h[8..16].try_into().unwrap()), &mut code)?;
+            let prog = code
+                .chunks(8)
+                .map(|c| (u16::from_le_bytes([c[0], c[1]]), c[2], c[3], u32::from_le_bytes(c[4..8].try_into().unwrap())))
+                .collect();
+            p.attach_filter(Some(prog));
+        } else if level == SOL_SOCKET && name == 27 {
+            p.attach_filter(None);
+        }
+        // Other options (buffer sizes, PACKET_*) are accepted and ignored.
+        return Ok(0);
+    }
     if let Some((_, s)) = inet(fd)? {
         let max = if netfilter::is_netfilter_opt(level, name) { 16 << 20 } else { 256 };
         if (len as i32) < 0 || len as usize > max {
@@ -858,6 +1021,17 @@ pub fn sys_getsockopt(fd: i32, level: i32, name: i32, val: u64, lenp: u64) -> KR
         return Err(EINVAL);
     }
     let int = |v: i64| (v as i32).to_le_bytes().to_vec();
+    if let Some(p) = pkt(fd)? {
+        let v = match (level, name) {
+            (SOL_SOCKET, SO_TYPE) => int(p.ty as i64),
+            (SOL_SOCKET, SO_DOMAIN) => int(crate::net::packet::AF_PACKET as i64),
+            _ => int(0),
+        };
+        let n = (len as usize).min(v.len());
+        mm.copy_out(val, &v[..n])?;
+        mm.copy_out(lenp, &(n as i32).to_le_bytes())?;
+        return Ok(0);
+    }
     if let Some((_, s)) = inet(fd)? {
         let (v, ret) = if netfilter::is_netfilter_opt(level, name) {
             let mut input = vec![0u8; (len as usize).min(16 << 20)];
@@ -973,7 +1147,7 @@ fn sockopt_unix(fd: i32, level: i32, name: i32) -> KResult<Vec<u8>> {
     let int = |v: i64| (v as i32).to_le_bytes().to_vec();
     Ok(match name {
         SO_TYPE => int(s.ty as i64),
-        SO_DOMAIN => int(AF_UNIX as i64),
+        SO_DOMAIN => int(if is_vsock(&s) { AF_VSOCK as i64 } else { AF_UNIX as i64 }),
         SO_PROTOCOL => int(0),
         SO_ERROR => int(s.take_error().map_or(0, |e| e.0 as i64)),
         SO_SNDBUF => int(s.sndbuf() as i64),

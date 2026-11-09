@@ -101,7 +101,7 @@ impl Fs {
         let a = data.attr;
         let meta = Meta::with_ino(nid, self.devno, a.mode, data.rdev);
         meta.update(|m| *m = a);
-        let inode = Arc::new(ErofsInode { meta, data, cache: Once::new() });
+        let inode = Arc::new(ErofsInode { meta, data, cache: Once::new(), dir: Once::new() });
         let mut map = self.inodes.lock();
         if let Some(i) = map.get(&nid).and_then(Weak::upgrade) {
             return Ok(i);
@@ -627,9 +627,22 @@ pub struct ErofsInode {
     meta: Meta,
     data: Arc<IData>,
     cache: Once<Arc<Shmem>>,
+    /// A directory's entries, parsed once (lookups of missing names, which
+    /// the dentry cache does not remember, used to re-read and re-parse
+    /// the whole directory every time: dynamic linker and class path
+    /// searches).
+    dir: Once<Vec<(Vec<u8>, u64, u8)>>,
 }
 
 impl ErofsInode {
+    fn dir_entries(&self) -> KResult<&Vec<(Vec<u8>, u64, u8)>> {
+        if let Some(d) = self.dir.get() {
+            return Ok(d);
+        }
+        let e = self.data.entries()?;
+        Ok(self.dir.call_once(|| e))
+    }
+
     fn page_cache(&self) -> Arc<Shmem> {
         self.cache.call_once(|| Shmem::from_source(self.data.size, self.data.clone())).clone()
     }
@@ -648,9 +661,9 @@ impl Inode for ErofsInode {
         if !self.meta.is_dir() {
             return Err(ENOTDIR);
         }
-        for (n, nid, _) in self.data.entries()? {
+        for (n, nid, _) in self.dir_entries()? {
             if n == name && n != b"." && n != b".." {
-                return Ok(self.data.fs.inode(nid)?);
+                return Ok(self.data.fs.inode(*nid)?);
             }
         }
         Err(ENOENT)
