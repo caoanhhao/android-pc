@@ -71,6 +71,19 @@
 #                                     the APK (installd, dex2oat), `am start`
 #                                     of its activity, resumed, visible on
 #                                     screencap and the scanout (D3b)
+#   tools/run-qemu.sh --aosp-fb-test  the boot test's machine with no virtio-gpu:
+#                                     a plain VGA (--fb, default std) whose
+#                                     linear framebuffer the firmware sets
+#                                     up (OVMF's GOP; VBE with --bios) and
+#                                     the kernel drives as a simpledrm-style
+#                                     DRM device; tools/aosp-fb-test.py
+#                                     checks the firmware and framebuffer,
+#                                     the graphics HALs on it,
+#                                     sys.boot_completed=1, the launcher on
+#                                     screencap and in the framebuffer
+#                                     (QEMU screendump). Without OVMF on
+#                                     the host it boots with BIOS and
+#                                     --fb=bochs (720x1280 VBE modes)
 #   tools/run-qemu.sh --hw-test       real-hardware-class controllers (E1):
 #                                     the ktest initramfs with the C2 test
 #                                     disk on an NVMe controller (00:04.0,
@@ -100,8 +113,11 @@
 #          disks) as NVMe controllers (nvme0n1, nvme1n1, ... at the same
 #          PCI slots) instead of virtio-blk; AOSP's partition_map follows.
 #          --gpu (virtio-gpu-pci at 00:02.0, no VGA; default for --ktest
-#          and --aosp-gfx-test), --no-gpu, --gpu-size WxH (scanout size,
-#          default 720x1280), --display none|vnc=:N|gtk|sdl (default none;
+#          and --aosp-gfx-test), --no-gpu, --fb[=std|bochs] (a VGA or
+#          bochs-display at 00:02.0 instead: only the firmware's linear
+#          framebuffer, which Limine sets to --gpu-size and the kernel's
+#          simpledrm drives; default for --aosp-fb-test), --gpu-size WxH
+#          (scanout / framebuffer size, default 720x1280), --display none|vnc=:N|gtk|sdl (default none;
 #          the screen can always be saved with the monitor's screendump),
 #          --input (virtio-keyboard-pci 00:10.0, virtio-tablet-pci 00:11.0,
 #          virtio-multitouch-pci 00:12.0; default for --ktest and the
@@ -122,9 +138,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel"
 
-mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
+mode=run profile=dev firmware="" kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
-gpu="" input="" gpu_size=720x1280 display=none monitor="" disk_bus=virtio
+gpu="" fb="" input="" gpu_size=720x1280 display=none monitor="" disk_bus=virtio
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -145,6 +161,8 @@ while [[ $# -gt 0 ]]; do
         --sh-arg) sh_args+=("$2"); shift ;;
         --no-net) net=0 ;;
         --gpu) gpu=1 ;;
+        --fb) fb=std ;;
+        --fb=*) fb="${1#--fb=}" ;;
         --no-gpu) gpu=0 ;;
         --input) input=1 ;;
         --no-input) input=0 ;;
@@ -155,6 +173,7 @@ while [[ $# -gt 0 ]]; do
         --aosp-input-test) mode=aosp-input-test ;;
         --aosp-boot-test) mode=aosp-boot-test ;;
         --aosp-apk-test) mode=aosp-apk-test ;;
+        --aosp-fb-test) mode=aosp-fb-test ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -185,8 +204,12 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
+if [[ $mode == aosp-fb-test ]]; then
+    [[ -z $gpu ]] && gpu=0
+    [[ -z $fb ]] && fb=std
+fi
 [[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && input=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -228,7 +251,7 @@ if [[ $mode == aosp-apk-test ]]; then
     # The APK under test, built from source (reproducible, a few seconds).
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -278,6 +301,9 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     boot_args+=" androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough"
     boot_args+=" androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting"
     boot_args+=" androidboot.enable_bootanimation=1"
+    # On the boot framebuffer, the DRM driver answers to the name the
+    # cuttlefish HALs look for (minigbm's backend, the ranchu composer).
+    [[ $gpu != 1 && -n $fb ]] && boot_args+=" simpledrm.name=virtio_gpu"
     boot_args+=" androidboot.setupwizard_mode=DISABLED androidboot.hw_timeout_multiplier=3"
     boot_args+=" androidboot.hypervisor.vm.supported=0 androidboot.hypervisor.protected_vm.supported=0"
     # Cuttlefish picks one of several vendor APEX variants per module
@@ -294,9 +320,9 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $timeout == 300 ]] && timeout=900
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $mem == 2G ]] && mem=6G
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test ) && $smp == 4 ]] && smp=6
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $timeout == 300 ]] && timeout=900
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $mem == 2G ]] && mem=6G
+    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $smp == 4 ]] && smp=6
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -340,6 +366,15 @@ for d in /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/OVMF /usr/share
     if [[ -f $d/OVMF_CODE.4m.fd ]]; then OVMF_CODE=$d/OVMF_CODE.4m.fd OVMF_VARS=$d/OVMF_VARS.4m.fd; break; fi
     if [[ -f $d/OVMF_CODE.fd ]]; then OVMF_CODE=$d/OVMF_CODE.fd OVMF_VARS=$d/OVMF_VARS.fd; break; fi
 done
+if [[ -z $firmware ]]; then
+    # UEFI by default; the framebuffer test falls back to BIOS (and VBE
+    # modes of the bochs display) on hosts without OVMF.
+    firmware=uefi
+    if [[ $mode == aosp-fb-test && -z $OVMF_CODE ]]; then
+        firmware=bios
+        [[ $fb == std ]] && fb=bochs
+    fi
+fi
 [[ $firmware == uefi && -z $OVMF_CODE ]] && missing+=(edk2-ovmf)
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "run-qemu.sh: missing host packages. Install them with:" >&2
@@ -358,7 +393,9 @@ cp "$elf" "$iso_root/boot/kernel"
 if [[ -z $initrd && $mode == run && -f $ROOT/out/ktest-initramfs.cpio ]]; then
     initrd="$ROOT/out/ktest-initramfs.cpio"
 fi
-module_conf=""
+module_conf="" resolution_conf=""
+# The boot framebuffer's mode (simpledrm shows it as the only mode).
+[[ -n $fb ]] && resolution_conf="    resolution: ${gpu_size}x32"
 if [[ -n $initrd && $initrd != none && $mode != test ]]; then
     cp "$initrd" "$iso_root/boot/initramfs.cpio"
     module_conf="    module_path: boot():/boot/initramfs.cpio"
@@ -372,6 +409,7 @@ verbose: no
     path: boot():/boot/kernel
     cmdline: ${append# }
 $module_conf
+$resolution_conf
 CONF
 cp "$LIMINE_DIR"/limine-bios.sys "$LIMINE_DIR"/limine-bios-cd.bin "$LIMINE_DIR"/limine-uefi-cd.bin \
     "$iso_root/boot/limine/"
@@ -424,9 +462,18 @@ for i in "${!disks[@]}"; do
     fi
 done
 
+IFS=x read -r gw gh <<<"$gpu_size"
 if [[ $gpu == 1 ]]; then
-    IFS=x read -r gw gh <<<"$gpu_size"
     args+=(-vga none -device "virtio-gpu-pci,addr=0x2,xres=$gw,yres=$gh")
+elif [[ -n $fb ]]; then
+    # A plain linear framebuffer, set up by the firmware (UEFI GOP or
+    # VBE) and handed over by Limine; the EDID's preferred mode is the
+    # --gpu-size one, which OVMF then offers.
+    case $fb in
+        std) args+=(-vga none -device "VGA,addr=0x2,xres=$gw,yres=$gh,edid=on") ;;
+        bochs) args+=(-vga none -device "bochs-display,addr=0x2,xres=$gw,yres=$gh,edid=on") ;;
+        *) echo "run-qemu.sh: --fb=std or --fb=bochs" >&2; exit 2 ;;
+    esac
 fi
 if [[ $input == 1 ]]; then
     # Modern-only, like Cuttlefish's; QEMU's `sendkey` and mouse events
@@ -436,7 +483,7 @@ if [[ $input == 1 ]]; then
            -device virtio-multitouch-pci,addr=0x12,disable-legacy=on)
 fi
 # Unix socket paths are limited to 107 bytes, too short for $work.
-[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-apk-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 if [[ -n $monitor ]]; then
     rm -f "$monitor"
     args+=(-monitor "unix:$monitor,server,nowait")
@@ -539,6 +586,18 @@ elif [[ $mode == aosp-apk-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP APK test FAILED (serial log: $log, screenshots: $work/apk)" >&2
+    exit 1
+elif [[ $mode == aosp-fb-test ]]; then
+    log="$work/aosp-fb-test.log"
+    args+=(-display "$display" -serial stdio)
+    fw_name=UEFI; [[ $firmware == bios ]] && fw_name=BIOS
+    if timeout --foreground $((timeout + 300)) python3 "$ROOT/tools/aosp-fb-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --monitor "$monitor" --out "$work/fb" \
+        --firmware "$fw_name" --size "$gpu_size" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP framebuffer test FAILED (serial log: $log, screenshots: $work/fb)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display "$display" -serial stdio)

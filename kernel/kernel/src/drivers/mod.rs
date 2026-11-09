@@ -1,7 +1,8 @@
 //! Device drivers.
 //!
 //! Now: the COM1 serial console, binder (+ binderfs), the PCI bus,
-//! virtio-blk, virtio-net, virtio-gpu (with DRM/KMS on top) and
+//! virtio-blk, virtio-net, virtio-gpu (with DRM/KMS on top; without
+//! one, the boot framebuffer drives the same DRM device) and
 //! virtio-input (with evdev and uinput on top), dma-bufs, the system
 //! dma-heap and sync files; real-hardware-class controllers: NVMe and
 //! AHCI disks, xHCI USB with HID boot keyboards and mice. Planned: more
@@ -31,5 +32,6 @@ pub fn init() {
     nvme::init();
     ahci::init();
     usb::init();
+    drm::register_boot_framebuffer();
     crate::net::inet::configure_static();
 }
