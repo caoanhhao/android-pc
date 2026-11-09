@@ -1,4 +1,4 @@
-# Kernel architecture (phase D1 state: AOSP init, its core daemons, netd and adbd run; SurfaceFlinger composites on virtio-gpu)
+# Kernel architecture (phase D2 state: AOSP init, its core daemons, netd and adbd run; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -39,7 +39,9 @@ cd kernel && cargo run / cargo test                    # same, script is the car
 Wrap every build or QEMU run in `tools/limited-build.sh` (see `CLAUDE.md`).
 
 Kernel command line (`--append`): `init=PATH` (default `/init`), `strace`
-(log every syscall), and everything after `--` becomes init's argv[1..]
+(log every syscall), `strace=COMM` (only processes whose name starts with
+COMM once, and their later children; write/writev payloads are shown, e.g.
+`strace=adbd`), and everything after `--` becomes init's argv[1..]
 (`--ktest b1` passes `-- b1`, so ktest-init only runs the B1 tests).
 
 `run-qemu.sh` builds a hybrid ISO (BIOS + UEFI) with xorriso and
@@ -660,24 +662,41 @@ libnetd_updatable, libbpf_android) need, without running any program:
   through in-flight fds are not collected.
 - `/proc/net/unix` is generated from a table of all live sockets.
 
-## Network (`net/inet/`, C3d)
+## Network (`net/inet/`, C3d, D2)
 
-- **Stack**: smoltcp 0.12 (no_std + alloc; TCP, UDP, IPv4, IPv6) with
-  one `Interface` of `Medium::Ip` holding every link's addresses, and
-  one `SocketSet`. All of it, plus the links, routes, policy rules and
-  the socket bookkeeping, lives in `inet::NET` (a spin mutex). smoltcp's
-  own source address choice (the first IPv4 address for everything) is
-  bypassed: `Net::source_for` picks 127.0.0.1 for loopback, the
-  destination for local addresses, else the address of the link the
-  destination (or the default gateway) is on.
+- **Stack**: smoltcp 0.12 (no_std + alloc; TCP, UDP, ICMP, IPv4, IPv6)
+  with one `Interface` of `Medium::Ip` holding every link's addresses,
+  and one `SocketSet`. All of it, plus the links, routes, policy rules
+  and the socket bookkeeping, lives in `inet::NET` (a spin mutex).
+  smoltcp's own source address choice (the first IPv4 address for
+  everything) is bypassed for TCP/UDP: `Net::source_for` picks 127.0.0.1
+  for loopback, the destination for local addresses, else the address of
+  the link the destination (or the default gateway) is on; for what
+  smoltcp sends on its own (ICMP) the cards' IPv4 addresses come before
+  127.0.0.1. The interface MTU is 64 KiB (lo's): loopback carries 64 KiB
+  segments and datagrams.
 - **Device** (`inet::Dev`, below smoltcp): an outgoing IP packet to a
   local address (127/8, ::1, any link's address) is queued straight back
   as received: that is `lo`. IPv4 to anywhere else goes out on the card
   whose subnet holds the destination, else on the default route's card
-  to its gateway, in an Ethernet frame; the next hop's MAC comes from a
-  per-card ARP cache (requests sent at most once a second, packets wait
-  in a small queue until the reply). The device answers ARP requests for
-  its addresses and learns from them. IPv6 never leaves the machine.
+  to its gateway, in an Ethernet frame, fragmented to the card's 1500
+  bytes when bigger (datagrams; TCP keeps to the peer's MSS); the next
+  hop's MAC comes from a per-card ARP cache (requests sent at most once a
+  second, packets wait in a small queue until the reply). The device
+  answers ARP requests for its addresses and learns from them. When a
+  card's transmit ring is full the device refuses smoltcp's transmit
+  token (backpressure: the data stays queued in the socket, no drop and
+  retransmission timeout).
+- **IPv6 off the machine** (`inet/ndisc.rs`): each card gets fe80::/64 +
+  EUI-64 when probed (with the fe80::/64 route) and sends a router
+  solicitation once configured. Neighbour solicitations for our
+  addresses are answered, advertisements fill a per-card neighbour cache
+  (packets wait for it as for ARP); IPv6 goes out on the card whose /64
+  holds the destination (link-local: the first card), else to the
+  default router. A router advertisement adds prefix + EUI-64 for each
+  autonomous /64, the prefix route, and the sender as default router
+  (`::/0 via fe80::2 proto ra`, mirrored into smoltcp); QEMU's user
+  network gives fec0::/64. No DAD, no fragments, no MLD.
 - **Links**: `lo` (index 1) and one `ethN` per virtio-net card in PCI
   order; flags, MTU, name and addresses are kernel state changed by
   rtnetlink (`net/rtnetlink.rs`) and the ifreq ioctls (`net/ifreq.rs`),
@@ -696,19 +715,30 @@ libnetd_updatable, libbpf_android) need, without running any program:
   every inet socket's wait queue is woken with unknown events (the
   callers may hold a socket's lock, so masks are not computed there).
 - **virtio-net** (`drivers/virtio/net.rs`): queues 0 (receive) and 1
-  (transmit), 64 posted 2 KiB receive buffers (virtio header + frame),
-  32 transmit bounce buffers reclaimed lazily, no offloads; modern and
-  legacy transports. `Virtqueue` gained non-blocking `add`/`pop_used`
-  next to virtio-blk's `submit_and_wait`.
+  (transmit), 256 posted 2 KiB receive buffers (virtio header + frame),
+  128 transmit bounce buffers reclaimed lazily (`can_send` tells the
+  device whether one is free), no offloads; modern and legacy
+  transports. `Virtqueue` gained non-blocking `add`/`pop_used` next to
+  virtio-blk's `submit_and_wait`.
 - **Sockets** (`inet/socket.rs`, `InetSocket` behind `InetFile`): TCP
-  connect makes one smoltcp socket; listen keeps a pool of two smoltcp
+  connect makes one smoltcp socket; listen keeps a pool of eight smoltcp
   sockets listening on the endpoint (smoltcp accepts one connection per
-  socket), topped up after every poll up to the backlog; accept takes an
-  established one out of the pool (its state counts toward POLLIN).
-  Closed connections stay in the set as orphans until their FIN
-  handshake ends (at most 60 s). UDP gets its smoltcp socket when it gets
-  a port. AF_INET6 sockets are dual-stack (v4-mapped peers). Raw and
-  ICMP sockets only hold options. Ports are reserved in `Tables`
+  socket). `Net::poll` lets smoltcp take at most eight received packets
+  per `Interface::poll` and tops the pools up in between (up to the
+  backlog), so a burst of SYNs never finds the pool empty and gets
+  refused; accept takes an established one out of the pool (its state
+  counts toward POLLIN). Closed connections stay in the set as orphans
+  until their FIN handshake ends (at most 60 s); an orphan that receives
+  data is reset, and so is a connection closed with unread data or with
+  SO_LINGER {1, 0}, as on Linux. A connection that goes to Closed
+  without our close (reset or timeout) reports ECONNRESET once (recv,
+  send or SO_ERROR, with POLLERR), then EOF / EPIPE; POLLRDHUP comes with
+  the peer's FIN even while data is left. UDP gets its smoltcp socket
+  when it gets a port. ICMP "ping" sockets (SOCK_DGRAM + IPPROTO_ICMP /
+  IPPROTO_ICMPV6) get a smoltcp ICMP socket bound to their port as echo
+  identifier: only echo requests may be sent (the identifier is
+  rewritten), only replies are received. AF_INET6 sockets are dual-stack
+  (v4-mapped peers). Raw sockets only hold options. Ports are reserved in `Tables`
   (EADDRINUSE unless both sides set SO_REUSEADDR and neither listens;
   ephemeral ports 32768-60999). Lock order: a socket's state, then
   `NET`; nothing sleeps holding either.
@@ -721,6 +751,63 @@ libnetd_updatable, libbpf_android) need, without running any program:
   the local table), rules and neighbours (empty); changes of addresses,
   routes, links (name, MTU, flags; renaming an up link is EBUSY) and
   rules, multicast to the RTNLGRP_LINK / *_IFADDR / *_ROUTE groups.
+- **ethtool** (`net/ifreq.rs`, SIOCETHTOOL): GDRVINFO (driver
+  `virtio_net`, bus_info = the card's PCI address), GLINK, GSET (speed
+  and duplex unknown, like Linux's virtio_net), GPERMADDR; `lo` only
+  answers GLINK, everything else is EOPNOTSUPP.
+- **/proc/net**: tcp, tcp6, udp, udp6, unix, netlink, arp, dev, route,
+  ipv6_route, if_inet6, the iptables names, and the statistics files
+  netd, ConnectivityService and tools read (snmp, snmp6, netstat,
+  sockstat, sockstat6, protocols, raw, raw6, icmp, icmp6, igmp, igmp6,
+  dev_mcast, packet; counters mostly zero).
+
+## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
+
+- **virtio-input** (`drivers/virtio/input.rs`): virtio device type 18
+  (QEMU's virtio-keyboard/-mouse/-tablet/-multitouch-pci, Cuttlefish's
+  devices). The configuration space gives the name, serial, ids,
+  property bits, the codes of every event type and the absolute axis
+  ranges, which become an input device. Queue 0 is kept full of 8-byte
+  event buffers (posted in order, so buffer i is descriptor i); the BSP's
+  timer tick notices the used ring move and the next return to user mode
+  or idle loop hands the events to the input core (the same soft
+  interrupt pattern as virtio-net). Queue 1 (status) takes LED events
+  written to the device's node.
+- **Input core** (`drivers/input/mod.rs`): `register(caps, parent,
+  sink)` makes `<parent>/input/inputN` in sysfs (class input; uevent
+  with PRODUCT, NAME, PHYS, UNIQ, PROP, EV, KEY, ..., MODALIAS; name,
+  phys, uniq, properties, modalias, id/*, capabilities/*) and its child
+  `eventN` (MAJOR=13, MINOR=64+N, DEVNAME=input/eventN), whose "add"
+  uevents make ueventd create /dev/input/eventN; devtmpfs gets the node
+  too. Events are filtered against the device state as on Linux (a key
+  already down, an unchanged axis or switch, a zero relative motion are
+  dropped; keys, LEDs, sounds, switches, axes and MT slots are tracked
+  for the EVIOCG* state ioctls), collected into a packet and delivered
+  to the clients at SYN_REPORT (an empty packet is dropped).
+- **evdev** (13:64+N): every open is a client with a queue of 1024
+  events (on overflow the queue becomes SYN_DROPPED), a clock
+  (EVIOCSCLOCKID: realtime, monotonic, boottime; events are stamped
+  with monotonic time and converted on read), an event mask
+  (EVIOCGMASK/EVIOCSMASK, per type and per code) and a grab
+  (EVIOCGRAB: only the grabbing client gets events). Reads return whole
+  24-byte input_events (EINVAL for a smaller buffer, EAGAIN, blocking,
+  ENODEV once the device is gone); poll/epoll through the client's wait
+  queue. Ioctls: EVIOCGVERSION/GID/GREP/SREP/GNAME/GPHYS/GUNIQ/GPROP/
+  GMTSLOTS/GKEY/GLED/GSND/GSW/GBIT/GABS/SABS/RMFF/GEFFECTS/GRAB/REVOKE/
+  GMASK/SMASK/SCLOCKID (EVIOCSFF: ENOSYS). Writes inject events
+  (`sendevent`): delivered like the device's, and LED/sound/repeat
+  events also go to the driver (virtio status queue, uinput reader).
+- **uinput** (`drivers/input/uinput.rs`, 10:223): UI_SET_*BIT,
+  UI_DEV_SETUP, UI_ABS_SETUP or the legacy `uinput_user_dev` write, then
+  UI_DEV_CREATE registers a device under devices/virtual; events written
+  to the file are its events, events written to its node (LEDs) can be
+  read back; UI_GET_SYSNAME, UI_GET_VERSION (5), UI_DEV_DESTROY or close
+  remove it.
+- **run-qemu.sh `--input`** (default for `--ktest`, `--aosp-gfx-test`,
+  `--aosp-input-test`): virtio-keyboard-pci 00:10.0, virtio-tablet-pci
+  00:11.0, virtio-multitouch-pci 00:12.0, modern only. The QEMU
+  monitor's `sendkey` and `mouse_button` go to them once the driver is
+  up (HMP's `mouse_move` is relative and goes to the PS/2 mouse).
 
 ## Binder (`drivers/binder/`)
 
@@ -1026,21 +1113,39 @@ checks the stack end to end. `--ktest` 42/42, `--test` 27/27,
 `--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
 `--aosp-adb-test` 17/17 pass.
 
+Phase D2 (input and network, [android-init.md](android-init.md#d2-input-and-network)):
+`adb exec-out` works (the pty's TCGETS overflowed bionic's termios in
+adbd's raw-PTY child); virtio keyboard/tablet/multitouch are evdev nodes
+that `getevent` lists and that QEMU's `sendkey` reaches; the TCP stack
+resets, reports resets and keeps up with bursts and backpressure; ICMP
+ping sockets, IPv4 fragmentation and IPv6 off the machine (NDP, SLAAC)
+work. New suites d2_evdev 86 (74 on the Linux host, through uinput),
+d2_tcp 39 (39 on the host), d2_udp 43 (24 on the host: no eth0 part);
+new `--aosp-input-test` 17/17. `--test` 27/27, `--ktest` 45/45,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
+`--aosp-adb-test` 21/21 (now with exec-out and `nc` to the host),
+`--aosp-gfx-test` 22/22 (now with `exec-out screencap`) pass.
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
   virtio-gpu with asynchronous commits (fences are signalled at once
-  now), a cursor plane, hotplug, `adb exec-out` returning no output
-  (adbd's raw exec service).
+  now), a cursor plane, hotplug.
+- Input follow-ups: force feedback (EVIOCSFF), key autorepeat (EV_REP is
+  only stored), EVIOCREVOKE semantics, /proc/bus/input/devices, uhid,
+  interrupt-driven virtio-input. `input keyevent` and InputFlinger run
+  in system_server (D3).
 - Android (phase D and later): userfaultfd (ART's GC, see
   android-init.md), kernel BTF for CO-RE bpf objects, a persistent /data
   (ext4 writes or f2fs, then FBE), a real SELinux policy engine, cgroup
   resource control, a pty line discipline for an interactive `adb shell`
   (commands work), ptrace/process_vm_readv for crash_dump.
-- Network follow-ups: IPv6 off the machine (neighbour discovery, SLAAC),
-  enforcing netfilter and policy routing, packet sockets, tun/tap and
-  virtual links, vsock, IP fragmentation, interrupt-driven virtio-net,
-  socket buffer sizes from SO_SNDBUF/SO_RCVBUF.
+- Network follow-ups: IPv6 DAD, MLD, fragments and router lifetimes;
+  reassembly of incoming IPv4 fragments; enforcing netfilter and policy
+  routing, packet sockets, tun/tap and virtual links, vsock,
+  interrupt-driven virtio-net, socket buffer sizes from
+  SO_SNDBUF/SO_RCVBUF, ICMP errors to UDP sockets (ECONNREFUSED), TCP
+  ETIMEDOUT, real /proc/net/snmp counters.
 
 - VFS follow-ups: permission checks and capabilities (ids are tracked),
   read-only mounts, slave/unbindable mounts, statfs block accounting.

@@ -256,6 +256,8 @@ pub struct Attrs {
     pub timerslack: u64,
     pub subreaper: bool,
     pub ioprio: u32,
+    /// Syscalls are logged (`strace=COMM`; inherited by children).
+    pub traced: bool,
     pub oom_score_adj: i32,
 }
 
@@ -280,6 +282,7 @@ impl Default for Attrs {
             timerslack: 50_000,
             subreaper: false,
             ioprio: 4,
+            traced: false,
             oom_score_adj: 0,
         }
     }

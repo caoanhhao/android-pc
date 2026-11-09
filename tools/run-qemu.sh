@@ -46,6 +46,15 @@
 #                                     and a QEMU screendump and checks both
 #                                     are not blank (zygote is stopped, it
 #                                     needs userfaultfd: phase D3)
+#   tools/run-qemu.sh --aosp-input-test
+#                                     the graphics test's boot (virtio-gpu,
+#                                     virtio-input devices, monitor):
+#                                     tools/aosp-input-test.py checks the
+#                                     /dev/input nodes, `getevent -lp`, keys
+#                                     typed with the monitor's `sendkey` and
+#                                     `mouse_button` reaching getevent, and
+#                                     `adb exec-out` (text, 2 MB, a
+#                                     `screencap -p` PNG)
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -65,6 +74,9 @@
 #          and --aosp-gfx-test), --no-gpu, --gpu-size WxH (scanout size,
 #          default 720x1280), --display none|vnc=:N|gtk|sdl (default none;
 #          the screen can always be saved with the monitor's screendump),
+#          --input (virtio-keyboard-pci 00:10.0, virtio-tablet-pci 00:11.0,
+#          virtio-multitouch-pci 00:12.0; default for --ktest and the
+#          --aosp-gfx-test/--aosp-input-test boots), --no-input,
 #          --monitor PATH (QEMU monitor on a unix socket, e.g. for
 #          `echo "screendump out.ppm" | socat - UNIX:PATH`),
 #          --no-net (no network card), --adb-port PORT (forward host
@@ -83,7 +95,7 @@ KERNEL_DIR="$ROOT/kernel"
 
 mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
-gpu="" gpu_size=720x1280 display=none monitor=""
+gpu="" input="" gpu_size=720x1280 display=none monitor=""
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -103,10 +115,13 @@ while [[ $# -gt 0 ]]; do
         --no-net) net=0 ;;
         --gpu) gpu=1 ;;
         --no-gpu) gpu=0 ;;
+        --input) input=1 ;;
+        --no-input) input=0 ;;
         --gpu-size) gpu_size="$2"; shift ;;
         --display) display="$2"; shift ;;
         --monitor) monitor="$2"; shift ;;
         --aosp-gfx-test) mode=aosp-gfx-test ;;
+        --aosp-input-test) mode=aosp-input-test ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -137,7 +152,8 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test ) ]] && gpu=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -157,7 +173,7 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -199,8 +215,8 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     boot_args+=" $v.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal"
     append="$boot_args $append"
     [[ $timeout == 120 ]] && timeout=300
-    [[ $mode == aosp-gfx-test && $timeout == 300 ]] && timeout=420
-    [[ $mode == aosp-gfx-test && $mem == 2G ]] && mem=4G
+    [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
+    [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -327,8 +343,15 @@ if [[ $gpu == 1 ]]; then
     IFS=x read -r gw gh <<<"$gpu_size"
     args+=(-vga none -device "virtio-gpu-pci,addr=0x2,xres=$gw,yres=$gh")
 fi
+if [[ $input == 1 ]]; then
+    # Modern-only, like Cuttlefish's; QEMU's `sendkey` and mouse events
+    # go to these once the guest driver is up.
+    args+=(-device virtio-keyboard-pci,addr=0x10,disable-legacy=on
+           -device virtio-tablet-pci,addr=0x11,disable-legacy=on
+           -device virtio-multitouch-pci,addr=0x12,disable-legacy=on)
+fi
 # Unix socket paths are limited to 107 bytes, too short for $work.
-[[ $mode == aosp-gfx-test && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 if [[ -n $monitor ]]; then
     rm -f "$monitor"
     args+=(-monitor "unix:$monitor,server,nowait")
@@ -391,6 +414,16 @@ elif [[ $mode == aosp-gfx-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP graphics test FAILED (serial log: $log, screenshots: $work/gfx)" >&2
+    exit 1
+elif [[ $mode == aosp-input-test ]]; then
+    log="$work/aosp-input-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 300)) python3 "$ROOT/tools/aosp-input-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --monitor "$monitor" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP input test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display "$display" -serial stdio)

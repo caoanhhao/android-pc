@@ -3,14 +3,16 @@
 Linux x86_64 syscalls the kernel in `kernel/` implements, by phase. The
 dispatcher is `kernel/kernel/src/syscall/mod.rs`; every number not listed
 returns `-ENOSYS` and is logged once (`unimplemented syscall N`). Boot with
-`--append strace` to log every call. What AOSP needs overall is in
+`--append strace` to log every call, or `--append strace=COMM` to log
+only the processes whose name starts with COMM, and their children
+(writes show their first bytes). What AOSP needs overall is in
 [syscall-trace.md](syscall-trace.md).
 
 Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics, D2 input and network)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -30,7 +32,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 13 | rt_sigaction | yes | SA_SIGINFO, SA_RESTORER (required), SA_ONSTACK, SA_RESTART, SA_NODEFER, SA_RESETHAND; setting SIG_IGN flushes pending |
 | 14 | rt_sigprocmask | yes | SIGKILL/SIGSTOP never blocked |
 | 15 | rt_sigreturn | yes | restores registers, mask, FPU state from the rt_sigframe |
-| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets, FIONREAD on netlink and inotify fds; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TIOCSCTTY (the caller's session and process group become the console's, so a shell started after setsid is in the foreground), TCSBRK/TCSBRKP/TCXONC/TIOCNOTTY (no-ops), TIOCGSID; pseudo-terminals: TIOCGPTN, TIOCSPTLCK/TIOCGPTLCK, TIOCGPTPEER, TCGETS/TCSETS*, TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP, FIONREAD; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); block devices, loop, device mapper: see Block devices below; everything else ENOTTY |
+| 16 | ioctl | partial | FIOCLEX/FIONCLEX/FIONBIO on any fd, FIONREAD on pipes, FIONREAD (SIOCINQ)/SIOCOUTQ on sockets, FIONREAD on netlink and inotify fds; console tty: TCGETS/TCSETS/TCSETSW/TCSETSF (F flushes input; switching ICANON keeps pending input), TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP (the foreground group ^C/^\/^Z signal), FIONREAD, TIOCOUTQ (0), TCFLSH, TIOCSCTTY (the caller's session and process group become the console's, so a shell started after setsid is in the foreground), TCSBRK/TCSBRKP/TCXONC/TIOCNOTTY (no-ops), TIOCGSID; pseudo-terminals: TIOCGPTN, TIOCSPTLCK/TIOCGPTLCK, TIOCGPTPEER, TCGETS/TCSETS*, TIOCGWINSZ/TIOCSWINSZ, TIOCGPGRP/TIOCSPGRP, FIONREAD; binder devices: the BINDER_* ioctls and BINDER_CTL_ADD (see Binder below); block devices, loop, device mapper: see Block devices below; evdev and uinput: see Input below; everything else ENOTTY |
 | 17 | pread64 | yes | ESPIPE on pipes/devices |
 | 18 | pwrite64 | yes | |
 | 19 | readv | yes | on a socket: one receive scattered over the iovecs (a datagram is not split over reads) |
@@ -429,7 +431,7 @@ Code: `kernel/kernel/src/block/` (block layer, cache, GPT, loop, dm),
   NLM_F_ACK, else -EOPNOTSUPP) otherwise; nothing is ever multicast.
   Protocols >= 32 EPROTONOSUPPORT, stream sockets ESOCKTNOSUPPORT.
 
-## Network (C3d)
+## Network (C3d, D2)
 
 AF_INET and AF_INET6 sockets on smoltcp's TCP/IP (see
 [kernel-architecture.md](kernel-architecture.md#network-netinet-c3d)).
@@ -447,15 +449,28 @@ AF_INET and AF_INET6 sockets on smoltcp's TCP/IP (see
   MSG_DONTWAIT, MSG_WAITALL and MSG_NOSIGNAL (EPIPE + SIGPIPE once the
   connection cannot send), shutdown (SHUT_WR sends FIN; EOF reads 0),
   getsockname/getpeername, FIONREAD/SIOCOUTQ. Close finishes the FIN
-  handshake in the background. Nagle is off (TCP_NODELAY on by default),
-  delayed ACKs off; 64 KiB buffers each way. poll: POLLIN (data, EOF, a
-  pending connection), POLLOUT, POLLRDHUP, POLLHUP, POLLERR.
+  handshake in the background; with unread data or SO_LINGER {1, 0} it
+  resets the connection, and data arriving for a closed socket is
+  answered with a reset. A reset (or timed-out) connection reports
+  ECONNRESET once (recv, send, or SO_ERROR with POLLERR|POLLHUP), then
+  EOF / EPIPE. Nagle is off (TCP_NODELAY on by default), delayed ACKs
+  off; 64 KiB buffers each way, a full one blocks the sender (EAGAIN
+  and no POLLOUT when non-blocking). poll: POLLIN (data, EOF, a pending
+  connection), POLLOUT, POLLRDHUP (from the peer's FIN on), POLLHUP,
+  POLLERR.
 - **UDP**: bind, sendto/sendmsg (EDESTADDRREQ without a destination,
-  EMSGSIZE above 64 KiB; datagrams above the 1500-byte MTU are not
-  fragmented), recvfrom/recvmsg with the source address, MSG_PEEK,
+  EINVAL to port 0, EMSGSIZE above 64 KiB; loopback carries 64 KiB
+  datagrams, IPv4 ones leaving through a card are fragmented to its
+  1500-byte MTU), recvfrom/recvmsg with the source address, MSG_PEEK,
   MSG_TRUNC (real length; the rest of the datagram is dropped), connect
   (default destination and receive filter; AF_UNSPEC dissolves it).
   Control messages are ignored on send and none are returned.
+- **ICMP ping sockets** (SOCK_DGRAM with IPPROTO_ICMP on AF_INET,
+  IPPROTO_ICMPV6 on AF_INET6; net.ipv4.ping_group_range is not checked):
+  the port is the echo identifier (bind or an ephemeral one); send takes
+  an echo request (type 8 / 128, else EINVAL; the identifier is
+  overwritten), recv returns echo replies with the identifier (ICMP
+  header + data, the source in sin_addr, port 0).
 - **Options**: SOL_SOCKET SO_TYPE/DOMAIN/PROTOCOL/ERROR/ACCEPTCONN,
   SO_REUSEADDR, SO_RCVTIMEO/SNDTIMEO, SO_KEEPALIVE (75 s keep-alive),
   SO_COOKIE; TCP_NODELAY, TCP_INFO (state only); every other option at any
@@ -490,10 +505,19 @@ AF_INET and AF_INET6 sockets on smoltcp's TCP/IP (see
   SIOCGIFNETMASK/SIOCSIFNETMASK, SIOCGIFBRDADDR, SIOCGIFDSTADDR,
   SIOCGIFMTU/SIOCSIFMTU, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFTXQLEN/
   SIOCSIFTXQLEN, SIOCGIFMETRIC, SIOCGIFMAP; SIOCADDRT/SIOCDELRT accepted;
-  SIOCETHTOOL EOPNOTSUPP; ENODEV for unknown names.
+  SIOCETHTOOL: ETHTOOL_GDRVINFO (driver virtio_net, bus_info the PCI
+  address), GLINK, GSET (speed/duplex unknown), GPERMADDR (E2BIG for a
+  short buffer), else EOPNOTSUPP (lo: only GLINK); ENODEV for unknown
+  names.
+- **IPv6 on cards**: fe80::/64 link-local per card, neighbour discovery,
+  SLAAC and the default router from router advertisements (fec0::/64 on
+  QEMU's user network), shown in if_inet6, ipv6_route and rtnetlink.
 - **/proc/net**: tcp, tcp6, udp, udp6 (Linux columns, state, queues,
-  inode), dev (per-link counters), if_inet6, route, arp, ip_tables_names,
-  ip6_tables_names (and empty ip_tables_matches/targets, ipv6_route).
+  inode), dev (per-link counters), if_inet6, route, ipv6_route, arp,
+  ip_tables_names, ip6_tables_names (and empty ip_tables_matches/targets),
+  snmp (packet counts), snmp6, netstat, sockstat/sockstat6 (sockets in
+  use), protocols, and header-only raw, raw6, icmp, icmp6, packet;
+  igmp, igmp6 and dev_mcast list the all-hosts groups.
   **/proc/sys/net**: ipv4 and ipv6 globals and conf/{all,default,lo,
   eth0}/* and neigh/{default,lo,eth0}/* (stored). **/sys/class/net**:
   lo and ethN with ifindex, address, mtu, type, operstate.
@@ -650,12 +674,44 @@ SET_REQKEY_KEYRING, GET_SECURITY, GET_PERSISTENT, SESSION_TO_PARENT,
 RESTRICT_KEYRING; others EOPNOTSUPP. No permission checks, quotas or
 expiry.
 
+## Input (D2)
+
+evdev nodes /dev/input/eventN (13:64+N) for virtio-input and uinput
+devices (see
+[kernel-architecture.md](kernel-architecture.md#input-driversinput-driversvirtioinputrs-d2)).
+
+- **read**: whole `struct input_event`s (24 bytes; EINVAL for a smaller
+  buffer), as many as fit; EAGAIN when empty and non-blocking; blocks
+  otherwise; ENODEV once the device is gone (POLLHUP|POLLERR). Events
+  come in packets ending with SYN_REPORT; SYN_DROPPED replaces the
+  queue (1024 events) on overflow.
+- **write**: input_events are injected (EINVAL for 1-23 bytes); LED,
+  sound and repeat events also go to the device.
+- **ioctl**: EVIOCGVERSION (0x010001), EVIOCGID, EVIOCGREP/EVIOCSREP,
+  EVIOCGNAME/GPHYS/GUNIQ (string, truncated to the size, returns the
+  length; ENOENT when unset), EVIOCGPROP, EVIOCGMTSLOTS (EINVAL for a
+  non-MT code), EVIOCGKEY/GLED/GSND/GSW (state), EVIOCGBIT (event types
+  with type 0; EINVAL for unknown types), EVIOCGABS/EVIOCSABS (any axis
+  of a device with EV_ABS), EVIOCRMFF, EVIOCGEFFECTS (0), EVIOCSFF
+  (ENOSYS), EVIOCGRAB (EBUSY when grabbed, EINVAL releasing someone
+  else's grab), EVIOCREVOKE (accepted), EVIOCGMASK/EVIOCSMASK (per type
+  with type 0, per code otherwise; the size must be a multiple of 8),
+  EVIOCSCLOCKID (REALTIME, MONOTONIC, BOOTTIME), else EINVAL.
+- **/dev/uinput** (10:223): UI_GET_VERSION (5), UI_SET_EVBIT/KEYBIT/
+  RELBIT/ABSBIT/MSCBIT/LEDBIT/SNDBIT/FFBIT/SWBIT/PROPBIT (the value is
+  the argument; EINVAL out of range or after create), UI_SET_PHYS,
+  UI_DEV_SETUP, UI_ABS_SETUP, the legacy `uinput_user_dev` write,
+  UI_DEV_CREATE (EINVAL without a name or twice), UI_GET_SYSNAME,
+  UI_DEV_DESTROY; afterwards writes are the device's events and reads
+  return the events written to its node. Close destroys the device.
+
 ## Pseudo-terminals (C3a)
 
 /dev/ptmx (5:2, also in devtmpfs and devpts) opens a new master and
 creates /dev/pts/N (136:N, 0620) in the shared devpts instance; the
 slave is locked until TIOCSPTLCK(0) (EIO before). TIOCGPTN, TIOCGPTLCK,
-TIOCGPTPEER (opens the slave without a path). No line discipline: bytes
+TIOCGPTPEER (opens the slave without a path); TCGETS/TCSETS* use the
+36-byte kernel `struct termios`, as on the console. No line discipline: bytes
 written to the master reach slave reads unchanged (no echo, canonical
 mode or signals); slave output gets "\n" -> "\r\n" while OPOST|ONLCR
 are set (the default termios). 64 KiB per direction (writers block).

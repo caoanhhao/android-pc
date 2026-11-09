@@ -256,6 +256,10 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::net::inet::softirq();
         }
+        if crate::drivers::virtio::input::pending() {
+            interrupts::enable();
+            crate::drivers::virtio::input::softirq();
+        }
         interrupts::disable();
         IDLE_CPUS.fetch_or(bit, Ordering::SeqCst);
         if RQ_LEN.load(Ordering::SeqCst) > 0 {
@@ -277,6 +281,7 @@ pub fn timer_interrupt() {
         crate::fs::tty::poll_input();
         crate::fs::kmsg::tick();
         crate::net::inet::tick();
+        crate::drivers::virtio::input::tick();
         expire_sleepers();
         timer::run_expired();
     }
@@ -292,6 +297,10 @@ pub fn exit_to_user(frame: &mut TrapFrame) {
     if crate::net::inet::pending() {
         interrupts::enable();
         crate::net::inet::softirq();
+    }
+    if crate::drivers::virtio::input::pending() {
+        interrupts::enable();
+        crate::drivers::virtio::input::softirq();
     }
     loop {
         interrupts::disable();
