@@ -1,13 +1,18 @@
-//! Sockets: AF_UNIX (`unix`) and AF_NETLINK (`netlink`: kernel uevents,
-//! stubs for the other protocols); every other address family is refused
-//! with EAFNOSUPPORT.
+//! Sockets: AF_UNIX (`unix`), AF_NETLINK (`netlink`: kernel uevents,
+//! rtnetlink, stubs for the other protocols) and AF_INET/AF_INET6
+//! (`inet`: smoltcp's TCP/IP over loopback and virtio-net, netfilter
+//! tables); every other address family is refused with EAFNOSUPPORT.
+//! `ifreq` has the interface ioctls every socket answers.
 //!
 //! A socket is an open file whose `FileOps` is a [`unix::SocketFile`] (or
-//! [`netlink::NetlinkFile`]) and
+//! [`netlink::NetlinkFile`], [`inet::socket::InetFile`]) and
 //! whose inode is an anonymous S_IFSOCK inode (`socket:[ino]` in
 //! /proc/<pid>/fd). The syscalls are in `syscall/net.rs`.
 
+pub mod ifreq;
+pub mod inet;
 pub mod netlink;
+pub mod rtnetlink;
 pub mod unix;
 
 pub const AF_UNSPEC: u16 = 0;

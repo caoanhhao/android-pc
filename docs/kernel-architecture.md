@@ -1,4 +1,4 @@
-# Kernel architecture (phase C3c state: AOSP init, its core daemons and eBPF loading run)
+# Kernel architecture (phase C3d state: AOSP init, its core daemons, eBPF loading, netd and adbd over TCP run)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -87,7 +87,11 @@ kernel/
                        BTF, links, attachments, ids, bpffs pinning; syscall/bpf.rs
                        is the bpf(2) front end
       net/             sockets: constants, credentials; unix (AF_UNIX sockets);
-                       netlink (AF_NETLINK: kernel uevents, stub protocols)
+                       netlink (AF_NETLINK: kernel uevents, stub protocols);
+                       rtnetlink (NETLINK_ROUTE); ifreq (interface ioctls);
+                       inet/ (AF_INET/AF_INET6: mod.rs the stack under smoltcp,
+                       links, routes, loopback + ARP device; socket.rs TCP/UDP
+                       sockets; netfilter.rs stored iptables tables)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
                        files, fd tables), tmpfs (also rootfs/devtmpfs/sysfs),
                        dev (character devices), tty (console line discipline),
@@ -101,7 +105,7 @@ kernel/
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); pci (config space, enumeration); virtio/
-                       (transports + virtqueues, blk); later net, gpu, dma-buf, ...
+                       (transports + virtqueues, blk, net); later gpu, dma-buf, ...
 ```
 
 Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
@@ -610,6 +614,7 @@ libnetd_updatable, libbpf_android) need, without running any program:
   multicast groups and a message queue; a global list of live sockets.
   The kernel's uevents are queued on every NETLINK_KOBJECT_UEVENT socket
   in group 1 (see [syscalls.md](syscalls.md#netlink-c3a)).
+- AF_INET / AF_INET6: see [Network](#network-netinet-c3d) below.
 - AF_UNIX (`net/unix.rs`); other families get EAFNOSUPPORT. A
   socket file is an `OpenFile` whose ops are `SocketFile(Arc<UnixSocket>)`
   and whose inode is a fresh anonymous `S_IFSOCK | 0777` inode (fstat,
@@ -646,6 +651,68 @@ libnetd_updatable, libbpf_android) need, without running any program:
   closes the files of unreceived SCM_RIGHTS messages. Reference cycles
   through in-flight fds are not collected.
 - `/proc/net/unix` is generated from a table of all live sockets.
+
+## Network (`net/inet/`, C3d)
+
+- **Stack**: smoltcp 0.12 (no_std + alloc; TCP, UDP, IPv4, IPv6) with
+  one `Interface` of `Medium::Ip` holding every link's addresses, and
+  one `SocketSet`. All of it, plus the links, routes, policy rules and
+  the socket bookkeeping, lives in `inet::NET` (a spin mutex). smoltcp's
+  own source address choice (the first IPv4 address for everything) is
+  bypassed: `Net::source_for` picks 127.0.0.1 for loopback, the
+  destination for local addresses, else the address of the link the
+  destination (or the default gateway) is on.
+- **Device** (`inet::Dev`, below smoltcp): an outgoing IP packet to a
+  local address (127/8, ::1, any link's address) is queued straight back
+  as received: that is `lo`. IPv4 to anywhere else goes out on the card
+  whose subnet holds the destination, else on the default route's card
+  to its gateway, in an Ethernet frame; the next hop's MAC comes from a
+  per-card ARP cache (requests sent at most once a second, packets wait
+  in a small queue until the reply). The device answers ARP requests for
+  its addresses and learns from them. IPv6 never leaves the machine.
+- **Links**: `lo` (index 1) and one `ethN` per virtio-net card in PCI
+  order; flags, MTU, name and addresses are kernel state changed by
+  rtnetlink (`net/rtnetlink.rs`) and the ifreq ioctls (`net/ifreq.rs`),
+  then mirrored into smoltcp (`Net::sync`). After probing, the last card
+  gets QEMU user networking's static configuration (10.0.2.15/24,
+  default route via 10.0.2.2), like Linux's `ip=`. Routes and fib rules
+  are stored and dumped; forwarding uses only the main table's default
+  route and the links' subnets.
+- **Running the stack**: every socket operation that may produce packets
+  polls the stack (`with_net`), looping while loopback packets are
+  queued. Otherwise a soft interrupt: the BSP's timer tick
+  (`inet::tick`) sets a flag when a card's receive ring moved (read
+  lock-free from the used index) or smoltcp's next timer is due, and the
+  next return to user mode or idle loop on any CPU polls
+  (`inet::softirq`, try-lock). After a poll that changed socket state
+  every inet socket's wait queue is woken with unknown events (the
+  callers may hold a socket's lock, so masks are not computed there).
+- **virtio-net** (`drivers/virtio/net.rs`): queues 0 (receive) and 1
+  (transmit), 64 posted 2 KiB receive buffers (virtio header + frame),
+  32 transmit bounce buffers reclaimed lazily, no offloads; modern and
+  legacy transports. `Virtqueue` gained non-blocking `add`/`pop_used`
+  next to virtio-blk's `submit_and_wait`.
+- **Sockets** (`inet/socket.rs`, `InetSocket` behind `InetFile`): TCP
+  connect makes one smoltcp socket; listen keeps a pool of two smoltcp
+  sockets listening on the endpoint (smoltcp accepts one connection per
+  socket), topped up after every poll up to the backlog; accept takes an
+  established one out of the pool (its state counts toward POLLIN).
+  Closed connections stay in the set as orphans until their FIN
+  handshake ends (at most 60 s). UDP gets its smoltcp socket when it gets
+  a port. AF_INET6 sockets are dual-stack (v4-mapped peers). Raw and
+  ICMP sockets only hold options. Ports are reserved in `Tables`
+  (EADDRINUSE unless both sides set SO_REUSEADDR and neither listens;
+  ephemeral ports 32768-60999). Lock order: a socket's state, then
+  `NET`; nothing sleeps holding either.
+- **Netfilter** (`inet/netfilter.rs`): x_tables tables per family and
+  name, created on first use with the built-in chains' ACCEPT policies;
+  IPT_SO_SET_REPLACE stores the blob (old counters copied back as
+  zeros), GET_INFO/GET_ENTRIES return it, every match/target revision
+  exists. Nothing is enforced.
+- **rtnetlink**: dumps of links (with stats), addresses, routes (plus
+  the local table), rules and neighbours (empty); changes of addresses,
+  routes, links (name, MTU, flags; renaming an up link is EBUSY) and
+  rules, multicast to the RTNLGRP_LINK / *_IFADDR / *_ROUTE groups.
 
 ## Binder (`drivers/binder/`)
 
@@ -860,14 +927,29 @@ decompression buffers that filled the kernel heap once zygote started
 are now one small global cache. `--aosp-init-test` 41/41; new suite
 c3_bpf 117 (skipped on the host: bpf needs CAP_BPF there).
 
+Phase C3d (network and adbd, [android-init.md](android-init.md#c3d-network-and-adbd)):
+virtio-net, smoltcp's TCP/IP behind AF_INET/AF_INET6 sockets (loopback,
+dual stack, ARP over the card), rtnetlink, the interface ioctls, /proc/net
+and the net sysctls, stored iptables/ip6tables tables, and cgroup.events
+notifications (init's service restarts no longer wait 2.2 s each). netd
+finishes its setup; adbd listens on TCP 5555 and the host's `adb connect`
+/ `adb shell` / `push` / `pull` work through QEMU's port forward.
+`--aosp-adb-test` 17/17 (debug and release); new suite c3_net 130 (97 on the Linux
+host, where rtnetlink changes, eth0 and iptables are skipped);
+`--ktest` 38/38, `--test` 27/27, `--aosp-sh-test` 15/15,
+`--aosp-disk-test` 9/9, `--aosp-init-test` 41/41 (debug and release) pass.
+
 ## Known gaps / next steps
 
-- Android init (C3d and later): netfilter (netd's iptables-restore), a
-  network stack and virtio-net for adbd, kernel BTF for CO-RE bpf
-  objects, userfaultfd (ART's GC, see android-init.md), a persistent /data (ext4 writes or f2fs, then FBE), a real
-  SELinux policy engine, cgroup resource control, a pty line discipline
-  for `adb shell`, adbd over virtio-net or virtio-console,
-  ptrace/process_vm_readv for crash_dump.
+- Android (phase D and later): userfaultfd (ART's GC, see
+  android-init.md), kernel BTF for CO-RE bpf objects, a persistent /data
+  (ext4 writes or f2fs, then FBE), a real SELinux policy engine, cgroup
+  resource control, a pty line discipline for an interactive `adb shell`
+  (commands work), ptrace/process_vm_readv for crash_dump.
+- Network follow-ups: IPv6 off the machine (neighbour discovery, SLAAC),
+  enforcing netfilter and policy routing, packet sockets, tun/tap and
+  virtual links, vsock, IP fragmentation, interrupt-driven virtio-net,
+  socket buffer sizes from SO_SNDBUF/SO_RCVBUF.
 
 - VFS follow-ups: permission checks and capabilities (ids are tracked),
   read-only mounts, slave/unbindable mounts, statfs block accounting.
@@ -882,8 +964,8 @@ c3_bpf 117 (skipped on the host: bpf needs CAP_BPF there).
 - Binder: freezer, oneway spam reports, priority inheritance, SELinux
   contexts, binder_logs; one global lock (fine for now, a per-process
   split later).
-- Sockets: AF_INET/INET6, netlink protocols other than uevents, in-flight fd garbage
-  collection, MSG_OOB, SO_PEEK_OFF.
+- Sockets: netlink protocols other than uevents and NETLINK_ROUTE,
+  in-flight fd garbage collection, MSG_OOB, SO_PEEK_OFF.
 - ELF: map segments from the file's page cache (MAP_PRIVATE) instead of
   copying them, so text pages are shared between processes.
 - Interrupt routing (IOAPIC from the ACPI MADT) for UART RX, and MSI-X

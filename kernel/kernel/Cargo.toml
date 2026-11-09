@@ -16,3 +16,4 @@ x86_64 = "0.15"
 spin = "0.10"
 log = "0.4"
 linked_list_allocator = "0.10"
+smoltcp = { version = "0.12", default-features = false, features = ["alloc", "log", "medium-ethernet", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-icmp", "socket-raw", "iface-max-addr-count-8"] }

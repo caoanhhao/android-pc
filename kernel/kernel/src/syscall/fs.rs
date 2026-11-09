@@ -209,6 +209,12 @@ fn readv_at(fd: i32, iov: u64, cnt: u64, at: Option<u64>) -> KResult<u64> {
         }
         return super::net::readv(&f, &s, &iov);
     }
+    if let Some(s) = crate::net::inet::socket::inet_of(&f) {
+        if at.is_some() {
+            return Err(ESPIPE);
+        }
+        return super::net::inet_readv(&f, &s, &iov);
+    }
     let mut total = 0;
     for (base, len) in iov {
         if len == 0 {
@@ -440,7 +446,7 @@ pub fn sys_pipe2(fds: u64, flags: u32) -> KResult<u64> {
 /// `fadvise64`: hints only (everything is in RAM).
 pub fn sys_fadvise64(fd: i32, advice: u32) -> KResult<u64> {
     let f = io_file(fd)?;
-    if f.inode.meta().file_type() == vfs::S_IFIFO || crate::net::unix::socket_of(&f).is_ok() {
+    if f.inode.meta().file_type() == vfs::S_IFIFO || f.inode.meta().file_type() == vfs::S_IFSOCK {
         return Err(ESPIPE);
     }
     if advice > 5 {

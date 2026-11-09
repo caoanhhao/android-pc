@@ -53,6 +53,8 @@ enum Node {
     NetDir,
     NetUnix,
     NetNetlink,
+    /// /proc/net/<NET_FILES[i]> (`net::inet::proc_net_file`).
+    NetFile(u8),
     PressureDir,
     Pressure(u8),
     /// /proc/sys entries (index into `sysctl::nodes`).
@@ -261,7 +263,7 @@ fn mode_of(node: Node) -> u32 {
             }
         }
         Node::Pressure(_) => S_IFREG | 0o666,
-        Node::Global(_) | Node::PidFile(..) | Node::TaskFile(..) | Node::NetUnix | Node::NetNetlink => S_IFREG | 0o444,
+        Node::Global(_) | Node::PidFile(..) | Node::TaskFile(..) | Node::NetUnix | Node::NetNetlink | Node::NetFile(_) => S_IFREG | 0o444,
     }
 }
 
@@ -460,7 +462,7 @@ impl Inode for ProcInode {
             Node::NetDir => match name {
                 b"unix" => Node::NetUnix,
                 b"netlink" => Node::NetNetlink,
-                _ => return Err(ENOENT),
+                _ => Node::NetFile(crate::net::inet::NET_FILES.iter().position(|f| f.as_bytes() == name).ok_or(ENOENT)? as u8),
             },
             Node::PressureDir => {
                 let i = PRESSURE.iter().position(|p| *p == name).ok_or(ENOENT)?;
@@ -547,6 +549,9 @@ impl Inode for ProcInode {
             Node::NetDir => {
                 v.push(ent(b"netlink", Node::NetNetlink));
                 v.push(ent(b"unix", Node::NetUnix));
+                for (i, f) in crate::net::inet::NET_FILES.iter().enumerate() {
+                    v.push(ent(f.as_bytes(), Node::NetFile(i as u8)));
+                }
             }
             Node::PressureDir => {
                 for (i, p) in PRESSURE.iter().enumerate() {
@@ -629,6 +634,7 @@ impl Inode for ProcInode {
             Node::FdInfo(pid, fd) => fdinfo(pid, fd)?,
             Node::NetUnix => crate::net::unix::proc_net_unix(),
             Node::NetNetlink => crate::net::netlink::proc_net_netlink(),
+            Node::NetFile(i) => crate::net::inet::proc_net_file(crate::net::inet::NET_FILES[i as usize]),
             _ => return Ok(None),
         };
         Ok(Some(Box::new(SeqFile { data: data.into_bytes() })))

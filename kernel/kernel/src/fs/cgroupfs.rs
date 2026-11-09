@@ -23,6 +23,8 @@ use core::any::Any;
 use spin::{Mutex, Once};
 
 use super::file::{FileOps, OpenFile};
+use super::poll::{DEFAULT_POLLMASK, POLLERR, POLLPRI, WaitQueue};
+use core::sync::atomic::{AtomicU64, Ordering};
 use super::vfs::{self, Dentry, DirEntry, Inode, Meta, S_IFDIR, S_IFMT, S_IFREG, dtype};
 use crate::errno::*;
 use crate::process::{TABLE, signal};
@@ -396,6 +398,8 @@ fn attach(dir: &CgDir, id: u32) -> KResult<()> {
     } else {
         m.0.insert(dir.hier.id, dir.path.clone());
     }
+    drop(m);
+    notify_events();
     Ok(())
 }
 
@@ -520,7 +524,12 @@ impl Inode for CgFile {
                 s
             }
         };
-        Ok(Some(alloc::boxed::Box::new(CgOps { data: text.into_bytes() })))
+        let events = self.kind == Kind::Events;
+        Ok(Some(alloc::boxed::Box::new(CgOps {
+            data: Mutex::new(text.into_bytes()),
+            events,
+            seen: AtomicU64::new(EVENTS_GEN.load(Ordering::SeqCst)),
+        })))
     }
 
     fn set_xattr(&self, _name: &[u8], _value: Option<&[u8]>, _flags: u32) -> KResult<()> {
@@ -532,15 +541,43 @@ impl Inode for CgFile {
     }
 }
 
+/// cgroup.events notification: a generation bumped (and a wait queue
+/// woken) whenever a process exits or changes group. An open events file
+/// polls POLLPRI | POLLERR until it is read again after a change, and a
+/// read at offset 0 sees the current state (libprocessgroup pread()s the
+/// same fd while it waits for a killed group to empty).
+static EVENTS_GEN: AtomicU64 = AtomicU64::new(0);
+static EVENTS_WQ: Once<Arc<WaitQueue>> = Once::new();
+
+fn events_wq() -> &'static Arc<WaitQueue> {
+    EVENTS_WQ.call_once(WaitQueue::new)
+}
+
+pub fn notify_events() {
+    EVENTS_GEN.fetch_add(1, Ordering::SeqCst);
+    if let Some(wq) = EVENTS_WQ.get() {
+        wq.wake(POLLPRI | POLLERR);
+    }
+}
+
 struct CgOps {
-    data: Vec<u8>,
+    data: Mutex<Vec<u8>>,
+    events: bool,
+    seen: AtomicU64,
 }
 
 impl FileOps for CgOps {
-    fn read(&self, _: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
-        let start = (*pos as usize).min(self.data.len());
-        let n = buf.len().min(self.data.len() - start);
-        buf[..n].copy_from_slice(&self.data[start..start + n]);
+    fn read(&self, f: &OpenFile, pos: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut data = self.data.lock();
+        if self.events && *pos == 0 {
+            self.seen.store(EVENTS_GEN.load(Ordering::SeqCst), Ordering::SeqCst);
+            let file = f.inode.as_any().downcast_ref::<CgFile>().ok_or(EINVAL)?;
+            let dir = file.dir.upgrade().ok_or(ENODEV)?;
+            *data = format!("populated {}\nfrozen 0\n", dir.populated() as u8).into_bytes();
+        }
+        let start = (*pos as usize).min(data.len());
+        let n = buf.len().min(data.len() - start);
+        buf[..n].copy_from_slice(&data[start..start + n]);
         *pos += n as u64;
         Ok(n)
     }
@@ -591,7 +628,19 @@ impl FileOps for CgOps {
     }
 
     fn size(&self, _: &OpenFile) -> u64 {
-        self.data.len() as u64
+        self.data.lock().len() as u64
+    }
+
+    fn poll(&self, _: &OpenFile) -> u32 {
+        if self.events && self.seen.load(Ordering::SeqCst) != EVENTS_GEN.load(Ordering::SeqCst) {
+            DEFAULT_POLLMASK | POLLPRI | POLLERR
+        } else {
+            DEFAULT_POLLMASK
+        }
+    }
+
+    fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        self.events.then(|| events_wq().clone())
     }
 
     fn as_any(&self) -> &dyn Any {

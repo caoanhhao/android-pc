@@ -3,11 +3,14 @@
 //! virtqueues.
 //!
 //! Drivers run their queues by polling: interrupts are suppressed
-//! (VRING_AVAIL_F_NO_INTERRUPT) and the caller spins on the used ring.
+//! (VRING_AVAIL_F_NO_INTERRUPT). virtio-blk spins on the used ring
+//! (`submit_and_wait`); virtio-net keeps buffers posted (`add`) and
+//! collects them later (`pop_used`).
 //! Ring memory comes straight from the frame allocator (physically
 //! contiguous, reached through the direct map).
 
 pub mod blk;
+pub mod net;
 
 use core::sync::atomic::{Ordering, fence};
 use x86_64::PhysAddr;
@@ -41,6 +44,7 @@ pub fn init() {
         // Modern ids are 0x1040 + device type; transitional 0x1000..0x103f.
         let ty = match d.device {
             0x1000..=0x103f => match d.device {
+                0x1000 => 1,
                 0x1001 => 2,
                 _ => 0,
             },
@@ -48,10 +52,11 @@ pub fn init() {
             _ => 0,
         };
         let sysdev = sysfs_device(&d, ty);
-        if ty == 2 {
+        if ty == 1 || ty == 2 {
             match Transport::new(&d) {
+                Some(t) if ty == 1 => net::probe(t, sysdev),
                 Some(t) => blk::probe(t, sysdev),
-                None => log::warn!("virtio-blk {:?}: no usable transport", d.addr),
+                None => log::warn!("virtio {:?}: no usable transport", d.addr),
             }
         }
     }
@@ -78,7 +83,12 @@ fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
     sysfs::symlink("bus/pci/devices", &slot, &sysfs::relative("bus/pci/devices", &pci_dir));
     let n = NEXT_VIRTIO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let vdir = format!("{pci_dir}/virtio{n}");
-    let vars = format!("DRIVER=virtio_{}\nVIRTIO_ID={ty}\n", if ty == 2 { "blk" } else { "unknown" });
+    let driver = match ty {
+        1 => "net",
+        2 => "blk",
+        _ => "unknown",
+    };
+    let vars = format!("DRIVER=virtio_{driver}\nVIRTIO_ID={ty}\n");
     sysfs::add_device(&vdir, "virtio", "bus/virtio", vars, false);
     sysfs::symlink("bus/virtio/devices", &format!("virtio{n}"), &sysfs::relative("bus/virtio/devices", &vdir));
     vdir
@@ -215,6 +225,13 @@ impl Transport {
         }
     }
 
+    pub fn config_read8(&self, off: u16) -> u8 {
+        match *self {
+            Transport::Modern { device, .. } => Self::rd(device + off as u64),
+            Transport::Legacy { io } => unsafe { Port::<u8>::new(io + 20 + off).read() },
+        }
+    }
+
     pub fn config_read64(&self, off: u16) -> u64 {
         self.config_read32(off) as u64 | (self.config_read32(off + 4) as u64) << 32
     }
@@ -289,6 +306,8 @@ pub struct Virtqueue {
     pages: usize,
     used_off: u64,
     free: alloc::vec::Vec<u16>,
+    /// Descriptor ids of each chain in flight, by head id (`add`).
+    chains: alloc::vec::Vec<alloc::vec::Vec<u16>>,
     avail_idx: u16,
     last_used: u16,
     notify: Notify,
@@ -317,6 +336,7 @@ impl Virtqueue {
             pages,
             used_off,
             free: (0..size).rev().collect(),
+            chains: (0..size).map(|_| alloc::vec::Vec::new()).collect(),
             avail_idx: 0,
             last_used: 0,
             notify: Notify::None,
@@ -357,9 +377,8 @@ impl Virtqueue {
         unsafe { core::ptr::read_volatile(self.ptr(off) as *const u16) }
     }
 
-    /// Submit a descriptor chain and spin until the device returns it.
-    /// Returns the number of bytes the device wrote.
-    pub fn submit_and_wait(&mut self, bufs: &[Buf]) -> Option<u32> {
+    /// Write a descriptor chain and make it available (no notify).
+    fn push_chain(&mut self, bufs: &[Buf]) -> Option<alloc::vec::Vec<u16>> {
         if bufs.is_empty() || bufs.len() > self.free.len() {
             return None;
         }
@@ -386,24 +405,74 @@ impl Virtqueue {
         self.avail_idx = self.avail_idx.wrapping_add(1);
         self.wr16(self.avail_off() + 2, self.avail_idx);
         fence(Ordering::SeqCst);
+        Some(ids)
+    }
+
+    /// Tell the device new buffers are available.
+    pub fn notify(&self) {
         match self.notify {
             Notify::Mmio(a) => unsafe { core::ptr::write_volatile(a as *mut u16, self.index) },
             Notify::Port(p) => unsafe { Port::<u16>::new(p).write(self.index) },
             Notify::None => {}
         }
-        // Poll the used ring.
-        while self.rd16(self.used_off + 2) == self.last_used {
-            core::hint::spin_loop();
+    }
+
+    /// The next (head id, bytes written) from the used ring, if any.
+    fn next_used(&mut self) -> Option<(u16, u32)> {
+        if self.rd16(self.used_off + 2) == self.last_used {
+            return None;
         }
         fence(Ordering::SeqCst);
         let e = self.used_off + 4 + 8 * (self.last_used % self.size) as u64;
+        let id = unsafe { core::ptr::read_volatile(self.ptr(e) as *const u32) } as u16;
         let len = unsafe { core::ptr::read_volatile((self.ptr(e) + 4) as *const u32) };
         self.last_used = self.last_used.wrapping_add(1);
-        for id in ids {
-            self.free.push(id);
-        }
-        Some(len)
+        Some((id, len))
     }
+
+    /// Submit a descriptor chain and spin until the device returns it.
+    /// Returns the number of bytes the device wrote.
+    pub fn submit_and_wait(&mut self, bufs: &[Buf]) -> Option<u32> {
+        let ids = self.push_chain(bufs)?;
+        self.notify();
+        loop {
+            if let Some((_, len)) = self.next_used() {
+                for id in ids {
+                    self.free.push(id);
+                }
+                return Some(len);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Make a chain available without waiting (call `notify` after a
+    /// batch). Returns its head id, or None when the ring is full.
+    pub fn add(&mut self, bufs: &[Buf]) -> Option<u16> {
+        let ids = self.push_chain(bufs)?;
+        let head = ids[0];
+        self.chains[head as usize] = ids;
+        Some(head)
+    }
+
+    /// A chain the device has finished with: (head id, bytes written).
+    pub fn pop_used(&mut self) -> Option<(u16, u32)> {
+        let (head, len) = self.next_used()?;
+        let ids = core::mem::take(&mut self.chains[head as usize]);
+        self.free.extend(ids);
+        Some((head, len))
+    }
+
+    /// Whether the device has returned buffers not yet popped; reads only
+    /// the ring (safe from interrupt context through `used_idx_addr`).
+    pub fn used_idx_addr(&self) -> u64 {
+        self.ptr(self.used_off + 2)
+    }
+
+    pub fn last_used(&self) -> u16 {
+        self.last_used
+    }
+
 }
 
 impl Drop for Virtqueue {

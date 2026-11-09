@@ -1047,7 +1047,7 @@ impl FileOps for SocketFile {
         let n = match cmd {
             FIONREAD => self.0.inq()?,
             SIOCOUTQ => self.0.outq()?,
-            _ => return Err(ENOTTY),
+            _ => return super::ifreq::ioctl(cmd, arg),
         };
         crate::process::current().mm().copy_out(arg, &(n as i32).to_le_bytes())?;
         Ok(0)

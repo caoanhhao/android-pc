@@ -346,6 +346,9 @@ pub fn exit_thread(status: i32) -> ! {
     drop(table);
     if !last {
         sched::wake_all((WAIT_EXEC, pid as u64));
+    } else {
+        // The process left its cgroups (cgroup.events "populated").
+        crate::fs::cgroupfs::notify_events();
     }
 
     if let Some((parent, final_status, auto_reap)) = notify_parent {

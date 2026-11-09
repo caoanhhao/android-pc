@@ -31,6 +31,10 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# A kernel log line on the serial port ("[  51.3] INFO cpu2 kmsg: ..."),
+# possibly printed in the middle of a line of the console shell's output.
+KLOG = re.compile(r"\[ *\d+\.\d+\] \x1b\[\d+m\w+ *\x1b\[0m cpu\d+ [^\n]*\n")
 spec = importlib.util.spec_from_file_location("aosp_sh_test", os.path.join(HERE, "aosp-sh-test.py"))
 sh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sh)
@@ -83,7 +87,7 @@ CHECKS = [
     ("i=0; while [ $i -lt 40 ] && ! service check android.system.keystore2.IKeystoreService/default"
      " | toybox grep -q ': found'; do sleep 0.5; i=$((i+1)); done; echo waited=$i",
      [r"waited=([0-9]|[1-3][0-9])\r?$"]),
-    ("service list | toybox head -n 60",
+    ("service list | toybox head -n 100",
      [r"Found \d+ services", r"\tmanager: \[android\.os\.IServiceManager\]",
       r"android\.system\.keystore2\.IKeystoreService/default",
       r"android\.hardware\.security\.keymint\.IKeyMintDevice/default", r"\tvold: \[android\.os\.IVold\]"]),
@@ -156,6 +160,8 @@ def main():
                 failed += 1
                 break
             out, m = r
+            # Kernel log lines interleave with the shell's output: drop them.
+            out = KLOG.sub("", out)
             missing = [x for x in regexes if not re.search(x, out, re.M)]
             if a.run:
                 print(f"aosp-init-test: [{n}] {command} (rc={int(m.group(1))})")

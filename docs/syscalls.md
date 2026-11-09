@@ -10,7 +10,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a/C3b/C3c Android init, daemons and eBPF)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -48,7 +48,7 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 35 | nanosleep | yes | EINTR + remaining time on signal |
 | 39 | getpid | yes | thread group id |
 | 40 | sendfile | yes | any readable fd to any writable fd through a kernel buffer; with an offset pointer the input position is untouched and the pointer advanced |
-| 41 | socket | yes | AF_UNIX: SOCK_STREAM, SOCK_DGRAM (SOCK_RAW = DGRAM), SOCK_SEQPACKET; SOCK_NONBLOCK, SOCK_CLOEXEC; protocol 0/1 else EPROTONOSUPPORT, other types ESOCKTNOSUPPORT, unknown flags EINVAL. AF_NETLINK: SOCK_RAW/SOCK_DGRAM, any protocol below 32 (see Netlink below). Every other family (AF_INET, AF_INET6, ...) EAFNOSUPPORT |
+| 41 | socket | yes | AF_UNIX: SOCK_STREAM, SOCK_DGRAM (SOCK_RAW = DGRAM), SOCK_SEQPACKET; SOCK_NONBLOCK, SOCK_CLOEXEC; protocol 0/1 else EPROTONOSUPPORT, other types ESOCKTNOSUPPORT, unknown flags EINVAL. AF_NETLINK: SOCK_RAW/SOCK_DGRAM, any protocol below 32 (see Netlink below). AF_INET/AF_INET6: SOCK_STREAM (TCP), SOCK_DGRAM (UDP; ICMP/ICMPv6 ping sockets hold options only), SOCK_RAW (options only; see Network below). Every other family EAFNOSUPPORT |
 | 42 | connect | yes | stream/seqpacket: to a listener by path or abstract name (ECONNREFUSED if nothing listens, ENOENT for a missing path, EPROTOTYPE on type mismatch, EISCONN, EINVAL on a listener); queued on the listener at once (no accept needed to send), blocks (EAGAIN with O_NONBLOCK) while the backlog is full. dgram: sets the default destination (EPERM if the target is connected elsewhere), AF_UNSPEC disconnects |
 | 43 | accept | yes | = accept4(0) |
 | 44 | sendto | yes | see "Sockets" below; an address on a connected stream EISCONN, unconnected EOPNOTSUPP |
@@ -422,10 +422,81 @@ Code: `kernel/kernel/src/block/` (block layer, cache, GPT, loop, dm),
   NETLINK_ADD/DROP_MEMBERSHIP change the groups. Messages to another
   socket's port are delivered (ECONNREFUSED if none), to groups to every
   member.
-- Every other protocol (ROUTE, SELINUX, AUDIT, ...) is a stub: requests
+- NETLINK_ROUTE (C3d) is real: see [Network](#network-c3d).
+  NETLINK_NETFILTER requests without NLM_F_ACK are accepted silently.
+- Every other protocol (SELINUX, AUDIT, XFRM, ...) is a stub: requests
   to the kernel get NLMSG_DONE for dumps, an NLMSG_ERROR ack (0 with
   NLM_F_ACK, else -EOPNOTSUPP) otherwise; nothing is ever multicast.
   Protocols >= 32 EPROTONOSUPPORT, stream sockets ESOCKTNOSUPPORT.
+
+## Network (C3d)
+
+AF_INET and AF_INET6 sockets on smoltcp's TCP/IP (see
+[kernel-architecture.md](kernel-architecture.md#network-netinet-c3d)).
+
+- **Addresses**: sockaddr_in (16 bytes) and sockaddr_in6 (28). AF_INET6
+  sockets are dual-stack: they talk to IPv4 peers through v4-mapped
+  addresses (`::ffff:a.b.c.d`), IPV6_V6ONLY is stored only. Connecting to
+  0.0.0.0 / :: means loopback. bind to an address that is not local
+  EADDRNOTAVAIL; to a port in use EADDRINUSE (both sockets with
+  SO_REUSEADDR and neither listening may share); port 0 and implicit
+  binds take an ephemeral port (32768-60999).
+- **TCP**: connect (blocking, or EINPROGRESS then POLLOUT and SO_ERROR;
+  ECONNREFUSED on a reset, EALREADY/EISCONN), listen (backlog), accept4
+  (peer address), send/recv/read/write/readv/writev with MSG_PEEK,
+  MSG_DONTWAIT, MSG_WAITALL and MSG_NOSIGNAL (EPIPE + SIGPIPE once the
+  connection cannot send), shutdown (SHUT_WR sends FIN; EOF reads 0),
+  getsockname/getpeername, FIONREAD/SIOCOUTQ. Close finishes the FIN
+  handshake in the background. Nagle is off (TCP_NODELAY on by default),
+  delayed ACKs off; 64 KiB buffers each way. poll: POLLIN (data, EOF, a
+  pending connection), POLLOUT, POLLRDHUP, POLLHUP, POLLERR.
+- **UDP**: bind, sendto/sendmsg (EDESTADDRREQ without a destination,
+  EMSGSIZE above 64 KiB; datagrams above the 1500-byte MTU are not
+  fragmented), recvfrom/recvmsg with the source address, MSG_PEEK,
+  MSG_TRUNC (real length; the rest of the datagram is dropped), connect
+  (default destination and receive filter; AF_UNSPEC dissolves it).
+  Control messages are ignored on send and none are returned.
+- **Options**: SOL_SOCKET SO_TYPE/DOMAIN/PROTOCOL/ERROR/ACCEPTCONN,
+  SO_REUSEADDR, SO_RCVTIMEO/SNDTIMEO, SO_KEEPALIVE (75 s keep-alive),
+  SO_COOKIE; TCP_NODELAY, TCP_INFO (state only); every other option at any
+  level (SO_MARK, SO_BINDTODEVICE, IP_TOS, IPV6_V6ONLY, ...) is stored and
+  read back (default 0, IP_TTL 64, TCP_MAXSEG 1460).
+- **Netfilter** (legacy iptables/ip6tables, libiptc): on any AF_INET
+  (SOL_IP) or AF_INET6 (SOL_IPV6) socket, IPT_SO_GET_INFO and
+  IPT_SO_GET_ENTRIES (the request's table name is read from the buffer;
+  ENOENT for unknown tables; EINVAL if the size does not match),
+  IPT_SO_SET_REPLACE (the new rule blob is stored, the old counters are
+  written back as zeros), IPT_SO_SET_ADD_COUNTERS (accepted),
+  IPT_SO_GET_REVISION_MATCH/TARGET (every extension exists: returns the
+  requested revision). Tables filter, nat, mangle, raw and security
+  start with their built-in chains' ACCEPT policies. Rules are never
+  applied. /proc/net/ip_tables_names, ip6_tables_names list the tables
+  in use.
+- **rtnetlink** (NETLINK_ROUTE): RTM_GETLINK (dump, or one link by index
+  or IFLA_IFNAME: name, flags, MTU, MAC, operstate, qdisc, stats),
+  RTM_NEWLINK/SETLINK (IFLA_IFNAME rename: EBUSY while up, EEXIST,
+  IFLA_MTU, flags with ifi_change; creating links EOPNOTSUPP),
+  RTM_GETADDR (dump, family filter), RTM_NEWADDR (NLM_F_EXCL: EEXIST) /
+  RTM_DELADDR (EADDRNOTAVAIL), RTM_GETROUTE (dump of every table incl.
+  the local one; without NLM_F_DUMP a lookup for RTA_DST), RTM_NEWROUTE /
+  RTM_DELROUTE (ESRCH), RTM_NEWRULE/DELRULE/GETRULE (stored, dumped in
+  priority order), RTM_GETNEIGH and RTM_GETNETCONF dumps (empty),
+  RTM_NEWNEIGH/DELNEIGH (accepted). Acks with NLM_F_ACK; changes are
+  multicast to RTNLGRP_LINK, RTNLGRP_IPV4/IPV6_IFADDR and
+  RTNLGRP_IPV4/IPV6_ROUTE members.
+- **Interface ioctls** (on any socket: inet, unix, netlink):
+  SIOCGIFNAME, SIOCGIFCONF (IPv4 addresses; NULL buffer gives the
+  length), SIOCGIFFLAGS/SIOCSIFFLAGS, SIOCGIFADDR/SIOCSIFADDR,
+  SIOCGIFNETMASK/SIOCSIFNETMASK, SIOCGIFBRDADDR, SIOCGIFDSTADDR,
+  SIOCGIFMTU/SIOCSIFMTU, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFTXQLEN/
+  SIOCSIFTXQLEN, SIOCGIFMETRIC, SIOCGIFMAP; SIOCADDRT/SIOCDELRT accepted;
+  SIOCETHTOOL EOPNOTSUPP; ENODEV for unknown names.
+- **/proc/net**: tcp, tcp6, udp, udp6 (Linux columns, state, queues,
+  inode), dev (per-link counters), if_inet6, route, arp, ip_tables_names,
+  ip6_tables_names (and empty ip_tables_matches/targets, ipv6_route).
+  **/proc/sys/net**: ipv4 and ipv6 globals and conf/{all,default,lo,
+  eth0}/* and neigh/{default,lo,eth0}/* (stored). **/sys/class/net**:
+  lo and ethN with ifindex, address, mtu, type, operstate.
 
 ## Kernel log (C3b)
 
@@ -712,8 +783,8 @@ bpf_jit_limit and kernel/unprivileged_bpf_disabled (2) are stored sysctls.
   without a page cache (procfs, devices other than /dev/zero),
   process_vm_readv/writev.
 - **B4 leftovers**: pidfd, TFD_IOC_SET_TICKS, timerfd clock-set
-  cancellation, SIGIO/O_ASYNC. Sockets: AF_INET/AF_INET6 (no network
-  stack), netlink protocols other than uevents, MSG_OOB, SO_PEEK_OFF,
+  cancellation, SIGIO/O_ASYNC. Sockets: netlink protocols other than
+  uevents and NETLINK_ROUTE, MSG_OOB, SO_PEEK_OFF,
   SO_PEERGROUPS, SCM_SECURITY, garbage collection of in-flight fd cycles
   (a socket sent over itself and never received leaks),
   /proc/sys/net/unix/max_dgram_qlen (fixed at 600).
