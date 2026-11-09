@@ -5,7 +5,8 @@
 //! network stack collects frames with [`EthDevice::recv`] when the timer
 //! tick sees the used ring move ([`rx_hint`]). Transmit copies each frame
 //! into one of a fixed set of bounce buffers; finished ones are reclaimed
-//! on the next send. Cards become `eth0`, `eth1`, ... in PCI order
+//! on the next send, and the stack stops sending while none is free
+//! ([`EthDevice::can_send`]). Cards become `eth0`, `eth1`, ... in PCI order
 //! (`crate::net::inet`).
 
 use alloc::boxed::Box;
@@ -21,8 +22,8 @@ use crate::net::inet::EthDevice;
 const F_MAC: u64 = 1 << 5;
 
 const BUF_SIZE: usize = 2048;
-const RX_BUFS: usize = 64;
-const TX_BUFS: usize = 32;
+const RX_BUFS: usize = 256;
+const TX_BUFS: usize = 128;
 
 const MAX_CARDS: usize = 8;
 
@@ -96,6 +97,11 @@ impl EthDevice for VirtioNet {
         self.post_rx(i);
         self.rx.notify();
         Some(frame)
+    }
+
+    fn can_send(&mut self) -> bool {
+        self.reclaim_tx();
+        !self.tx_free.is_empty()
     }
 
     fn send(&mut self, frame: &[u8]) -> bool {

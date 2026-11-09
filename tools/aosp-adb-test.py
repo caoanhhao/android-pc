@@ -9,7 +9,9 @@ no USB FunctionFS). Then the host adb, with a server of its own on a
 private port (so other adb servers and devices, such as Cuttlefish's, are
 left alone) and a throw-away HOME, connects to 127.0.0.1:PORT and runs
 commands through `adb shell` (the shell protocol: stdout, exit status),
-pushes and pulls a file (the sync service) and checks the output. netd
+pushes and pulls a file (the sync service), reads output through
+`adb exec-out` (the raw service: text, the pushed file, 3 MB) and checks
+it, and runs `toybox nc` from the guest to a host server at 10.0.2.2. netd
 must have finished its setup (its iptables chains are in the stored
 netfilter tables).
 
@@ -23,9 +25,11 @@ import hashlib
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +73,34 @@ def adb(a, *args, timeout=30, check=False):
     return r.returncode, r.stdout, r.stderr
 
 
+def md5_server():
+    """A host TCP server on 127.0.0.1 (the guest's 10.0.2.2): one
+    connection, read until EOF, answer the md5 of what came, close.
+    Returns (port, thread)."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.settimeout(60)
+
+    def serve():
+        try:
+            c, _ = srv.accept()
+            c.settimeout(60)
+            h = hashlib.md5()
+            while chunk := c.recv(65536):
+                h.update(chunk)
+            c.sendall(h.hexdigest().encode() + b"\n")
+            c.close()
+        except OSError:
+            pass
+        finally:
+            srv.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return srv.getsockname()[1], t
+
+
 def wait_log(path, rx, deadline, qemu):
     pat = re.compile(rx)
     while time.monotonic() < deadline:
@@ -108,7 +140,7 @@ def main():
     log = a.log or os.path.join(home, "serial.log")
     serial = f"127.0.0.1:{a.port}"
 
-    total = len(MILESTONES) + 2 + (len(a.run) if a.run else len(CHECKS) + 1)
+    total = len(MILESTONES) + 2 + (len(a.run) if a.run else len(CHECKS) + 5)
     passed = 0
     qemu = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=open(log, "wb"), stderr=subprocess.STDOUT)
     try:
@@ -178,6 +210,36 @@ def main():
                 print("aosp-adb-test: ok   adb push / md5sum / pull of 300 kB")
             else:
                 print(f"aosp-adb-test: FAIL adb push/pull: push={r1} md5={r2} pull={r3}")
+            # exec-out: adbd's raw service (a PTY in raw mode): no \r\n
+            # translation, every byte, then the stream ends.
+            base = [a.adb, "-P", str(a.server_port), "-s", serial]
+            for desc, argv, want in [
+                ("adb exec-out echo", ["exec-out", "echo exec-out-works; echo two"], b"exec-out-works\ntwo\n"),
+                ("adb exec-out cat of the pushed file", ["exec-out", "cat /data/local/tmp/payload.bin"], data),
+                ("adb exec-out 3 MB", ["exec-out", "head -c 3000000 /dev/zero"], bytes(3000000)),
+            ]:
+                try:
+                    p = subprocess.run(base + argv, capture_output=True, timeout=a.timeout, env=a.env)
+                    got, rc = p.stdout, p.returncode
+                except subprocess.TimeoutExpired:
+                    got, rc = b"", 124
+                if got == want and rc == 0:
+                    passed += 1
+                    print(f"aosp-adb-test: ok   {desc}")
+                else:
+                    print(f"aosp-adb-test: FAIL {desc}: rc={rc}, {len(got)} bytes (want {len(want)}) {got[:60]!r}")
+            # Out of the guest through QEMU's user network: toybox nc to
+            # a host server at 10.0.2.2 sends 400 kB, half-closes, and
+            # reads the server's md5 of it until the server closes.
+            port, t = md5_server()
+            want = hashlib.md5("".join(f"{i}\n" for i in range(1, 70001)).encode()).hexdigest()
+            rc, out, err = adb(a, "-s", serial, "shell", f"toybox seq 1 70000 | toybox nc 10.0.2.2 {port}", timeout=a.timeout)
+            t.join(5)
+            if out.strip() == want:
+                passed += 1
+                print("aosp-adb-test: ok   toybox nc to a host server via 10.0.2.2 (400 kB up, md5 back)")
+            else:
+                print(f"aosp-adb-test: FAIL toybox nc to 10.0.2.2:{port}: rc={rc} {out.strip()[:80]!r} {err.strip()[:200]!r} (want {want})")
         adb(a, "disconnect", serial)
     finally:
         adb(a, "kill-server", timeout=20)

@@ -1,5 +1,7 @@
 //! Network interface ioctls (struct ifreq / ifconf) on any socket:
-//! names, indexes, flags, addresses, MTU, hardware address, txqueuelen.
+//! names, indexes, flags, addresses, MTU, hardware address, txqueuelen,
+//! and the basic SIOCETHTOOL queries (driver info, link, settings,
+//! permanent address).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -64,7 +66,7 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
     match cmd {
         SIOCGIFCONF => return ifconf(arg),
         SIOCADDRT | SIOCDELRT => return Ok(0),
-        SIOCETHTOOL => return Err(EOPNOTSUPP),
+        SIOCETHTOOL => return ethtool(arg),
         SIOCGIFNAME | SIOCGIFFLAGS | SIOCSIFFLAGS | SIOCGIFADDR | SIOCSIFADDR | SIOCGIFDSTADDR | SIOCGIFBRDADDR
         | SIOCSIFBRDADDR | SIOCGIFNETMASK | SIOCSIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCSIFMTU | SIOCGIFHWADDR
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCSIFTXQLEN | SIOCGIFMAP => {}
@@ -150,6 +152,70 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
     }
     if let Some(o) = out {
         mm.copy_out(arg, &o)?;
+    }
+    Ok(0)
+}
+
+const ETHTOOL_GSET: u32 = 0x1;
+const ETHTOOL_GDRVINFO: u32 = 0x3;
+const ETHTOOL_GLINK: u32 = 0xa;
+const ETHTOOL_GPERMADDR: u32 = 0x20;
+
+/// SIOCETHTOOL: `ifr_data` points at a command-specific struct whose
+/// first u32 is the command. Cards look like Linux's virtio_net (speed
+/// and duplex unknown); `lo` only answers GLINK.
+fn ethtool(arg: u64) -> KResult<u64> {
+    let mm = current().mm();
+    let mut r = [0u8; IFREQ];
+    mm.copy_in(arg, &mut r)?;
+    let data = u64::from_le_bytes(r[16..24].try_into().unwrap());
+    let mut c = [0u8; 4];
+    mm.copy_in(data, &mut c)?;
+    let cmd = u32::from_le_bytes(c);
+    let (up, mac, bus) = with_net_nopoll(|n| {
+        let l = n.link_by_name(ifname(&r)).ok_or(ENODEV)?;
+        Ok::<_, Errno>((l.flags & IFF_UP != 0, l.mac, n.bus_info(l.index).map(alloc::string::String::from)))
+    })?;
+    match cmd {
+        ETHTOOL_GLINK => {
+            let mut v = [0u8; 8];
+            v[..4].copy_from_slice(&cmd.to_le_bytes());
+            v[4..].copy_from_slice(&(up as u32).to_le_bytes());
+            mm.copy_out(data, &v)?;
+        }
+        ETHTOOL_GDRVINFO => {
+            let bus = bus.ok_or(EOPNOTSUPP)?;
+            let mut v = [0u8; 196];
+            v[..4].copy_from_slice(&cmd.to_le_bytes());
+            let mut put = |off: usize, s: &str| v[off..off + s.len().min(31)].copy_from_slice(&s.as_bytes()[..s.len().min(31)]);
+            put(4, "virtio_net");
+            put(36, "1.0.0");
+            put(100, &bus);
+            mm.copy_out(data, &v)?;
+        }
+        ETHTOOL_GSET => {
+            bus.ok_or(EOPNOTSUPP)?;
+            let mut v = [0u8; 44];
+            v[..4].copy_from_slice(&cmd.to_le_bytes());
+            v[12..14].copy_from_slice(&0xffffu16.to_le_bytes()); // SPEED_UNKNOWN (low half)
+            v[14] = 0xff; // DUPLEX_UNKNOWN
+            v[15] = 0xef; // PORT_OTHER
+            v[28..30].copy_from_slice(&0xffffu16.to_le_bytes()); // speed_hi
+            mm.copy_out(data, &v)?;
+        }
+        ETHTOOL_GPERMADDR => {
+            bus.ok_or(EOPNOTSUPP)?;
+            let mut h = [0u8; 8];
+            mm.copy_in(data, &mut h)?;
+            let size = u32::from_le_bytes(h[4..8].try_into().unwrap());
+            h[4..8].copy_from_slice(&6u32.to_le_bytes());
+            mm.copy_out(data, &h)?;
+            if size < 6 {
+                return Err(E2BIG);
+            }
+            mm.copy_out(data + 8, &mac)?;
+        }
+        _ => return Err(EOPNOTSUPP),
     }
     Ok(0)
 }

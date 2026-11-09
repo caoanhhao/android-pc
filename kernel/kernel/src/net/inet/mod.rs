@@ -9,7 +9,10 @@
 //!   `eth0`, `eth1`, ...) in an Ethernet frame: the card whose subnet holds
 //!   the destination, else the default route's, with the next hop's MAC
 //!   from a small per-card ARP cache (ARP requests and replies are handled
-//!   here too). IPv6 never leaves the machine (no neighbour discovery).
+//!   here too);
+//! - IPv6 packets likewise, with neighbour discovery instead of ARP and
+//!   addresses and the default router from router advertisements
+//!   (`ndisc`).
 //!
 //! The links, their addresses and the routing table are kernel state
 //! here, changed through rtnetlink and the interface ioctls
@@ -24,6 +27,7 @@
 //! loop ([`softirq`]) polls. After a poll that changed socket state, every
 //! socket's wait queue is woken.
 
+pub mod ndisc;
 pub mod netfilter;
 pub mod socket;
 
@@ -64,6 +68,8 @@ pub trait EthDevice: Send {
     fn recv(&mut self) -> Option<Vec<u8>>;
     /// Queue a frame; false when it was dropped.
     fn send(&mut self, frame: &[u8]) -> bool;
+    /// Whether `send` has room for a frame now.
+    fn can_send(&mut self) -> bool;
 }
 
 #[derive(Clone, Copy, Default)]
@@ -127,7 +133,10 @@ struct Port {
     /// Snapshot of the link's state (`Net::sync`).
     up: bool,
     v4: Vec<(Ipv4Address, u8)>,
+    v6: Vec<(Ipv6Address, u8)>,
     stats: Stats,
+    /// PCI address of the card ("0000:00:03.0", ethtool's bus_info).
+    bus: String,
 }
 
 fn mask(p: u8) -> u32 {
@@ -155,7 +164,17 @@ pub struct Dev {
     arp: BTreeMap<(u32, Ipv4Address), ([u8; 6], u64)>,
     arp_asked: BTreeMap<(u32, Ipv4Address), u64>,
     pending: VecDeque<(u32, Ipv4Address, Vec<u8>)>,
+    /// IPv6 neighbours, like `arp` / `arp_asked` / `pending`.
+    nd: BTreeMap<(u32, Ipv6Address), ([u8; 6], u64)>,
+    nd_asked: BTreeMap<(u32, Ipv6Address), u64>,
+    pending6: VecDeque<(u32, Ipv6Address, Vec<u8>)>,
+    /// The main table's IPv6 default route: (link, router).
+    gateway6: Option<(u32, Ipv6Address)>,
+    /// Router advertisements for `Net::poll` to apply.
+    ra: Vec<ndisc::RaEvent>,
     pub lo_stats: Stats,
+    /// Packets smoltcp may still take in this `Interface::poll`.
+    rx_budget: usize,
 }
 
 const ETH_HDR: usize = 14;
@@ -207,8 +226,9 @@ impl Dev {
             self.rx.push_back(pkt);
             return;
         }
-        let IpAddress::Ipv4(dst) = dst else {
-            return;
+        let dst = match dst {
+            IpAddress::Ipv4(d) => d,
+            IpAddress::Ipv6(d) => return self.output6(d, pkt),
         };
         if dst.is_multicast() || dst.is_broadcast() || self.ports.iter().any(|p| subnet_broadcast(&p.v4, dst)) {
             let o = dst.octets();
@@ -217,7 +237,7 @@ impl Dev {
             else {
                 return;
             };
-            self.send_frame(i, mac, ETHERTYPE_IPV4, &pkt);
+            self.send_ip(i, mac, &pkt);
             return;
         }
         let Some((i, hop)) = self.route4(dst) else {
@@ -226,7 +246,7 @@ impl Dev {
         let link = self.ports[i].link;
         let now = crate::time::monotonic_ns();
         match self.arp.get(&(link, hop)) {
-            Some(&(mac, exp)) if exp > now => self.send_frame(i, mac, ETHERTYPE_IPV4, &pkt),
+            Some(&(mac, exp)) if exp > now => self.send_ip(i, mac, &pkt),
             _ => {
                 if self.pending.len() >= MAX_PENDING {
                     self.pending.pop_front();
@@ -244,6 +264,7 @@ impl Dev {
     }
 
     fn send_frame(&mut self, i: usize, dst: [u8; 6], ty: u16, payload: &[u8]) {
+
         let port = &mut self.ports[i];
         let mut f = Vec::with_capacity(ETH_HDR + payload.len());
         f.extend_from_slice(&dst);
@@ -255,6 +276,38 @@ impl Dev {
             port.stats.tx_bytes += f.len() as u64;
         } else {
             port.stats.tx_dropped += 1;
+        }
+    }
+
+    /// An IPv4 packet out of card `i`, fragmented to its 1500-byte MTU
+    /// (smoltcp sets DF on everything; TCP stays within the peer's MSS,
+    /// so what is too big here is a datagram, which Linux fragments).
+    fn send_ip(&mut self, i: usize, mac: [u8; 6], pkt: &[u8]) {
+        const MTU: usize = 1500;
+        let hl = ((pkt[0] & 0xf) as usize) * 4;
+        if pkt.len() <= MTU || hl < 20 || pkt.len() < hl {
+            return self.send_frame(i, mac, ETHERTYPE_IPV4, pkt);
+        }
+        let data = &pkt[hl..];
+        let step = (MTU - hl) & !7;
+        let mut off = 0;
+        while off < data.len() {
+            let n = step.min(data.len() - off);
+            let more = off + n < data.len();
+            let mut f = Vec::with_capacity(hl + n);
+            f.extend_from_slice(&pkt[..hl]);
+            f.extend_from_slice(&data[off..off + n]);
+            f[2..4].copy_from_slice(&((hl + n) as u16).to_be_bytes());
+            let frag = (off / 8) as u16 | if more { 0x2000 } else { 0 };
+            f[6..8].copy_from_slice(&frag.to_be_bytes());
+            f[10..12].fill(0);
+            let mut sum: u32 = f[..hl].chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]]) as u32).sum();
+            while sum >> 16 != 0 {
+                sum = (sum & 0xffff) + (sum >> 16);
+            }
+            f[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+            self.send_frame(i, mac, ETHERTYPE_IPV4, &f);
+            off += n;
         }
     }
 
@@ -295,7 +348,12 @@ impl Dev {
                 port.stats.rx_packets += 1;
                 port.stats.rx_bytes += f.len() as u64;
                 match u16::from_be_bytes([f[12], f[13]]) {
-                    ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => self.rx.push_back(f[ETH_HDR..].to_vec()),
+                    ETHERTYPE_IPV4 => self.rx.push_back(f[ETH_HDR..].to_vec()),
+                    ETHERTYPE_IPV6 => {
+                        if !self.ndisc_input(i, &f[ETH_HDR..]) {
+                            self.rx.push_back(f[ETH_HDR..].to_vec());
+                        }
+                    }
                     ETHERTYPE_ARP => self.arp_input(i, &f[ETH_HDR..]),
                     _ => {}
                 }
@@ -317,7 +375,7 @@ impl Dev {
             let (ready, rest): (Vec<_>, Vec<_>) = self.pending.drain(..).partition(|(l, h, _)| *l == link && *h == spa);
             self.pending = rest.into();
             for (_, _, pkt) in ready {
-                self.send_frame(i, sha, ETHERTYPE_IPV4, &pkt);
+                self.send_ip(i, sha, &pkt);
             }
         }
         if op == 1
@@ -352,18 +410,30 @@ impl Device for Dev {
     type TxToken<'a> = DevTx<'a>;
 
     fn receive(&mut self, _: Instant) -> Option<(DevRx, DevTx<'_>)> {
+        if self.rx_budget == 0 {
+            return None;
+        }
         let p = self.rx.pop_front()?;
+        self.rx_budget -= 1;
         Some((DevRx(p), DevTx(self)))
     }
 
     fn transmit(&mut self, _: Instant) -> Option<DevTx<'_>> {
+        // Backpressure: with a card's ring full smoltcp keeps the data
+        // and retries on the next poll, instead of a dropped frame and a
+        // retransmission timeout.
+        if self.ports.iter_mut().any(|p| p.up && !p.eth.can_send()) {
+            return None;
+        }
         Some(DevTx(self))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut c = DeviceCapabilities::default();
         c.medium = Medium::Ip;
-        c.max_transmission_unit = 1500;
+        // lo's MTU: loopback carries 64 KiB segments and datagrams; what
+        // leaves through a card is fragmented to its MTU (`send_ip`).
+        c.max_transmission_unit = 65535;
         c
     }
 }
@@ -401,7 +471,13 @@ pub fn init() {
         arp: BTreeMap::new(),
         arp_asked: BTreeMap::new(),
         pending: VecDeque::new(),
+        nd: BTreeMap::new(),
+        nd_asked: BTreeMap::new(),
+        pending6: VecDeque::new(),
+        gateway6: None,
+        ra: Vec::new(),
         lo_stats: Stats::default(),
+        rx_budget: 0,
     };
     let mut cfg = Config::new(HardwareAddress::Ip);
     let mut seed = [0u8; 8];
@@ -461,7 +537,9 @@ pub fn add_ethernet(dev: Box<dyn EthDevice>, sysdev: String) {
         };
         let index = n.links.iter().map(|l| l.index).max().unwrap_or(LO) + 1;
         let name = alloc::format!("eth{}", n.dev.ports.len());
-        n.dev.ports.push(Port { link: index, eth: dev, mac, up: false, v4: Vec::new(), stats: Stats::default() });
+        let bus = sysdev.split('/').find(|c| c.starts_with("0000:")).unwrap_or("").into();
+        n.dev.ports.push(Port { link: index, eth: dev, mac, up: false, v4: Vec::new(), v6: Vec::new(), stats: Stats::default(), bus });
+        let ll = IpAddress::Ipv6(ndisc::link_local(mac));
         n.links.push(Link {
             index,
             name: name.clone(),
@@ -469,8 +547,20 @@ pub fn add_ethernet(dev: Box<dyn EthDevice>, sysdev: String) {
             mtu: 1500,
             flags: IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST | IFF_LOWER_UP,
             arptype: ARPHRD_ETHER,
-            addrs: Vec::new(),
+            addrs: alloc::vec![IfAddr { addr: ll, prefix: 64, scope: RT_SCOPE_LINK, flags: 0x80 }],
             txqlen: 1000,
+        });
+        n.routes.push(Route {
+            dst: IpAddress::Ipv6(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
+            dst_len: 64,
+            gateway: None,
+            oif: index,
+            table: RT_TABLE_MAIN,
+            metric: 256,
+            protocol: 2,
+            scope: RT_SCOPE_UNIVERSE,
+            ty: 1,
+            prefsrc: None,
         });
         n.sync();
         (index, name)
@@ -520,6 +610,9 @@ pub fn configure_static() {
         prefsrc: None,
     });
     n.sync();
+    // IPv6 addresses and router come from the router advertisement.
+    let i = n.dev.ports.len() - 1;
+    n.dev.router_solicit(i);
     log::info!("net: {} is 10.0.2.15/24, default route via 10.0.2.2", n.link(index).unwrap().name);
 }
 
@@ -534,6 +627,11 @@ impl Net {
 
     pub fn link_by_name(&self, name: &str) -> Option<&Link> {
         self.links.iter().find(|l| l.name == name)
+    }
+
+    /// The PCI address of a card's link (None for `lo`).
+    pub fn bus_info(&self, index: u32) -> Option<&str> {
+        self.dev.ports.iter().find(|p| p.link == index).map(|p| p.bus.as_str())
     }
 
     pub fn stats(&self, index: u32) -> Stats {
@@ -557,6 +655,14 @@ impl Net {
                     _ => None,
                 })
                 .collect();
+            let v6s: Vec<(Ipv6Address, u8)> = l
+                .addrs
+                .iter()
+                .filter_map(|a| match a.addr {
+                    IpAddress::Ipv6(v) => Some((v, a.prefix)),
+                    _ => None,
+                })
+                .collect();
             for a in &l.addrs {
                 local.push(a.addr);
                 if l.flags & IFF_UP != 0 {
@@ -566,10 +672,16 @@ impl Net {
             if let Some(p) = self.dev.port(l.index) {
                 p.up = l.flags & IFF_UP != 0;
                 p.v4 = v4s;
+                p.v6 = v6s;
             }
         }
-        // IPv4 first: smoltcp picks source addresses in this order.
-        cidrs.sort_by_key(|c| matches!(c, IpCidr::Ipv6(_)));
+        // IPv4 first, cards before lo: smoltcp takes the first IPv4
+        // address as the source of what it sends on its own (ICMP).
+        cidrs.sort_by_key(|c| match c {
+            IpCidr::Ipv4(v) if v.address().is_loopback() => 1,
+            IpCidr::Ipv4(_) => 0,
+            IpCidr::Ipv6(_) => 2,
+        });
         self.iface.update_ip_addrs(|v| {
             v.clear();
             for c in cidrs.iter().take(8) {
@@ -586,12 +698,76 @@ impl Net {
                 _ => None,
             });
         self.dev.gateway = gw;
+        let gw6 = self
+            .routes
+            .iter()
+            .filter(|r| r.dst_len == 0 && r.table == RT_TABLE_MAIN && r.family() == AF_INET6)
+            .find_map(|r| match r.gateway {
+                Some(IpAddress::Ipv6(g)) => Some((r.oif, g)),
+                _ => None,
+            });
+        self.dev.gateway6 = gw6;
         let gw = gw.map(|(_, g)| g);
         let routes = self.iface.routes_mut();
         routes.remove_default_ipv4_route();
         if let Some(g) = gw {
             let _ = routes.add_default_ipv4_route(g);
         }
+        routes.remove_default_ipv6_route();
+        if let Some((_, g)) = gw6 {
+            let _ = routes.add_default_ipv6_route(g);
+        }
+    }
+
+    /// Router advertisements: SLAAC addresses, their prefixes on link, the
+    /// sender as default router (removed again by a zero lifetime).
+    fn apply_ra(&mut self) {
+        let events = core::mem::take(&mut self.dev.ra);
+        for e in events {
+            let Some(l) = self.link_mut(e.link) else { continue };
+            for &a in &e.addrs {
+                if !l.addrs.iter().any(|x| x.addr == IpAddress::Ipv6(a)) {
+                    l.addrs.push(IfAddr { addr: IpAddress::Ipv6(a), prefix: 64, scope: RT_SCOPE_UNIVERSE, flags: 0 });
+                    log::info!("net: {} got {a}/64 (SLAAC)", l.name);
+                }
+            }
+            for &a in &e.addrs {
+                let mut o = a.octets();
+                o[8..].fill(0);
+                let dst = IpAddress::Ipv6(Ipv6Address::from(o));
+                if !self.routes.iter().any(|r| r.dst == dst && r.dst_len == 64 && r.oif == e.link) {
+                    self.routes.push(Route {
+                        dst,
+                        dst_len: 64,
+                        gateway: None,
+                        oif: e.link,
+                        table: RT_TABLE_MAIN,
+                        metric: 256,
+                        protocol: 9,
+                        scope: RT_SCOPE_UNIVERSE,
+                        ty: 1,
+                        prefsrc: None,
+                    });
+                }
+            }
+            let is_default = |r: &Route| r.family() == AF_INET6 && r.dst_len == 0 && r.oif == e.link && r.protocol == 9;
+            self.routes.retain(|r| !is_default(r));
+            if e.lifetime > 0 {
+                self.routes.push(Route {
+                    dst: IpAddress::Ipv6(Ipv6Address::UNSPECIFIED),
+                    dst_len: 0,
+                    gateway: Some(IpAddress::Ipv6(e.router)),
+                    oif: e.link,
+                    table: RT_TABLE_MAIN,
+                    metric: 1024,
+                    protocol: 9,
+                    scope: RT_SCOPE_UNIVERSE,
+                    ty: 1,
+                    prefsrc: None,
+                });
+            }
+        }
+        self.sync();
     }
 
     /// The source address for packets to `dst` from a socket not bound to
@@ -620,17 +796,27 @@ impl Net {
     /// changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
-        for _ in 0..64 {
+        // A few packets at a time, topping up the listening pools in
+        // between: each packet takes at most one listening socket.
+        for _ in 0..256 {
             self.dev.pull_eth();
+            self.dev.rx_budget = socket::LISTEN_POOL;
             if self.iface.poll(now(), &mut self.dev, &mut self.sockets) == PollResult::SocketStateChanged {
                 changed = true;
             }
-            if self.dev.rx.is_empty() {
+            if socket::after_poll(self) {
+                changed = true;
+            }
+            if self.dev.rx.is_empty() && self.dev.rx_budget > 0 {
                 break;
             }
             changed = true;
         }
-        if socket::after_poll(self) {
+        if !self.dev.rx.is_empty() {
+            PENDING.store(true, Ordering::Relaxed);
+        }
+        if !self.dev.ra.is_empty() {
+            self.apply_ra();
             changed = true;
         }
         let next = self.iface.poll_at(now(), &self.sockets).map_or(u64::MAX, |t| t.total_micros().max(0) as u64 * 1000);
@@ -752,13 +938,27 @@ pub fn addr_bytes(a: &IpAddress) -> Vec<u8> {
 pub const NET_FILES: &[&str] = &[
     "arp",
     "dev",
+    "dev_mcast",
+    "icmp",
+    "icmp6",
     "if_inet6",
+    "igmp",
+    "igmp6",
     "ip6_tables_names",
     "ip_tables_matches",
     "ip_tables_names",
     "ip_tables_targets",
     "ipv6_route",
+    "netstat",
+    "packet",
+    "protocols",
+    "raw",
+    "raw6",
     "route",
+    "snmp",
+    "snmp6",
+    "sockstat",
+    "sockstat6",
     "tcp",
     "tcp6",
     "udp",
@@ -836,7 +1036,103 @@ pub fn proc_net_file(name: &str) -> String {
             }
             s
         }),
-        "ipv6_route" => String::new(),
+        "ipv6_route" => with_net_nopoll(|n| {
+            let hex = |a: &IpAddress| -> String {
+                match a {
+                    IpAddress::Ipv6(v) => v.octets().iter().map(|b| format!("{b:02x}")).collect(),
+                    _ => "0".repeat(32),
+                }
+            };
+            let mut s = String::new();
+            for r in n.routes.iter().filter(|r| r.family() == AF_INET6) {
+                // RTF_UP | RTF_GATEWAY
+                let flags = 1 | if r.gateway.is_some() { 2 } else { 0 };
+                let name = n.link(r.oif).map_or("lo", |l| l.name.as_str());
+                s.push_str(&format!(
+                    "{} {:02x} {} 00 {} {:08x} 00000001 00000000 {flags:08x} {name:>8}\n",
+                    hex(&r.dst),
+                    r.dst_len,
+                    "0".repeat(32),
+                    r.gateway.as_ref().map_or_else(|| "0".repeat(32), hex),
+                    r.metric
+                ));
+            }
+            s
+        }),
+        "dev_mcast" => with_net_nopoll(|n| {
+            let mut s = String::new();
+            for l in n.links.iter().filter(|l| l.arptype == ARPHRD_ETHER) {
+                s.push_str(&format!("{:<5}{:<15}1     0     01005e000001\n", l.index, l.name));
+                s.push_str(&format!("{:<5}{:<15}1     0     333300000001\n", l.index, l.name));
+            }
+            s
+        }),
+        "igmp" => with_net_nopoll(|n| {
+            let mut s = String::from("Idx\tDevice    : Count Querier\tGroup    Users Timer\tReporter\n");
+            for l in &n.links {
+                s.push_str(&format!("{}\t{:<10}:     1      V3\n\t\t\t\t010000E0     1 0:00000000\t\t0\n", l.index, l.name));
+            }
+            s
+        }),
+        "igmp6" => with_net_nopoll(|n| {
+            let mut s = String::new();
+            for l in &n.links {
+                s.push_str(&format!("{:<4} {:<15} ff020000000000000000000000000001     1 0000000C 0\n", l.index, l.name));
+            }
+            s
+        }),
+        "raw" | "icmp" => String::from("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"),
+        "raw6" | "icmp6" => String::from(
+            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
+        ),
+        "packet" => String::from("sk               RefCnt Type Proto  Iface R Rmem   User   Inode\n"),
+        "protocols" => String::from(
+            "protocol  size sockets  memory press maxhdr  slab module     cl co di ac io in de sh ss gs se re sp bi br ha uh gp em\n\
+             PINGv6    1176      0      -1   NI       0   yes  kernel      y  y  y  n  n  y  n  n  y  y  y  y  n  y  y  y  y  y  n\n\
+             UDPv6     1344      0      -1   NI       0   yes  kernel      y  y  y  n  y  y  y  n  y  y  y  y  n  n  n  y  y  y  n\n\
+             TCPv6     2432      0      -1   no     320   yes  kernel      y  y  y  y  y  y  y  y  y  y  y  y  y  n  y  y  y  y  y\n\
+             UNIX      1024      0      -1   NI       0   yes  kernel      n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n\n\
+             PING       976      0      -1   NI       0   yes  kernel      y  y  y  n  n  y  n  n  y  y  y  y  n  y  y  y  y  y  n\n\
+             UDP       1152      0      -1   NI       0   yes  kernel      y  y  y  n  y  y  y  n  y  y  y  y  y  n  n  y  y  y  n\n\
+             TCP       2272      0      -1   no     320   yes  kernel      y  y  y  y  y  y  y  y  y  y  y  y  y  n  y  y  y  y  y\n",
+        ),
+        "snmp" => with_net_nopoll(|n| {
+            let (mut rx, mut tx) = (0, 0);
+            for l in &n.links {
+                let st = n.stats(l.index);
+                rx += st.rx_packets;
+                tx += st.tx_packets;
+            }
+            format!(
+                "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
+                 Ip: 2 64 {rx} 0 0 0 0 0 {rx} {tx} 0 0 0 0 0 0 0 0 0\n\
+                 Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutRateLimitGlobal OutRateLimitHost OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
+                 Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+                 Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
+                 Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
+                 Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\n\
+                 Udp: 0 0 0 0 0 0 0 0 0\n\
+                 UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\n\
+                 UdpLite: 0 0 0 0 0 0 0 0 0\n"
+            )
+        }),
+        "snmp6" => String::from(
+            "Ip6InReceives                   \t0\nIp6OutRequests                  \t0\nIcmp6InMsgs                     \t0\nIcmp6OutMsgs                    \t0\nUdp6InDatagrams                 \t0\nUdp6OutDatagrams                \t0\n",
+        ),
+        "netstat" => String::from(
+            "TcpExt: SyncookiesSent SyncookiesRecv SyncookiesFailed EmbryonicRsts PruneCalled TW ListenOverflows ListenDrops\n\
+             TcpExt: 0 0 0 0 0 0 0 0\n\
+             IpExt: InNoRoutes InTruncatedPkts InMcastPkts OutMcastPkts InBcastPkts OutBcastPkts InOctets OutOctets\n\
+             IpExt: 0 0 0 0 0 0 0 0\n",
+        ),
+        "sockstat" => {
+            let (tcp, udp) = socket::counts(false);
+            format!("sockets: used {}\nTCP: inuse {tcp} orphan 0 tw 0 alloc {tcp} mem 0\nUDP: inuse {udp} mem 0\nUDPLITE: inuse 0\nRAW: inuse 0\nFRAG: inuse 0 memory 0\n", tcp + udp)
+        }
+        "sockstat6" => {
+            let (tcp, udp) = socket::counts(true);
+            format!("TCP6: inuse {tcp}\nUDP6: inuse {udp}\nUDPLITE6: inuse 0\nRAW6: inuse 0\nFRAG6: inuse 0 memory 0\n")
+        }
         _ => String::new(),
     }
 }

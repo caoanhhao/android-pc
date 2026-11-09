@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1)
+# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1, D2)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -21,7 +21,11 @@ and `adb shell` from the host work (see
 [How far the boot gets](#how-far-the-boot-gets-c3d)). Since D1, with a
 virtio-gpu (`--gpu`), the graphics allocator, the composer and
 SurfaceFlinger run with software rendering and the boot animation is on
-the screen ([D1: graphics](#d1-graphics)).
+the screen ([D1: graphics](#d1-graphics)). Since D2, with `--input`,
+virtio keyboard, tablet and multitouch devices appear as
+/dev/input/event* (`getevent` sees keys typed into QEMU), `adb exec-out`
+returns command output, and IPv6 reaches QEMU's user network
+([D2: input and network](#d2-input-and-network)).
 
 ## Running it
 
@@ -343,10 +347,54 @@ services running and registered with servicemanager; RenderEngine on
 SwiftShader, the display connected, the composer's 720x1280 config, the
 boot animation started and its layer in `dumpsys SurfaceFlinger --list`;
 surfaceflinger's pid stable; the `adb shell screencap -p` PNG is 720x1280
-and not blank (`adb exec-out` still returns no output here: adbd's raw
-exec service, a follow-up; the test only reports it); and QEMU's
-`screendump` of the scanout not blank. The images are kept in
+and not blank, and so is the one from `adb exec-out screencap -p`; and
+QEMU's `screendump` of the scanout not blank. The images are kept in
 `kernel/target/.../qemu-kernel/gfx/`.
+
+## D2: input and network
+
+`--input` (default for `--aosp-gfx-test` and `--aosp-input-test`) adds
+virtio-keyboard-pci (00:10.0), virtio-tablet-pci (00:11.0) and
+virtio-multitouch-pci (00:12.0); Cuttlefish uses the same virtio-input
+devices. The kernel side (virtio-input, the input core with evdev and
+uinput) is in
+[kernel-architecture.md](kernel-architecture.md#input-driversinput-driversvirtioinputrs-d2).
+
+- ueventd's `subsystem input` rule (devname from the devpath, dirname
+  /dev/input) turns the eventN uevents into /dev/input/event0..2
+  (`0660 root input`); /dev/uinput (10:223) comes from its misc uevent.
+- `getevent -lp` lists "QEMU Virtio Keyboard" (keys, LEDs), "QEMU
+  Virtio Tablet" (buttons, ABS_X/Y 0-32767, wheel) and "QEMU Virtio
+  MultiTouch" (MT slots, positions, tracking ids). Keys typed with the
+  QEMU monitor's `sendkey`, and its `mouse_button` (on the virtio
+  pointer QEMU activated last), show up in `getevent`; `sendevent` into a node reaches the other readers (and an
+  LED event the device).
+- InputFlinger (InputReader's EventHub) and `input keyevent` live in
+  system_server, which needs zygote: phase D3.
+- **`adb exec-out`** returned nothing: adbd runs raw services (exec:)
+  without the shell protocol in a PTY switched to raw mode, and the
+  child's `tcgetattr` overflowed bionic's 36-byte `struct termios`
+  because the pty copied 60 bytes ("stack corruption detected"; the
+  child aborted before exec, its output was empty). The pty now uses
+  the kernel `struct termios` like the console. exec-out returns text,
+  binary files and `screencap -p` PNGs.
+- **Network**: TCP closes with unread data or SO_LINGER 0 reset,
+  resets are reported (ECONNRESET), the listen pool keeps up with bursts
+  of connections, a full transmit ring holds smoltcp back instead of
+  dropping frames, ICMP ping sockets work (`ping 10.0.2.2`), datagrams
+  bigger than 1500 bytes are fragmented, and eth0 gets IPv6 from QEMU's
+  router advertisement (fe80:: link-local, fec0::/64 SLAAC address,
+  default route via fe80::2: `ping6 fec0::2`). DNS through slirp's
+  10.0.2.3 works with plain UDP; Android's own resolver needs netd's DNS
+  configuration from ConnectivityService (system_server, D3).
+  SIOCETHTOOL answers the driver/link queries and /proc/net has the
+  statistics files.
+
+`--aosp-input-test` (`tools/aosp-input-test.py`, the gfx test's boot)
+checks the nodes, `getevent -lp`, `sendkey` and `mouse_button` through
+`getevent`, `sendevent`, and `adb exec-out` (text, 2 MB of `seq`, a
+720x1280 `screencap -p` PNG). `--aosp-adb-test` now also checks exec-out
+(text, the pushed 300 kB file, 3 MB).
 
 ## How far the boot gets (C3d)
 
@@ -415,12 +463,12 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
   interpreter): socket filters, cgroup hooks, tracepoints and uprobes do
   nothing, ring buffers stay empty, traffic accounting maps stay as user
   space left them. No kernel BTF (CO-RE objects fail), no fuse-bpf.
-- **Network** (C3d): IPv6 never leaves the machine (no neighbour
-  discovery, no SLAAC; ::1 works), no IP forwarding, packet sockets,
-  tun/tap, dummy/veth links or vsock; netfilter tables and policy rules
-  are stored, never applied; raw and ICMP sockets carry no traffic; no
-  DHCP client in the kernel (the address is static), and no IP
-  fragmentation (datagrams must fit the 1500-byte MTU).
+- **Network** (C3d, D2): no IP forwarding, packet sockets, tun/tap,
+  dummy/veth links or vsock; netfilter tables and policy rules are
+  stored, never applied; raw sockets carry no traffic (ICMP ping sockets
+  do); no DHCP client in the kernel (the IPv4 address is static, IPv6
+  comes from SLAAC); incoming IP fragments are not reassembled; no IPv6
+  DAD or MLD.
 - **SELinux** is not enforced: there is no policy engine. The policy is
   accepted, every access check allows, `enforce=1` is stored only. There
   is no `class/` tree in selinuxfs, so libselinux logs "Unknown class"
@@ -434,9 +482,9 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
 - **Credentials** are tracked but never checked, and capabilities are not
   modelled: a daemon that dropped to its uid can do what root can.
 - **ueventd** only sees the devices the kernel registers (block, mem,
-  tty, misc incl. hw_random, RAM disks); there is no firmware loading,
-  no modalias handling and no input/graphics/net/rtc devices (`wait
-  /dev/dri/card0` times out after 5 s). `dlkm_loader` and modprobe fail:
+  tty, misc incl. hw_random and uinput, RAM disks, DRM and dma-heap
+  since D1, input since D2); there is no firmware loading, no modalias
+  handling and no rtc devices. `dlkm_loader` and modprobe fail:
   there are no loadable modules (`finit_module` is ENOSYS).
 - **logd** gets the netlink stub for NETLINK_AUDIT (no audit messages).
 - **cgroups** store limits but enforce nothing (no memory, cpu or cpuset
@@ -444,8 +492,8 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
 - **keys** have no permission checks, quotas or expiry; one set of
   special keyrings for the whole system.
 - **pseudo-terminals** have no line discipline (no echo, canonical mode
-  or signals on the slave); good enough for logwrapper, not yet for an
-  interactive `adb shell`.
+  or signals on the slave); good enough for logwrapper and adbd's raw
+  services (`exec-out`), not yet for an interactive `adb shell`.
 - **namespaces**: mount namespaces are real; the other kinds are one
   global instance each (unshare/setns accept them without effect); slave
   and unbindable mounts act as private; chroot only to the current root.

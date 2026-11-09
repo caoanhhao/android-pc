@@ -50,3 +50,7 @@ d1_dumb
 d1_kms
 d1_prime
 d1_sync
+# D2: input (evdev, uinput, virtio-input) and networking (TCP, UDP, ICMP, IPv6 on virtio-net)
+d2_evdev
+d2_tcp
+d2_udp

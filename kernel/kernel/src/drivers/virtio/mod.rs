@@ -11,6 +11,7 @@
 
 pub mod blk;
 pub mod gpu;
+pub mod input;
 pub mod net;
 
 use core::sync::atomic::{Ordering, fence};
@@ -53,10 +54,11 @@ pub fn init() {
             _ => 0,
         };
         let sysdev = sysfs_device(&d, ty);
-        if ty == 1 || ty == 2 || ty == 16 {
+        if ty == 1 || ty == 2 || ty == 16 || ty == 18 {
             match Transport::new(&d) {
                 Some(t) if ty == 1 => net::probe(t, sysdev),
                 Some(t) if ty == 16 => gpu::probe(t, sysdev),
+                Some(t) if ty == 18 => input::probe(t, sysdev),
                 Some(t) => blk::probe(t, sysdev),
                 None => log::warn!("virtio {:?}: no usable transport", d.addr),
             }
@@ -89,6 +91,7 @@ fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
         1 => "net",
         2 => "blk",
         16 => "gpu",
+        18 => "input",
         _ => "unknown",
     };
     let vars = format!("DRIVER=virtio_{driver}\nVIRTIO_ID={ty}\n");
@@ -232,6 +235,13 @@ impl Transport {
         match *self {
             Transport::Modern { device, .. } => Self::rd(device + off as u64),
             Transport::Legacy { io } => unsafe { Port::<u8>::new(io + 20 + off).read() },
+        }
+    }
+
+    pub fn config_write8(&self, off: u16, v: u8) {
+        match *self {
+            Transport::Modern { device, .. } => Self::wr(device + off as u64, v),
+            Transport::Legacy { io } => unsafe { Port::<u8>::new(io + 20 + off).write(v) },
         }
     }
 

@@ -49,9 +49,9 @@ const TIOCGPTPEER: u32 = 0x5441;
 const OPOST: u32 = 1;
 const ONLCR: u32 = 4;
 
-/// struct termios (60 bytes): iflag, oflag, cflag, lflag, line, cc[19].
-fn default_termios() -> [u8; 60] {
-    let mut t = [0u8; 60];
+/// Kernel struct termios (36 bytes): iflag, oflag, cflag, lflag, line, cc[19].
+fn default_termios() -> [u8; 36] {
+    let mut t = [0u8; 36];
     let words: [u32; 4] = [0x500 /* ICRNL|IXON */, OPOST | ONLCR, 0xbf /* B38400|CS8|CREAD */, 0x8a3b /* ISIG|ICANON|ECHO... */];
     for (i, w) in words.iter().enumerate() {
         t[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
@@ -72,7 +72,7 @@ struct Pty {
     slave_opens: AtomicU32,
     slave_seen: AtomicBool,
     wq: Arc<WaitQueue>,
-    termios: Mutex<[u8; 60]>,
+    termios: Mutex<[u8; 36]>,
     winsize: Mutex<[u8; 8]>,
     pgrp: AtomicU32,
 }
@@ -184,7 +184,7 @@ impl Pty {
                 Ok(0)
             }
             TCSETS | TCSETSW | TCSETSF => {
-                let mut t = [0u8; 60];
+                let mut t = [0u8; 36];
                 mm.copy_in(arg, &mut t)?;
                 *self.termios.lock() = t;
                 if cmd == TCSETSF {

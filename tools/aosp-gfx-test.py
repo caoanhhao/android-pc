@@ -11,8 +11,8 @@ aosp-adb-test.py does (own server, throw-away HOME). Then:
   surfaceflinger are running and registered with servicemanager,
   SurfaceFlinger runs RenderEngine on ANGLE over SwiftShader and starts
   the boot animation, and surfaceflinger keeps its pid (no restarts);
-- `adb exec-out screencap -p` gives a PNG of the display's size that is
-  not blank;
+- `adb shell screencap -p` and `adb exec-out screencap -p` give a PNG
+  of the display's size that is not blank;
 - QEMU's `screendump` of the virtio-gpu scanout (what the composer put on
   the screen through DRM) is not blank either.
 
@@ -228,7 +228,12 @@ def main():
             r.check(states.get(s) == "running", f"service {s} running", f"state {states.get(s)}")
         for name in ["android.hardware.graphics.allocator.IAllocator/default",
                      "android.hardware.graphics.composer3.IComposer/default", "SurfaceFlinger", "SurfaceFlingerAIDL"]:
-            _, out, _ = r.sh(f"service check {name}")
+            # A service registers a moment after init reports it running.
+            while True:
+                _, out, _ = r.sh(f"service check {name}")
+                if f"Service {name}: found" in out or time.monotonic() >= deadline:
+                    break
+                time.sleep(2)
             r.check(f"Service {name}: found" in out, f"{name} registered", out.strip())
 
         # RenderEngine on ANGLE/SwiftShader, display connected, boot animation.
@@ -259,7 +264,8 @@ def main():
         # from `adb shell screencap -p`'s stdout (shell protocol). The boot
         # animation fades its logo in, so try for a while.
         base = [a.adb, "-P", str(a.server_port), "-s", a.serial]
-        for how, argv in [("adb shell screencap -p", base + ["shell", "screencap", "-p"])]:
+        for how, argv in [("adb shell screencap -p", base + ["shell", "screencap", "-p"]),
+                          ("adb exec-out screencap -p", base + ["exec-out", "screencap", "-p"])]:
             png_ok, detail = False, ""
             cap_deadline = time.monotonic() + 90
             while time.monotonic() < cap_deadline and not png_ok:
@@ -277,11 +283,6 @@ def main():
                 if not png_ok:
                     time.sleep(5)
             r.check(png_ok, f"{how} not blank ({detail})", detail)
-        # Not checked: `adb exec-out` (adbd's raw exec service) returns no
-        # output on this kernel yet; report what it gives.
-        for argv in (["exec-out", "echo", "exec-out-works"], ["exec-out", "screencap", "-p"]):
-            p = subprocess.run(base + argv, capture_output=True, timeout=120, env=a.env)
-            print(f"aosp-gfx-test: note adb {' '.join(argv)}: {len(p.stdout)} bytes, rc {p.returncode}")
 
         # What reached the scanout: QEMU's screendump of the virtio-gpu.
         dump = os.path.join(out_dir, "screendump.ppm")

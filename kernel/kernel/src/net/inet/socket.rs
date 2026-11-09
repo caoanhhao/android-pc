@@ -6,8 +6,14 @@
 //!   takes an established one out of the pool. A closed connection is
 //!   left in the stack as an orphan until its FIN handshake ends.
 //! - UDP: one smoltcp socket, created when the socket gets a port.
-//! - Raw and ICMP sockets exist for their options (netfilter's
-//!   IPT_SO_* live on raw sockets) but carry no traffic.
+//! - ICMP "ping" sockets (SOCK_DGRAM + IPPROTO_ICMP/ICMPV6): one smoltcp
+//!   ICMP socket bound to the echo identifier, which is the socket's port;
+//!   echo requests go out with that identifier, replies come back.
+//! - Raw sockets exist for their options (netfilter's IPT_SO_* live on
+//!   raw sockets) but carry no traffic.
+//!
+//! A connection reset by the peer (or timed out) reports ECONNRESET once,
+//! through recv/send and SO_ERROR, then end of file / EPIPE.
 //!
 //! AF_INET6 sockets are dual-stack: IPv4 peers appear as v4-mapped
 //! addresses. Ports are reserved in [`Tables`] (bind conflicts, ephemeral
@@ -22,7 +28,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 use core::sync::atomic::{AtomicU64, Ordering};
 use smoltcp::iface::SocketHandle;
-use smoltcp::socket::{tcp, udp};
+use smoltcp::socket::{icmp, tcp, udp};
 use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 use spin::Mutex;
@@ -43,8 +49,12 @@ pub const IPPROTO_ICMPV6: u32 = 58;
 const TCP_BUF: usize = 64 * 1024;
 const UDP_BUF: usize = 64 * 1024;
 const UDP_SLOTS: usize = 64;
-/// Sockets kept listening per listening socket.
-const LISTEN_POOL: usize = 2;
+/// Sockets kept listening per listening socket (smoltcp takes one
+/// connection per socket; `Net::poll` refills the pool every
+/// `LISTEN_POOL` received packets, so a burst of SYNs is not refused).
+pub const LISTEN_POOL: usize = 8;
+const ICMP_BUF: usize = 16 * 1024;
+const ICMP_SLOTS: usize = 32;
 const ORPHAN_TIMEOUT_NS: u64 = 60_000_000_000;
 const EPHEMERAL: core::ops::Range<u16> = 32768..61000;
 
@@ -126,6 +136,13 @@ fn new_tcp() -> tcp::Socket<'static> {
     s
 }
 
+fn new_icmp() -> icmp::Socket<'static> {
+    icmp::Socket::new(
+        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; ICMP_SLOTS], vec![0u8; ICMP_BUF]),
+        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; ICMP_SLOTS], vec![0u8; ICMP_BUF]),
+    )
+}
+
 fn new_udp() -> udp::Socket<'static> {
     udp::Socket::new(
         udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; UDP_SLOTS], vec![0u8; UDP_BUF]),
@@ -142,6 +159,14 @@ pub(super) fn after_poll(n: &mut Net) -> bool {
     while i < n.sock.orphans.len() {
         let (h, deadline) = n.sock.orphans[i];
         let s = n.sockets.get_mut::<tcp::Socket>(h);
+        // Data for a closed socket: reset (sent by the next poll, then
+        // the socket goes), as Linux does.
+        if s.recv_queue() > 0 && s.state() != tcp::State::Closed {
+            s.abort();
+            changed = true;
+            i += 1;
+            continue;
+        }
         if s.state() == tcp::State::Closed || now >= deadline {
             s.abort();
             n.sockets.remove(h);
@@ -197,6 +222,7 @@ enum Tcp {
 enum Kind {
     Tcp(Tcp),
     Udp(Option<SocketHandle>),
+    Icmp(Option<SocketHandle>),
     Raw,
 }
 
@@ -209,6 +235,8 @@ struct State {
     error: Option<Errno>,
     shut_rd: bool,
     shut_wr: bool,
+    /// The connection was reset; reported (ECONNRESET) or not yet.
+    reset: Option<bool>,
     reuse: bool,
     rcvtimeo: u64,
     sndtimeo: u64,
@@ -233,8 +261,13 @@ pub struct Received {
     pub from: Option<Vec<u8>>,
 }
 
-fn proto_of(ty: u32) -> u32 {
-    if ty == SOCK_STREAM { IPPROTO_TCP } else { IPPROTO_UDP }
+/// The port namespace of a socket (ICMP echo identifiers are ports too).
+fn proto_of(ty: u32, protocol: u32) -> u32 {
+    match ty {
+        SOCK_STREAM => IPPROTO_TCP,
+        SOCK_DGRAM if protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 => IPPROTO_ICMP,
+        _ => IPPROTO_UDP,
+    }
 }
 
 impl InetSocket {
@@ -242,7 +275,10 @@ impl InetSocket {
         let (kind, protocol) = match ty {
             SOCK_STREAM if protocol == 0 || protocol == IPPROTO_TCP => (Kind::Tcp(Tcp::Idle), IPPROTO_TCP),
             SOCK_DGRAM if protocol == 0 || protocol == IPPROTO_UDP => (Kind::Udp(None), IPPROTO_UDP),
-            SOCK_DGRAM if protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 => (Kind::Raw, protocol),
+            SOCK_DGRAM if protocol == IPPROTO_ICMP && family == AF_INET || protocol == IPPROTO_ICMPV6 && family == AF_INET6 => {
+                (Kind::Icmp(None), protocol)
+            }
+            SOCK_DGRAM if protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 => return Err(EPROTONOSUPPORT),
             SOCK_RAW if protocol < 256 => (Kind::Raw, protocol),
             SOCK_STREAM | SOCK_DGRAM | SOCK_RAW => return Err(EPROTONOSUPPORT),
             _ => return Err(ESOCKTNOSUPPORT),
@@ -262,6 +298,7 @@ impl InetSocket {
                 error: None,
                 shut_rd: false,
                 shut_wr: false,
+                reset: None,
                 reuse: false,
                 rcvtimeo: 0,
                 sndtimeo: 0,
@@ -335,7 +372,7 @@ impl InetSocket {
             return Ok(());
         }
         let addr = (!addr.is_unspecified()).then_some(addr);
-        let proto = proto_of(self.ty);
+        let proto = proto_of(self.ty, self.protocol);
         let reuse = st.reuse;
         let port = with_net_nopoll(|n| {
             if let Some(a) = addr
@@ -353,8 +390,14 @@ impl InetSocket {
             Ok(port)
         })?;
         st.bound = Some((addr, port));
-        if matches!(st.kind, Kind::Udp(None)) {
-            with_net_nopoll(|n| self.ensure_udp(&mut st, n))?;
+        match st.kind {
+            Kind::Udp(None) => {
+                with_net_nopoll(|n| self.ensure_udp(&mut st, n))?;
+            }
+            Kind::Icmp(None) => {
+                with_net_nopoll(|n| self.ensure_icmp(&mut st, n))?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -364,7 +407,7 @@ impl InetSocket {
         if let Some(b) = st.bound {
             return Ok(b);
         }
-        let port = n.sock.ephemeral(proto_of(self.ty), None, self.id)?;
+        let port = n.sock.ephemeral(proto_of(self.ty, self.protocol), None, self.id)?;
         st.bound = Some((None, port));
         Ok((None, port))
     }
@@ -459,6 +502,11 @@ impl InetSocket {
                 st.remote = Some(remote);
                 return Ok(());
             }
+            Kind::Icmp(_) => {
+                with_net_nopoll(|n| self.ensure_icmp(st, n))?;
+                st.remote = Some(remote);
+                return Ok(());
+            }
             Kind::Raw => {
                 st.remote = Some(remote);
                 return Ok(());
@@ -510,6 +558,18 @@ impl InetSocket {
         }
     }
 
+    fn ensure_icmp(&self, st: &mut State, n: &mut Net) -> KResult<SocketHandle> {
+        if let Kind::Icmp(Some(h)) = st.kind {
+            return Ok(h);
+        }
+        let (_, ident) = self.autobind(st, n)?;
+        let mut s = new_icmp();
+        s.bind(icmp::Endpoint::Ident(ident)).map_err(|_| EINVAL)?;
+        let h = n.sockets.add(s);
+        st.kind = Kind::Icmp(Some(h));
+        Ok(h)
+    }
+
     fn ensure_udp(&self, st: &mut State, n: &mut Net) -> KResult<SocketHandle> {
         if let Kind::Udp(Some(h)) = st.kind {
             return Ok(h);
@@ -535,6 +595,32 @@ impl InetSocket {
                 self.tcp_send(h, data, nonblock, timeo)
             }
             Kind::Tcp(_) => Err(if to.is_some() { EOPNOTSUPP } else { ENOTCONN }),
+            Kind::Icmp(_) => {
+                let dest = match to {
+                    Some(b) => self.parse(b)?.0,
+                    None => st.remote.ok_or(EDESTADDRREQ)?.addr,
+                };
+                let request = if self.family == AF_INET6 { 128 } else { 8 };
+                if data.len() < 8 || data[0] != request || data[1] != 0 {
+                    return Err(EINVAL);
+                }
+                if data.len() > ICMP_BUF {
+                    return Err(EMSGSIZE);
+                }
+                let h = with_net_nopoll(|n| self.ensure_icmp(&mut st, n))?;
+                let ident = st.bound.map_or(0, |b| b.1);
+                let timeo = st.sndtimeo;
+                drop(st);
+                let mut pkt = data.to_vec();
+                pkt[4..6].copy_from_slice(&ident.to_be_bytes());
+                self.wait(nonblock, timeo, || {
+                    with_net(|n| match n.sockets.get_mut::<icmp::Socket>(h).send_slice(&pkt, dest) {
+                        Ok(()) => Some(Ok(data.len())),
+                        Err(icmp::SendError::BufferFull) => None,
+                        Err(icmp::SendError::Unaddressable) => Some(Err(ENETUNREACH)),
+                    })
+                })
+            }
             Kind::Raw => {
                 if to.is_none() && st.remote.is_none() {
                     return Err(EDESTADDRREQ);
@@ -587,6 +673,23 @@ impl InetSocket {
         }
     }
 
+    /// Whether a connection is gone without our close (reset or timed
+    /// out); the first caller to see it gets ECONNRESET.
+    fn take_reset(&self, state: tcp::State) -> Option<Errno> {
+        let mut st = self.st.lock();
+        if state != tcp::State::Closed || st.shut_wr || st.connecting {
+            return None;
+        }
+        match st.reset {
+            Some(true) => None,
+            _ => {
+                st.reset = Some(true);
+                st.error = None;
+                Some(ECONNRESET)
+            }
+        }
+    }
+
     fn tcp_send(&self, h: SocketHandle, data: &[u8], nonblock: bool, timeo: u64) -> KResult<usize> {
         let mut done = 0;
         loop {
@@ -595,7 +698,7 @@ impl InetSocket {
                     let s = n.sockets.get_mut::<tcp::Socket>(h);
                     match s.state() {
                         tcp::State::SynSent | tcp::State::SynReceived => return None,
-                        _ if !s.may_send() => return Some(Err(EPIPE)),
+                        st if !s.may_send() => return Some(Err(self.take_reset(st).unwrap_or(EPIPE))),
                         _ => {}
                     }
                     match s.send_slice(&data[done..]) {
@@ -644,7 +747,11 @@ impl InetSocket {
                                     buf.truncate(k);
                                     Some(Ok(buf))
                                 }
-                                Err(_) => Some(Ok(Vec::new())),
+                                Err(tcp::RecvError::InvalidState) => match self.take_reset(s.state()) {
+                                    Some(e) => Some(Err(e)),
+                                    None => Some(Ok(Vec::new())),
+                                },
+                                Err(tcp::RecvError::Finished) => Some(Ok(Vec::new())),
                             }
                         })
                     });
@@ -664,9 +771,34 @@ impl InetSocket {
                 Ok(Received { data: out, len: n, from: None })
             }
             Kind::Tcp(_) => Err(ENOTCONN),
-            Kind::Raw => {
+            Kind::Raw | Kind::Icmp(None) => {
                 drop(st);
                 self.wait(nonblock, timeo, || None)
+            }
+            Kind::Icmp(Some(h)) => {
+                drop(st);
+                let fam = self.family;
+                let request = if fam == AF_INET6 { 128 } else { 8 };
+                self.wait(nonblock, timeo, || {
+                    with_net(|n| {
+                        let s = n.sockets.get_mut::<icmp::Socket>(h);
+                        loop {
+                            let (data, from) = {
+                                let (d, a) = s.recv().ok()?;
+                                (d.to_vec(), a)
+                            };
+                            // Our own requests (to a local address) are
+                            // not for us; only replies are.
+                            if data.first() == Some(&request) {
+                                continue;
+                            }
+                            let full = data.len();
+                            let mut data = data;
+                            data.truncate(len);
+                            return Some(Ok(Received { data, len: full, from: Some(sockaddr_in((from, 0), fam)) }));
+                        }
+                    })
+                })
             }
             Kind::Udp(h) => {
                 let remote = st.remote;
@@ -762,7 +894,18 @@ impl InetSocket {
         let mut st = self.st.lock();
         let mut m = match st.kind {
             Kind::Raw => WRITE_EVENTS,
-            Kind::Udp(None) => WRITE_EVENTS,
+            Kind::Udp(None) | Kind::Icmp(None) => WRITE_EVENTS,
+            Kind::Icmp(Some(h)) => with_net_nopoll(|n| {
+                let s = n.sockets.get::<icmp::Socket>(h);
+                let mut m = 0;
+                if s.can_recv() {
+                    m |= READ_EVENTS;
+                }
+                if s.can_send() {
+                    m |= WRITE_EVENTS;
+                }
+                m
+            }),
             Kind::Udp(Some(h)) => with_net_nopoll(|n| {
                 let s = n.sockets.get::<udp::Socket>(h);
                 let mut m = 0;
@@ -804,7 +947,12 @@ impl InetSocket {
                         if can_recv || !may_recv {
                             m |= READ_EVENTS;
                         }
-                        if !may_recv {
+                        // The peer's FIN is in (even with data left to read).
+                        let fin = matches!(
+                            state,
+                            tcp::State::CloseWait | tcp::State::LastAck | tcp::State::Closing | tcp::State::TimeWait | tcp::State::Closed
+                        );
+                        if !may_recv || fin {
                             m |= POLLRDHUP;
                         }
                         if can_send && may_send {
@@ -812,6 +960,14 @@ impl InetSocket {
                         }
                         if matches!(state, tcp::State::Closed | tcp::State::TimeWait) {
                             m |= POLLHUP | READ_EVENTS;
+                        }
+                        if state == tcp::State::Closed && !st.shut_wr && st.reset.is_none() {
+                            // Reset: SO_ERROR says so until recv/send does.
+                            st.reset = Some(false);
+                            st.error = Some(ECONNRESET);
+                        }
+                        if st.reset == Some(false) {
+                            m |= POLLERR;
                         }
                         m
                     }
@@ -850,7 +1006,11 @@ impl InetSocket {
     }
 
     pub fn take_error(&self) -> Option<Errno> {
-        self.st.lock().error.take()
+        let mut st = self.st.lock();
+        if st.reset == Some(false) {
+            st.reset = Some(true);
+        }
+        st.error.take()
     }
 
     pub fn set_reuse(&self, on: bool) {
@@ -921,12 +1081,25 @@ impl InetSocket {
     /// The last close: connections finish in the background, everything
     /// else leaves the stack.
     fn release(&self) {
-        let kind = core::mem::replace(&mut self.st.lock().kind, Kind::Raw);
+        let (kind, linger0) = {
+            let mut st = self.st.lock();
+            // SO_LINGER {on, 0 s}: close resets the connection.
+            let linger0 = st.opts.get(&(crate::net::SOL_SOCKET, 13)).is_some_and(|v| v.len() >= 8 && v[..4] != [0; 4] && v[4..8] == [0; 4]);
+            (core::mem::replace(&mut st.kind, Kind::Raw), linger0)
+        };
         with_net(|n| {
             n.sock.release(self.id);
             match kind {
                 Kind::Tcp(Tcp::Conn(h)) => {
-                    n.sockets.get_mut::<tcp::Socket>(h).close();
+                    let s = n.sockets.get_mut::<tcp::Socket>(h);
+                    // As on Linux, unread data (or SO_LINGER 0) makes
+                    // close send a reset instead of a FIN.
+                    if linger0 || s.recv_queue() > 0 {
+                        s.abort();
+                        n.sock.orphans.push((h, 0));
+                        return;
+                    }
+                    s.close();
                     n.sock.orphans.push((h, crate::time::monotonic_ns() + ORPHAN_TIMEOUT_NS));
                 }
                 Kind::Tcp(Tcp::Listening(id)) => {
@@ -937,7 +1110,7 @@ impl InetSocket {
                         }
                     }
                 }
-                Kind::Udp(Some(h)) => {
+                Kind::Udp(Some(h)) | Kind::Icmp(Some(h)) => {
                     n.sockets.remove(h);
                 }
                 _ => {}
@@ -1040,6 +1213,15 @@ pub fn proc_net(tcp: bool, v6: bool) -> String {
         i += 1;
     }
     out
+}
+
+/// Open (TCP, UDP) sockets of one family, for /proc/net/sockstat{,6}.
+pub fn counts(v6: bool) -> (usize, usize) {
+    let socks: Vec<Arc<InetSocket>> = REGISTRY.lock().iter().filter_map(Weak::upgrade).collect();
+    let fam = |s: &&Arc<InetSocket>| (s.family == AF_INET6) == v6;
+    let tcp = socks.iter().filter(fam).filter(|s| s.is_tcp()).count();
+    let udp = socks.iter().filter(fam).filter(|s| s.ty == SOCK_DGRAM && s.protocol == IPPROTO_UDP).count();
+    (tcp, udp)
 }
 
 /// Families the socket syscalls route here.

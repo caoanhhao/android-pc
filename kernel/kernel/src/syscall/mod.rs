@@ -28,6 +28,30 @@ use crate::mm::user::{Backing, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::process::{TABLE, current, futex, lifecycle, signal};
 
 pub static TRACE: AtomicBool = AtomicBool::new(false);
+/// `strace=COMM`: trace only processes whose comm started with this
+/// once (up to 15 bytes, NUL-padded), and their later children.
+pub static TRACE_COMM: spin::Once<[u8; 16]> = spin::Once::new();
+
+fn traced() -> bool {
+    if !TRACE.load(Ordering::Relaxed) {
+        return false;
+    }
+    match TRACE_COMM.get() {
+        None => true,
+        Some(want) => {
+            let p = &current().process;
+            if p.attrs.lock().traced {
+                return true;
+            }
+            let n = want.iter().position(|&b| b == 0).unwrap_or(16);
+            let hit = p.comm.lock()[..n] == want[..n];
+            if hit {
+                p.attrs.lock().traced = true;
+            }
+            hit
+        }
+    }
+}
 static WARNED: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 pub mod nr {
@@ -283,10 +307,31 @@ fn warn_once(n: u64) {
     log::warn!("unimplemented syscall {} (pid {})", n, current().pid());
 }
 
+/// Traced write/writev: show the start of the data.
+fn trace_data(n: u64, a0: u64, a1: u64, a2: u64) {
+    let mm = current().mm();
+    let (addr, len) = match n {
+        nr::WRITE => (a1, a2),
+        nr::WRITEV if a2 > 0 => {
+            let mut iov = [0u8; 16];
+            if mm.copy_in(a1, &mut iov).is_err() {
+                return;
+            }
+            (u64::from_le_bytes(iov[..8].try_into().unwrap()), u64::from_le_bytes(iov[8..].try_into().unwrap()))
+        }
+        _ => return,
+    };
+    let mut b = [0u8; 96];
+    let k = (len as usize).min(b.len());
+    if mm.copy_in(addr, &mut b[..k]).is_ok() {
+        log::info!("[{}]   fd {} data {:?}", current().tid, a0 as i32, alloc::string::String::from_utf8_lossy(&b[..k]));
+    }
+}
+
 pub fn dispatch(frame: &mut TrapFrame) {
     let n = frame.rax;
     let [a0, a1, a2, a3, a4, a5] = frame.args();
-    let trace = TRACE.load(Ordering::Relaxed);
+    let trace = traced();
     if trace {
         log::info!(
             "[{}] syscall {} ({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
@@ -299,6 +344,9 @@ pub fn dispatch(frame: &mut TrapFrame) {
             a4,
             a5
         );
+    }
+    if trace {
+        trace_data(n, a0, a1, a2);
     }
     let (i0, i1) = (a0 as i32, a1 as i32);
     let r = match n {

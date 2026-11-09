@@ -229,6 +229,7 @@ pub fn init() {
         "class/mem",
         "class/tty",
         "class/misc",
+        "class/input",
         "devices/system/cpu",
         "devices/virtual",
     ] {
@@ -263,6 +264,7 @@ pub fn init() {
         ("device-mapper", "mapper/control", crate::block::DM_CONTROL_MINOR),
         ("loop-control", "loop-control", crate::block::LOOP_CONTROL_MINOR),
         ("hw_random", "hw_random", super::dev::HWRNG_MINOR),
+        ("uinput", "uinput", crate::drivers::input::uinput::UINPUT_MINOR),
     ] {
         add_char_device(&format!("devices/virtual/misc/{name}"), "misc", name, devname, crate::block::MISC_MAJOR, minor);
     }
