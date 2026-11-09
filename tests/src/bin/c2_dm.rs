@@ -190,6 +190,17 @@ fn main() {
     let n = read(fdn, &mut sys);
     close(fdn);
     check!(n > 0 && &sys[..n as usize] == b"c2-lin\n", "sysfs_dm_name");
+    // slaves/ and the lower device's holders/ link the two (apexd reads them).
+    let mut lb = [0u8; 64];
+    let ln = readlink(part.as_ptr(), &mut lb).max(0) as usize;
+    let lower = &lb[lb[..ln].iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1)..ln];
+    let holder = cpath!("/sys/class/block/{}/holders/dm-{}", Bytes(lower), dev & 0xff);
+    let (mut t, mut h) = ([0u8; 128], [0u8; 128]);
+    let sl = readlink(cpath!("/sys/block/dm-{}/slaves/{}", dev & 0xff, Bytes(lower)).as_ptr(), &mut t);
+    let hl = readlink(holder.as_ptr(), &mut h);
+    check!(!lower.is_empty() && sl > 0 && t[..sl as usize].ends_with(lower) && hl > 0
+           && h[..hl as usize].ends_with(cpath!("dm-{}", dev & 0xff).as_bytes()), "sysfs_slaves_holders",
+           "lower {} slave {} holder {}", Bytes(lower), errname(sl), errname(hl));
 
     // Table and status, deps, device list.
     let mut t = Dm::new("c2-lin", "", DM_STATUS_TABLE_FLAG);
@@ -289,8 +300,10 @@ fn main() {
         ok &= d.call(fd, DM_DEV_REMOVE) == 0;
     }
     let gone = fstatat(AT_FDCWD, node.as_ptr(), &mut st, 0);
+    let hgone = readlink(holder.as_ptr(), &mut h);
     let mut s = Dm::new("c2-lin", "", 0);
-    check!(ok && gone == -(ENOENT as isize) && s.call(fd, DM_DEV_STATUS) == -(ENXIO as isize), "remove", "node {}", errname(gone));
+    check!(ok && gone == -(ENOENT as isize) && hgone == -(ENOENT as isize) && s.call(fd, DM_DEV_STATUS) == -(ENXIO as isize),
+           "remove", "node {} holder {}", errname(gone), errname(hgone));
     close(fd);
 }
 

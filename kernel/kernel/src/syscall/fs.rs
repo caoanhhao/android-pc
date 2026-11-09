@@ -1173,7 +1173,7 @@ pub fn sys_inotify_rm_watch(fd: i32, wd: i32) -> KResult<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// sendfile / copy_file_range: a copy loop through a kernel buffer.
+// sendfile / copy_file_range / splice: a copy loop through a kernel buffer.
 
 /// Copy up to `count` bytes from `src` to `dst`. `src_off`/`dst_off` are
 /// explicit offsets (pread/pwrite, file positions untouched) or None (the
@@ -1256,4 +1256,49 @@ pub fn sys_copy_file_range(fd_in: i32, off_in: u64, fd_out: i32, off_out: u64, l
         current().mm().copy_out(off_out, &(o + n).to_le_bytes())?;
     }
     Ok(n)
+}
+
+/// splice(2): one side must be a pipe (a FIFO), which takes no offset.
+/// Moves one chunk (at most 64 KiB) per call through a kernel buffer, so
+/// a reader of a pipe or socket returns once some data has moved, as on
+/// Linux; no pages are moved. PackageInstaller's `FileUtils.copy` uses it
+/// for `adb install`'s streamed APK.
+pub fn sys_splice(fd_in: i32, off_in: u64, fd_out: i32, off_out: u64, len: u64, _flags: u32) -> KResult<u64> {
+    let (src, dst) = (io_file(fd_in)?, io_file(fd_out)?);
+    if !src.readable() || !dst.writable() {
+        return Err(EBADF);
+    }
+    let in_pipe = src.inode.meta().file_type() == vfs::S_IFIFO;
+    let out_pipe = dst.inode.meta().file_type() == vfs::S_IFIFO;
+    if !in_pipe && !out_pipe {
+        return Err(EINVAL);
+    }
+    if (in_pipe && off_in != 0) || (out_pipe && off_out != 0) {
+        return Err(ESPIPE);
+    }
+    if dst.flags() & O_APPEND != 0 {
+        return Err(EINVAL);
+    }
+    let (oi, oo) = (read_off(off_in)?, read_off(off_out)?);
+    if len == 0 {
+        return Ok(0);
+    }
+    let mut buf = vec![0u8; (len as usize).min(IO_CHUNK)];
+    let r = src.read(&mut buf, oi)?;
+    let mut w = 0;
+    while w < r {
+        match dst.write(&buf[w..r], oo.map(|o| o + w as u64)) {
+            Ok(0) => break,
+            Ok(x) => w += x,
+            Err(e) if w == 0 => return Err(e),
+            Err(_) => break,
+        }
+    }
+    if let Some(o) = oi {
+        current().mm().copy_out(off_in, &(o + w as u64).to_le_bytes())?;
+    }
+    if let Some(o) = oo {
+        current().mm().copy_out(off_out, &(o + w as u64).to_le_bytes())?;
+    }
+    Ok(w as u64)
 }

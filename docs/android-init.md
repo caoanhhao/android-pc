@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1, D2, D3a)
+# Android init on the Rust kernel (phases C3a, C3b, C3c, C3d, D1, D2, D3a, D3b)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -29,7 +29,10 @@ returns command output, and IPv6 reaches QEMU's user network
 ART with its userfaultfd-based GC, system_server starts every service,
 apps (Launcher3, SystemUI, Settings, Phone, ...) run, and the boot
 reaches `sys.boot_completed=1` in about 20-25 s
-([D3a: zygote and system_server](#d3a-zygote-and-system_server)).
+([D3a: zygote and system_server](#d3a-zygote-and-system_server)). Since
+D3b, Launcher3's home screen is on the display, and an APK built from
+source (`apps/hello`) installs with `adb install` and its Activity runs
+and draws ([D3b: adb install and an app](#d3b-adb-install-and-an-app)).
 
 ## Running it
 
@@ -39,6 +42,7 @@ tools/limited-build.sh tools/run-qemu.sh --aosp-init-test   # scripted check, ex
 tools/limited-build.sh tools/run-qemu.sh --aosp-adb-test    # adb from the host (C3d), exit 0 iff it passes
 tools/limited-build.sh tools/run-qemu.sh --aosp-gfx-test    # graphics (D1), exit 0 iff it passes
 tools/limited-build.sh tools/run-qemu.sh --aosp-boot-test   # zygote, system_server, boot_completed (D3a)
+tools/limited-build.sh tools/run-qemu.sh --aosp-apk-test    # adb install + am start of apps/hello (D3b)
 tools/limited-build.sh tools/run-qemu.sh --aosp-init --gpu --mem 4G --display gtk   # watch the screen
 ```
 
@@ -494,6 +498,79 @@ empty); /proc/<pid>/task/<tid>/wchan names the wait a thread sleeps in
 (ANR traces include it); the ANR traces in /data/anr (system_server's
 watchdog) have Java stacks.
 
+## D3b: adb install and an app
+
+`--aosp-apk-test` (`tools/aosp-apk-test.py`; the boot test's machine
+plus a QEMU monitor, 6 GiB, 6 CPUs) first builds `apps/hello` from
+source (`apps/hello/build.sh`: aapt2, javac, d8, the NDK's clang for
+the x86_64 JNI library, zipalign, apksigner; a few seconds, no Gradle,
+byte-for-byte reproducible), boots to `sys.boot_completed=1`, then
+checks (22 checks, about 2 minutes in all):
+
+- **Launcher on screen**: after `wm dismiss-keyguard` (SystemUI's
+  lockscreen is up after boot), Launcher3's QuickstepLauncher is the
+  resumed activity with the window focus, and `adb exec-out screencap
+  -p` shows its home screen (wallpaper, hotseat, navigation bar).
+- **`adb install -r -t hello.apk`** prints `Success`: adbd runs `cmd
+  package install` with the APK streamed over its socket;
+  PackageInstallerSession copies it with `FileUtils.copy`, which uses
+  splice(2) socket -> pipe -> file (`syscall/fs.rs`, new: "failed to
+  write; splice failed: ENOSYS" before). installd creates
+  /data/app/~~X/com.androidpc.hello-Y/ and /data/user/0/com.androidpc.hello
+  (owned by the new app uid), the JNI library is extracted to
+  `lib/x86_64/libhello.so`, and artd runs dex2oat64 (filter `verify`,
+  reason `install`) into `oat/x86_64/base.{odex,vdex}`. `pm list
+  packages`, `pm path` and `dumpsys package` (version, primaryCpuAbi
+  x86_64) know the package.
+- **`am start -W -n com.androidpc.hello/.MainActivity`**: `Status: ok`, a
+  cold start (zygote forks the app, ~200 ms); the app logs `HELLO_OK`
+  with what its JNI library computed (machine x86_64, kernel
+  6.12.0-android-pc, sum 5050); `dumpsys activity` shows it as the
+  (top) resumed activity, `dumpsys window` its window visible, with a
+  surface and the focus; both `screencap` and QEMU's screendump of the
+  virtio-gpu scanout show the app (more than 60% of the body is its
+  light background, the launcher is dark).
+- The app process and system_server keep their pids afterwards. The
+  screenshots (launcher.png, hello.png, hello-scanout.ppm) and the full
+  logcat are in `kernel/target/x86_64-unknown-none/<profile>/qemu-kernel/apk/`.
+
+/data is still tmpfs: the install works within one boot, nothing
+survives a reboot (enough for this milestone; ext4 writes are a later
+step). What it took besides splice:
+
+- **dm `slaves/` and `holders/` in sysfs**: when system_server dies,
+  the restarted one asks apexd (restarted as a lazy service) for the
+  active APEXes; apexd rebuilds its list from /proc/mounts and maps each
+  `/dev/block/dm-N` back to its loop device through
+  `/sys/block/dm-N/slaves/` ("Can't resolve mount info dm device ...
+  has unexpected number of slaves (should be 1) : 0" before). Without
+  them every APEX package (PermissionController among them) was
+  missing, and each new system_server died on "There must be exactly
+  one permissions manager; found []": a runtime restart loop that never
+  recovered. `block/dm.rs` now links them when a table goes live.
+  What killed the first system_server in that boot (a SIGABRT in a
+  binder thread ~30 s after boot, with no abort message: crash_dump
+  cannot run) was seen once in ~10 boots and not reproduced;
+  `abortdump=system_server` is the way to catch it.
+- One boot in about ten took ~110 s instead of ~25 s to reach
+  `sys.boot_completed` (no crash or restart in the log); not
+  reproduced, cause unknown.
+
+Try it by hand:
+
+```
+apps/hello/build.sh
+tools/limited-build.sh tools/run-qemu.sh --aosp-init --gpu --input --mem 6G --smp 6
+adb connect 127.0.0.1:15555
+adb -s 127.0.0.1:15555 shell wm dismiss-keyguard
+adb -s 127.0.0.1:15555 install -r -t apps/hello/build/hello.apk
+adb -s 127.0.0.1:15555 shell am start -W -n com.androidpc.hello/.MainActivity
+adb -s 127.0.0.1:15555 exec-out screencap -p > hello.png
+```
+
+(`apps/hello/run-device.sh -s 127.0.0.1:15555` does the install, start
+and HELLO_OK check too.)
+
 ## How far the boot gets (D3a)
 
 `sys.boot_completed=1` and `dev.bootcomplete=1` about 20-25 s after
@@ -586,7 +663,8 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
   for its checks (and allows them, `deny_unknown` is 0). Domain
   transitions on exec are guessed from the program's `*_exec` label for
   the kernel and init domains only; `seclabel` (setexeccon) works.
-- **/data and /metadata** are tmpfs: empty on every boot, no ext4 writes,
+- **/data and /metadata** are tmpfs: empty on every boot (D3b: `adb
+  install` works within a boot, the app is gone after a reboot), no ext4 writes,
   f2fs, file-based or metadata encryption (`mount_all` still finds no
   default fstab: `ro.crypto.state` stays unset, so the
   `zygote-start && ro.crypto.state=...` triggers would not fire either).

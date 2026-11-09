@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3a state: AOSP boots to sys.boot_completed=1: zygote runs ART's userfaultfd GC, system_server and apps run; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -27,6 +27,9 @@ tools/run-qemu.sh --aosp-init     # unmodified AOSP /init (init_boot ramdisk + s
 tools/run-qemu.sh --aosp-init-test  # the same, boot milestones and getprop/setprop checked
 tools/run-qemu.sh --aosp-gfx-test  # the same boot with a virtio-gpu: graphics HALs, surfaceflinger,
                                   # adb screencap and a QEMU screendump checked (see android-init.md)
+tools/run-qemu.sh --aosp-boot-test  # zygote, system_server, sys.boot_completed=1 (D3a)
+tools/run-qemu.sh --aosp-apk-test  # builds apps/hello, boots, adb install, am start: the Activity
+                                  # resumed and on the screen (D3b, see android-init.md)
 tools/run-qemu.sh --gpu [--gpu-size WxH] [--display vnc=:1] [--monitor SOCK]
                                   # virtio-gpu-pci at 00:02.0 (default for --ktest / --aosp-gfx-test)
 tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
@@ -567,7 +570,10 @@ of mounts whose mount-point chain leads to its root mount. The pieces:
   (any file system or another block device) at the offset; **device
   mapper** (`block/dm.rs`) keeps a live and an inactive table per device,
   maps I/O by walking the live table, and implements the dm ioctl buffer
-  protocol (header + data area, BUFFER_FULL). Details of both in
+  protocol (header + data area, BUFFER_FULL). Resuming a table links
+  `slaves/<lower>` under the dm device and `holders/dm-N` under each
+  lower device in sysfs (D3b; removed with the table or the device), as
+  apexd needs to map /apex mounts back to loop devices. Details of both in
   [syscalls.md](syscalls.md#block-devices-c2).
 - **erofs** (`fs/erofs.rs`): superblock, compact/extended inodes (nid =
   inode number, st_dev = the block device), FLAT_PLAIN and tail-packed
@@ -1255,6 +1261,22 @@ named offline CPUs spun forever, a shmem read of a hole past an empty
 initramfs backing panicked, timeouts with huge tv_sec overflowed (futex,
 sigtimedwait, clock_nanosleep, utimensat).
 
+Phase D3b (an APK from source, [android-init.md](android-init.md#d3b-adb-install-and-an-app)):
+splice(2) for PackageInstaller's streamed `adb install`, and dm devices'
+sysfs `slaves/` and `holders/` links (a restarted apexd maps every /apex
+mount back to its loop device; without them a restarted system_server
+lost all APEX packages and crash-looped on "There must be exactly one
+permissions manager"). apps/hello, built by `apps/hello/build.sh`
+(aapt2, javac, d8, NDK clang, apksigner; no Gradle) installs (installd
+creates the app directories and extracts the JNI library, artd's
+dex2oat verifies it) and `am start` runs its Activity, which calls its
+x86_64 JNI library and draws through SurfaceFlinger on the scanout.
+New `--aosp-apk-test` 22/22; new suite d3_splice 10 (10 on the host);
+c2_dm checks the slaves/holders links. `--test` 27/27, `--ktest` 49/49,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
+`--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
+17/17, `--aosp-boot-test` 24/24 pass.
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
@@ -1278,9 +1300,11 @@ sigtimedwait, clock_nanosleep, utimensat).
 - VFS follow-ups: permission checks and capabilities (ids are tracked),
   read-only mounts (only access(W_OK) and erofs/ext4 writes honour them),
   slave/unbindable mounts, statfs block accounting, fs-verity.
-- D3a follow-ups (D3b): `adb install` needs a writable, persistent /data
-  (tmpfs today: installs and dexopt results vanish at reboot) and works
-  inside one boot; userfaultfd write-protect, ptrace / process_vm_readv
+- D3a/D3b follow-ups: a persistent /data (tmpfs today: `adb install`
+  works, but installs and dexopt results vanish at reboot); one boot in
+  ~10 took ~110 s instead of ~25 s to sys.boot_completed (cause not
+  found); a system_server SIGABRT in a binder thread seen once
+  (`abortdump=system_server` to catch it); userfaultfd write-protect, ptrace / process_vm_readv
   (tombstones), a real priority-inheritance scheduler, AF_PACKET rings,
   vsock to a host, the apexd-bootstrap SIGSEGV seen once.
 - Memory follow-ups: MAP_GROWSDOWN, swap/reclaim of page-cache pages (none:

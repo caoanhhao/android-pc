@@ -20,6 +20,7 @@ use spin::Mutex;
 
 use super::{Backend, BlockDev, DM_MAJOR, SECTOR};
 use crate::errno::*;
+use crate::fs::sysfs;
 use crate::fs::file::{FileOps, OpenFile};
 
 const IOCTL_SIZE: usize = 312;
@@ -96,6 +97,19 @@ struct Table {
 impl Table {
     fn sectors(&self) -> u64 {
         self.targets.last().map_or(0, |t| t.start + t.len)
+    }
+
+    /// The distinct lower devices, in table order.
+    fn lowers(&self) -> Vec<Arc<BlockDev>> {
+        let mut v: Vec<Arc<BlockDev>> = Vec::new();
+        for t in &self.targets {
+            if let Kind::Linear(d, _) = &t.kind
+                && !v.iter().any(|x| Arc::ptr_eq(x, d))
+            {
+                v.push(d.clone());
+            }
+        }
+        v
     }
 
     fn deps(&self) -> Vec<u64> {
@@ -226,6 +240,22 @@ fn update_sysfs(d: &BlockDev) {
     drop(st);
     d.update_sysfs_size();
     super::sysfs_set(&d.sysfs_path(), "ro", &format!("{}\n", d.read_only() as u8));
+}
+
+/// sysfs `slaves/` of `d` and `holders/` of its lower devices, as Linux
+/// keeps them: apexd maps a dm mount back to its loop device through
+/// /sys/block/dm-N/slaves when it restarts.
+fn link_lowers(d: &BlockDev, old: Vec<Arc<BlockDev>>, new: Vec<Arc<BlockDev>>) {
+    let path = d.sysfs_path();
+    for l in &old {
+        sysfs::remove(&format!("{path}/slaves/{}", l.name));
+        sysfs::remove(&format!("{}/holders/{}", l.sysfs_path(), d.name));
+    }
+    for l in &new {
+        let (slaves, holders) = (format!("{path}/slaves"), format!("{}/holders", l.sysfs_path()));
+        sysfs::symlink(&slaves, &l.name, &sysfs::relative(&slaves, &l.sysfs_path()));
+        sysfs::symlink(&holders, &d.name, &sysfs::relative(&holders, &path));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +561,8 @@ fn command(nr: u32, req: &Req, out: &mut Out) -> KResult<()> {
                     old
                 }
             };
+            let new = dm_of(&d).state.lock().live.as_ref().map(Table::lowers).unwrap_or_default();
+            link_lowers(&d, old.as_ref().map(Table::lowers).unwrap_or_default(), new);
             drop(old);
             d.cache.invalidate();
             update_sysfs(&d);
@@ -646,6 +678,8 @@ fn remove(d: &Arc<BlockDev>) -> KResult<()> {
         return Err(EBUSY);
     }
     DEVS.lock().retain(|x| !Arc::ptr_eq(x, d));
+    let lowers = dm_of(d).state.lock().live.as_ref().map(Table::lowers).unwrap_or_default();
+    link_lowers(d, lowers, Vec::new());
     super::unregister(d);
     // Drop the tables (releasing their lower devices).
     let (live, inactive) = {

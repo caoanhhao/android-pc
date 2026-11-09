@@ -12,7 +12,7 @@ Status: **yes** = implemented with Linux semantics for what the B1 tests and
 static programs use; **partial** = works for the common case, gaps listed;
 **stub** = accepted, does nothing useful yet.
 
-## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics, D2 input and network, D3a zygote and system_server)
+## Implemented (phases B1-B4b, B5 AOSP shell, C1 binder, C2 block devices, C3a-C3d Android init, daemons, eBPF and network, D1 graphics, D2 input and network, D3a zygote and system_server, D3b adb install)
 
 | Nr | Name | Status | Notes |
 |---:|------|--------|-------|
@@ -230,6 +230,14 @@ static programs use; **partial** = works for the common case, gaps listed;
 | 436 | close_range | yes | CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE |
 | 439 | faccessat2 | yes | AT_EACCESS, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH |
 | 441 | epoll_pwait2 | yes | epoll_pwait with a timespec timeout |
+
+## D3b additions
+
+| Nr | Name | Status | Notes |
+|---:|------|--------|-------|
+| 275 | splice | yes | one side must be a pipe or FIFO (EINVAL otherwise), no offset on the pipe side (ESPIPE), offset pointers on the other side advanced (the file position untouched); one chunk of at most 64 KiB per call through a kernel buffer (no page moving), so a call returns as soon as some data moved; flags ignored. PackageInstaller's `FileUtils.copy` splices `adb install`'s streamed APK socket -> pipe -> file (was ENOSYS: "failed to write; splice failed") |
+
+tee (276) and vmsplice (278) are still ENOSYS.
 
 ## D3a additions
 
@@ -997,8 +1005,8 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
   filters (accepted, not applied), a persistent /data (see
   [android-init.md](android-init.md)).
 - **C3b leftovers**: NETLINK_AUDIT (logd's auditd
-  gets the stub), /dev/kmsg EPIPE on lost records, the mq/ and slaves/
-  entries of dm devices.
+  gets the stub), /dev/kmsg EPIPE on lost records, the mq/ entries of
+  dm devices (slaves/ and holders/ links exist since D3b).
 - **C3c leftovers (eBPF)**: running programs (no verifier, JIT or
   interpreter: socket filters, cgroup hooks, tracepoints and uprobes
   never fire, ring buffers stay empty), kernel BTF
@@ -1020,4 +1028,5 @@ SW_SYNC_IOC_INC; closing the timeline signals pending fences with
   quotactl (179, installd), process_vm_readv (310), ptrace (101): no
   tombstones (crash_dump cannot attach); fs-verity ioctls (system_server
   logs "Failed to enable fs-verity"), sched_setattr.
+- **D3b leftovers**: tee, vmsplice; splice moves data by copying.
 - Later: rseq, clone3, io_uring (not used by AOSP).
