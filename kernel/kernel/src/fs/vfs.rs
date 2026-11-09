@@ -1055,6 +1055,16 @@ pub fn create(dir: &PathRef, name: &[u8], mode: u32, rdev: u64) -> KResult<PathR
     Ok(PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) })
 }
 
+/// Give `inode`, which the file system just added as `dir`/`name` by
+/// other means than `Inode::create` (bpffs pinning), the owner, label and
+/// notifications `create` gives a new node.
+pub fn adopt(dir: &PathRef, name: &[u8], inode: Arc<dyn Inode>) -> PathRef {
+    set_new_owner(&**dir.inode(), &*inode);
+    crate::security::label_new_inode(&*inode, false);
+    super::inotify::created(&**dir.inode(), name, &*inode);
+    PathRef { mnt: dir.mnt.clone(), dentry: dir.dentry.attach(name, inode) }
+}
+
 pub fn symlink(dir: &PathRef, name: &[u8], target: &[u8]) -> KResult<()> {
     check_name(name)?;
     if target.is_empty() {

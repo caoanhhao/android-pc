@@ -10,7 +10,7 @@ use crate::errno::*;
 use crate::fs::file::*;
 use crate::fs::pipe::{self, PIPE_CAPACITY, PipeReader, PipeWriter};
 use crate::fs::vfs::{self, Inode, PathRef, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
-use crate::fs::{self};
+use crate::fs::{self, lock};
 use crate::mm::shmem;
 use crate::process::current;
 
@@ -344,10 +344,33 @@ pub fn sys_fcntl(fd: i32, cmd: u32, arg: u64) -> KResult<u64> {
             f.flags.store(keep | (arg as u32 & SETFL_FLAGS), Ordering::Relaxed);
             Ok(0)
         }
-        // Record locks: a single process tree with no contention model yet;
-        // every lock is granted and F_GETLK reports "unlocked".
-        F_SETLK | F_SETLKW | F_OFD_SETLK | F_OFD_SETLKW => Ok(0),
-        F_GETLK | F_OFD_GETLK => {
+        // Open file description locks are real (`fs::lock`).
+        F_OFD_SETLK | F_OFD_SETLKW | F_OFD_GETLK => {
+            let mut b = [0u8; 32];
+            current().mm().copy_in(arg, &mut b)?;
+            let r = lock::Request::parse(&f, &b)?;
+            if cmd != F_OFD_GETLK {
+                lock::set(&f, &r, cmd == F_OFD_SETLKW)?;
+                return Ok(0);
+            }
+            match lock::test(&f, &r) {
+                Some((ty, start, end)) => {
+                    b[0..2].copy_from_slice(&ty.to_ne_bytes());
+                    b[2..4].copy_from_slice(&0i16.to_ne_bytes());
+                    b[8..16].copy_from_slice(&start.to_ne_bytes());
+                    let len = if end == u64::MAX { 0 } else { end - start };
+                    b[16..24].copy_from_slice(&len.to_ne_bytes());
+                    b[24..28].copy_from_slice(&(-1i32).to_ne_bytes());
+                }
+                None => b[0..2].copy_from_slice(&lock::F_UNLCK.to_ne_bytes()),
+            }
+            current().mm().copy_out(arg, &b)?;
+            Ok(0)
+        }
+        // Classic record locks: no contention model yet; every lock is
+        // granted and F_GETLK reports "unlocked".
+        F_SETLK | F_SETLKW => Ok(0),
+        F_GETLK => {
             current().mm().copy_out(arg, &F_UNLCK.to_le_bytes())?;
             Ok(0)
         }

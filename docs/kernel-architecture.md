@@ -1,4 +1,4 @@
-# Kernel architecture (phase C3b state: AOSP init and its core daemons run)
+# Kernel architecture (phase C3c state: AOSP init, its core daemons and eBPF loading run)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -82,6 +82,10 @@ kernel/
                        (rlimits, rusage, sched_*, priorities, ids, caps,
                        personality, sigqueueinfo, unshare/setns, syslog,
                        hostname, ioprio), keys (add_key/keyctl)
+      bpf/             eBPF objects: maps (map.rs: array, hash, LRU, LPM trie,
+                       per-CPU, ring buffer storage), programs (kept, never run),
+                       BTF, links, attachments, ids, bpffs pinning; syscall/bpf.rs
+                       is the bpf(2) front end
       net/             sockets: constants, credentials; unix (AF_UNIX sockets);
                        netlink (AF_NETLINK: kernel uevents, stub protocols)
       fs/              vfs (inodes, dentries, mounts, path walk), file (open
@@ -93,7 +97,7 @@ kernel/
                        file systems); sysfs (device tree, uevent files), sysctl
                        (/proc/sys table), selinuxfs, cgroupfs (cgroup v1/v2),
                        inotify, pty (ptmx + devpts), kmsg (printk ring: /dev/kmsg,
-                       /proc/kmsg, syslog); mod.rs: cpio unpacking,
+                       /proc/kmsg, syslog), lock (OFD byte-range locks); mod.rs: cpio unpacking,
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); pci (config space, enumeration); virtio/
@@ -494,8 +498,10 @@ of mounts whose mount-point chain leads to its root mount. The pieces:
   (4B/2B) lcluster indexes following Linux's zmap.c: an offset maps to its
   extent (lookback through NONHEAD lclusters), whose single-block pcluster
   is decompressed (`fs/lz4.rs`, partial decoding; 0-padded or not) or, for
-  plain pclusters, copied (interlaced or shifted). The last decompressed
-  pcluster is kept per inode for sequential reads. That covers AOSP's
+  plain pclusters, copied (interlaced or shifted). The 32 most recently
+  decompressed pclusters (of all inodes) are kept for sequential reads; a
+  buffer per inode used to fill the 64 MiB kernel heap once zygote read
+  hundreds of files. That covers AOSP's
   system/vendor/product images (lz4hc, 4 KiB pclusters, compact indexes).
 - **ext4** (`fs/ext4.rs`, read-only): group descriptors (32/64 bytes),
   inode table lookup, extent trees and indirect maps (holes and
@@ -507,6 +513,58 @@ of mounts whose mount-point chain leads to its root mount. The pieces:
   number), give each regular file a read-only page cache (`Inode::shmem`,
   so mmap and exec work) and refuse namespace changes with EROFS; mounts
   are forced read-only.
+
+## eBPF (`bpf/`, `syscall/bpf.rs`, C3c)
+
+What AOSP's loaders (netbpfload with libbpf, the platform bpfloader in
+Rust over libbpf-rs, uprobestatsbpfload) and their users (netd's
+libnetd_updatable, libbpf_android) need, without running any program:
+
+- **Objects**: `BpfMap`, `BpfProg`, `Btf`, `BpfLink`, each with an id from
+  its own registry (weak references: an object lives while a file, a
+  bpffs node, or for maps a program using them refers to it). Files are
+  `anon_inode:bpf-map` / `bpf-prog` / `btf` / `bpf_link` on the shared
+  anonymous inode (netd's OFD locks rely on that), always close-on-exec;
+  BPF_F_RDONLY / WRONLY become the file's access mode.
+- **Maps** (`bpf/map.rs`): arrays live in a shmem object (elements of
+  `round_up(value_size, 8)` bytes, per-CPU arrays one such value per
+  possible CPU), so BPF_F_MMAPABLE arrays mmap through
+  `FileOps::mmap_shmem` and share pages with lookup/update. Hash-like
+  types (hash, per-CPU and LRU variants, map-in-map, devmap, sockmap,
+  local storage, ...) are ordered maps of keys (GET_NEXT_KEY walks them in
+  key order; an unknown key restarts at the first), LRU maps evict the
+  least recently used key when full, LPM tries store (prefix length,
+  masked prefix) and look up the longest match. fd arrays (prog array,
+  perf event array, ...) are sparse arrays. Ring buffers are a shmem
+  object laid out like Linux's mapping (consumer page, producer page,
+  data) that stays empty; their fds never poll readable.
+- **Programs**: BPF_PROG_LOAD checks the type, length, license (for the
+  GPL bit) and the maps referenced by ld_imm64 (BPF_PSEUDO_MAP_FD /
+  MAP_VALUE: EBADF for a bad fd) and keeps the instructions. There is no
+  verifier, JIT or interpreter: OBJ_GET_INFO_BY_FD reports the
+  instructions as both the translated and the "JITed" image (netbpfload
+  insists on a non-zero JIT length), the tag is a hash over them with map
+  fds cleared (not Linux's SHA-1), the verifier log is empty.
+- **Attaching**: BPF_PROG_ATTACH/DETACH record (target inode, attach
+  type) -> programs (ALLOW_MULTI keeps several, otherwise one is
+  replaced), BPF_PROG_QUERY reports them (netd aborts unless its cgroup
+  programs show up); LINK_CREATE and RAW_TRACEPOINT_OPEN give link fds.
+  Nothing runs: socket filters, cgroup skb/sock hooks, tracepoints and
+  uprobes never fire.
+- **BTF**: BPF_BTF_LOAD checks the header and section bounds and keeps
+  the blob (libbpf's feature probes and netbpfload require a BTF fd).
+  There is no kernel BTF (`/sys/kernel/btf/vmlinux`), so CO-RE objects
+  (timeInState.bpf) fail to load; nothing critical needs them.
+- **bpffs**: a tmpfs instance whose nodes can hold an object
+  (`TmpInode::add_object`); BPF_OBJ_PIN works only in a bpffs (EPERM
+  elsewhere, EEXIST for an existing name), the node is a regular file
+  (mode 0600 & ~umask) that chmod, chown, rename and unlink handle like
+  any tmpfs file; open(2) of it is EIO. BPF_OBJ_GET looks the path up
+  (BPF_F_PATH_FD supported) and opens the object.
+- **OFD locks** (`fs/lock.rs`): F_OFD_SETLK/SETLKW/GETLK byte-range locks
+  per inode, owned by the open file description and dropped with it
+  (libbpf_android's `bpfLock` locks byte `map id` of the shared bpf
+  inode). Classic F_SETLK locks are still always granted.
 
 ## Readiness and event files (`fs/poll.rs`, `fs/epoll.rs`, ...)
 
@@ -788,10 +846,25 @@ c3_creds 15, c3_sysfs 14 (9 on the host), c3_mntns 8 (8 on the host,
 in a user namespace); `--ktest` 36/36, `--test` 27/27, `--aosp-sh-test`
 15/15, `--aosp-disk-test` 9/9 pass.
 
+Phase C3c (eBPF, [android-init.md](android-init.md#c3c-ebpf)): the
+bpf(2) syscall with real maps (array, per-CPU, mmapable array, hash, LRU,
+LPM trie, ring buffer, map-in-map and the other key/value types),
+programs that are stored but never run, BTF blobs, links and recorded
+cgroup attachments, ids, OBJ_GET_INFO_BY_FD, a real bpffs at
+/sys/fs/bpf (pin, get, rename, chmod), OFD locks, uname 6.12.0 (Android
+16's GKI) and /proc/sys/net/core/bpf_jit_*. netbpfload, the platform
+bpfloader and uprobestatsbpfload load and pin everything critical,
+`bpf.progs_loaded=1`, init starts netd (its bpf setup passes; it then
+exits on iptables) and zygote; init stays up. The per-inode erofs
+decompression buffers that filled the kernel heap once zygote started
+are now one small global cache. `--aosp-init-test` 41/41; new suite
+c3_bpf 117 (skipped on the host: bpf needs CAP_BPF there).
+
 ## Known gaps / next steps
 
-- Android init (C3c and later): eBPF for netbpfload/netd (the next boot
-  blocker), a persistent /data (ext4 writes or f2fs, then FBE), a real
+- Android init (C3d and later): netfilter (netd's iptables-restore), a
+  network stack and virtio-net for adbd, kernel BTF for CO-RE bpf
+  objects, userfaultfd (ART's GC, see android-init.md), a persistent /data (ext4 writes or f2fs, then FBE), a real
   SELinux policy engine, cgroup resource control, a pty line discipline
   for `adb shell`, adbd over virtio-net or virtio-console,
   ptrace/process_vm_readv for crash_dump.

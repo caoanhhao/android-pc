@@ -149,7 +149,6 @@ impl Fs {
             rdev,
             attr: Attr { mode, uid, gid, nlink, atime: mtime, mtime, ctime: mtime },
             z: None,
-            last: Mutex::new(None),
         };
         if matches!(layout, LAYOUT_COMPRESSED_FULL | LAYOUT_COMPRESSED_COMPACT) && ty == S_IFREG {
             let h = self.read_vec((pos + isize + xattr_isize).next_multiple_of(8), 8)?;
@@ -207,8 +206,42 @@ pub struct IData {
     rdev: u64,
     attr: Attr,
     z: Option<ZInfo>,
-    /// Last decompressed pcluster: (pblk, output from its extent start).
-    last: Mutex<Option<(u64, u64, Vec<u8>)>>,
+}
+
+/// A decompressed pcluster: (file system, physical block, logical
+/// start of its extent) -> output from that start.
+type ZKey = (usize, u64, u64);
+
+/// Recently decompressed pclusters of all erofs inodes (sequential reads
+/// hit the same pcluster many times). Global and small: a cache per
+/// inode filled the kernel heap once zygote touched hundreds of files.
+static ZCACHE: Mutex<Vec<(ZKey, Arc<Vec<u8>>)>> = Mutex::new(Vec::new());
+const ZCACHE_ENTRIES: usize = 32;
+
+fn zcache_get(key: ZKey, need: usize) -> Option<Arc<Vec<u8>>> {
+    let mut c = ZCACHE.lock();
+    let i = c.iter().position(|(k, out)| *k == key && out.len() >= need)?;
+    let e = c.remove(i);
+    let out = e.1.clone();
+    c.push(e);
+    Some(out)
+}
+
+impl Drop for Fs {
+    fn drop(&mut self) {
+        // A later file system may get the same address.
+        let me = self as *const Fs as usize;
+        ZCACHE.lock().retain(|((fs, _, _), _)| *fs != me);
+    }
+}
+
+fn zcache_put(key: ZKey, out: Arc<Vec<u8>>) {
+    let mut c = ZCACHE.lock();
+    c.retain(|(k, _)| *k != key);
+    if c.len() >= ZCACHE_ENTRIES {
+        c.remove(0);
+    }
+    c.push((key, out));
 }
 
 impl IData {
@@ -439,26 +472,29 @@ impl IData {
                     }
                 }
                 _ => {
-                    let mut last = self.last.lock();
-                    let hit = matches!(&*last, Some((p, la, out)) if *p == e.pblk && *la == e.la && out.len() >= need);
-                    if !hit {
-                        let mut src = vec![0u8; bs as usize];
-                        self.fs.read(e.pblk * bs, &mut src)?;
-                        // The first token has literals, so it is never 0.
-                        let start = src.iter().position(|&b| b != 0).ok_or(EUCLEAN)?;
-                        // Without 0-padding the stream end is unknown: stop at
-                        // exactly what is needed.
-                        let want = if self.fs.zero_padding { need.next_multiple_of(64 * 1024) } else { need };
-                        let mut out = vec![0u8; want];
-                        let got = super::lz4::decompress(&src[start..], &mut out).ok_or(EUCLEAN)?;
-                        if got < need {
-                            log::warn!("erofs: nid {}: pcluster {} gave {got} of {need} bytes", self.nid, e.pblk);
-                            return Err(EUCLEAN);
+                    let key = (Arc::as_ptr(&self.fs) as usize, e.pblk, e.la);
+                    let out = match zcache_get(key, need) {
+                        Some(out) => out,
+                        None => {
+                            let mut src = vec![0u8; bs as usize];
+                            self.fs.read(e.pblk * bs, &mut src)?;
+                            // The first token has literals, so it is never 0.
+                            let start = src.iter().position(|&b| b != 0).ok_or(EUCLEAN)?;
+                            // Without 0-padding the stream end is unknown: stop at
+                            // exactly what is needed.
+                            let want = if self.fs.zero_padding { need.next_multiple_of(64 * 1024) } else { need };
+                            let mut out = vec![0u8; want];
+                            let got = super::lz4::decompress(&src[start..], &mut out).ok_or(EUCLEAN)?;
+                            if got < need {
+                                log::warn!("erofs: nid {}: pcluster {} gave {got} of {need} bytes", self.nid, e.pblk);
+                                return Err(EUCLEAN);
+                            }
+                            out.truncate(got);
+                            let out = Arc::new(out);
+                            zcache_put(key, out.clone());
+                            out
                         }
-                        out.truncate(got);
-                        *last = Some((e.pblk, e.la, out));
-                    }
-                    let out = &last.as_ref().unwrap().2;
+                    };
                     let from = (pos - e.la) as usize;
                     dst.copy_from_slice(&out[from..from + n]);
                 }

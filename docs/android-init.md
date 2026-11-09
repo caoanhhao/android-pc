@@ -1,4 +1,4 @@
-# Android init on the Rust kernel (phases C3a, C3b)
+# Android init on the Rust kernel (phases C3a, C3b, C3c)
 
 Unmodified AOSP `/init` (android-16.0.0_r4, `aosp_cf_x86_64_only_phone`,
 the build in `aosp/out/target/product/vsoc_x86_64_only/`) boots on the
@@ -11,9 +11,10 @@ starts the `console` service: an interactive `sh` on the serial port in
 which `getprop` and `setprop` work. Since C3b the core native daemons run
 for real (ueventd, servicemanager, hwservicemanager, logd, lmkd, vold,
 keystore2 with the keymint/gatekeeper HALs, apexd, tombstoned, ...):
-`service list`, `logcat`, `dmesg` and `ps` work from that shell, and boot
-continues through `post-fs-data` until netbpfload needs eBPF (see [How
-far the boot gets](#how-far-the-boot-gets-c3b)).
+`service list`, `logcat`, `dmesg` and `ps` work from that shell. Since
+C3c the kernel has eBPF maps, programs (stored, not run) and bpffs:
+`load-bpf-programs` succeeds (`bpf.progs_loaded=1`), init starts netd and
+zygote and stays up (see [How far the boot gets](#how-far-the-boot-gets-c3c)).
 
 ## Running it
 
@@ -61,8 +62,15 @@ keystore2, keymint and vold; servicemanager, hwservicemanager, keystore2
 and logd running; `logcat -d` with service logs, `logcat -b kernel` with
 init's kmsg lines (logd's klogd), `dmesg`; `ps` showing logd,
 servicemanager and keystore2 under their own users; tmpfs /metadata and
-/data with `/data/misc/keystore`. 34 checks, done about 25 s into the
-boot (before the netbpfload reboot); the serial log is in
+/data with `/data/misc/keystore`; and (C3c) the `load-bpf-programs` and
+`bpf-progs-loaded` triggers with netbpfload's "success" as milestones,
+then `bpf.progs_loaded` = 1, the bpfloader service stopped,
+`/sys/fs/bpf/netd_shared/mainline_done`, bpffs mounted with netd's
+pinned maps and programs (owner and mode as netbpfload set them), netd's
+`libnetd_updatable_init success` in logcat (its bpf setup: map locks,
+cgroup attach and query), and no reboot: `sys.powerctl` still empty and
+the shell still answering 10 s later. 41 checks, done about 55 s into
+the boot; the serial log is in
 `kernel/target/x86_64-unknown-none/<profile>/qemu-kernel/aosp-init-test.log`.
 
 ## The ramdisk (`tools/mkaosp-init-initramfs.py`)
@@ -170,6 +178,73 @@ logs "HIDL is not supported on this device" and waits, as on Cuttlefish),
 vold, keystore2, the keymint and gatekeeper HALs, system_suspend,
 tombstoned, apexd, aconfigd's socket service, the console shell.
 
+## C3c: eBPF
+
+`load-bpf-programs` runs `bpfloader`, which the tethering APEX's rc file
+turns into `/apex/com.android.tethering/bin/netbpfload`:
+
+1. netbpfload checks the kernel: uname 6.12.0 (>= 5.10 for 25Q4, an LTS
+   branch, 64-bit), writes `/proc/sys/kernel/unprivileged_bpf_disabled`
+   and `/proc/sys/net/core/bpf_jit_{enable,kallsyms}` (stored sysctls),
+   creates its bpffs directories (`tethering`, `netd_shared`,
+   `netd_readonly`, `net_shared`, `net_private`, `loader`), checks that
+   no program or map exists yet (PROG/MAP_GET_NEXT_ID say ENOENT), loads
+   `offload.o` with its own ELF loader and `test.o`, `clatd.o`,
+   `dscpPolicy.o`, `netd.o` with libbpf 1.4 (feature probes, BTF_LOAD,
+   map creation with BTF, `.rodata` maps updated and frozen,
+   PROG_LOAD), pins each map and program (create location, rename,
+   chmod, chown) and checks it through OBJ_GET_INFO_BY_FD (type, sizes,
+   flags, and a non-zero JIT length), then writes and pins
+   `map_kernel_bugs` and creates `netd_shared/mainline_done`.
+2. It execs `uprobestatsbpfload` (the uprobestats APEX: its uprobe
+   programs and maps are pinned under `/sys/fs/bpf/uprobestats`), which
+   execs the platform `/system/bin/bpfloader` (Rust, libbpf-rs): gpuMem,
+   gpuWork, memevents (ring buffers) and the critical bpfRingbufProg
+   load; timeInState fails (CO-RE: no `/sys/kernel/btf/vmlinux`) and
+   fuseMedia fails (no fuse-bpf), both optional. Its legacy part loads
+   `/vendor/etc/bpf/filterPowerSupplyEvents.o` (healthd's, critical).
+3. It execs `netbpfload done`, which sets `bpf.progs_loaded=1`; init
+   moves on to `bpf-progs-loaded` (start netd) and `zygote-start`.
+
+What the kernel provides is described in
+[kernel-architecture.md](kernel-architecture.md#ebpf-bpf-syscallbpfrs-c3c)
+and [syscalls.md](syscalls.md#ebpf-c3c): real maps, programs that are
+stored but never run, BTF blobs, links and recorded attachments, ids,
+bpffs, and OFD locks (netd's `mapLockTest`).
+
+Starting zygote and the many services of class `main` filled the 64 MiB
+kernel heap within seconds (a kernel panic): erofs kept a decompression
+buffer of up to 64 KiB per open compressed inode. That is now a small
+global cache, and the heap stays at about 18 MB (`Slab` in
+/proc/meminfo is the kernel heap in use).
+
+## How far the boot gets (C3c)
+
+Everything in [C3b](#how-far-the-boot-gets-c3b) below, then
+`load-bpf-programs` (about 20-35 s in, under 1 s of loading),
+`bpf-progs-loaded`, `zygote-start`, `early-boot`, `boot` with the class
+`main`/`hal` services. init stays up (checked for 2+ minutes). Running
+or restarting at that point: netd, zygote, statsd, surfaceflinger,
+audioserver, cameraserver, media, credstore, wificond and most vendor
+HALs (graphics allocator, hwcomposer, health, camera provider, ...).
+
+- **netd**: `libnetd_updatable_init` succeeds (bpf maps opened with
+  OFD locks, cgroup programs attached to /sys/fs/cgroup and found by
+  BPF_PROG_QUERY), then `iptables-restore`/`ip6tables-restore` fail
+  (no netfilter: "Failed to initialize BandwidthController") and netd
+  exits; init restarts it every few seconds, and its `onrestart`
+  restarts zygote each time. Netfilter, the network stack and
+  virtio-net are C3d.
+- **zygote** (`app_process64`) starts the runtime
+  (`ZygoteInit` begins), but ART rejects `/system/framework/boot.art`
+  ("read barrier state mismatch"): without userfaultfd (syscall 323) ART
+  falls back from the CMC to the CC garbage collector, which the boot
+  image was not built for. It is killed by netd's restarts before it
+  gets further. Phase D.
+- Failing as before: `vendor.boot-default` (no default fstab with
+  `/misc`), the minigbm graphics allocator (no DRM device), odsign,
+  crash_dump (no ptrace). `sys.boot_completed` is not reached.
+
 ## How far the boot gets (C3b)
 
 `early-init`, `init`, `late-init`, `early-fs`, `fs`, `post-fs`, `late-fs`
@@ -177,15 +252,11 @@ tombstoned, apexd, aconfigd's socket service, the console shell.
 namespace, apexd's full activation (`apexd.status=activated`, every
 APEX in /apex), `perform_apex_config` (the APEX rc files parsed),
 `vdc cryptfs init_user0` (succeeds), the /data directory tree, then
-`load-bpf-programs`: netbpfload (from the tethering APEX) needs eBPF
-(`/proc/sys/net/core/bpf_jit_enable`, the bpf() syscall, maps,
-programs, bpffs pinning). It exits with status 24, its
-`reboot_on_failure` makes init reboot ("reboot,bpfloader-failed")
-about 30 s after boot, which ends the QEMU run. `zygote-start`,
-`early-boot`, `boot` (class `core`/`main`: vndservicemanager, netd,
-surfaceflinger, zygote, ...) and `sys.boot_completed` are not reached;
-without eBPF, networking (netd) and then graphics (SurfaceFlinger needs
-a DRM device) would be next.
+`load-bpf-programs`. Until C3c netbpfload (from the tethering APEX)
+stopped there for lack of eBPF (`/proc/sys/net/core/bpf_jit_enable`,
+the bpf() syscall, maps, programs, bpffs pinning): it exited with status
+24 and its `reboot_on_failure` made init reboot
+("reboot,bpfloader-failed") about 30 s after boot.
 
 Failing but harmless before that: `vendor.boot-default` (the boot HAL
 finds no default fstab with `/misc`), `odsign` (needs ART's
@@ -195,8 +266,10 @@ finds no default fstab with `/misc`), `odsign` (needs ART's
 
 ## What is stubbed or missing (C3c and later)
 
-- **eBPF**: no bpf() syscall, maps or bpffs; netbpfload fails and init
-  reboots (above).
+- **eBPF** (C3c): programs are never run (no verifier, JIT or
+  interpreter): socket filters, cgroup hooks, tracepoints and uprobes do
+  nothing, ring buffers stay empty, traffic accounting maps stay as user
+  space left them. No kernel BTF (CO-RE objects fail), no fuse-bpf.
 - **SELinux** is not enforced: there is no policy engine. The policy is
   accepted, every access check allows, `enforce=1` is stored only. There
   is no `class/` tree in selinuxfs, so libselinux logs "Unknown class"

@@ -17,6 +17,7 @@ mod drivers;
 mod arch;
 mod block;
 mod boot;
+mod bpf;
 mod errno;
 mod fs;
 mod logger;

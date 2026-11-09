@@ -82,6 +82,13 @@ pub trait FileOps: Send + Sync + Any {
         Err(ENODEV)
     }
 
+    /// The shmem object an mmap of this (non-regular) file maps (bpf array
+    /// and ring buffer maps); `shared_write` is a MAP_SHARED PROT_WRITE
+    /// request. None: not mappable this way.
+    fn mmap_shmem(&self, _file: &OpenFile, _shared_write: bool) -> KResult<Option<Arc<crate::mm::shmem::Shmem>>> {
+        Ok(None)
+    }
+
     /// Current readiness (POLLIN, POLLOUT, POLLHUP, ...). Files that never
     /// block are always ready.
     fn poll(&self, _file: &OpenFile) -> u32 {
@@ -239,6 +246,7 @@ impl OpenFile {
 /// Regular files: read/write through the inode at the file position.
 impl Drop for OpenFile {
     fn drop(&mut self) {
+        super::lock::release_all(self);
         if self.path.is_some() && self.flags() & O_PATH == 0 {
             let mask = if self.writable() { super::inotify::IN_CLOSE_WRITE } else { super::inotify::IN_CLOSE_NOWRITE };
             super::inotify::touched(&*self.inode, self.path.as_ref(), mask);
