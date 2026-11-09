@@ -3,7 +3,8 @@
 //! A [`BlockDev`] is what `/dev/block/<name>` opens and what disk file
 //! systems read from: a name, a device number, a read-only flag, a
 //! [`Backend`] doing the actual I/O and a page cache ([`cache::Cache`]) in
-//! front of it. Backends: virtio-blk disks (`drivers::virtio::blk`), GPT
+//! front of it. Backends: virtio-blk disks (`drivers::virtio::blk`), NVMe
+//! namespaces (`drivers::nvme`), SATA disks (`drivers::ahci`), GPT
 //! partitions ([`gpt`]), loop devices ([`loop_dev`]) and device-mapper
 //! devices ([`dm`]). Stacked devices (partition, dm, loop) call the lower
 //! device's backend directly, so each layer has its own cache, as on
@@ -18,8 +19,9 @@
 //! `/sys/dev/block/<maj>:<min>` symlinks. Registering and removing a
 //! device sends "add"/"remove" uevents (`fs::sysfs`).
 //!
-//! Device numbers: virtio disks 254:(16 * disk + part) with partitions past
-//! 15 on 259:n (Linux's blkext), loop 7:n, device-mapper 253:n, RAM disks
+//! Device numbers: virtio disks 254:(16 * disk + part) and SATA disks
+//! 8:(16 * disk + part) with partitions past 15 on 259:n (Linux's blkext),
+//! NVMe namespaces and their partitions all on 259:n, loop 7:n, device-mapper 253:n, RAM disks
 //! 1:n ([`brd`]). Control
 //! devices: /dev/loop-control 10:237, /dev/device-mapper (and
 //! /dev/mapper/control) 10:236.
@@ -49,6 +51,7 @@ use crate::fs::vfs::{self, Inode, S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, encode_dev
 pub const SECTOR: u64 = 512;
 
 pub const VIRTBLK_MAJOR: u32 = 254;
+pub const SCSI_DISK_MAJOR: u32 = 8;
 pub const DM_MAJOR: u32 = 253;
 pub const BLKEXT_MAJOR: u32 = 259;
 pub const LOOP_MAJOR: u32 = 7;
@@ -279,6 +282,8 @@ pub fn register(dev: Arc<BlockDev>) {
         ] {
             sysfs::set_rw(&q, f, &format!("{v}\n"));
         }
+        // blk-mq: one hardware queue (apexd sizes its loop devices by it).
+        sysfs_set(&format!("{path}/mq/0"), "nr_tags", "128\n");
     }
     sysfs::symlink("class/block", &dev.name, &sysfs::relative("class/block", &path));
     sysfs::symlink("dev/block", &format!("{}:{}", dev.major, dev.minor), &sysfs::relative("dev/block", &path));
@@ -342,7 +347,7 @@ pub fn scan_partitions(disk: &Arc<BlockDev>) {
         }
     };
     for p in parts {
-        let (major, minor) = if p.number < 16 && disk.major == VIRTBLK_MAJOR {
+        let (major, minor) = if p.number < 16 && (disk.major == VIRTBLK_MAJOR || disk.major == SCSI_DISK_MAJOR) {
             (disk.major, disk.minor + p.number)
         } else {
             (BLKEXT_MAJOR, alloc_ext_minor())

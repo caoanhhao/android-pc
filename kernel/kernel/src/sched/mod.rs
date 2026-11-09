@@ -288,6 +288,10 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::drivers::virtio::input::softirq();
         }
+        if crate::drivers::usb::pending() {
+            interrupts::enable();
+            crate::drivers::usb::softirq();
+        }
         if process::ptimer::pending() {
             interrupts::enable();
             process::ptimer::run_due();
@@ -318,6 +322,7 @@ pub fn timer_interrupt(user: bool) {
         crate::fs::kmsg::tick();
         crate::net::inet::tick();
         crate::drivers::virtio::input::tick();
+        crate::drivers::usb::tick();
         expire_sleepers();
         timer::run_expired();
     }
@@ -337,6 +342,10 @@ pub fn exit_to_user(frame: &mut TrapFrame) {
     if crate::drivers::virtio::input::pending() {
         interrupts::enable();
         crate::drivers::virtio::input::softirq();
+    }
+    if crate::drivers::usb::pending() {
+        interrupts::enable();
+        crate::drivers::usb::softirq();
     }
     if process::ptimer::pending() {
         interrupts::enable();
