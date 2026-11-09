@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -30,8 +30,14 @@ tools/run-qemu.sh --aosp-gfx-test  # the same boot with a virtio-gpu: graphics H
 tools/run-qemu.sh --aosp-boot-test  # zygote, system_server, sys.boot_completed=1 (D3a)
 tools/run-qemu.sh --aosp-apk-test  # builds apps/hello, boots, adb install, am start: the Activity
                                   # resumed and on the screen (D3b, see android-init.md)
+tools/run-qemu.sh --aosp-fb-test  # E2: the boot test with no virtio-gpu, only a VGA's linear
+                                  # framebuffer set up by OVMF's GOP (simpledrm): launcher on
+                                  # screencap and in the framebuffer (QEMU screendump)
 tools/run-qemu.sh --gpu [--gpu-size WxH] [--display vnc=:1] [--monitor SOCK]
                                   # virtio-gpu-pci at 00:02.0 (default for --ktest / --aosp-gfx-test)
+tools/run-qemu.sh --fb[=std|bochs] [--gpu-size WxH]
+                                  # a VGA / bochs-display at 00:02.0 instead: Limine asks the
+                                  # firmware for that mode and the kernel drives it (simpledrm)
 tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
                                   # (PCI slots 00:04.0, 00:05.0, ... in order)
 tools/run-qemu.sh --nvme ...      # the same disks (and the AOSP boots' super/frp/misc) as NVMe
@@ -39,7 +45,8 @@ tools/run-qemu.sh --nvme ...      # the same disks (and the AOSP boots' super/fr
 tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI, qemu-xhci with usb-kbd/usb-mouse;
                                   # ktest c2_fs + e1_hw, keys/mouse sent through the monitor
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
-tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes
+tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes (UEFI through
+                                  # OVMF is the default; --bios boots the same ISO via SeaBIOS)
 cd kernel && cargo run / cargo test                    # same, script is the cargo runner
 ```
 
@@ -51,7 +58,8 @@ COMM once, and their later children; write/writev payloads are shown, e.g.
 `strace=adbd`), `abortdump=COMM` (keep the last 48 syscalls of each thread
 of such processes and log them when a thread abort()s itself: SIGABRT to
 its own tid), `dtfstab=` (Android device-tree fstab entries, see
-android-init.md), and everything after `--` becomes init's argv[1..]
+android-init.md), `simpledrm.name=NAME` (the DRM driver name of the boot
+framebuffer device, see Graphics), and everything after `--` becomes init's argv[1..]
 (`--ktest b1` passes `-- b1`, so ktest-init only runs the B1 tests).
 
 `run-qemu.sh` builds a hybrid ISO (BIOS + UEFI) with xorriso and
@@ -129,8 +137,9 @@ kernel/
                        and MMIO helpers); nvme; ahci; usb/ (xHCI host + hid boot
                        keyboards/mice); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
-                       on virtio-gpu: mod = files, GEM, ioctls; kms = mode
-                       objects, properties, atomic state); dma_buf/ (buffers,
+                       on virtio-gpu or the boot framebuffer: mod = files,
+                       GEM, ioctls; kms = mode objects, properties, atomic
+                       state, outputs); dma_buf/ (buffers,
                        dma-buf files, the system dma-heap; sync_file = fences,
                        sync files, sw_sync)
 ```
@@ -1082,6 +1091,33 @@ is in [syscalls.md](syscalls.md#graphics-d1).
   a timeline fails its pending fences with -ENOENT.
 - **dma-heap**: /dev/dma_heap/system (249:0, sysfs class `dma_heap`):
   DMA_HEAP_IOCTL_ALLOC returns a dma-buf of a new zeroed Buffer.
+- **Boot framebuffer (simpledrm, E2)**: the realistic display path on
+  real hardware without an open GPU driver (this machine's RTX 4070):
+  the linear framebuffer the firmware set up (UEFI GOP, or VBE under
+  BIOS), which Limine reports (framebuffer request; `boot::framebuffer`
+  gives its physical address, size, pitch and channel positions; the
+  memory-map entry is in the direct map). Limine picks the mode from
+  `resolution:` in limine.conf (run-qemu.sh writes `--gpu-size` there
+  for `--fb`; OVMF offers the EDID's preferred mode of QEMU's VGA and
+  bochs-display, so 720x1280 works under UEFI; SeaBIOS's VGA BIOS has it
+  only for bochs-display). When no virtio-gpu was probed,
+  `drm::register_boot_framebuffer` creates the same DRM device on it
+  (`kms::Output::Boot`; sysfs `devices/platform/simple-framebuffer.0`,
+  GET_UNIQUE `simple-framebuffer.0`): one CRTC / plane / connector whose
+  only mode is the framebuffer's size, dumb buffers, PRIME and the
+  whole KMS core of D1. A commit that shows a framebuffer copies the
+  plane's source rectangle into the boot framebuffer, converting from
+  any of the 8 supported 32 bpp formats to the firmware's channel layout
+  (page flip by copy; no double buffering in the hardware, so a flip can
+  tear). The stores are non-temporal (`movnti` + `sfence`): the direct
+  map is write-back, and streaming stores bypass the cache like a
+  write-combining mapping would on real hardware. Driver name
+  "simpledrm"; `simpledrm.name=virtio_gpu` (run-qemu.sh adds it for AOSP
+  boots with `--fb`) lets AOSP's cuttlefish HALs use it unmodified:
+  minigbm picks its backend by DRM driver name and has none for
+  simpledrm, the ranchu composer refuses drivers without "virtio" in
+  the name; both then only use generic DRM (dumb buffers, PRIME, atomic
+  KMS), and the virtgpu ioctls answer as the 2D-only device anyway.
 
 ## Android devices of D3a (`drivers/ashmem.rs`, `drivers/hvc.rs`, `net/tun.rs`)
 
@@ -1353,6 +1389,26 @@ strings, xHCI endpoint math and HID report decoding. Disks also get
 `--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
 17/17, `--aosp-boot-test` 24/24, `--aosp-apk-test` 22/22 pass.
 
+Phase E2 (graphics on the firmware framebuffer, the real-hardware path
+for a machine whose GPU has no open driver): Limine's framebuffer and
+firmware-type requests (the kernel logs `firmware: UEFI|BIOS` and the
+framebuffer), a simpledrm-style output for the D1 DRM/KMS core (see
+Graphics), `run-qemu.sh --fb[=std|bochs]`. With no virtio-gpu, a plain
+VGA under OVMF (UEFI is run-qemu.sh's default; BIOS boots the same ISO)
+and `simpledrm.name=virtio_gpu`, AOSP's minigbm, ranchu composer and
+SurfaceFlinger run unchanged on the boot framebuffer: new
+`--aosp-fb-test` 21/21 (sys.boot_completed=1 in ~125 s, Launcher3 on
+screencap, QEMU's screendump of the VGA matching the screencap). New
+kernel test for the format-converting copy. `--aosp-gfx-test` no longer
+fails when the framework finishes booting before adb connects (the
+boot animation had already exited, so only SystemUI's layers such as
+NotificationShade were listed): zygote is stopped only while
+`service.bootanim.exit` is unset, otherwise the framework's layers are
+accepted. `--test` 33/33, `--ktest` 50/50, `--hw-test`,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
+`--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
+17/17, `--aosp-boot-test` 24/24, `--aosp-apk-test` 22/22 pass.
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
@@ -1362,7 +1418,12 @@ strings, xHCI endpoint math and HID report decoding. Disks also get
   queues per CPU, AHCI NCQ), NVMe namespaces with 4 KiB LBAs, USB hubs and
   hot-plug, HID report descriptors (non-boot devices such as usb-tablet,
   touch screens), keyboard LEDs, USB mass storage; then real machines
-  (ACPI/IOAPIC, UEFI GOP framebuffer, Intel/AMD GPUs).
+  (ACPI/IOAPIC, Intel/AMD GPUs).
+- E2 follow-ups: a page-attribute (PAT) write-combining mapping of the
+  boot framebuffer, copying only damaged rectangles, mode changes
+  (the firmware's mode is the only one), a native "simpledrm" backend
+  in userspace (today AOSP needs `simpledrm.name=virtio_gpu`), not yet
+  tried on the physical machine.
 - Input follow-ups: force feedback (EVIOCSFF), key autorepeat (EV_REP is
   only stored), EVIOCREVOKE semantics, /proc/bus/input/devices, uhid,
   interrupt-driven virtio-input. `input keyevent` and InputFlinger run

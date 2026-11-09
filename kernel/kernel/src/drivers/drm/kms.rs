@@ -1,14 +1,22 @@
-//! KMS objects of the virtio-gpu DRM device: one primary plane, one CRTC,
-//! one virtual encoder and one virtual connector (scanout 0), their
-//! properties, framebuffers, property blobs and the atomic state.
+//! KMS objects of the DRM device: one primary plane, one CRTC, one
+//! virtual encoder and one virtual connector, their properties,
+//! framebuffers, property blobs and the atomic state.
 //!
 //! A commit builds a new [`State`] from property writes, checks it and,
-//! unless TEST_ONLY, shows the plane's framebuffer on the scanout: the
-//! framebuffer becomes a virtio-gpu resource on first use (backed by the
-//! buffer's pages), SET_SCANOUT points the scanout at it when it changed,
-//! and TRANSFER_TO_HOST_2D + RESOURCE_FLUSH copy it to the host. Commits
-//! complete synchronously, so out-fences are already signalled and flip
-//! events are queued at once.
+//! unless TEST_ONLY, shows the plane's framebuffer on the [`Output`]:
+//!
+//! - virtio-gpu (scanout 0): the framebuffer becomes a virtio-gpu
+//!   resource on first use (backed by the buffer's pages), SET_SCANOUT
+//!   points the scanout at it when it changed, and TRANSFER_TO_HOST_2D +
+//!   RESOURCE_FLUSH copy it to the host.
+//! - the boot framebuffer (simpledrm): the firmware's linear framebuffer
+//!   (UEFI GOP or VBE) is the only "scanout", so every commit copies the
+//!   plane's framebuffer into it, converting the pixel format (page flip
+//!   by copy). Stores are non-temporal, which bypasses the cache as a
+//!   write-combining mapping would on real hardware.
+//!
+//! Commits complete synchronously, so out-fences are already signalled
+//! and flip events are queued at once.
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -16,8 +24,12 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::drivers::dma_buf::Buffer;
+use crate::boot::BootFramebuffer;
 use crate::drivers::virtio::gpu::{self, Rect};
 use crate::errno::*;
+use crate::mm::PAGE_SIZE;
+use crate::mm::paging::phys_to_virt;
+use x86_64::PhysAddr;
 
 pub const PLANE_ID: u32 = 31;
 pub const CRTC_ID: u32 = 32;
@@ -68,6 +80,91 @@ pub const FORMATS: [(u32, u32); 8] = [
 
 pub fn virtio_format(fmt: u32) -> Option<u32> {
     FORMATS.iter().find(|f| f.0 == fmt).map(|f| f.1)
+}
+
+/// Bit position of the red, green and blue bytes of a 32 bpp format
+/// (DRM formats name channels from the most significant bit down).
+fn shifts(fmt: u32) -> Option<(u8, u8, u8)> {
+    Some(match fmt {
+        FMT_XRGB8888 | FMT_ARGB8888 => (16, 8, 0),
+        FMT_XBGR8888 | FMT_ABGR8888 => (0, 8, 16),
+        FMT_BGRX8888 | FMT_BGRA8888 => (8, 16, 24),
+        FMT_RGBX8888 | FMT_RGBA8888 => (24, 16, 8),
+        _ => return None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+
+/// What the CRTC drives.
+pub enum Output {
+    Virtio(&'static gpu::VirtioGpu),
+    /// The boot framebuffer (simpledrm).
+    Boot(BootFramebuffer),
+}
+
+impl Output {
+    /// Mode size and the EDID, if any.
+    fn panel(&self) -> (u32, u32, Option<Vec<u8>>) {
+        match self {
+            Output::Virtio(g) => (g.scanouts[0].width, g.scanouts[0].height, g.edid.clone()),
+            Output::Boot(fb) => (fb.width, fb.height, None),
+        }
+    }
+}
+
+/// Copy the `r` rectangle of `fb` to the boot framebuffer's top left
+/// corner, converting pixels to its channel layout.
+fn blit(out: &BootFramebuffer, fb: &Fb, r: Rect) -> KResult<()> {
+    let (sr, sg, sb) = shifts(fb.format).ok_or(EINVAL)?;
+    let (dr, dg, db) = out.shifts;
+    let same = (sr, sg, sb) == (dr, dg, db);
+    let (w, h) = (r.2.min(out.width), r.3.min(out.height));
+    let dst = phys_to_virt(PhysAddr::new(out.phys)).as_u64();
+    let mut row = alloc::vec![0u32; w as usize];
+    for y in 0..h {
+        let src = fb.offset as u64 + (r.1 + y) as u64 * fb.pitch as u64 + r.0 as u64 * 4;
+        read_pages(&fb.buf.pages, src, bytemuck_u32(&mut row));
+        let d = (dst + y as u64 * out.pitch as u64) as *mut i32;
+        for (x, &p) in row.iter().enumerate() {
+            let v = if same {
+                p
+            } else {
+                let (c_r, c_g, c_b) = ((p >> sr) & 0xff, (p >> sg) & 0xff, (p >> sb) & 0xff);
+                c_r << dr | c_g << dg | c_b << db
+            };
+            // SAFETY: inside the framebuffer (x < width, y < height).
+            unsafe { core::arch::x86_64::_mm_stream_si32(d.add(x), v as i32) };
+        }
+    }
+    unsafe { core::arch::x86_64::_mm_sfence() };
+    Ok(())
+}
+
+/// Read `out.len()` bytes at `off` from a buffer's pages (zeros past
+/// its end).
+fn read_pages(pages: &[PhysAddr], mut off: u64, out: &mut [u8]) {
+    let mut done = 0;
+    while done < out.len() {
+        let (pg, in_pg) = ((off / PAGE_SIZE) as usize, (off % PAGE_SIZE) as usize);
+        let n = (PAGE_SIZE as usize - in_pg).min(out.len() - done);
+        match pages.get(pg) {
+            Some(&p) => {
+                let src = (phys_to_virt(p).as_u64() + in_pg as u64) as *const u8;
+                // SAFETY: the buffer's pages are populated and direct mapped.
+                unsafe { core::ptr::copy_nonoverlapping(src, out[done..].as_mut_ptr(), n) };
+            }
+            None => out[done..done + n].fill(0),
+        }
+        done += n;
+        off += n as u64;
+    }
+}
+
+fn bytemuck_u32(v: &mut [u32]) -> &mut [u8] {
+    // SAFETY: u32 has no invalid bit patterns and a stricter alignment.
+    unsafe { core::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, v.len() * 4) }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +392,7 @@ impl State {
 }
 
 pub struct Kms {
+    pub out: Output,
     pub state: State,
     pub fbs: BTreeMap<u32, Arc<Fb>>,
     pub blobs: BTreeMap<u32, Arc<Blob>>,
@@ -333,22 +431,23 @@ pub fn mode_size(m: &[u8]) -> (u32, u32) {
 }
 
 impl Kms {
-    pub fn new(g: &gpu::VirtioGpu) -> Kms {
-        let s = g.scanouts[0];
+    pub fn new(out: Output) -> Kms {
+        let (width, height, edid) = out.panel();
         let mut k = Kms {
+            out,
             state: State { conn_crtc: 0, ..Default::default() },
             fbs: BTreeMap::new(),
             blobs: BTreeMap::new(),
             next_id: FIRST_DYNAMIC_ID,
             shown: None,
-            mode: make_mode(s.width, s.height),
-            width: s.width,
-            height: s.height,
+            mode: make_mode(width, height),
+            width,
+            height,
             // ~160 dpi when the EDID gives no size.
-            mm: (s.width * 254 / 1600, s.height * 254 / 1600),
+            mm: (width * 254 / 1600, height * 254 / 1600),
             edid_blob: 0,
         };
-        if let Some(e) = &g.edid {
+        if let Some(e) = &edid {
             if e[21] != 0 && e[22] != 0 {
                 k.mm = (e[21] as u32 * 10, e[22] as u32 * 10);
             }
@@ -493,7 +592,16 @@ impl Kms {
 
     /// Make `st` the current state and update the scanout.
     pub fn apply(&mut self, st: State) -> KResult<()> {
-        let g = gpu::get().ok_or(ENODEV)?;
+        let g = match &self.out {
+            Output::Virtio(g) => *g,
+            Output::Boot(fb) => {
+                if let Some((f, r)) = st.scanout() {
+                    blit(fb, &f, r)?;
+                }
+                self.state = st;
+                return Ok(());
+            }
+        };
         match st.scanout() {
             Some((fb, r)) => {
                 let res = fb.resource(g)?;
@@ -531,4 +639,37 @@ pub struct Extra {
     pub out_fence_ptr: u64,
     pub in_fence: i32,
     pub crtc_touched: bool,
+}
+
+#[test_case]
+fn simpledrm_blit_converts_formats() {
+    // A 4x2 ABGR8888 framebuffer (bytes R, G, B, A), source rectangle
+    // (1, 0, 2, 2), shown on an XRGB8888 boot framebuffer with a 16-byte
+    // pitch.
+    let buf = Buffer::new(PAGE_SIZE, "test").unwrap();
+    let src = phys_to_virt(buf.pages[0]).as_mut_ptr::<u32>();
+    for i in 0..8u32 {
+        // R = i, G = 0x10 + i, B = 0x20 + i.
+        unsafe { src.add(i as usize).write(0xff00_0000 | (0x20 + i) << 16 | (0x10 + i) << 8 | i) };
+    }
+    let fb = Fb::new(0, 4, 2, FMT_ABGR8888, 16, 0, buf, 0, 0);
+    let frame = crate::mm::frame::alloc_zeroed().unwrap();
+    let out = BootFramebuffer {
+        phys: frame.start_address().as_u64(),
+        width: 2,
+        height: 2,
+        pitch: 16,
+        bpp: 32,
+        shifts: (16, 8, 0),
+    };
+    blit(&out, &fb, (1, 0, 2, 2)).unwrap();
+    let dst = phys_to_virt(frame.start_address()).as_ptr::<u32>();
+    let px = |x: usize, y: usize| unsafe { dst.add(y * 4 + x).read() };
+    let want = |i: u32| i << 16 | (0x10 + i) << 8 | (0x20 + i);
+    assert_eq!(px(0, 0), want(1));
+    assert_eq!(px(1, 0), want(2));
+    assert_eq!(px(0, 1), want(5));
+    assert_eq!(px(1, 1), want(6));
+    assert_eq!(px(2, 0), 0, "nothing past the mode's width");
+    crate::mm::frame::free(frame);
 }

@@ -9,7 +9,7 @@ use limine::memmap;
 use limine::mp::MpRespData;
 use limine::request::{
     BootloaderInfoRequest, DateAtBootRequest, ExecutableAddressRequest, ExecutableCmdlineRequest,
-    HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest, StackSizeRequest,
+    FirmwareTypeRequest, FramebufferRequest, HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest, StackSizeRequest,
 };
 
 /// Lowest base revision whose semantics this kernel relies on (HHDM covers
@@ -63,6 +63,16 @@ static MODULES: ModulesRequest = ModulesRequest::new();
 #[unsafe(link_section = ".requests")]
 static DATE_AT_BOOT: DateAtBootRequest = DateAtBootRequest::new();
 
+#[used]
+#[unsafe(link_section = ".requests")]
+static FIRMWARE_TYPE: FirmwareTypeRequest = FirmwareTypeRequest::new();
+
+/// The linear framebuffer the firmware set up (UEFI GOP or VBE), shown
+/// by the simpledrm-style DRM driver when there is no virtio-gpu.
+#[used]
+#[unsafe(link_section = ".requests")]
+static FRAMEBUFFER: FramebufferRequest = FramebufferRequest::new();
+
 /// Ask Limine to enable x2APIC when the CPU supports it.
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -90,6 +100,13 @@ pub fn init() {
             revision.unwrap()
         );
     }
+    log::info!("firmware: {}", firmware_name());
+    if let Some(fb) = framebuffer() {
+        log::info!(
+            "framebuffer: {}x{} {} bpp, pitch {}, at {:#x}",
+            fb.width, fb.height, fb.bpp, fb.pitch, fb.phys
+        );
+    }
     if STACK_SIZE.response().is_none() {
         log::warn!("bootloader ignored the stack size request");
     }
@@ -97,6 +114,42 @@ pub fn init() {
         && !cmdline.cmdline().is_empty() {
             log::info!("cmdline: {}", cmdline.cmdline());
         }
+}
+
+/// "UEFI" or "BIOS" (what booted us, as Limine reports it).
+pub fn firmware_name() -> &'static str {
+    use limine::firmware::*;
+    match FIRMWARE_TYPE.response().map(|r| r.firmware_type) {
+        Some(FIRMWARE_TYPE_X86BIOS) => "BIOS",
+        Some(FIRMWARE_TYPE_EFI32 | FIRMWARE_TYPE_EFI64) => "UEFI",
+        _ => "unknown",
+    }
+}
+
+/// The boot framebuffer (the first one Limine reports).
+#[derive(Clone, Copy, Debug)]
+pub struct BootFramebuffer {
+    pub phys: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub bpp: u16,
+    /// Bit position of the red, green and blue channels (8 bits each).
+    pub shifts: (u8, u8, u8),
+}
+
+pub fn framebuffer() -> Option<BootFramebuffer> {
+    let fb = *FRAMEBUFFER.response()?.framebuffers().first()?;
+    // The address is in the HHDM.
+    let phys = fb.address() as u64 - hhdm_offset();
+    Some(BootFramebuffer {
+        phys,
+        width: fb.width as u32,
+        height: fb.height as u32,
+        pitch: fb.pitch as u32,
+        bpp: fb.bpp,
+        shifts: (fb.red_mask_shift, fb.green_mask_shift, fb.blue_mask_shift),
+    })
 }
 
 /// Kernel command line ("" if none).

@@ -1,5 +1,11 @@
-//! DRM for virtio-gpu: /dev/dri/card0 (226:0) and /dev/dri/renderD128
-//! (226:128), driver name "virtio_gpu".
+//! DRM for virtio-gpu, or for the boot framebuffer when there is none:
+//! /dev/dri/card0 (226:0) and /dev/dri/renderD128 (226:128). Driver name
+//! "virtio_gpu", or "simpledrm" for the boot framebuffer (Linux's driver
+//! for firmware framebuffers, see `kms::Output`). `simpledrm.name=NAME`
+//! on the command line renames the latter: AOSP's cuttlefish HALs pick
+//! their backend by driver name (the ranchu composer wants "virtio",
+//! minigbm a name it knows), and the generic DRM paths they use are the
+//! same for both devices.
 //!
 //! Buffers are GEM objects backed by [`Buffer`]s (dumb buffers, or
 //! dma-bufs imported with PRIME); handles are per open file, mmap goes
@@ -94,6 +100,9 @@ const VIRTGPU_PARAMS: [u32; 7] = [0, 1, 0, 0, 0, 0, 0];
 
 struct Device {
     kms: Mutex<Kms>,
+    /// Driver name and description (VERSION).
+    name: &'static str,
+    desc: &'static str,
     /// "0000:00:02.0" (GET_UNIQUE).
     unique: String,
     /// Pid of the open file that is DRM master (0: none).
@@ -122,7 +131,31 @@ fn vblank_now() -> (u32, u64) {
 pub fn register(sysdev: &str) {
     let Some(g) = crate::drivers::virtio::gpu::get() else { return };
     let unique = sysdev.split('/').find(|c| c.starts_with("0000:")).unwrap_or("").into();
-    DEV.call_once(|| Device { kms: Mutex::new(Kms::new(g)), unique, master: AtomicU64::new(0) });
+    create(Kms::new(Output::Virtio(g)), "virtio_gpu", "virtio GPU", unique, sysdev);
+}
+
+/// Without a virtio-gpu, drive the boot framebuffer (simpledrm) if the
+/// firmware left a 32 bpp linear one.
+pub fn register_boot_framebuffer() {
+    if DEV.get().is_some() {
+        return;
+    }
+    let Some(fb) = crate::boot::framebuffer() else { return };
+    if fb.bpp != 32 {
+        log::warn!("simpledrm: {} bpp boot framebuffer not supported", fb.bpp);
+        return;
+    }
+    let name = crate::boot::cmdline()
+        .split_ascii_whitespace()
+        .find_map(|w| w.strip_prefix("simpledrm.name="))
+        .map_or("simpledrm", |n| &*alloc::boxed::Box::leak(String::from(n).into_boxed_str()));
+    log::info!("simpledrm: {}x{} boot framebuffer at {:#x} as card0 (driver \"{name}\")", fb.width, fb.height, fb.phys);
+    let sysdev = "devices/platform/simple-framebuffer.0";
+    create(Kms::new(Output::Boot(fb)), name, "DRM driver for simple-framebuffer platform devices", "simple-framebuffer.0".into(), sysdev);
+}
+
+fn create(kms: Kms, name: &'static str, desc: &'static str, unique: String, sysdev: &str) {
+    DEV.call_once(|| Device { kms: Mutex::new(kms), name, desc, unique, master: AtomicU64::new(0) });
     use crate::fs::sysfs;
     for (name, minor) in [("card0", 0), ("renderD128", RENDER_MINOR)] {
         let path = alloc::format!("{sysdev}/drm/{name}");
@@ -331,7 +364,7 @@ impl DrmFile {
         k.apply(st)?;
         let (seq, ts) = vblank_now();
         if extra.out_fence_ptr != 0 {
-            let fd = sync_file::signalled_fd(fence_context(), seq as u64, "virtio_gpu", "crtc-0")?;
+            let fd = sync_file::signalled_fd(fence_context(), seq as u64, self.dev().name, "crtc-0")?;
             current().mm().copy_out(extra.out_fence_ptr, &fd.to_le_bytes())?;
         }
         if flags & PAGE_FLIP_EVENT != 0 && active {
@@ -348,9 +381,9 @@ impl DrmFile {
                 a.set32(0, 0);
                 a.set32(4, 1);
                 a.set32(8, 0);
-                put_str(a, 16, 24, "virtio_gpu")?;
+                put_str(a, 16, 24, dev.name)?;
                 put_str(a, 32, 40, "0")?;
-                put_str(a, 48, 56, "virtio GPU")?;
+                put_str(a, 48, 56, dev.desc)?;
             }
             // GET_UNIQUE
             0x01 => put_str(a, 0, 8, &dev.unique)?,
@@ -530,7 +563,7 @@ impl DrmFile {
                 }
                 let pitch = w * (bpp / 8);
                 let size = (pitch as u64 * h as u64).next_multiple_of(PAGE_SIZE);
-                let buf = Buffer::new(size, "virtio_gpu")?;
+                let buf = Buffer::new(size, dev.name)?;
                 let handle = self.st.lock().handle_of(&buf);
                 a.set32(16, handle);
                 a.set32(20, pitch);

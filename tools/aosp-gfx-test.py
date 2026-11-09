@@ -17,7 +17,11 @@ aosp-adb-test.py does (own server, throw-away HOME). Then:
   the screen through DRM) is not blank either.
 
 zygote is stopped first: the graphics checks do not need the framework
-(--aosp-boot-test boots it), and it would only cost CPU here.
+(--aosp-boot-test boots it), and it would only cost CPU here. On a fast
+boot the framework may already have finished (the boot animation exited,
+the launcher and SystemUI are on screen) by the time adb connects; then
+zygote is left running and the layer check accepts the framework's
+layers instead of the boot animation's.
 
 Usage: aosp-gfx-test.py [--boot-timeout SECS] [--log FILE] [--port PORT]
                         [--monitor SOCKET] [--out DIR] -- qemu-system-x86_64 ...
@@ -209,7 +213,16 @@ def main():
             time.sleep(2)
         if not r.check(state == "device", f"adb connect {a.serial}", f"state '{state}'"):
             return report(r, log)
-        r.sh("stop zygote; stop zygote_secondary")
+        # Stop the framework while the boot animation still runs (it then
+        # never exits). Once WindowManager has set service.bootanim.exit
+        # the animation is on its way out (it plays its last frames
+        # first), so the framework is kept.
+        framework_up = r.sh("getprop service.bootanim.exit")[1].strip() == "1"
+        if not framework_up:
+            r.sh("stop zygote; stop zygote_secondary")
+            framework_up = r.sh("getprop service.bootanim.exit")[1].strip() == "1"
+        if framework_up:
+            print("aosp-gfx-test: note: the framework finished booting first (service.bootanim.exit=1)")
 
         rc, out, _ = r.sh("ls -l /dev/dri/card0 /dev/dri/renderD128 /dev/dma_heap/system")
         r.check(rc == 0 and re.search(r"226,\s+0 .*card0", out) and re.search(r"226,\s+128 .*renderD128", out)
@@ -258,7 +271,11 @@ def main():
         _, pid2, _ = r.sh("pidof surfaceflinger")
         r.check(pid1.strip() != "" and pid1.strip() == pid2.strip(), "surfaceflinger keeps running", f"{pid1.strip()} -> {pid2.strip()}")
         rc, out, _ = r.sh("dumpsys SurfaceFlinger --list", timeout=60)
-        r.check(rc == 0 and "BootAnimation" in out, "boot animation layer", out.strip()[:300])
+        if framework_up:
+            r.check(rc == 0 and ("BootAnimation" in out or re.search(r"NotificationShade|Launcher|StatusBar", out)),
+                    "boot animation or framework layers (boot animation already done)", out.strip()[:300])
+        else:
+            r.check(rc == 0 and "BootAnimation" in out, "boot animation layer", out.strip()[:300])
 
         # screencap through SurfaceFlinger: a PNG that is not blank, read
         # from `adb shell screencap -p`'s stdout (shell protocol). The boot
