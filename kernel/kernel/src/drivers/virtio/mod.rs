@@ -73,18 +73,7 @@ static NEXT_VIRTIO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
     use crate::fs::sysfs;
     use alloc::format;
-    let a = d.addr;
-    let slot = format!("0000:{:02x}:{:02x}.{}", a.bus, a.dev, a.func);
-    let pci_dir = format!("devices/pci0000:{:02x}/{slot}", a.bus);
-    let vars = format!(
-        "DRIVER=virtio-pci\nPCI_CLASS={:X}{:02X}00\nPCI_ID={:04X}:{:04X}\nPCI_SLOT_NAME={slot}\n",
-        d.class, d.subclass, d.vendor, d.device
-    );
-    sysfs::add_device(&pci_dir, "pci", "bus/pci", vars, false);
-    sysfs::set(&pci_dir, "vendor", &format!("0x{:04x}\n", d.vendor));
-    sysfs::set(&pci_dir, "device", &format!("0x{:04x}\n", d.device));
-    sysfs::set(&pci_dir, "class", &format!("0x{:02x}{:02x}00\n", d.class, d.subclass));
-    sysfs::symlink("bus/pci/devices", &slot, &sysfs::relative("bus/pci/devices", &pci_dir));
+    let pci_dir = pci::sysfs_dir(d, "virtio-pci");
     let n = NEXT_VIRTIO.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let vdir = format!("{pci_dir}/virtio{n}");
     let driver = match ty {

@@ -71,6 +71,16 @@
 #                                     the APK (installd, dex2oat), `am start`
 #                                     of its activity, resumed, visible on
 #                                     screencap and the scanout (D3b)
+#   tools/run-qemu.sh --hw-test       real-hardware-class controllers (E1):
+#                                     the ktest initramfs with the C2 test
+#                                     disk on an NVMe controller (00:04.0,
+#                                     nvme0n1) and on an AHCI SATA port
+#                                     (00:05.0, sda), a qemu-xhci (00:06.0)
+#                                     with usb-kbd and usb-mouse, no virtio
+#                                     disks or input; ktest-init runs c2_fs
+#                                     (over NVMe) and e1_hw, and
+#                                     tools/hw-test.py types into the USB
+#                                     devices through the monitor
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -86,6 +96,9 @@
 #          unless ",rw" (writes reach FILE) or ",snapshot" (writes go to a
 #          throw-away overlay); ",legacy" makes the device legacy-only
 #          (virtio 0.9 I/O ports) instead of modern.
+#          --nvme: attach the --disk images (and the AOSP boots' default
+#          disks) as NVMe controllers (nvme0n1, nvme1n1, ... at the same
+#          PCI slots) instead of virtio-blk; AOSP's partition_map follows.
 #          --gpu (virtio-gpu-pci at 00:02.0, no VGA; default for --ktest
 #          and --aosp-gfx-test), --no-gpu, --gpu-size WxH (scanout size,
 #          default 720x1280), --display none|vnc=:N|gtk|sdl (default none;
@@ -111,7 +124,7 @@ KERNEL_DIR="$ROOT/kernel"
 
 mode=run profile=dev firmware=uefi kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
-gpu="" input="" gpu_size=720x1280 display=none monitor=""
+gpu="" input="" gpu_size=720x1280 display=none monitor="" disk_bus=virtio
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -127,6 +140,8 @@ while [[ $# -gt 0 ]]; do
         --initrd) initrd="$2"; shift ;;
         --append) append="$2"; shift ;;
         --disk) disks+=("$2"); shift ;;
+        --nvme) disk_bus=nvme ;;
+        --hw-test) mode=hw-test ;;
         --sh-arg) sh_args+=("$2"); shift ;;
         --no-net) net=0 ;;
         --gpu) gpu=1 ;;
@@ -156,7 +171,7 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-[[ -z $timeout ]] && { timeout=120; [[ $mode == ktest ]] && timeout=600; }
+[[ -z $timeout ]] && { timeout=120; [[ $mode == ktest ]] && timeout=600; [[ $mode == hw-test ]] && timeout=300; }
 
 # rust-toolchain.toml must win over a toolchain forced from the environment.
 cargo_() { (cd "$KERNEL_DIR" && env -u RUSTUP_TOOLCHAIN cargo "$@"); }
@@ -181,6 +196,24 @@ if [[ $mode == ktest ]]; then
         disks=("$ROOT/out/c2/c2-disk.img,snapshot" "$ROOT/out/c2/c2-disk.img,legacy")
     fi
     [[ ${#ktest_filters[@]} -gt 0 ]] && append="$append -- ${ktest_filters[*]}"
+fi
+if [[ $mode == hw-test ]]; then
+    "$ROOT/tools/mkinitramfs.sh" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
+    [[ -z $gpu ]] && gpu=0
+    [[ -z $input ]] && input=0
+    append="$append -- c2_fs e1_hw"
+    img="$ROOT/out/c2/c2-disk.img"
+    # Fixed slots (sysfs paths), writes to throw-away overlays.
+    qemu_hw=(-drive "file=$img,format=raw,if=none,id=hwnvme,snapshot=on,file.locking=off"
+             -device "nvme,drive=hwnvme,serial=RUSTPCNVME0,addr=0x4"
+             -device "ahci,id=hwahci,addr=0x5"
+             -drive "file=$img,format=raw,if=none,id=hwsata,snapshot=on,file.locking=off"
+             -device "ide-hd,drive=hwsata,bus=hwahci.0"
+             -device "qemu-xhci,id=hwxhci,addr=0x6"
+             -device "usb-kbd,bus=hwxhci.0" -device "usb-mouse,bus=hwxhci.0")
+    qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
+    [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi
 if [[ $mode == aosp-disk-test ]]; then
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
@@ -220,7 +253,11 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     boot_args="init=/init androidboot.hardware=cutf_cvm androidboot.fstab_suffix=rustpc"
     boot_args+=" androidboot.slot_suffix=_a androidboot.force_normal_boot=0"
     boot_args+=" androidboot.boot_devices=pci0000:00/0000:00:04.0,pci0000:00/0000:00:05.0,pci0000:00/0000:00:06.0"
-    boot_args+=" androidboot.partition_map=vda,super;vdb,frp;vdc,misc"
+    if [[ $disk_bus == nvme ]]; then
+        boot_args+=" androidboot.partition_map=nvme0n1,super;nvme1n1,frp;nvme2n1,misc"
+    else
+        boot_args+=" androidboot.partition_map=vda,super;vdb,frp;vdc,misc"
+    fi
     # The fstab (with /misc) as a device-tree style fstab node: first
     # stage mounts from it, and fs_mgr's default fstab keeps it afterwards
     # (androidboot.android_dt_dir), see tools/mkaosp-init-initramfs.py.
@@ -369,7 +406,8 @@ for i in "${!disks[@]}"; do
         case "$o" in
             rw) ro=off ;;
             snapshot) ro=off snap=on ;;
-            legacy) modern=",disable-modern=on,disable-legacy=off" ;;
+            legacy) modern=",disable-modern=on,disable-legacy=off"
+                    [[ $disk_bus == nvme ]] && { echo "run-qemu.sh: ,legacy is for virtio disks" >&2; exit 2; } ;;
             *) echo "run-qemu.sh: unknown disk option $o" >&2; exit 2 ;;
         esac
     done
@@ -378,8 +416,12 @@ for i in "${!disks[@]}"; do
     # only ever opened read-only or through a snapshot here.
     # Fixed PCI slots from 00:04.0 on, so sysfs paths (and Android's
     # androidboot.boot_devices) are stable.
-    args+=(-drive "file=$file,format=raw,if=none,id=disk$i,readonly=$ro,snapshot=$snap,file.locking=off"
-           -device "virtio-blk-pci,drive=disk$i,addr=$(printf '0x%x' $((4 + i)))$modern")
+    args+=(-drive "file=$file,format=raw,if=none,id=disk$i,readonly=$ro,snapshot=$snap,file.locking=off")
+    if [[ $disk_bus == nvme ]]; then
+        args+=(-device "nvme,drive=disk$i,serial=RUSTPC$i,addr=$(printf '0x%x' $((4 + i)))")
+    else
+        args+=(-device "virtio-blk-pci,drive=disk$i,addr=$(printf '0x%x' $((4 + i)))$modern")
+    fi
 done
 
 if [[ $gpu == 1 ]]; then
@@ -406,7 +448,16 @@ if [[ $net == 1 ]]; then
     args+=(-netdev "user,id=net0$fwd" -device "virtio-net-pci,netdev=net0,addr=0x3")
 fi
 
-if [[ $mode == ktest ]]; then
+if [[ $mode == hw-test ]]; then
+    log="$work/hw-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 30)) python3 "$ROOT/tools/hw-test.py" --log "$log" --monitor "$monitor" \
+        --timeout "$timeout" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: hardware test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.
     log="$work/ktest.log"
     args+=(-display "$display" -serial stdio)

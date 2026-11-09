@@ -79,6 +79,7 @@ pub struct Device {
     pub device: u16,
     pub class: u8,
     pub subclass: u8,
+    pub prog_if: u8,
     pub bars: [Bar; 6],
 }
 
@@ -158,6 +159,7 @@ fn probe(a: Address) -> Option<Device> {
         device: (id >> 16) as u16,
         class: (class >> 24) as u8,
         subclass: (class >> 16) as u8,
+        prog_if: (class >> 8) as u8,
         bars,
     })
 }
@@ -194,4 +196,76 @@ pub fn init() {
 
 pub fn devices() -> Vec<Device> {
     DEVICES.lock().clone()
+}
+
+/// The sysfs directory of a PCI function (`devices/pci0000:00/0000:00:04.0`,
+/// relative to /sys), created with its uevent (DRIVER=`driver`), ids and
+/// the /sys/bus/pci/devices link.
+pub fn sysfs_dir(d: &Device, driver: &str) -> alloc::string::String {
+    use crate::fs::sysfs;
+    use alloc::format;
+    let a = d.addr;
+    let slot = format!("0000:{:02x}:{:02x}.{}", a.bus, a.dev, a.func);
+    let pci_dir = format!("devices/pci0000:{:02x}/{slot}", a.bus);
+    let vars = format!(
+        "DRIVER={driver}\nPCI_CLASS={:X}{:02X}{:02X}\nPCI_ID={:04X}:{:04X}\nPCI_SLOT_NAME={slot}\n",
+        d.class, d.subclass, d.prog_if, d.vendor, d.device
+    );
+    sysfs::add_device(&pci_dir, "pci", "bus/pci", vars, false);
+    sysfs::set(&pci_dir, "vendor", &format!("0x{:04x}\n", d.vendor));
+    sysfs::set(&pci_dir, "device", &format!("0x{:04x}\n", d.device));
+    sysfs::set(&pci_dir, "class", &format!("0x{:02x}{:02x}{:02x}\n", d.class, d.subclass, d.prog_if));
+    sysfs::symlink("bus/pci/devices", &slot, &sysfs::relative("bus/pci/devices", &pci_dir));
+    pci_dir
+}
+
+/// Zeroed, physically contiguous memory for bus-master DMA: `pages`
+/// frames, returned as (physical address, pointer through the direct map).
+pub fn dma_alloc(pages: usize) -> Option<(u64, *mut u8)> {
+    let phys = crate::mm::frame::alloc_contiguous(pages, 1)?;
+    let ptr = crate::mm::paging::phys_to_virt(phys).as_mut_ptr::<u8>();
+    unsafe { core::ptr::write_bytes(ptr, 0, pages * crate::mm::PAGE_SIZE as usize) };
+    Some((phys.as_u64(), ptr))
+}
+
+/// The memory BAR `i`, mapped uncached: (virtual address, size).
+pub fn map_bar(d: &Device, i: usize) -> Option<(u64, u64)> {
+    match d.bars.get(i)? {
+        Bar::Mem { addr, size } => Some((crate::mm::paging::map_mmio(*addr, *size).as_u64(), *size)),
+        _ => None,
+    }
+}
+
+/// 32-bit MMIO register access (`base` from [`map_bar`]).
+pub fn mmio_read32(base: u64, off: u64) -> u32 {
+    unsafe { core::ptr::read_volatile((base + off) as *const u32) }
+}
+
+pub fn mmio_write32(base: u64, off: u64, v: u32) {
+    unsafe { core::ptr::write_volatile((base + off) as *mut u32, v) }
+}
+
+/// 64-bit registers as two dword accesses, low half first.
+pub fn mmio_read64(base: u64, off: u64) -> u64 {
+    mmio_read32(base, off) as u64 | (mmio_read32(base, off + 4) as u64) << 32
+}
+
+pub fn mmio_write64(base: u64, off: u64, v: u64) {
+    mmio_write32(base, off, v as u32);
+    mmio_write32(base, off + 4, (v >> 32) as u32);
+}
+
+/// Spin until `f` holds or `ms` milliseconds pass (TSC clock; usable
+/// before the scheduler runs). Returns whether `f` held.
+pub fn wait_until(ms: u64, mut f: impl FnMut() -> bool) -> bool {
+    let start = crate::time::monotonic_ns();
+    loop {
+        if f() {
+            return true;
+        }
+        if crate::time::monotonic_ns().saturating_sub(start) > ms * 1_000_000 {
+            return f();
+        }
+        core::hint::spin_loop();
+    }
 }

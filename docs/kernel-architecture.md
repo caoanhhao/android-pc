@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -34,6 +34,10 @@ tools/run-qemu.sh --gpu [--gpu-size WxH] [--display vnc=:1] [--monitor SOCK]
                                   # virtio-gpu-pci at 00:02.0 (default for --ktest / --aosp-gfx-test)
 tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as virtio-blk disks
                                   # (PCI slots 00:04.0, 00:05.0, ... in order)
+tools/run-qemu.sh --nvme ...      # the same disks (and the AOSP boots' super/frp/misc) as NVMe
+                                  # controllers: nvme0n1, nvme1n1, ... (E1)
+tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI, qemu-xhci with usb-kbd/usb-mouse;
+                                  # ktest c2_fs + e1_hw, keys/mouse sent through the monitor
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes
 cd kernel && cargo run / cargo test                    # same, script is the cargo runner
@@ -121,7 +125,9 @@ kernel/
                        open, mountable file system types
       drivers/         serial (COM1); binder/ (binder IPC + binderfs: abi, state,
                        protocol, mod); ashmem; hvc (host-less virtio-console
-                       ports); pci (config space, enumeration); virtio/
+                       ports); pci (config space, enumeration, sysfs dirs, DMA
+                       and MMIO helpers); nvme; ahci; usb/ (xHCI host + hid boot
+                       keyboards/mice); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
                        on virtio-gpu: mod = files, GEM, ioctls; kms = mode
                        objects, properties, atomic state); dma_buf/ (buffers,
@@ -150,8 +156,8 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 7. Tests (`cfg(test)`), or: unpack the initramfs (first Limine module)
    into a tmpfs that becomes the root mount, fill in sysfs (mount
    points, memory/tty/misc character devices), create loop0-7 and the
-   RAM disks asked for with `brd.rd_nr=` (`block::init`), enumerate PCI and bring up virtio-blk disks with
-   their partitions (`drivers::init`), start `/init` as pid 1 (cwd
+   RAM disks asked for with `brd.rd_nr=` (`block::init`), enumerate PCI and bring up the virtio
+   devices, NVMe and AHCI disks with their partitions and xHCI USB keyboards/mice (`drivers::init`), start `/init` as pid 1 (cwd
    `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
    loop. When init exits the kernel logs its status and powers off.
 
@@ -831,6 +837,64 @@ libnetd_updatable, libbpf_android) need, without running any program:
   sockstat, sockstat6, protocols, raw, raw6, icmp, icmp6, igmp, igmp6,
   dev_mcast, packet; counters mostly zero).
 
+## Real-hardware-class controllers (`drivers/nvme.rs`, `drivers/ahci.rs`, `drivers/usb/`, E1)
+
+Drivers for controllers found on PCs rather than in VMs, developed against
+QEMU's emulations (`-device nvme`, `ahci` + `ide-hd`, `qemu-xhci` +
+`usb-kbd`/`usb-mouse`). All are polled like virtio (no IOAPIC/MSI-X yet),
+use `pci::dma_alloc` (zeroed contiguous frames through the direct map)
+for rings and bounce buffers, and register PCI sysfs directories with
+`pci::sysfs_dir`.
+
+- **NVMe** (`drivers/nvme.rs`, class 01.08.02): disable, admin queues
+  (64 entries) in AQA/ASQ/ACQ, enable (timeout from CAP.TO), IDENTIFY
+  controller (MDTS caps the transfer at min(128 KiB, 2^MDTS pages), NN),
+  create I/O completion + submission queue 1, then IDENTIFY each active
+  namespace (CNS 2 list on NVMe >= 1.1). Namespaces with 512-byte LBAs
+  become disks `nvme<C>n<N>` on blkext (259:n, partitions `nvme0n1p1`...
+  also 259:n, as on Linux) below `.../0000:00:04.0/nvme/nvme0/block/`.
+  One command in flight per controller: the entry goes in the submission
+  queue, the tail doorbell (CAP.DSTRD stride) is rung, the completion is
+  found by its phase bit, the head doorbell acknowledges it; data through
+  a 128 KiB bounce buffer described by PRP1/PRP2 or a PRP list page.
+  Read, write, flush.
+- **AHCI** (`drivers/ahci.rs`, class 01.06.01): GHC.AE; for every
+  implemented port with a device (SSTS.DET = 3) and the ATA signature
+  (QEMU's `-cdrom` ATAPI drive on the q35 ICH9 controller is skipped):
+  stop, command list / received FIS / one command table in one page,
+  start; IDENTIFY DEVICE (LBA48 size, model, serial); READ/WRITE DMA EXT
+  (one PRD, 128 KiB bounce buffer) and FLUSH CACHE EXT in slot 0, polled
+  on PxCI, errors (PxIS.TFES, TFD.ERR) restart the port and give EIO.
+  Disks are sda, sdb, ... (8:16n, partitions +1..15), with libata's
+  sysfs path (`.../ata1/host0/target0:0:0/0:0:0:0/block/sda`).
+- **xHCI** (`drivers/usb/mod.rs`, class 0c.03.30): BIOS hand-off (legacy
+  support capability), halt, reset, DCBAA (+ scratchpad buffers),
+  command ring and one event ring segment of 256 TRBs (link TRB with
+  toggle cycle), run. Connected root ports are reset (USB2) and
+  enumerated: Enable Slot, Address Device (EP0 max packet by speed,
+  Evaluate Context when bMaxPacketSize0 differs), device/config/string
+  descriptors, SET_CONFIGURATION; each HID interface of the boot subclass
+  (protocol 1 keyboard, 2 mouse) gets SET_PROTOCOL(boot), SET_IDLE,
+  Configure Endpoint for its interrupt IN endpoint (Interval from
+  bInterval and speed) and 16 Normal TRBs kept posted. A stalled control
+  request is recovered with Reset Endpoint + Set TR Dequeue Pointer. No
+  hubs, no hot-plug, no LED output reports.
+- **HID boot protocol** (`drivers/usb/hid.rs`): keyboard reports are
+  diffed against the previous one (modifier bits, six usages, rollover
+  errors ignored) and mapped with Linux's usbkbd table; mouse reports
+  give BTN_LEFT/RIGHT/MIDDLE, REL_X/REL_Y and REL_WHEEL. Devices are
+  input devices named like Linux's ("QEMU QEMU USB Keyboard", bus 0x03,
+  phys `usb-0000:00:06.0-5/input0`) below
+  `.../usb1/1-5/1-5:1.0/0003:0627:0001.0001/input/inputN`. Like
+  virtio-input, the BSP's timer tick sees the next event TRB's cycle bit
+  flip and the soft interrupt (idle loop / return to user mode) decodes
+  the reports and re-posts the TRBs.
+- **AOSP over NVMe**: `run-qemu.sh --nvme` attaches super, frp and misc as
+  NVMe controllers at 00:04.0-00:06.0 (same `androidboot.boot_devices`)
+  with `androidboot.partition_map=nvme0n1,super;nvme1n1,frp;nvme2n1,misc`;
+  first-stage init finds `by-name/super` and maps the dynamic partitions
+  as before.
+
 ## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
 
 - **virtio-input** (`drivers/virtio/input.rs`): virtio device type 18
@@ -1087,7 +1151,7 @@ IXON flow control, devpts.
 `#[test_case]` functions anywhere in the crate; `cargo test` boots a test
 kernel which runs them after full boot (SMP included) and writes to
 `isa-debug-exit` (0x10 -> QEMU status 33 = pass, 0x11 -> 35 = fail); a panic
-fails the run; the script times out after 120 s. Current tests (27): int3
+fails the run; the script times out after 120 s. Current tests (32; E1 added NVMe PRP lists, ATA strings, xHCI endpoint math, HID keyboard and mouse reports): int3
 returns, all CPUs online, per-CPU area, frame alloc/free/zero/contiguous, heap
 Box/Vec/1 MiB, map/unmap a page, kernel text RX-only, timer ticks advance, TSC
 clock advances, guarded kernel stack, user address space (mmap, copy in/out
@@ -1277,11 +1341,28 @@ c2_dm checks the slaves/holders links. `--test` 27/27, `--ktest` 49/49,
 `--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
 17/17, `--aosp-boot-test` 24/24 pass.
 
+Phase E1 (real-hardware-class controllers, tested on QEMU's emulations):
+NVMe, AHCI SATA and xHCI with HID boot keyboards/mice (see the section
+above); `run-qemu.sh --nvme` boots AOSP from NVMe (`--aosp-boot-test
+--nvme` 24/24, sys.boot_completed=1). New `--hw-test` (c2_fs 59/59 over
+NVMe, new suite e1_hw 27: SATA and NVMe disks, writes, mounts, USB key
+and mouse events through evdev); new kernel tests for NVMe PRPs, ATA
+strings, xHCI endpoint math and HID report decoding. Disks also get
+`mq/0/nr_tags` (apexd reads it). `--test` 32/32, `--ktest` 50/50,
+`--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9, `--aosp-init-test` 41/41,
+`--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
+17/17, `--aosp-boot-test` 24/24, `--aosp-apk-test` 22/22 pass.
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
   virtio-gpu with asynchronous commits (fences are signalled at once
   now), a cursor plane, hotplug.
+- E1 follow-ups: MSI-X interrupts and several commands in flight (NVMe
+  queues per CPU, AHCI NCQ), NVMe namespaces with 4 KiB LBAs, USB hubs and
+  hot-plug, HID report descriptors (non-boot devices such as usb-tablet,
+  touch screens), keyboard LEDs, USB mass storage; then real machines
+  (ACPI/IOAPIC, UEFI GOP framebuffer, Intel/AMD GPUs).
 - Input follow-ups: force feedback (EVIOCSFF), key autorepeat (EV_REP is
   only stored), EVIOCREVOKE semantics, /proc/bus/input/devices, uhid,
   interrupt-driven virtio-input. `input keyevent` and InputFlinger run
