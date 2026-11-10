@@ -65,17 +65,36 @@ struct Insn {
 
 /// Run a classic BPF program over `p`: the number of bytes to keep
 /// (0 drops). Out-of-bounds loads and invalid code drop the packet.
-fn run_filter(prog: &[Insn], p: &[u8]) -> u32 {
+fn run_filter(prog: &[Insn], p: &[u8], ifindex: u32) -> u32 {
     let (mut a, mut x) = (0u32, 0u32);
     let mut mem = [0u32; 16];
     let mut pc = 0;
     // Linux's special offsets: SKF_NET_OFF + n is n bytes into the network
     // header (after the 14-byte Ethernet header), SKF_LL_OFF + n into the
-    // link-layer header; ancillary data (SKF_AD_OFF) is not provided.
+    // link-layer header; SKF_AD_OFF + n is ancillary data: the protocol,
+    // the packet type (wpa_supplicant's filter drops PACKET_OTHERHOST)
+    // and the interface index.
     const SKF_NET_OFF: i32 = -0x10_0000;
     const SKF_LL_OFF: i32 = -0x20_0000;
+    const SKF_AD_OFF: i32 = -0x1000;
+    let pkttype = if p[0..6] == [0xff; 6] {
+        PACKET_BROADCAST
+    } else if p[0] & 1 != 0 {
+        PACKET_MULTICAST
+    } else {
+        // The stack only passes on frames for the card's own address.
+        PACKET_HOST
+    };
     let load = |off: u32, size: u32| -> Option<u32> {
         let off = off as i32;
+        if (SKF_AD_OFF..SKF_AD_OFF + 0x100).contains(&off) {
+            return match off - SKF_AD_OFF {
+                0 => Some(u16::from_be_bytes([p[12], p[13]]) as u32),
+                4 => Some(pkttype as u32),
+                8 => Some(ifindex),
+                _ => None,
+            };
+        }
         let o = if off >= 0 {
             off as usize
         } else if off >= SKF_NET_OFF {
@@ -304,7 +323,7 @@ pub fn deliver(ifindex: u32, frame: &[u8]) {
             continue;
         }
         let keep = match &i.filter {
-            Some(p) => run_filter(p, frame) as usize,
+            Some(p) => run_filter(p, frame, ifindex) as usize,
             None => frame.len(),
         };
         if keep == 0 || i.queue.len() >= QUEUE_MAX {
@@ -334,6 +353,12 @@ impl FileOps for PacketFile {
 
     fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
         Some(self.0.wq.clone())
+    }
+
+    /// The interface ioctls (wpa_supplicant's l2_packet asks for the
+    /// index and address of its interface on the packet socket).
+    fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
+        super::ifreq::ioctl(cmd, arg)
     }
 
     fn as_any(&self) -> &dyn Any {

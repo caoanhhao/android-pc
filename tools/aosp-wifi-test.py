@@ -14,9 +14,11 @@ user-mode network 10.0.3.0/24). After sys.boot_completed=1:
   `cmd wifi list-scan-results`;
 - `cmd wifi connect-network <ssid> wpa2 <passphrase>`: WPA2-Personal
   association and the 4-way handshake (wpa_supplicant over AF_PACKET),
-  then DHCP gives wlan0 an address on 10.0.3.0/24 and the gateway
-  answers pings through wlan0 (the internet path of QEMU's NAT);
-- a wrong passphrase is refused (the simulated AP deauthenticates).
+  then DHCP gives wlan0 an address on 10.0.3.0/24 and a TCP connection
+  through wlan0 reaches a server on the host via QEMU's NAT (the
+  internet path);
+- afterwards, a wrong passphrase is refused (the simulated AP
+  deauthenticates).
 
 Usage: aosp-wifi-test.py [--boot-timeout SECS] [--log FILE] [--port PORT]
                          [--ssid S --psk P --open-ssid S]
@@ -28,6 +30,9 @@ import importlib.util
 import os
 import re
 import shutil
+import signal
+import socket
+import threading
 import subprocess
 import sys
 import tempfile
@@ -135,13 +140,6 @@ def main():
         if not r.check(bool(res), f"scan finds {a.ssid} and {a.open_ssid}", r.sh("cmd wifi list-scan-results")[1][:500]):
             dump(r, "WifiScanning|WificondScan|wificond|scan|nl80211")
 
-        # A wrong passphrase must not connect.
-        r.sh(f"cmd wifi connect-network {a.ssid} wpa2 wrong-passphrase")
-        time.sleep(15)
-        st = r.sh("cmd wifi status")[1]
-        r.check(f'connected to "{a.ssid}"' not in st, "wrong passphrase is refused", st[:300])
-        r.sh(f"cmd wifi forget-network $(cmd wifi list-networks | grep {a.ssid} | cut -d' ' -f1)")
-
         # Connect with WPA2-Personal.
         r.sh(f"cmd wifi connect-network {a.ssid} wpa2 {a.psk}")
         conn = lambda: (lambda s: s if f'connected to "{a.ssid}"' in s.replace("\\", "") else "")(r.sh("cmd wifi status")[1])
@@ -150,13 +148,43 @@ def main():
             dump(r, "wpa_supplicant|ClientModeImpl|SupplicantStaIfaceHal|WifiNative|nl80211|EAPOL|WPA:")
         addr = wait(lambda: re.search(r"inet (10\.0\.3\.\d+)/", r.sh("ip -4 addr show wlan0")[1]), 90)
         r.check(addr is not None, "DHCP address on wlan0", r.sh("ip addr show wlan0")[1][:300])
-        rc, out, _ = r.sh("ping -c 3 -W 5 10.0.3.2", timeout=60)
-        r.check(rc == 0 and " 0% packet loss" in out, "gateway 10.0.3.2 answers through wlan0", out[-300:])
+        # The internet path: QEMU's NAT behind the AP's uplink maps the
+        # gateway 10.0.3.2 to the host, where a TCP server answers.
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        port = srv.getsockname()[1]
+
+        def serve():
+            try:
+                while True:
+                    c, _ = srv.accept()
+                    c.sendall(b"wifi-path-ok\n")
+                    c.close()
+            except OSError:
+                pass
+        threading.Thread(target=serve, daemon=True).start()
+        rc, out, _ = r.sh(f"toybox nc -w 10 10.0.3.2 {port} </dev/null", timeout=60)
+        srv.close()
+        r.check("wifi-path-ok" in out, "TCP through wlan0 to the host behind the AP's NAT", out[-300:])
+        _, out, _ = r.sh("ping -c 2 -W 3 10.0.3.2; ip route get 10.0.3.2", timeout=30)
+        print(f"aosp-wifi-test: info {out.strip()[-300:]}")
         _, out, _ = r.sh("dumpsys connectivity | grep -E 'NetworkAgentInfo.*WIFI' | head -3", timeout=60)
         print(f"aosp-wifi-test: info {out.strip()[:400]}")
         _, out, _ = r.sh("logcat -d | grep -iE 'wpa_supplicant.*(CTRL-EVENT-CONNECTED|WPA: Key negotiation completed)' | tail -2")
         r.check("CTRL-EVENT-CONNECTED" in out or "Key negotiation completed" in out, "wpa_supplicant completed the handshake",
                 out.strip()[:300])
+        # A wrong passphrase must not connect (last: the framework
+        # blocklists the AP after the failure).
+        r.sh(f"cmd wifi forget-network $(cmd wifi list-networks | grep {a.ssid} | cut -d' ' -f1)")
+        time.sleep(3)
+        r.sh(f"cmd wifi connect-network {a.ssid} wpa2 wrong-passphrase")
+        time.sleep(15)
+        st = r.sh("cmd wifi status")[1]
+        r.check(f'connected to "{a.ssid}"' not in st, "wrong passphrase is refused", st[:300])
+        r.sh(f"cmd wifi forget-network $(cmd wifi list-networks | grep {a.ssid} | cut -d' ' -f1)")
+
         adbt.adb(a, "disconnect", a.serial)
     finally:
         adbt.adb(a, "kill-server", timeout=20)
@@ -167,9 +195,17 @@ def main():
 
 
 def dump(r, pattern):
-    """Print the matching logcat lines (after a failed check)."""
-    noise = "getWifiEnabledState|isScanAlwaysAvailable|getConnectionInfo|handleShellCommand"
-    _, out, _ = r.sh(f"logcat -d -b all | grep -vE '{noise}' | grep -E -A6 '{pattern}|Exception' | head -250", timeout=120)
+    """After a failed check: save the whole logcat next to the serial log
+    (once) and print its Wi-Fi lines."""
+    if not getattr(r, "logcat_saved", False):
+        _, out, _ = r.sh("logcat -d -b all", timeout=180)
+        path = (r.a.log or "/tmp/aosp-wifi-test.log") + ".logcat"
+        with open(path, "w") as f:
+            f.write(out)
+        print(f"aosp-wifi-test: logcat saved in {path}")
+        r.logcat_saved = True
+    noise = "getWifiEnabledState|isScanAlwaysAvailable|getConnectionInfo|handleShellCommand|Parsing file|apexd"
+    _, out, _ = r.sh(f"logcat -d -b all | grep -vE '{noise}' | grep -iE '{pattern}' | tail -150", timeout=120)
     print(out)
 
 
@@ -182,4 +218,6 @@ def report(r, log):
 
 
 if __name__ == "__main__":
+    # A terminated test still stops its QEMU (the finally blocks).
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     sys.exit(main())

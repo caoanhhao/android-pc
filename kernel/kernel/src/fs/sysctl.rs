@@ -228,7 +228,7 @@ const NEIGH: &[(&str, &str)] = &[
     ("retrans_time_ms", "1000"),
     ("ucast_solicit", "3"),
 ];
-const NET_IFS: &[&str] = &["all", "default", "lo", "eth0"];
+const NET_IFS: &[&str] = &["all", "default", "lo", "eth0", "wlan0"];
 
 /// ENTRIES plus the per-interface ones.
 fn all_entries() -> Vec<(String, String)> {

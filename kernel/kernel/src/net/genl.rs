@@ -260,11 +260,13 @@ impl Nla {
         self.put(ty, &b);
     }
 
-    /// Start a nested attribute; close it with [`Nla::end`].
+    /// Start a nested attribute; close it with [`Nla::end`]. Without
+    /// NLA_F_NESTED, like nl80211's and nlctrl's nla_nest_start_noflag:
+    /// wificond looks attributes up by their raw type.
     pub fn nest(&mut self, ty: u16) -> usize {
         let at = self.0.len();
         self.0.extend_from_slice(&[0, 0]);
-        self.0.extend_from_slice(&(ty | NLA_F_NESTED).to_le_bytes());
+        self.0.extend_from_slice(&ty.to_le_bytes());
         at
     }
 
