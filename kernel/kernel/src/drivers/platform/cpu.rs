@@ -194,8 +194,10 @@ fn setup_this_cpu(i: usize) {
         c.hwp_lo.store(lo as u32, Ordering::Relaxed);
         c.hwp_hi.store(hi as u32, Ordering::Relaxed);
         c.hwp_guar.store(guar as u32, Ordering::Relaxed);
-        // min, max, desired 0 (autonomous), EPP.
-        wrmsr(IA32_HWP_REQUEST, lo | hi << 8 | EPP_BALANCE_PERFORMANCE << 24);
+        // min, max, desired 0 (autonomous), EPP (a reserved field without
+        // CPUID.06H:EAX[10]).
+        let epp = if f.epp { EPP_BALANCE_PERFORMANCE } else { 0 };
+        wrmsr(IA32_HWP_REQUEST, lo | hi << 8 | epp << 24);
     }
     if f.aperfmperf {
         c.last_aperf.store(rdmsr(IA32_APERF), Ordering::Relaxed);
