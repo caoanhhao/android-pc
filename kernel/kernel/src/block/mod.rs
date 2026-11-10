@@ -59,6 +59,21 @@ pub const MISC_MAJOR: u32 = 10;
 pub const DM_CONTROL_MINOR: u32 = 236;
 pub const LOOP_CONTROL_MINOR: u32 = 237;
 
+/// SCSI disks (SATA through AHCI, USB mass storage) share the sd names
+/// and 8:16n numbers, numbered in probe order as on Linux.
+static NEXT_SD: AtomicU32 = AtomicU32::new(0);
+
+/// The next SCSI disk index (0 = sda) and its name.
+pub fn next_sd() -> (u32, String) {
+    let n = NEXT_SD.fetch_add(1, Ordering::Relaxed);
+    let name = if n < 26 {
+        format!("sd{}", (b'a' + n as u8) as char)
+    } else {
+        format!("sd{}{}", (b'a' + (n / 26 - 1) as u8) as char, (b'a' + (n % 26) as u8) as char)
+    };
+    (n, name)
+}
+
 /// What a block device does. Offsets and lengths are multiples of 512.
 pub trait Backend: Send + Sync + Any {
     /// Size in bytes.
@@ -369,6 +384,79 @@ pub fn scan_partitions(disk: &Arc<BlockDev>) {
         d.partname = (!p.name.is_empty()).then_some(p.name);
         d.ro.store(disk.read_only(), Ordering::Relaxed);
         register(Arc::new(d));
+    }
+}
+
+/// The partitions Android's fstab names, mapped by
+/// `androidboot.partition_map=auto`.
+const BOOT_PARTITIONS: [&str; 3] = ["super", "frp", "misc"];
+
+/// Fill in `androidboot.boot_devices=auto` and
+/// `androidboot.partition_map=auto` (a USB stick's name and controller
+/// depend on the machine): the boot disk is the one with a GPT partition
+/// named "super", preferring the disk Limine loaded the kernel from. Its
+/// controller's PCI prefix (what ueventd matches boot devices by,
+/// `pci0000:00/0000:00:14.0`) and "sda2,super;sda3,frp;sda4,misc" replace
+/// the two values. Every other hardware disk (the PC's own) becomes
+/// read-only. Must run after the disk drivers and before init.
+pub fn resolve_boot_disk() {
+    let cmdline = crate::boot::cmdline();
+    let auto = |w: &str| w == "androidboot.boot_devices=auto" || w == "androidboot.partition_map=auto";
+    if !cmdline.split_ascii_whitespace().any(auto) {
+        return;
+    }
+    let candidates: Vec<_> = all()
+        .into_iter()
+        .filter(|d| d.parent.is_none() && partitions_of(d).iter().any(|p| p.partname.as_deref() == Some("super")))
+        .collect();
+    let boot = crate::boot::boot_disk_guid();
+    let pick = candidates.iter().find(|d| boot.is_some() && gpt::disk_guid(d) == boot).or(candidates.first());
+    let Some(disk) = pick else {
+        log::error!("boot disk: no disk has a GPT partition named \"super\" (is the USB stick plugged in and detected?)");
+        return;
+    };
+    let path = disk.sysfs_path();
+    let parts: Vec<&str> = path.split('/').collect();
+    let pci = match parts.as_slice() {
+        ["devices", root, func, ..] if root.starts_with("pci") => format!("{root}/{func}"),
+        _ => {
+            log::warn!("boot disk: {} is not below a PCI device ({path})", disk.name);
+            String::new()
+        }
+    };
+    let mut map = Vec::new();
+    for p in partitions_of(disk) {
+        if let Some(n) = p.partname.as_deref().filter(|n| BOOT_PARTITIONS.contains(n)) {
+            map.push(format!("{},{n}", p.name));
+        }
+    }
+    map.sort();
+    let map = map.join(";");
+    let words: Vec<String> = cmdline
+        .split_ascii_whitespace()
+        .map(|w| match w {
+            "androidboot.boot_devices=auto" if !pci.is_empty() => format!("androidboot.boot_devices={pci}"),
+            "androidboot.partition_map=auto" => format!("androidboot.partition_map={map}"),
+            _ => w.into(),
+        })
+        .collect();
+    log::info!(
+        "boot disk: {} ({} MiB{}), boot device {pci}, partitions {map}",
+        disk.name,
+        disk.size() >> 20,
+        if boot.is_some() && gpt::disk_guid(disk) == boot { ", the one the kernel was loaded from" } else { "" }
+    );
+    crate::boot::set_cmdline(words.join(" "));
+    // The machine's own disks are not Android's: keep them read-only.
+    for d in all() {
+        let whole = d.parent.as_ref().and_then(Weak::upgrade).unwrap_or_else(|| d.clone());
+        // Hardware disks only (RAM disks and the like have no sysdev).
+        if !Arc::ptr_eq(&whole, disk) && whole.sysdev.is_some() {
+            if !d.read_only() {
+                log::info!("boot disk: {} is not on the boot disk, made read-only", d.name);
+            }
+            d.set_read_only(true);
+        }
     }
 }
 

@@ -59,11 +59,19 @@ impl Log for SerialLogger {
 
 static LOGGER: SerialLogger = SerialLogger;
 
+/// Install the logger: Debug in debug builds, Info otherwise, or what
+/// `loglevel=N` on the command line asks (Linux's console levels: 7
+/// debug, 6 info, 4 warnings, 3 errors).
 pub fn init() {
     log::set_logger(&LOGGER).expect("logger already set");
-    log::set_max_level(if cfg!(debug_assertions) {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
+    let level = crate::boot::cmdline().split_ascii_whitespace().find_map(|w| w.strip_prefix("loglevel=")?.parse::<u8>().ok());
+    log::set_max_level(match level {
+        Some(8..) => LevelFilter::Trace,
+        Some(7) => LevelFilter::Debug,
+        Some(5 | 6) => LevelFilter::Info,
+        Some(4) => LevelFilter::Warn,
+        Some(_) => LevelFilter::Error,
+        None if cfg!(debug_assertions) => LevelFilter::Debug,
+        None => LevelFilter::Info,
     });
 }

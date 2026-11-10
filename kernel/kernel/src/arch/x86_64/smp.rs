@@ -1,4 +1,6 @@
-//! Application processor (AP) bring-up via the Limine MP response.
+//! Application processor (AP) bring-up via the Limine MP response (which
+//! Limine builds from the ACPI MADT), cross-checked against the MADT as
+//! [`super::acpi`] read it.
 //!
 //! APs get their own stack, GDT/TSS, per-CPU area and the shared IDT and
 //! kernel page tables, enable their LAPIC and timer, then enter the
@@ -34,7 +36,16 @@ pub fn start_aps() {
         return;
     };
     let cpus = mp.cpus();
-    TOTAL.store(cpus.len(), Ordering::Release);
+    TOTAL.store(cpus.len().min(super::cpu::MAX_CPUS), Ordering::Release);
+    if let Some(a) = super::acpi::get() {
+        let missing: alloc::vec::Vec<u32> = a.cpus.iter().copied().filter(|id| !cpus.iter().any(|c| c.lapic_id == *id)).collect();
+        if !missing.is_empty() {
+            log::warn!("SMP: the MADT lists {} CPUs, the bootloader reports {}; missing LAPIC ids {missing:?}", a.cpus.len(), cpus.len());
+        }
+    }
+    if cpus.len() > super::cpu::MAX_CPUS {
+        log::warn!("SMP: {} CPUs, only the first {} are used", cpus.len(), super::cpu::MAX_CPUS);
+    }
     log::info!(
         "SMP: {} CPU(s), BSP LAPIC id {}, x2APIC {}",
         cpus.len(),
@@ -42,7 +53,7 @@ pub fn start_aps() {
         mp.flags & limine::mp::MP_FLAG_X2APIC as u32 != 0
     );
 
-    let aps = cpus.iter().filter(|c| c.lapic_id != mp.bsp_lapic_id);
+    let aps = cpus.iter().filter(|c| c.lapic_id != mp.bsp_lapic_id).take(super::cpu::MAX_CPUS - 1);
     for (index, info) in (1..).zip(aps) {
         let mut pc = Box::new(PerCpu::new(index, info.lapic_id));
         pc.boot_stack_top = cpu::alloc_stack(cpu::AP_STACK_SIZE);
@@ -51,17 +62,14 @@ pub fn start_aps() {
     }
 
     let deadline = time::ticks() + time::HZ;
-    while online_cpus() < cpus.len() && time::ticks() < deadline {
+    let want = cpus.len().min(super::cpu::MAX_CPUS);
+    while online_cpus() < want && time::ticks() < deadline {
         crate::arch::wait_for_interrupt();
     }
-    if online_cpus() < cpus.len() {
-        log::error!(
-            "SMP: only {}/{} CPUs came online",
-            online_cpus(),
-            cpus.len()
-        );
+    if online_cpus() < want {
+        log::error!("SMP: only {}/{want} CPUs came online", online_cpus());
     } else {
-        log::info!("SMP: all {} CPUs online", cpus.len());
+        log::info!("SMP: all {want} CPUs online");
     }
 }
 

@@ -1,5 +1,6 @@
 //! x86_64 platform: descriptor tables, interrupts, Local APIC, SMP.
 
+pub mod acpi;
 pub mod apic;
 pub mod cpu;
 pub mod entry;
@@ -26,15 +27,18 @@ pub fn init_bsp_early() {
 /// the periodic timer. Enables interrupts.
 pub fn init_bsp_late() {
     pic::disable();
+    acpi::init();
     apic::init_bsp();
     interrupts::enable();
 }
 
-/// Power the machine off (QEMU/ACPI PM1a on q35 and PIIX4), falling back
-/// to the `isa-debug-exit` device, then halting.
+/// Power the machine off: ACPI S5 from the tables, then QEMU's PM1a on
+/// q35 and PIIX4, falling back to the `isa-debug-exit` device, then
+/// halting.
 pub fn power_off() -> ! {
     use x86_64::instructions::port::Port;
     interrupts::disable();
+    acpi::power_off();
     unsafe {
         Port::<u16>::new(0x604).write(0x2000);
         Port::<u16>::new(0xb004).write(0x2000);
@@ -43,10 +47,12 @@ pub fn power_off() -> ! {
     halt_forever()
 }
 
-/// Reset the machine through the keyboard controller / port 0xcf9.
+/// Reset the machine through the FADT reset register, then port 0xcf9 /
+/// the keyboard controller.
 pub fn reboot() -> ! {
     use x86_64::instructions::port::Port;
     interrupts::disable();
+    acpi::reset();
     unsafe {
         Port::<u8>::new(0xcf9).write(0x06);
         Port::<u8>::new(0x64).write(0xfe);

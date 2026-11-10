@@ -1,6 +1,7 @@
 //! 16550 UART on COM1, used as the kernel console and log sink.
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
 use x86_64::instructions::port::Port;
@@ -57,8 +58,25 @@ impl Write for SerialPort {
 
 static COM1_PORT: Mutex<SerialPort> = Mutex::new(SerialPort::new(COM1));
 
+/// The kernel console goes to the UART (off without one, or with
+/// `serial=off` on the command line: a real 16550 with nothing attached
+/// would pace the log at 115200 baud).
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
 pub fn init() {
-    COM1_PORT.lock().init();
+    let mut port = COM1_PORT.lock();
+    // A UART keeps what is written to its scratch register.
+    port.outb(7, 0x5a);
+    if port.inb(7) != 0x5a {
+        ENABLED.store(false, Ordering::Relaxed);
+        return;
+    }
+    port.init();
+}
+
+/// Stop (or resume) logging to the UART.
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
 }
 
 /// Release the console lock unconditionally. Only for the panic path.
@@ -71,7 +89,10 @@ pub fn _print(args: fmt::Arguments) {
     // Interrupts off so an interrupt handler that prints cannot deadlock on
     // the lock held by the code it interrupted.
     without_interrupts(|| {
-        let _ = COM1_PORT.lock().write_fmt(args);
+        if ENABLED.load(Ordering::Relaxed) {
+            let _ = COM1_PORT.lock().write_fmt(args);
+        }
+        super::fbcon::write_fmt(args);
     });
 }
 

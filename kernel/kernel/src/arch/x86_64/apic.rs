@@ -81,27 +81,121 @@ pub fn init_bsp() {
         if x2apic { "x2APIC" } else { "xAPIC (MMIO)" }
     );
 
-    // Count LAPIC timer decrements (and TSC cycles) during 10 ms of PIT time.
+    // Count LAPIC timer decrements and TSC cycles against a reference
+    // clock: the HPET or ACPI PM timer (PCs whose 8254 is gated off),
+    // else 10 ms of PIT time.
     write(REG_TIMER_DIVIDE, TIMER_DIVIDE_BY_16);
     write(REG_LVT_TIMER, LVT_MASKED);
-    let mut tsc_start = 0;
-    let (elapsed, tsc_end) = pit::measure(
-        10,
-        || {
-            write(REG_TIMER_INITIAL, u32::MAX);
-            tsc_start = crate::time::rdtsc();
-        },
-        || (u32::MAX - read(REG_TIMER_CURRENT), crate::time::rdtsc()),
-    );
+    let pit = || {
+        let mut tsc_start = 0;
+        let (elapsed, tsc_end) = pit::measure(
+            10,
+            || {
+                write(REG_TIMER_INITIAL, u32::MAX);
+                tsc_start = crate::time::rdtsc();
+            },
+            || (u32::MAX - read(REG_TIMER_CURRENT), crate::time::rdtsc()),
+        )?;
+        Some(("PIT", elapsed as u64 * 100, (tsc_end - tsc_start) * 100))
+    };
+    // Last resort: what CPUID states (the LAPIC timer counts the core
+    // crystal clock on Intel CPUs that report it).
+    let stated = || {
+        let crystal = cpuid_crystal_hz()?;
+        Some(("CPUID crystal clock", crystal / 16, cpuid_tsc_hz()?))
+    };
+    let Some((source, lapic_hz, mut tsc_hz)) = calibrate_acpi(20).or_else(pit).or_else(stated) else {
+        panic!("no clock to calibrate the timers against (no HPET, ACPI PM timer, PIT or CPUID crystal frequency)");
+    };
     write(REG_TIMER_INITIAL, 0);
-    crate::time::set_tsc_hz((tsc_end - tsc_start) * 100);
-    let per_tick = (elapsed as u64 * 100 / HZ) as u32;
+    // The TSC frequency the CPU states (Intel leaf 0x15/0x16) is exact;
+    // prefer it when the measurement is off by more than 2%.
+    if let Some(stated) = cpuid_tsc_hz()
+        && tsc_hz.abs_diff(stated) > stated / 50
+    {
+        log::warn!("TSC: measured {} kHz against the {source}, CPUID says {} kHz; using CPUID", tsc_hz / 1000, stated / 1000);
+        tsc_hz = stated;
+    }
+    crate::time::set_tsc_hz(tsc_hz);
+    let per_tick = (lapic_hz / HZ).clamp(1, u32::MAX as u64) as u32;
     TIMER_COUNT.store(per_tick, Ordering::Relaxed);
     log::info!(
-        "LAPIC timer: {} kHz bus/16, {HZ} Hz tick = {per_tick} counts",
-        elapsed as u64 / 10
+        "LAPIC timer: {} kHz bus/16 (calibrated against the {source}), {HZ} Hz tick = {per_tick} counts",
+        lapic_hz / 1000
     );
     start_timer();
+}
+
+/// Measure the LAPIC timer (divide by 16) and TSC rates over `ms`
+/// milliseconds of HPET or ACPI PM timer time: (source, LAPIC Hz, TSC Hz).
+fn calibrate_acpi(ms: u64) -> Option<(&'static str, u64, u64)> {
+    // A reference: (name, read the counter, counter ticks to ns).
+    let (name, now, to_ns): (&str, &dyn Fn() -> u64, &dyn Fn(u64, u64) -> u64);
+    let hpet = super::acpi::hpet();
+    let pm = super::acpi::pm_timer();
+    let hpet_now;
+    let hpet_ns;
+    let pm_now;
+    let pm_ns;
+    if let Some((base, period_fs)) = hpet {
+        hpet_now = move || unsafe { core::ptr::read_volatile((base + 0xf0) as *const u64) };
+        hpet_ns = move |a: u64, b: u64| (b.wrapping_sub(a) as u128 * period_fs as u128 / 1_000_000) as u64;
+        (name, now, to_ns) = ("HPET", &hpet_now, &hpet_ns);
+    } else if let Some((_, mask)) = pm {
+        pm_now = || super::acpi::pm_timer().map_or(0, |t| t.0 as u64);
+        pm_ns = move |a: u64, b: u64| (b.wrapping_sub(a) & mask as u64) * 1_000_000_000 / super::acpi::PM_TIMER_HZ;
+        (name, now, to_ns) = ("ACPI PM timer", &pm_now, &pm_ns);
+    } else {
+        return None;
+    }
+    let t0 = now();
+    write(REG_TIMER_INITIAL, u32::MAX);
+    let tsc0 = crate::time::rdtsc();
+    let target = ms * 1_000_000;
+    loop {
+        let t = now();
+        if to_ns(t0, t) >= target {
+            break;
+        }
+        if crate::time::rdtsc().wrapping_sub(tsc0) > 1 << 34 {
+            log::warn!("{name}: does not count, not used for calibration");
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+    let lapic = u32::MAX - read(REG_TIMER_CURRENT);
+    let tsc1 = crate::time::rdtsc();
+    let ns = to_ns(t0, now()).max(1);
+    let per_s = |n: u64| (n as u128 * 1_000_000_000 / ns as u128) as u64;
+    Some((name, per_s(lapic as u64), per_s(tsc1 - tsc0)))
+}
+
+/// The core crystal clock from CPUID leaf 0x15 (None under a hypervisor
+/// or when unstated).
+fn cpuid_crystal_hz() -> Option<u64> {
+    use core::arch::x86_64::__cpuid;
+    if __cpuid(1).ecx & (1 << 31) != 0 || __cpuid(0).eax < 0x15 {
+        return None;
+    }
+    Some(__cpuid(0x15).ecx as u64).filter(|&hz| hz != 0)
+}
+
+/// The TSC frequency from CPUID leaf 0x15 (crystal clock x ratio), or the
+/// base frequency of leaf 0x16; None under a hypervisor or when unstated.
+fn cpuid_tsc_hz() -> Option<u64> {
+    use core::arch::x86_64::__cpuid;
+    let max = __cpuid(0).eax;
+    if __cpuid(1).ecx & (1 << 31) != 0 || max < 0x15 {
+        return None;
+    }
+    let l15 = __cpuid(0x15);
+    if l15.eax != 0 && l15.ebx != 0 && l15.ecx != 0 {
+        return Some(l15.ecx as u64 * l15.ebx as u64 / l15.eax as u64);
+    }
+    if max >= 0x16 && __cpuid(0x16).eax & 0xffff != 0 {
+        return Some((__cpuid(0x16).eax & 0xffff) as u64 * 1_000_000);
+    }
+    None
 }
 
 /// Software-enable the executing CPU's LAPIC with all local interrupts masked.

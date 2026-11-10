@@ -134,6 +134,16 @@ pub fn register(sysdev: &str) {
     create(Kms::new(Output::Virtio(g)), "virtio_gpu", "virtio GPU", unique, sysdev);
 }
 
+/// Repaint the boot framebuffer from the current DRM state (skipped
+/// while a modeset or flip holds the device: it repaints anyway).
+pub fn redraw_boot_framebuffer() {
+    if let Some(d) = DEV.get()
+        && let Some(k) = d.kms.try_lock()
+    {
+        k.redraw_boot();
+    }
+}
+
 /// Without a virtio-gpu, drive the boot framebuffer (simpledrm) if the
 /// firmware left a 32 bpp linear one.
 pub fn register_boot_framebuffer() {

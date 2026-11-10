@@ -20,9 +20,18 @@ Limine hands over, and a QEMU monitor), then:
   copy and the pixel format conversion are right;
 - surfaceflinger and system_server keep running.
 
+With --usb (run-qemu.sh --usb-boot-test: OVMF boots Limine from the ESP of
+a USB stick image on a qemu-xhci, no virtio disks), also:
+- the kernel found the stick as an sd disk and resolved
+  androidboot.boot_devices/partition_map=auto to its controller and its
+  super/frp/misc partitions (the disk Limine loaded it from);
+- /dev/block/by-name/super is that disk's partition 2, below the xHCI
+  function in sysfs; no virtio-blk disk exists;
+- the USB keyboard and mouse are evdev devices (no virtio-input).
+
 Usage: aosp-fb-test.py [--boot-timeout SECS] [--log FILE] [--port PORT]
                        [--monitor SOCKET] [--out DIR] [--firmware UEFI|BIOS]
-                       [--size WxH] -- qemu-system-x86_64 ...
+                       [--size WxH] [--usb] -- qemu-system-x86_64 ...
 Exit status 0 iff every check passed.
 """
 import argparse
@@ -86,6 +95,7 @@ def main():
     ap.add_argument("--out", default=None, help="directory for the screenshots")
     ap.add_argument("--firmware", default="UEFI", help="what the kernel must report having booted from")
     ap.add_argument("--size", default="720x1280", help="the framebuffer mode")
+    ap.add_argument("--usb", action="store_true", help="AOSP boots from a USB stick (run-qemu.sh --usb-boot-test)")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
     a = ap.parse_args()
     cmd = a.qemu[1:] if a.qemu[:1] == ["--"] else a.qemu
@@ -107,6 +117,15 @@ def main():
         (f"booted from {a.firmware}", re.escape(f"firmware: {a.firmware}").encode()),
         (f"boot framebuffer {a.size}", re.escape(f"framebuffer: {a.size} 32 bpp").encode()),
         ("simpledrm drives it", re.escape(f"simpledrm: {a.size} boot framebuffer").encode() + rb" at 0x[0-9a-f]+ as card0"),
+    ]
+    if a.usb:
+        milestones += [
+            ("USB stick is an sd disk", rb"usb-storage: sd[a-z]: "),
+            ("boot disk resolved (the one Limine loaded the kernel from)",
+             rb"boot disk: sd[a-z] \(\d+ MiB, the one the kernel was loaded from\), boot device pci0000:00/0000:00:[0-9a-f.]+, "
+             rb"partitions sd[a-z]2,super;sd[a-z]3,frp;sd[a-z]4,misc"),
+        ]
+    milestones += [
         ("second stage", rb"init: init second stage started!"),
         ("zygote started", rb"init: \.\.\. started service 'zygote'"),
         ("adbd started", rb"init: \.\.\. started service 'adbd'"),
@@ -137,6 +156,20 @@ def main():
         _, out, _ = r.sh("ls -l /dev/dri/card0; readlink /sys/class/drm/card0")
         r.check(re.search(r"226,\s+0 .*card0", out) and "platform/simple-framebuffer.0/drm/card0" in out,
                 "card0 is the simple-framebuffer device", out.strip())
+        if a.usb:
+            _, out, _ = r.sh("readlink /dev/block/by-name/super; readlink /sys/block/sda; ls /sys/block")
+            lines = out.split()
+            r.check(lines[:1] == ["/dev/block/sda2"], "by-name/super is sda2", out.strip())
+            r.check(len(lines) > 1 and re.search(r"/usb\d+/\d+-\d+/\d+-\d+:1\.0/host\d+/target\d+:0:0/\d+:0:0:0/block/sda$", lines[1]),
+                    "sda is below the xHCI controller", out.strip())
+            r.check(not any(l.startswith("vd") for l in lines[2:]), "no virtio disk", out.strip())
+            _, out, _ = r.sh("cat /proc/cmdline")
+            r.check("androidboot.partition_map=sda2,super;sda3,frp;sda4,misc" in out
+                    and re.search(r"androidboot\.boot_devices=pci0000:00/0000:00:[0-9a-f.]+ ", out), "partition map filled in",
+                    out.strip()[:300])
+            _, out, _ = r.sh("getevent -p 2>/dev/null | grep name:")
+            r.check("QEMU QEMU USB Keyboard" in out and "QEMU QEMU USB Mouse" in out and "virtio" not in out.lower(),
+                    "USB keyboard and mouse, no virtio input", out.strip())
 
         # The graphics services, on the same software path as virtio-gpu.
         deadline = start + a.boot_timeout

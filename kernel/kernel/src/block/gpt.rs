@@ -71,6 +71,13 @@ pub fn parse(disk: &BlockDev) -> KResult<Vec<PartInfo>> {
     Ok(out)
 }
 
+/// The disk GUID of `disk`'s GPT header (on-disk byte order).
+pub fn disk_guid(disk: &BlockDev) -> Option<[u8; 16]> {
+    let mut hdr = [0u8; 512];
+    disk.read(SECTOR, &mut hdr).ok()?;
+    (&hdr[..8] == b"EFI PART").then(|| hdr[56..72].try_into().unwrap())
+}
+
 /// A slice of the parent disk.
 pub struct Partition {
     pub disk: Arc<dyn Backend>,

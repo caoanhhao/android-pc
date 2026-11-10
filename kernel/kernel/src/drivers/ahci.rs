@@ -19,7 +19,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 use super::pci::{self, CMD_BUS_MASTER, CMD_INTX_DISABLE, CMD_MEMORY, mmio_read32, mmio_write32, wait_until};
@@ -63,8 +63,6 @@ const ATA_FLUSH_CACHE_EXT: u8 = 0xea;
 
 const MAX_XFER: usize = 128 * 1024;
 const TIMEOUT_MS: u64 = 5000;
-
-static NEXT_DISK: AtomicU32 = AtomicU32::new(0);
 
 /// One port's DMA memory (one page: command list at 0, received FISes at
 /// 1 KiB, the command table at 2 KiB) and the bounce buffer.
@@ -297,8 +295,7 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
             log::warn!("ahci: port {i}: {model}: no LBA48, skipped");
             continue;
         }
-        let n = NEXT_DISK.fetch_add(1, Ordering::Relaxed);
-        let name = format!("sd{}", (b'a' + (n % 26) as u8) as char);
+        let (n, name) = block::next_sd();
         log::info!("ahci: port {i}: {name}: {model} (serial {serial}), {sectors} sectors");
         let pci_dir = pci_dir.get_or_insert_with(|| pci::sysfs_dir(d, "ahci")).clone();
         let scsi = format!("{pci_dir}/ata{}/host{n}/target{n}:0:0/{n}:0:0:0", i + 1);
