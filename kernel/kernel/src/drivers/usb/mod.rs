@@ -1,7 +1,10 @@
 //! USB: the xHCI host controller (PCI class 0c.03.30), polled; HID
 //! boot-protocol keyboards and mice ([`hid`]), which become evdev input
 //! devices; hubs ([`hub`]); and mass storage ([`storage`]: Bulk-Only
-//! Transport with SCSI commands), which becomes sd disks.
+//! Transport with SCSI commands), which becomes sd disks; USB video
+//! class cameras ([`uvc`], V4L2 /dev/videoN) and USB audio class
+//! microphones ([`uac`], ALSA capture), streaming over isochronous
+//! endpoints ([`isoch`]).
 //!
 //! Bring-up: BIOS hand-off (USB legacy support capability), halt and
 //! reset, device context base array (with scratchpad buffers if the
@@ -37,7 +40,10 @@
 pub mod btusb;
 pub mod hid;
 pub mod hub;
+pub mod isoch;
 pub mod storage;
+pub mod uac;
+pub mod uvc;
 
 use alloc::format;
 use alloc::string::String;
@@ -123,9 +129,10 @@ const SPEED_SUPER: u32 = 4;
 
 /// TRBs per ring page; the last one is the link back.
 const RING_TRBS: usize = 256;
-/// Event ring entries (one segment of four pages): room for a second of
-/// 1 kHz reports from several devices if the soft interrupt is late.
-const EVENT_TRBS: usize = 1024;
+/// Event ring entries (one segment of sixteen pages): room for a second
+/// of 1 kHz reports from several devices, or half a second of a camera's
+/// 8000 isochronous completions a second, if the soft interrupt is late.
+const EVENT_TRBS: usize = 4096;
 /// Interrupt transfers kept posted per endpoint: 64 ms of a 1 kHz mouse.
 const POSTED: usize = 64;
 /// Bytes of report buffer per ring slot.
@@ -253,6 +260,14 @@ struct HidEp {
     recovering: bool,
 }
 
+/// A configured device with isochronous functions (a camera and its
+/// microphone): its EP0 and the endpoint contexts enabled (bit = DCI).
+/// Taken out while a request runs on it.
+struct MediaDev {
+    dev: UsbDev,
+    enabled: u32,
+}
+
 /// What a transfer event asks of the controller.
 enum After {
     Nothing,
@@ -360,6 +375,9 @@ struct Xhci {
     /// Disks found during bring-up, registered once the controller is
     /// reachable through [`CTRLS`].
     new_disks: Vec<storage::NewDisk>,
+    /// Devices with isochronous functions, and their streaming endpoints.
+    media: Vec<Option<MediaDev>>,
+    isochs: Vec<isoch::IsochEp>,
     /// Bluetooth controllers ([`btusb`]).
     bts: Vec<btusb::Bt>,
     /// Those found during bring-up, handed to the Bluetooth core once the
@@ -561,7 +579,9 @@ impl Xhci {
                     After::Error(code) => self.hid_error(i, code),
                 }
             } else {
-                self.bt_dispatch(ev);
+                if !self.isoch_event(slot, dci, ev) {
+                    self.bt_dispatch(ev);
+                }
             }
         }
     }
@@ -951,12 +971,14 @@ impl Xhci {
         let is_hub = dev_class == 9 || ifaces.iter().any(|f| f.class.0 == 9);
         let msd = ifaces.iter().position(|f| f.alt == 0 && f.class == (8, 6, 0x50));
         let hid_any = ifaces.iter().any(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1 && matches!(f.class.2, 1 | 2));
+        // A camera (video control) or a microphone (audio streaming).
+        let media = ifaces.iter().any(|f| f.alt == 0 && (f.class.0, f.class.1) == (14, 1) || (f.class.0, f.class.1) == (1, 2));
         let bt = ifaces.iter().position(|f| f.alt == 0 && f.class == (0xe0, 1, 1));
-        if !is_hub && msd.is_none() && !hid_any && bt.is_none() {
+        if !is_hub && msd.is_none() && !hid_any && bt.is_none() && !media {
             if ifaces.iter().any(|f| f.class.0 == 8) {
                 log::warn!("xhci: {name}: mass storage without SCSI Bulk-Only (UAS-only?), not supported");
             } else {
-                log::info!("xhci: {name}: no hub, disk, keyboard or mouse interface, left unconfigured");
+                log::info!("xhci: {name}: no hub, disk, keyboard, mouse, camera or microphone interface, left unconfigured");
             }
             return true;
         }
@@ -983,11 +1005,31 @@ impl Xhci {
                 (false, false) => format!("{manufacturer} {prod_name}"),
                 (true, false) => prod_name.clone(),
                 (false, true) => manufacturer.clone(),
-                (true, true) => format!("HID {vendor:04x}:{product:04x}"),
+                (true, true) => format!("{} {vendor:04x}:{product:04x}", if media { "USB" } else { "HID" }),
             };
-            self.hid(d, &ifaces, &usbdev, &name, [vendor, product, version]);
+            if media {
+                self.media_bind(d, &cfg, &usbdev, &name);
+            } else {
+                self.hid(d, &ifaces, &usbdev, &name, [vendor, product, version]);
+            }
         }
         true
+    }
+
+    /// Bind the camera and microphone functions of a configured device.
+    fn media_bind(&mut self, d: UsbDev, cfg: &[u8], usbdev: &str, name: &str) {
+        let path = d.topo.path.clone();
+        let bus = self.bus;
+        let bus_info = format!("usb-{}-{path}", self.pci_dir.rsplit('/').next().unwrap_or(""));
+        let idx = self.media.len();
+        self.media.push(Some(MediaDev { dev: d, enabled: 0 }));
+        let dir = |n: u8| format!("{usbdev}/{bus}-{path}:1.{n}");
+        if let Some(f) = uvc::parse(cfg) {
+            self.uvc_bind(idx, f, name, &bus_info, &dir);
+        }
+        if let Some(f) = uac::parse(cfg) {
+            self.uac_bind(idx, f, name, &dir);
+        }
     }
 
     /// Set up the boot-protocol keyboards and mice of a configured device.
@@ -1120,6 +1162,9 @@ pub fn softirq() {
         for x in ctrls.iter_mut().filter(|x| !x.hids.is_empty()) {
             x.status();
         }
+        for x in ctrls.iter_mut() {
+            x.isoch_status();
+        }
     }
 }
 
@@ -1247,6 +1292,8 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         hid_devs: Vec::new(),
         disks: Vec::new(),
         new_disks: Vec::new(),
+        media: Vec::new(),
+        isochs: Vec::new(),
         bts: Vec::new(),
         new_bts: Vec::new(),
         pci_dir,

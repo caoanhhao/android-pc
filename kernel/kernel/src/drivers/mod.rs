@@ -5,7 +5,8 @@
 //! one, the boot framebuffer drives the same DRM device) and
 //! virtio-input (with evdev and uinput on top), dma-bufs, the system
 //! dma-heap and sync files; real-hardware-class controllers: NVMe and
-//! AHCI disks, xHCI USB with HID boot keyboards and mice, the Realtek
+//! AHCI disks, xHCI USB with HID boot keyboards and mice, mass storage,
+//! UVC cameras (V4L2) and UAC microphones (ALSA capture), the Realtek
 //! RTL8125 2.5 GbE card; HD Audio (ALSA PCM and control devices); PC
 //! platform devices (CMOS RTC, ACPI power button, CPU thermal/cpufreq,
 //! AC power); Bluetooth controllers on xHCI USB (`bluetooth`, on
@@ -27,6 +28,7 @@ pub mod hvc;
 pub mod firmware;
 pub mod input;
 pub mod iwlwifi;
+pub mod media;
 pub mod nvme;
 pub mod pci;
 pub mod rfkill;
@@ -47,8 +49,10 @@ pub fn init() {
     rtl8125::init();
     nvme::init();
     ahci::init();
-    usb::init();
+    // Sound before USB: HD Audio is card 0, USB microphones follow.
     sound::init();
+    usb::init();
+    media::init();
     drm::register_boot_framebuffer();
     crate::net::inet::configure_static();
     // Wi-Fi links after the Ethernet ones (configure_static picks the

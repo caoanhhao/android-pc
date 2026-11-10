@@ -18,6 +18,9 @@ itself with status 0 (ACPI S5; the isa-debug-exit fallback gives 33).
 The VM has no RTL8125 (QEMU has no model of it): the kernel must log
 "rtl8125: no RTL8125 found" and nothing else from that driver (E4: the
 driver probes cleanly without its device).
+The kernel's isochronous OUT self-test on the usb-audio speaker (E8,
+usb.isoch_selftest=1) must report at least 200 TDs in its 300 ms and no
+errors.
 
 Usage: hw-test.py --monitor SOCKET [--log FILE] [--timeout SECS] -- qemu-system-x86_64 ...
 Exit status 0 iff ktest-init reports "END ktest-init pass=N fail=0" with
@@ -89,6 +92,7 @@ def main():
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     end_line = None
     injected = False
+    isoch = None
     rtl_absent = False
     rtl_other = []
     deadline = time.time() + a.timeout
@@ -108,6 +112,9 @@ def main():
             if b"E1-HID-READY" in line and not injected:
                 injected = True
                 threading.Thread(target=inject, args=(a.monitor,), daemon=True).start()
+            m = re.search(rb"isoch OUT self-test: (\d+) TDs in \d+ ms \(\d+ bytes each\), (\d+) errors", line)
+            if m:
+                isoch = (int(m.group(1)), int(m.group(2)))
             if b"rtl8125: no RTL8125 found" in line:
                 rtl_absent = True
             elif b"rtl8125:" in line:
@@ -132,6 +139,10 @@ def main():
     if code != 0:
         print("hw-test: the power off did not end QEMU through ACPI S5", file=sys.stderr)
         return 1
+    if isoch is None or isoch[0] < 200 or isoch[1] != 0:
+        print(f"hw-test: isochronous self-test FAILED: {isoch} (TDs, errors)", file=sys.stderr)
+        return 1
+    print(f"hw-test: isochronous self-test: {isoch[0]} TDs, no errors")
     return 0 if failed == 0 and passed > 0 else 1
 
 

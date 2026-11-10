@@ -17,6 +17,13 @@ sys.boot_completed=1 the way aosp-boot-test.py does. Then:
   AudioTrack tone; AudioFlinger mixes it, the Cuttlefish primary audio
   HAL (StreamPrimary, tinyalsa on card 0 device 0) writes it to the
   kernel, and the WAV file gets a loud ~440 Hz signal.
+- recording (E8; the VM boots with testcam=1): the kernel's test
+  microphone is card 1, and card 0, which has no capture of its own, gets
+  pcmC0D0c recording from it, as a USB webcam's microphone does on a PC
+  with HD Audio. tinycap on card 0 device 0 records its 1 kHz tone, and
+  apps/hello's RecordActivity (AudioRecord, MIC) gets it through
+  AudioFlinger and the primary HAL's "Built-In Mic", which opens
+  pcmC0D0c.
 
 Usage: aosp-audio-test.py --wav FILE --apk FILE [--boot-timeout SECS]
                           [--log FILE] [--port PORT] -- qemu-system-x86_64 ...
@@ -249,6 +256,50 @@ def main():
         xr = len(re.findall(r"snd: pcmC0D0p underrun", klog))
         # One when the tone ends (the HAL stops feeding before standby).
         r.check(xr <= 2, f"no repeated underruns during HAL playback ({xr})")
+
+        # Recording (E8): card 0's capture is the test microphone (card 1).
+        klog = log_since(log, 0)
+        r.check(re.search(r"sound: card 0 \(.*\) has no capture: pcmC0D0c records from card 1", klog) is not None,
+                "card 0's pcmC0D0c records from the microphone card",
+                "\n".join(l for l in klog.splitlines() if "sound:" in l)[-600:])
+        _, out, _ = r.sh("ls -l /dev/snd")
+        r.check(re.search(r"^crw-rw---- 1 system audio 116,\s+24 .* pcmC0D0c$", out, re.M) is not None
+                and re.search(r"pcmC1D0c$", out, re.M) is not None, "/dev/snd/pcmC0D0c and pcmC1D0c", out.strip())
+        rc, out, err = r.sh("tinycap /data/local/tmp/cap.wav -D 0 -d 0 -c 1 -r 16000 -T 2", timeout=60)
+        cap = os.path.join(home, "cap.wav")
+        prc, _, perr = adbt.adb(a, "-s", a.serial, "pull", "/data/local/tmp/cap.wav", cap, timeout=60)
+        rms, freq = 0.0, 0.0
+        if prc == 0 and os.path.exists(cap):
+            with open(cap, "rb") as f:
+                raw = f.read()[44:]
+            s = [v[0] for v in struct.iter_unpack("<h", raw[: len(raw) // 2 * 2])]
+            half = s[len(s) // 2:]
+            if half:
+                rms = math.sqrt(sum(x * x for x in half) / len(half))
+                freq = sum(1 for i in range(1, len(half)) if (half[i - 1] < 0) != (half[i] < 0)) / 2 / (len(half) / 16000)
+        r.check(rc == 0 and rms > 2000 and 900 <= freq <= 1100, f"tinycap on card 0 device 0 records the 1 kHz test tone (rms {rms:.0f}, {freq:.0f} Hz)",
+                (out + err + perr).strip()[-400:])
+        r.sh("pm grant com.androidpc.hello android.permission.RECORD_AUDIO")
+        r.sh("logcat -c")
+        logoff = os.path.getsize(log)
+        rc, out, _ = r.sh("am start -W -n com.androidpc.hello/.RecordActivity", timeout=120)
+        r.check(rc == 0 and "Status: ok" in out, "am start RecordActivity", out.strip()[-300:])
+        lc = ""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            time.sleep(1)
+            _, lc, _ = r.sh("logcat -d -s AndroidPcHello:*")
+            if "RECORD_OK" in lc or "RECORD_FAIL" in lc:
+                break
+        m = re.search(r"RECORD_OK frames (\d+) rms (\d+) freq (\d+)", lc)
+        if m is None:
+            _, more, _ = r.sh("logcat -d -s AHAL_StreamAlsa:* AHAL_StreamPrimary:* AHAL_AlsaUtils:* alsa_device_proxy:* AudioFlinger:* AudioRecord:*")
+            lc += more
+        r.check(m is not None and int(m.group(2)) > 2000 and 900 <= int(m.group(3)) <= 1100,
+                "RecordActivity records the test tone through the HAL's Built-In Mic", lc.strip()[-600:])
+        klog = log_since(log, logoff)
+        r.check(re.search(r"sound: card 1: hw_params", klog) is not None, "the audio HAL opened the microphone's PCM",
+                "\n".join(l for l in klog.splitlines() if "sound:" in l or "snd:" in l)[-600:])
         adbt.adb(a, "disconnect", a.serial)
     finally:
         adbt.adb(a, "kill-server", timeout=20)

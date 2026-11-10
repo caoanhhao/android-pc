@@ -251,7 +251,8 @@ impl FileOps for ControlFile {
                 let mut v = [0u8; 4];
                 copy_in(arg, &mut v)?;
                 let cur = i32::from_le_bytes(v);
-                let next = c.pcms.lock().iter().map(|p| p.device as i32).filter(|&d| d > cur).min().unwrap_or(-1);
+                let caps: Vec<i32> = c.captures.lock().iter().map(|(d, _)| *d as i32).collect();
+                let next = c.pcms.lock().iter().map(|p| p.device as i32).chain(caps).filter(|&d| d > cur).min().unwrap_or(-1);
                 copy_out(arg, &next.to_le_bytes()).map(|_| 0)
             }
             // PCM_INFO
@@ -261,7 +262,14 @@ impl FileOps for ControlFile {
                 let device = u32::from_le_bytes(b[0..4].try_into().unwrap());
                 let subdevice = u32::from_le_bytes(b[4..8].try_into().unwrap());
                 let stream = i32::from_le_bytes(b[8..12].try_into().unwrap());
-                if stream != 0 || subdevice != 0 {
+                if subdevice != 0 {
+                    return Err(ENOENT);
+                }
+                if stream == 1 {
+                    let p = c.capture(device).ok_or(ENXIO)?;
+                    return copy_out(arg, &p.info()).map(|_| 0);
+                }
+                if stream != 0 {
                     return Err(ENOENT);
                 }
                 let p = c.pcm(device).ok_or(ENXIO)?;
