@@ -15,6 +15,9 @@ wired Ethernet on the board's Realtek RTL8125 2.5 GbE port: Android's
 EthernetService gets an address by DHCP, so DNS, the browser and `adb
 connect <address>:5555` should work. What does not: Wi-Fi and Bluetooth
 (Intel AX211), sound, the GPU's acceleration
+keyboards and mice (boot protocol), the Intel AX211's Bluetooth (on, scan,
+pair; see section 6). What does not: networking (no driver
+for the Intel I225-V / Wi-Fi, so no adb), sound, the GPU's acceleration
 (Android renders in software, SwiftShader), suspend, hot-plug (plug
 keyboard and mouse in before booting). `/data` is in RAM, so nothing
 persists between boots.
@@ -276,3 +279,57 @@ Common cases:
   the start of the log (the `S5` values and the tables) and hold the
   power button.
 - *The PC freezes once Android is idle*: add `idle=hlt` (deep C-states).
+
+## 7. Bluetooth (Intel AX211, phase E7)
+
+The board's AX211 Bluetooth sits on USB (`8087:0033`, full speed, root
+port 14 of the xHCI at 00:14.0). At boot the kernel downloads its
+firmware (`intel/ibt-0040-0041.sfi` and `.ddc` from linux-firmware,
+built into the kernel; the controller asks for `ibt-1040-0041`, which
+linux-firmware links to the same file) and hands the controller to
+Android's Bluetooth HAL as an H4 link on `/dev/hvc5`. In Android:
+Settings → Connected devices → Pair new device (Bluetooth turns on by
+itself after boot; the quick settings tile toggles it). Headphones
+(A2DP), phones, LE devices and Bluetooth keyboards/mice should pair
+(the stack creates those through `/dev/uhid`; the kernel log then shows
+`uhid: "<name>" 0005:vvvv:pppp: … input N`).
+Not supported: voice over Bluetooth (SCO/HFP audio, which needs the
+isochronous USB endpoints), anything after suspend, and pairings do not
+survive a reboot (`/data` is in RAM). The AX211's antennas must be
+screwed on the board's back panel, as for Linux.
+
+On screen (the kernel log; Pause/Break shows it over Android) the
+`bluetooth:` lines tell where it stands:
+
+1. `xhci: usb1-14: 8087:0033 class 0xe0 …`, then `bluetooth: usb1-14
+   8087:0033: … full speed` and `endpoints: events 81 (64 B), ACL in 82
+   out 02 (64 B)`.
+2. `bluetooth: intel: hardware variant 0x…, CNVi … CNVr …, bootloader
+   (build 38 19.40 …), …, OTP address XX:XX:…` (after a warm reboot it
+   may say `operational firmware` and skip the download).
+3. `downloading intel/ibt-1040-0041.sfi (721052 bytes, version 24-29.26,
+   boot address 0x100800) in 2909 commands`, then `download 25%` … `100%`,
+   `firmware loaded in N ms` (about 1–3 s), `firmware booted in N ms`.
+4. `DDC parameters: 2 of 2 records applied`, `running operational
+   firmware build …`, and `Intel controller ready in N ms (…), address
+   XX:XX:…`.
+5. `bluetooth: usb1-14 8087:0033 is hci0, on /dev/hvc5 (H4) for the
+   Bluetooth HAL`.
+6. Once Android turns Bluetooth on: `bluetooth: command 0x03/0x003 []`
+   (the HAL's HCI Reset), `bluetooth: event [0e, 04, 01, 03, 0c, 00]`,
+   then the stack's first commands and events, and every 10 s at most a
+   counters line `bluetooth: hci0: N commands, N ACL out, N events, N ACL
+   in, N failed commands, N dropped (HAL attached)`. Failed commands are
+   logged (`command 0x…/0x… failed, status 0x…`, the first 20).
+
+If it fails, photograph the `bluetooth:` lines: a red `Intel setup
+failed: …` line names the step (`no answer` to a command, `secure send
+k/2909: …`, `no firmware download result`, `firmware did not boot`,
+`firmware … is not built into the kernel` if the build host lacked
+linux-firmware), `transfer error` warnings give the xHCI completion code.
+
+Testing without the PC: `tools/run-qemu.sh --aosp-bt-test` runs AOSP's
+rootcanal (a software controller) on the host behind a virtio-console
+port, which the kernel treats like the USB controller; the firmware
+download is covered by the in-kernel tests (`--test`,
+`bluetooth_intel_download`, against a simulated Intel bootloader).

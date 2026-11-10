@@ -64,3 +64,5 @@ e1_hw
 # E9: PC platform devices (CMOS RTC, AC power supply, cpufreq, thermal, ACPI power button; restart and power off with run-qemu.sh --power-test)
 e9_platform
 e9_power
+# E7: Bluetooth HID (/dev/uhid with report descriptors; skipped without it)
+e7_uhid

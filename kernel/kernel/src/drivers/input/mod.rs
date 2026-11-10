@@ -1,5 +1,6 @@
 //! The input core: input devices, their evdev nodes (/dev/input/eventN,
-//! 13:64+N) and /dev/uinput (10:223, `uinput`).
+//! 13:64+N), /dev/uinput (10:223, `uinput`) and /dev/uhid (10:239, `uhid`,
+//! reports decoded by `hidrd`).
 //!
 //! A device ([`InputDev`]) is registered with its capabilities (name, id,
 //! property and event bits, absolute axis ranges) by a driver (virtio-input,
@@ -19,6 +20,8 @@
 //! gets events). Writing input_events to a node injects them (`sendevent`);
 //! LED and sound events also go to the driver ([`Sink`]).
 
+pub mod hidrd;
+pub mod uhid;
 pub mod uinput;
 
 use alloc::boxed::Box;

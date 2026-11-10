@@ -6,6 +6,10 @@
 //! That lets those HALs register their services, so system_server's
 //! `waitForDeclaredService` calls return; requests that need an answer
 //! from the host block (or fail with EAGAIN when non-blocking).
+//!
+//! Except `/dev/hvc5`, the Bluetooth HAL's H4 link, when there is a
+//! Bluetooth controller: reads and writes then go to
+//! [`super::bluetooth`] (termios still handled here).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -14,6 +18,7 @@ use spin::{Mutex, Once};
 
 use crate::errno::*;
 use crate::fs::file::{FileOps, OpenFile};
+use super::bluetooth;
 use crate::fs::poll::{POLLOUT, POLLWRNORM, WaitQueue};
 use crate::sched::{self, WaitMode};
 
@@ -62,10 +67,22 @@ fn port(minor: u32) -> &'static Port {
     })[minor as usize]
 }
 
-struct Hvc(u32);
+/// A port; the bool: it is the Bluetooth link.
+struct Hvc(u32, bool);
+
+impl Drop for Hvc {
+    fn drop(&mut self) {
+        if self.1 {
+            bluetooth::closed();
+        }
+    }
+}
 
 impl FileOps for Hvc {
-    fn read(&self, f: &OpenFile, _: &mut u64, _buf: &mut [u8]) -> KResult<usize> {
+    fn read(&self, f: &OpenFile, _: &mut u64, buf: &mut [u8]) -> KResult<usize> {
+        if self.1 {
+            return bluetooth::read(f.nonblock(), buf);
+        }
         if f.nonblock() {
             return Err(EAGAIN);
         }
@@ -75,6 +92,9 @@ impl FileOps for Hvc {
     }
 
     fn write(&self, _: &OpenFile, _: &mut u64, data: &[u8]) -> KResult<usize> {
+        if self.1 {
+            return bluetooth::write(data);
+        }
         Ok(data.len())
     }
 
@@ -102,10 +122,16 @@ impl FileOps for Hvc {
     }
 
     fn poll(&self, _: &OpenFile) -> u32 {
+        if self.1 {
+            return bluetooth::poll();
+        }
         POLLOUT | POLLWRNORM
     }
 
     fn wait_queue(&self, _: &OpenFile) -> Option<Arc<WaitQueue>> {
+        if self.1 {
+            return Some(bluetooth::wait_queue());
+        }
         Some(port(self.0).wq.clone())
     }
 
@@ -118,5 +144,9 @@ pub fn open(minor: u32) -> KResult<Box<dyn FileOps>> {
     if minor == 0 || minor >= HVC_PORTS {
         return Err(ENXIO);
     }
-    Ok(Box::new(Hvc(minor)))
+    let bt = minor == bluetooth::HVC_MINOR && bluetooth::present();
+    if bt {
+        bluetooth::opened();
+    }
+    Ok(Box::new(Hvc(minor, bt)))
 }

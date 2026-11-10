@@ -299,6 +299,7 @@ pub fn init() {
         ("loop-control", "loop-control", crate::block::LOOP_CONTROL_MINOR),
         ("hw_random", "hw_random", super::dev::HWRNG_MINOR),
         ("uinput", "uinput", crate::drivers::input::uinput::UINPUT_MINOR),
+        ("uhid", "uhid", crate::drivers::input::uhid::UHID_MINOR),
         ("userfaultfd", "userfaultfd", crate::mm::userfaultfd::USERFAULTFD_MINOR),
         ("ashmem", "ashmem", crate::drivers::ashmem::ASHMEM_MINOR),
         ("tun", "net/tun", crate::net::tun::TUN_MINOR),

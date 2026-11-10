@@ -8,7 +8,9 @@
 //! AHCI disks, xHCI USB with HID boot keyboards and mice, the Realtek
 //! RTL8125 2.5 GbE card; HD Audio (ALSA PCM and control devices); PC
 //! platform devices (CMOS RTC, ACPI power button, CPU thermal/cpufreq,
-//! AC power). Planned: more
+//! AC power); Bluetooth controllers on xHCI USB (`bluetooth`, on
+//! /dev/hvc5 for Android's HAL); a virtio-console port as an H4
+//! Bluetooth link (tests). Planned: more
 //! virtio (console).
 
 #[macro_use]
@@ -16,6 +18,7 @@ pub mod serial;
 pub mod ahci;
 pub mod ashmem;
 pub mod binder;
+pub mod bluetooth;
 pub mod dma_buf;
 pub mod drm;
 pub mod fbcon;
