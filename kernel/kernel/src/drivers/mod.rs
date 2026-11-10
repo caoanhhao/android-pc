@@ -5,7 +5,8 @@
 //! one, the boot framebuffer drives the same DRM device) and
 //! virtio-input (with evdev and uinput on top), dma-bufs, the system
 //! dma-heap and sync files; real-hardware-class controllers: NVMe and
-//! AHCI disks, xHCI USB with HID boot keyboards and mice. Planned: more
+//! AHCI disks, xHCI USB with HID boot keyboards and mice, the Realtek
+//! RTL8125 2.5 GbE card. Planned: more
 //! virtio (console).
 
 #[macro_use]
@@ -21,6 +22,7 @@ pub mod hvc;
 pub mod input;
 pub mod nvme;
 pub mod pci;
+pub mod rtl8125;
 pub mod usb;
 pub mod virtio;
 
@@ -31,6 +33,7 @@ pub fn init() {
     dma_buf::init();
     pci::init();
     virtio::init();
+    rtl8125::init();
     nvme::init();
     ahci::init();
     usb::init();
