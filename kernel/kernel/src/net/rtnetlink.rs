@@ -426,6 +426,7 @@ fn set_link(body: &[u8]) -> KResult<()> {
     let change = u32::from_le_bytes(body[12..16].try_into().unwrap());
     let a = attrs(&body[16..]);
     let mtu = a.iter().find(|(t, d)| *t == IFLA_MTU && d.len() == 4).map(|(_, d)| u32::from_le_bytes((*d).try_into().unwrap()));
+    let mac: Option<[u8; 6]> = a.iter().find(|(t, d)| *t == IFLA_ADDRESS && d.len() == 6).map(|(_, d)| (*d).try_into().unwrap());
     let name = a
         .iter()
         .find(|(t, _)| *t == IFLA_IFNAME)
@@ -447,6 +448,9 @@ fn set_link(body: &[u8]) -> KResult<()> {
                 return Err(EBUSY);
             }
             n.link_mut(idx).unwrap().name = new.clone();
+        }
+        if let Some(m) = mac {
+            n.set_mac(idx, m)?;
         }
         let l = n.link_mut(idx).unwrap();
         if let Some(m) = mtu {

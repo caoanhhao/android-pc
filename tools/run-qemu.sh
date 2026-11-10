@@ -64,6 +64,17 @@
 #                                     framework services (service list,
 #                                     dumpsys activity/window, pm path) and
 #                                     that system_server and zygote stay up
+#   tools/run-qemu.sh --aosp-wifi-test
+#                                     the boot test's machine plus the
+#                                     kernel's simulated Wi-Fi radio
+#                                     (wifisim=: a WPA2-Personal and an
+#                                     open access point) whose APs bridge
+#                                     to a second virtio-net card (00:09.0,
+#                                     QEMU user network 10.0.3.0/24):
+#                                     tools/aosp-wifi-test.py enables
+#                                     Wi-Fi, scans, connects from the
+#                                     framework (`cmd wifi`), checks DHCP
+#                                     and pings the gateway over wlan0 (E6)
 #   tools/run-qemu.sh --aosp-apk-test the boot test's machine plus a monitor:
 #                                     builds apps/hello (apps/hello/build.sh)
 #                                     and tools/aosp-apk-test.py checks the
@@ -199,6 +210,7 @@ while [[ $# -gt 0 ]]; do
         --aosp-gfx-test) mode=aosp-gfx-test ;;
         --aosp-input-test) mode=aosp-input-test ;;
         --aosp-boot-test) mode=aosp-boot-test ;;
+        --aosp-wifi-test) mode=aosp-wifi-test ;;
         --aosp-apk-test) mode=aosp-apk-test ;;
         --aosp-fb-test) mode=aosp-fb-test ;;
         --adb-port) adb_port="$2"; shift ;;
@@ -244,8 +256,8 @@ if [[ $mode == usb-boot-test ]]; then
 fi
 [[ -z $gpu_size ]] && gpu_size=720x1280
 [[ -z $density ]] && density=320
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -290,7 +302,7 @@ if [[ $mode == aosp-apk-test ]]; then
     # The APK under test, built from source (reproducible, a few seconds).
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -317,7 +329,9 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    big=0; [[ $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]] && big=1
+    big=0; [[ $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]] && big=1
+    # The simulated Wi-Fi access points and their uplink card (00:09.0).
+    [[ $mode == aosp-wifi-test ]] && append+=" wifisim=AndroidPC-WPA2:androidpc123@6,AndroidPC-Open@36 wifisim.uplink=00:09.0"
     [[ $big == 1 && $timeout == 300 ]] && timeout=900
     [[ $big == 1 && $mem == 2G ]] && mem=6G
     [[ $big == 1 && $smp == 4 ]] && smp=6
@@ -514,6 +528,7 @@ if [[ $net == 1 ]]; then
     fwd=""
     [[ -n $adb_port ]] && fwd=",hostfwd=tcp:127.0.0.1:$adb_port-:5555"
     args+=(-netdev "user,id=net0$fwd" -device "virtio-net-pci,netdev=net0,addr=0x3")
+    [[ $mode == aosp-wifi-test ]] && args+=(-netdev "user,id=wifi0,net=10.0.3.0/24" -device "virtio-net-pci,netdev=wifi0,addr=0x9,mac=52:54:00:12:34:99")
 fi
 
 if [[ $mode == hw-test ]]; then
@@ -596,6 +611,16 @@ elif [[ $mode == aosp-boot-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP boot test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-wifi-test ]]; then
+    log="$work/aosp-wifi-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 600)) python3 "$ROOT/tools/aosp-wifi-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP Wi-Fi test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == aosp-apk-test ]]; then
     log="$work/aosp-apk-test.log"

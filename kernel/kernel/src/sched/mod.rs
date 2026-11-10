@@ -292,6 +292,10 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::drivers::usb::softirq();
         }
+        if crate::net::wireless::pending() {
+            interrupts::enable();
+            crate::net::wireless::softirq();
+        }
         if process::ptimer::pending() {
             interrupts::enable();
             process::ptimer::run_due();
@@ -323,6 +327,7 @@ pub fn timer_interrupt(user: bool) {
         crate::net::inet::tick();
         crate::drivers::virtio::input::tick();
         crate::drivers::usb::tick();
+        crate::net::wireless::tick();
         expire_sleepers();
         timer::run_expired();
     }

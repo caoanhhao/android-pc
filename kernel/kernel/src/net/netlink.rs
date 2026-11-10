@@ -8,6 +8,8 @@
 //!   DEVPATH=...\0SUBSYSTEM=...\0<uevent file lines>\0SEQNUM=n\0".
 //! - NETLINK_ROUTE requests are answered by `net::rtnetlink`.
 //! - NETLINK_NETFILTER requests succeed silently (an ack when asked).
+//! - NETLINK_GENERIC requests are answered by `net::genl` (nlctrl,
+//!   nl80211).
 //! - Every other protocol (SELINUX, AUDIT, ...) is a stub: binds
 //!   work, requests to the kernel are answered with NLMSG_DONE (dumps) or
 //!   an NLMSG_ERROR ack (error 0 when NLM_F_ACK is set, else EOPNOTSUPP),
@@ -293,6 +295,10 @@ impl NetlinkSocket {
                 for r in replies {
                     self.deliver(Msg { data: r, portid: 0, groups: 0, cred: KERNEL_CRED });
                 }
+            } else if flags & NLM_F_REQUEST != 0 && self.protocol == super::genl::NETLINK_GENERIC {
+                for r in super::genl::request(&data[off..off + len], me) {
+                    self.deliver(Msg { data: r, portid: 0, groups: 0, cred: KERNEL_CRED });
+                }
             } else if flags & NLM_F_REQUEST != 0
                 && self.protocol == NETLINK_NETFILTER
                 && flags & (NLM_F_ACK | NLM_F_DUMP) == 0
@@ -386,6 +392,15 @@ pub fn multicast(protocol: u32, groups: u32, msg: &[u8]) {
         if s.protocol == protocol && s.groups() & groups != 0 {
             s.deliver(Msg { data: msg.to_vec(), portid: 0, groups, cred: KERNEL_CRED });
         }
+    }
+}
+
+/// Send a kernel message to the socket of `protocol` bound to `portid`;
+/// false if there is none or its queue is full.
+pub fn unicast(protocol: u32, portid: u32, msg: &[u8]) -> bool {
+    match live().into_iter().find(|s| s.protocol == protocol && s.inner.lock().portid == portid) {
+        Some(s) => s.deliver(Msg { data: msg.to_vec(), portid: 0, groups: 0, cred: KERNEL_CRED }),
+        None => false,
     }
 }
 

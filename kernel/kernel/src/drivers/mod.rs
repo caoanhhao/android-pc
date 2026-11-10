@@ -18,9 +18,12 @@ pub mod drm;
 pub mod fbcon;
 mod font;
 pub mod hvc;
+pub mod firmware;
 pub mod input;
+pub mod iwlwifi;
 pub mod nvme;
 pub mod pci;
+pub mod rfkill;
 pub mod usb;
 pub mod virtio;
 
@@ -36,4 +39,8 @@ pub fn init() {
     usb::init();
     drm::register_boot_framebuffer();
     crate::net::inet::configure_static();
+    // Wi-Fi links after the Ethernet ones (configure_static picks the
+    // last Ethernet card).
+    iwlwifi::init();
+    crate::net::wireless::init();
 }

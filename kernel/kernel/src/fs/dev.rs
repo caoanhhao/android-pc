@@ -24,6 +24,7 @@
 //! | /dev/input/eventN | 13:64+N   | evdev (`drivers::input`)             |
 //! | /dev/uinput     | 10:223      | uinput (`drivers::input::uinput`)    |
 //! | /dev/net/tun    | 10:200      | tun links without traffic (`net::tun`) |
+//! | /dev/rfkill     | 10:242      | radio kill switches (`drivers::rfkill`) |
 //! | /dev/hvc1..17   | 229:N       | host-less virtio-console stand-ins (`drivers::hvc`) |
 //! | /dev/ashmem<boot_id> | 10:126 | ashmem regions (`drivers::ashmem`) |
 //! | /dev/userfaultfd | 10:124     | USERFAULTFD_IOC_NEW (`mm::userfaultfd`) |
@@ -134,6 +135,7 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (crate::block::MISC_MAJOR, crate::net::tun::TUN_MINOR) => return crate::net::tun::open(),
         (crate::block::MISC_MAJOR, crate::drivers::ashmem::ASHMEM_MINOR) => return crate::drivers::ashmem::open(),
         (crate::block::MISC_MAJOR, crate::mm::userfaultfd::USERFAULTFD_MINOR) => return crate::mm::userfaultfd::open_dev(),
+        (crate::block::MISC_MAJOR, crate::drivers::rfkill::RFKILL_MINOR) => return crate::drivers::rfkill::open(),
         (crate::block::MISC_MAJOR, minor) => return crate::block::open_misc(minor),
         _ => return Err(ENXIO),
     };

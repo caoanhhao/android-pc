@@ -285,6 +285,7 @@ pub fn init() {
         ("userfaultfd", "userfaultfd", crate::mm::userfaultfd::USERFAULTFD_MINOR),
         ("ashmem", "ashmem", crate::drivers::ashmem::ASHMEM_MINOR),
         ("tun", "net/tun", crate::net::tun::TUN_MINOR),
+        ("rfkill", "rfkill", crate::drivers::rfkill::RFKILL_MINOR),
     ] {
         add_char_device(&format!("devices/virtual/misc/{name}"), "misc", name, devname, crate::block::MISC_MAJOR, minor);
     }

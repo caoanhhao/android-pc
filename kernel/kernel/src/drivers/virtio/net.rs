@@ -190,6 +190,12 @@ pub fn probe(t: Transport, sysdev: alloc::string::String) {
     RX_LAST[card].store(dev.rx.last_used() as u64, Ordering::Relaxed);
     RX_USED_ADDR[card].store(dev.rx.used_idx_addr(), Ordering::Release);
     CARDS.store(card as u64 + 1, Ordering::Release);
+    // The simulated Wi-Fi access points' uplink (`wifisim.uplink=`) is
+    // not a link of its own.
+    if crate::net::wireless::hwsim::uplink_slot().is_some_and(|s| sysdev.contains(s)) {
+        crate::net::wireless::hwsim::set_uplink(Box::new(dev));
+        return;
+    }
     log::info!(
         "virtio-net: eth{card} {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, {}",
         mac[0],
