@@ -108,8 +108,8 @@
 #                                     nvme0n1) and on an AHCI SATA port
 #                                     (00:05.0, sda), a qemu-xhci (00:06.0)
 #                                     with the same disk as usb-storage
-#                                     (sdb), a usb-hub with the usb-kbd
-#                                     behind it, and a usb-mouse; no virtio
+#                                     (sdb), a usb-hub with the usb-kbd and
+#                                     usb-mouse behind it; no virtio
 #                                     disks or input; ktest-init runs c2_fs
 #                                     (over NVMe) and e1_hw, and
 #                                     tools/hw-test.py types into the USB
@@ -273,7 +273,7 @@ if [[ $mode == hw-test ]]; then
              -drive "file=$img,format=raw,if=none,id=hwusb,snapshot=on,file.locking=off"
              -device "usb-storage,bus=hwxhci.0,port=1,drive=hwusb,serial=RUSTPCUSB0"
              -device "usb-hub,bus=hwxhci.0,port=2"
-             -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=3")
+             -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=2.3")
     qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
     [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi

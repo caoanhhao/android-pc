@@ -2,7 +2,7 @@
 //! (run-qemu.sh --hw-test): the C2 test disk on an NVMe controller
 //! (nvme0n1) and on an AHCI SATA port (sda), a USB keyboard and mouse on
 //! an xHCI controller; the same disk as a USB mass storage device (sdb)
-//! and the keyboard behind a USB hub.
+//! and the keyboard and mouse behind a USB hub.
 //!
 //! Disks: nodes and device numbers (NVMe on blkext 259:n, SATA 8:16n+p),
 //! sysfs paths below the controller's PCI function, GPT partitions on
@@ -259,6 +259,9 @@ fn hid() {
     ioctl(kbd, eioc_read(0x07, 64), phys.as_mut_ptr() as usize);
     // Behind the hub on root port 1 of usb2... as QEMU numbers them.
     check!(cfield(&phys).starts_with(b"usb-0000:00:06.0-") && contains(cfield(&phys), b".1/input0"), "keyboard_phys_behind_hub", "{}", Bytes(cfield(&phys)));
+    let mut mphys = [0u8; 64];
+    ioctl(mouse, eioc_read(0x07, 64), mphys.as_mut_ptr() as usize);
+    check!(cfield(&mphys).starts_with(b"usb-0000:00:06.0-") && contains(cfield(&mphys), b".3/input0"), "mouse_phys_behind_hub", "{}", Bytes(cfield(&mphys)));
 
     println!("E1-HID-READY");
     let fds = [kbd, mouse];

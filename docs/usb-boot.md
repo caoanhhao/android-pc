@@ -122,10 +122,16 @@ send:
 2. **Where it stopped**: firmware menu without a `UEFI:` entry for the
    stick, Limine menu, black screen without text, the kernel log
    (which last line), boot animation (for how long), launcher.
-3. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
+3. The `xhci:` lines: every connected root port (`usb1 port N (USB 2):
+   connected`), each device's speed, slot, route and TT, its VID:PID and
+   interfaces (`if0 alt 0 class 03/01/01 …`), what got bound (`if2 bound
+   as Mouse`) and the first reports a keyboard or mouse sends (`report
+   [..]`, press a key and move the mouse once Android is up, then
+   Pause/Break to show the log).
+4. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
    especially `xhci:`, `usb-storage:`, `boot disk:`, `SMP:`, `acpi:`,
    `simpledrm:`.
-4. Which USB port the stick was in (rear/front, USB 2 black or USB 3
+5. Which USB port the stick was in (rear/front, USB 2 black or USB 3
    blue/red/teal), what keyboard and mouse were plugged in and where, and
    the monitor's resolution.
 

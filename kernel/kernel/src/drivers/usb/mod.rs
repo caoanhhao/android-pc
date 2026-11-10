@@ -90,6 +90,7 @@ const TRB_DATA: u32 = 3;
 const TRB_STATUS: u32 = 4;
 const TRB_LINK: u32 = 6;
 const TRB_ENABLE_SLOT: u32 = 9;
+const TRB_DISABLE_SLOT: u32 = 10;
 const TRB_ADDRESS_DEVICE: u32 = 11;
 const TRB_CONFIGURE_EP: u32 = 12;
 const TRB_EVALUATE_CTX: u32 = 13;
@@ -226,6 +227,8 @@ struct HidEp {
     kind: hid::Kind,
     prev: [u8; 8],
     dev: Arc<InputDev>,
+    /// Reports logged so far (the first few show what the device sends).
+    shown: u8,
 }
 
 impl HidEp {
@@ -244,6 +247,10 @@ impl HidEp {
             let len = self.mps.saturating_sub(ev[2] & 0xff_ffff) as usize;
             if slot < RING_TRBS {
                 let r = unsafe { core::slice::from_raw_parts(self.bufs.1.add(slot * REPORT_BUF), len.min(REPORT_BUF)) };
+                if self.shown < 3 {
+                    self.shown += 1;
+                    log::info!("xhci: slot {} DCI {} {:?} report {:02x?}", self.slot, self.dci, self.kind, r);
+                }
                 let dev = &self.dev;
                 let mut pause = false;
                 let mut emit = |t: u16, c: u16, v: i32| {
@@ -301,6 +308,9 @@ struct Xhci {
     new_disks: Vec<storage::NewDisk>,
     pci_dir: String,
     bus: u32,
+    /// USB major revision of each root port (index = port number), from
+    /// the Supported Protocol capabilities; 0 if unlisted.
+    proto: Vec<u8>,
 }
 
 unsafe impl Send for Xhci {}
@@ -350,6 +360,10 @@ fn ep_interval(speed: u32, b_interval: u8) -> u32 {
     }
 }
 
+fn ok(b: bool) -> &'static str {
+    if b { "ok" } else { "failed" }
+}
+
 fn speed_name(speed: u32) -> &'static str {
     match speed {
         SPEED_FULL => "full",
@@ -359,6 +373,66 @@ fn speed_name(speed: u32) -> &'static str {
         5.. => "super+",
         _ => "unknown",
     }
+}
+
+/// Poll `snap` until it has not changed for `stable` ms, after at least
+/// `min` and at most `max` ms; whether it settled. Real devices connect
+/// some time after their port gets power (the controller reset may have
+/// cut it), so ports are only looked at once their state stops moving.
+fn settle<T: PartialEq>(min: u64, max: u64, stable: u64, mut snap: impl FnMut() -> T) -> bool {
+    let start = crate::time::monotonic_ns();
+    let ms = |t: u64| (crate::time::monotonic_ns() - t) / 1_000_000;
+    let mut last = snap();
+    let mut since = crate::time::monotonic_ns();
+    loop {
+        wait_until(10, || false);
+        let now = snap();
+        if now != last {
+            last = now;
+            since = crate::time::monotonic_ns();
+        }
+        if ms(start) >= min && ms(since) >= stable {
+            return true;
+        }
+        if ms(start) >= max {
+            return false;
+        }
+    }
+}
+
+/// Slot context dwords 0-2: route string, speed, hub flag, context
+/// entries; root port, hub port count; TT hub slot and port (low/full
+/// speed behind a high-speed hub), TT think time (hubs).
+fn slot_words(t: &Topo, speed: u32, hub: Option<(u32, u32)>, entries: u32) -> [u32; 3] {
+    let (is_hub, ports, ttt) = match hub {
+        Some((n, ttt)) => (1, n, ttt),
+        None => (0, 0, 0),
+    };
+    let (tt_slot, tt_port) = t.tt.unwrap_or((0, 0));
+    [
+        t.route & 0xf_ffff | speed << 20 | is_hub << 26 | entries << 27,
+        t.port << 16 | ports << 24,
+        tt_slot | tt_port << 8 | ttt << 16,
+    ]
+}
+
+/// The boot-protocol keyboard and mouse interfaces of a configuration
+/// (every one, whatever its number: a receiver often has a keyboard on
+/// interface 0 and its mouse on 2) with their interrupt IN endpoint
+/// (address, max packet size, bInterval).
+fn boot_hid_interfaces(ifaces: &[Iface]) -> Vec<(u8, hid::Kind, (u8, u16, u8))> {
+    let mut found = Vec::new();
+    for f in ifaces.iter().filter(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1) {
+        let kind = match f.class.2 {
+            1 => hid::Kind::Keyboard,
+            2 => hid::Kind::Mouse,
+            _ => continue,
+        };
+        if let Some(&(addr, _, mps, interval, _)) = f.eps.iter().find(|e| e.0 & 0x80 != 0 && e.1 & 3 == 3) {
+            found.push((f.num, kind, (addr, mps, interval)));
+        }
+    }
+    found
 }
 
 /// An interface of the active configuration and its endpoints
@@ -480,16 +554,11 @@ impl Xhci {
 
     fn slot_ctx(&self, d: &UsbDev, entries: u32) {
         let s = self.ctx(d.input.1, 1);
-        let t = &d.topo;
-        let (hub, ports, ttt) = match d.hub {
-            Some((n, ttt)) => (1, n, ttt),
-            None => (0, 0, 0),
-        };
-        let (tt_slot, tt_port) = t.tt.unwrap_or((0, 0));
+        let w = slot_words(&d.topo, d.speed, d.hub, entries);
         unsafe {
-            *s = t.route & 0xf_ffff | d.speed << 20 | hub << 26 | entries << 27;
-            *s.add(1) = t.port << 16 | ports << 24;
-            *s.add(2) = tt_slot | tt_port << 8 | ttt << 16;
+            for (i, v) in w.iter().enumerate() {
+                *s.add(i) = *v;
+            }
         }
     }
 
@@ -586,39 +655,70 @@ impl Xhci {
     /// Reset (if needed) and enumerate the device on root port `port`.
     fn attach_root(&mut self, port: u32) {
         let reg = OP_PORTSC + 0x10 * (port as u64 - 1);
-        let sc = mmio_read32(self.op, reg);
-        if sc & PORT_CCS == 0 {
+        let sc0 = mmio_read32(self.op, reg);
+        if sc0 & PORT_CCS == 0 {
             return;
         }
-        if sc & PORT_PED == 0 {
-            mmio_write32(self.op, reg, (sc & PORT_KEEP) | PORT_PR);
-            let op = self.op;
-            if !wait_until(500, || mmio_read32(op, reg) & PORT_PRC != 0) {
-                log::warn!("xhci: port {port}: reset timed out ({:#x})", mmio_read32(op, reg));
+        let usb = self.proto.get(port as usize).copied().unwrap_or(0);
+        log::info!(
+            "xhci: usb{} port {port} (USB {}): connected, PORTSC {sc0:#010x}, {}",
+            self.bus,
+            if usb == 0 { "?".into() } else { format!("{usb}") },
+            if sc0 & PORT_PED != 0 { "enabled" } else { "to reset" }
+        );
+        for attempt in 0..3 {
+            // USB2 ports need a reset to enable; a USB3 port enables
+            // itself, but a retry resets it too (warm-reset like).
+            let sc = mmio_read32(self.op, reg);
+            if sc & PORT_PED == 0 || attempt > 0 {
+                mmio_write32(self.op, reg, (sc & PORT_KEEP) | PORT_PR);
+                let op = self.op;
+                if !wait_until(500, || mmio_read32(op, reg) & PORT_PRC != 0) {
+                    log::warn!("xhci: usb{} port {port}: reset timed out ({:#x})", self.bus, mmio_read32(op, reg));
+                    continue;
+                }
+                // Reset recovery (TRSTRCY), more on a retry.
+                wait_until(if attempt == 0 { 10 } else { 100 }, || false);
+            }
+            let sc = mmio_read32(self.op, reg);
+            mmio_write32(self.op, reg, (sc & PORT_KEEP) | (sc & 0x00fe_0000));
+            if sc & PORT_CCS == 0 {
+                log::warn!("xhci: usb{} port {port}: device gone ({sc:#x})", self.bus);
                 return;
             }
-            // Reset recovery (TRSTRCY).
-            wait_until(10, || false);
+            if sc & PORT_PED == 0 {
+                log::warn!("xhci: usb{} port {port}: not enabled after reset ({sc:#x})", self.bus);
+                continue;
+            }
+            let speed = (sc >> 10) & 0xf;
+            let topo = Topo { port, route: 0, depth: 0, tt: None, path: format!("{port}") };
+            if self.enumerate(topo, speed) {
+                return;
+            }
+            log::warn!("xhci: usb{} port {port}: enumeration failed (try {}), resetting the port", self.bus, attempt + 1);
         }
-        let sc = mmio_read32(self.op, reg);
-        mmio_write32(self.op, reg, (sc & PORT_KEEP) | (sc & 0x00fe_0000));
-        if sc & PORT_PED == 0 {
-            log::warn!("xhci: port {port}: not enabled after reset ({sc:#x})");
-            return;
-        }
-        let speed = (sc >> 10) & 0xf;
-        let topo = Topo { port, route: 0, depth: 0, tt: None, path: format!("{port}") };
-        self.enumerate(topo, speed);
     }
 
-    /// Address the device at `topo` and set it up by class.
-    fn enumerate(&mut self, topo: Topo, speed: u32) {
+    /// Give back a slot whose device could not be set up.
+    fn disable_slot(&mut self, slot: u32) {
+        let _ = self.command_code([0, 0, 0, TRB_DISABLE_SLOT << 10 | slot << 24]);
+        unsafe { *self.dcbaa.add(slot as usize) = 0 };
+    }
+
+    /// Address the device at `topo` and set it up by class. False if it
+    /// could not be addressed or described (the caller may reset the port
+    /// and try again); a device of no supported class still counts as done.
+    fn enumerate(&mut self, topo: Topo, speed: u32) -> bool {
         let path = topo.path.clone();
-        let Some(ev) = self.command([0, 0, 0, TRB_ENABLE_SLOT << 10]) else { return };
+        let name = format!("usb{}-{path}", self.bus);
+        let Some(ev) = self.command([0, 0, 0, TRB_ENABLE_SLOT << 10]) else {
+            log::warn!("xhci: {name}: no free slot");
+            return false;
+        };
         let slot = ev[3] >> 24;
         let (Some(out), Some(input), Some(ep0)) = (pci::dma_alloc(1), pci::dma_alloc(1), Ring::new()) else {
-            log::warn!("xhci: {path}: out of memory");
-            return;
+            log::warn!("xhci: {name}: out of memory");
+            return true;
         };
         unsafe { *self.dcbaa.add(slot as usize) = out.0 };
         let mps0 = match speed {
@@ -626,42 +726,60 @@ impl Xhci {
             SPEED_SUPER.. => 512,
             _ => 8,
         };
+        let tt = topo.tt;
         let mut d = UsbDev { slot, speed, topo, input, ep0, mps0, hub: None };
+        log::info!(
+            "xhci: {name}: {} speed, slot {slot}, route {:#x}, root port {}{}",
+            speed_name(speed),
+            d.topo.route,
+            d.topo.port,
+            tt.map_or(String::new(), |(s, p)| format!(", TT hub slot {s} port {p}"))
+        );
         self.input_ctx(&d, 0b11);
         self.slot_ctx(&d, 1);
         self.ep0_ctx(&d);
-        if self.command([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_ADDRESS_DEVICE << 10 | slot << 24]).is_none() {
-            log::warn!("xhci: {path}: device does not take an address");
-            return;
+        if let Err(code) = self.command_code([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_ADDRESS_DEVICE << 10 | slot << 24]) {
+            log::warn!("xhci: {name}: Address Device failed (completion code {code})");
+            self.disable_slot(slot);
+            return false;
         }
         // Address recovery (TRSTRCY) before the first request.
-        wait_until(2, || false);
-        let Some(dd) = self.get_descriptor(&mut d, 1, 0, 0, 8) else { return };
+        wait_until(10, || false);
+        let Some(dd) = self.get_descriptor(&mut d, 1, 0, 0, 8) else {
+            log::warn!("xhci: {name}: no device descriptor");
+            self.disable_slot(slot);
+            return false;
+        };
         let mps = if speed >= SPEED_SUPER { 1u32 << dd[7].min(9) } else { dd[7] as u32 };
         if mps != d.mps0 && mps >= 8 {
+            log::info!("xhci: {name}: EP0 max packet {mps}");
             d.mps0 = mps;
             self.input_ctx(&d, 0b10);
             let e = self.ctx(d.input.1, 2);
             unsafe { *e.add(1) = 3 << 1 | 4 << 3 | mps << 16 };
             self.command([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_EVALUATE_CTX << 10 | slot << 24]);
         }
-        let Some(dd) = self.get_descriptor(&mut d, 1, 0, 0, 18) else { return };
+        let descs = (|| {
+            let dd = self.get_descriptor(&mut d, 1, 0, 0, 18)?;
+            let cfg = self.get_descriptor(&mut d, 2, 0, 0, 9)?;
+            let total = u16::from_le_bytes([cfg[2], cfg[3]]).clamp(9, 4096);
+            let cfg = self.get_descriptor(&mut d, 2, 0, 0, total)?;
+            Some((dd, cfg))
+        })();
+        let Some((dd, cfg)) = descs else {
+            log::warn!("xhci: {name}: descriptors unreadable");
+            self.disable_slot(slot);
+            return false;
+        };
         let dev_class = dd[4];
         let vendor = u16::from_le_bytes([dd[8], dd[9]]);
         let product = u16::from_le_bytes([dd[10], dd[11]]);
         let version = u16::from_le_bytes([dd[12], dd[13]]);
         let (i_mfr, i_prod, i_serial) = (dd[14], dd[15], dd[16]);
-        let Some(cfg) = self.get_descriptor(&mut d, 2, 0, 0, 9) else { return };
-        let total = u16::from_le_bytes([cfg[2], cfg[3]]).clamp(9, 4096);
-        let Some(cfg) = self.get_descriptor(&mut d, 2, 0, 0, total) else { return };
         let manufacturer = self.string(&mut d, i_mfr);
         let prod_name = self.string(&mut d, i_prod);
         let serial = self.string(&mut d, i_serial);
-        log::info!(
-            "xhci: usb{}-{path}: slot {slot}, {} speed, {vendor:04x}:{product:04x} {manufacturer} {prod_name}",
-            self.bus,
-            speed_name(speed)
-        );
+        log::info!("xhci: {name}: {vendor:04x}:{product:04x} class {dev_class:#04x} \"{manufacturer}\" \"{prod_name}\"");
         let usbdev = format!("{}/usb{}/{}-{path}", self.pci_dir, self.bus, self.bus);
         crate::fs::sysfs::set(&usbdev, "idVendor", &format!("{vendor:04x}\n"));
         crate::fs::sysfs::set(&usbdev, "idProduct", &format!("{product:04x}\n"));
@@ -673,19 +791,33 @@ impl Xhci {
         }
 
         let ifaces = parse_config(&cfg);
+        for f in &ifaces {
+            let eps: Vec<String> = f.eps.iter().map(|e| format!("{:02x}/{}B/{}", e.0, e.2, e.3)).collect();
+            log::info!(
+                "xhci: {name}: if{} alt {} class {:02x}/{:02x}/{:02x} endpoints [{}]",
+                f.num,
+                f.alt,
+                f.class.0,
+                f.class.1,
+                f.class.2,
+                eps.join(" ")
+            );
+        }
         let is_hub = dev_class == 9 || ifaces.iter().any(|f| f.class.0 == 9);
         let msd = ifaces.iter().position(|f| f.alt == 0 && f.class == (8, 6, 0x50));
         let hid_any = ifaces.iter().any(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1 && matches!(f.class.2, 1 | 2));
         if !is_hub && msd.is_none() && !hid_any {
             if ifaces.iter().any(|f| f.class.0 == 8) {
-                log::warn!("xhci: usb{}-{path}: mass storage without SCSI Bulk-Only (UAS-only?), not supported", self.bus);
+                log::warn!("xhci: {name}: mass storage without SCSI Bulk-Only (UAS-only?), not supported");
             } else {
-                log::info!("xhci: usb{}-{path}: no hub, disk, keyboard or mouse interface, left unconfigured", self.bus);
+                log::info!("xhci: {name}: no hub, disk, keyboard or mouse interface, left unconfigured");
             }
-            return;
+            return true;
         }
         if !self.control(&mut d, 0x00, 9, cfg[5] as u16, 0, 0) {
-            return;
+            log::warn!("xhci: {name}: SET_CONFIGURATION {} failed", cfg[5]);
+            self.disable_slot(slot);
+            return false;
         }
         if is_hub {
             self.hub(d, &usbdev);
@@ -702,32 +834,24 @@ impl Xhci {
             };
             self.hid(d, &ifaces, &usbdev, &name, [vendor, product, version]);
         }
+        true
     }
 
     /// Set up the boot-protocol keyboards and mice of a configured device.
     fn hid(&mut self, mut d: UsbDev, ifaces: &[Iface], usbdev: &str, name: &str, ids: [u16; 3]) {
         let [vendor, product, version] = ids;
         let slot = d.slot;
-        let mut found: Vec<(u8, hid::Kind, (u8, u16, u8))> = Vec::new();
-        for f in ifaces.iter().filter(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1) {
-            let kind = match f.class.2 {
-                1 => hid::Kind::Keyboard,
-                2 => hid::Kind::Mouse,
-                _ => continue,
-            };
-            if let Some(&(addr, _, mps, interval, _)) = f.eps.iter().find(|e| e.0 & 0x80 != 0 && e.1 & 3 == 3) {
-                found.push((f.num, kind, (addr, mps, interval)));
-            }
-        }
+        let found = boot_hid_interfaces(ifaces);
         if found.is_empty() {
             log::info!("xhci: {name}: no interrupt endpoint, left unconfigured");
             return;
         }
         let mut add = 1u32;
         let mut max_dci = 1;
-        for &(num, _, (addr, _, _)) in &found {
-            self.control(&mut d, 0x21, 0x0b, 0, num as u16, 0); // SET_PROTOCOL(boot)
-            self.control(&mut d, 0x21, 0x0a, 0, num as u16, 0); // SET_IDLE(0)
+        for &(num, kind, (addr, _, _)) in &found {
+            let proto = self.control(&mut d, 0x21, 0x0b, 0, num as u16, 0); // SET_PROTOCOL(boot)
+            let idle = self.control_quiet(&mut d, 0x21, 0x0a, 0, num as u16, 0, true); // SET_IDLE(0)
+            log::info!("xhci: {name}: if{num} {kind:?} endpoint {addr:02x}: SET_PROTOCOL(boot) {}, SET_IDLE {}", ok(proto), ok(idle));
             add |= 1 << dci_of(addr);
             max_dci = max_dci.max(dci_of(addr));
         }
@@ -749,7 +873,8 @@ impl Xhci {
             }
             eps.push((num, kind, dci, ring, bufs, mps));
         }
-        if self.command([d.input.0 as u32, (d.input.0 >> 32) as u32, 0, TRB_CONFIGURE_EP << 10 | slot << 24]).is_none() {
+        if let Err(code) = self.command_code([d.input.0 as u32, (d.input.0 >> 32) as u32, 0, TRB_CONFIGURE_EP << 10 | slot << 24]) {
+            log::warn!("xhci: {name}: Configure Endpoint failed (completion code {code})");
             return;
         }
         let path = &d.topo.path;
@@ -767,12 +892,12 @@ impl Xhci {
                     continue;
                 }
             };
-            let mut h = HidEp { slot, dci, ring, bufs, mps, kind, prev: [0; 8], dev };
+            let mut h = HidEp { slot, dci, ring, bufs, mps, kind, prev: [0; 8], dev, shown: 0 };
             for _ in 0..POSTED {
                 h.post();
             }
             self.ring_doorbell(slot, dci);
-            log::info!("xhci: {name}: {kind:?} on slot {slot} endpoint {dci}");
+            log::info!("xhci: {name}: if{num} bound as {kind:?} (slot {slot}, DCI {dci}, {mps}-byte reports)");
             self.hids.push(h);
         }
     }
@@ -843,11 +968,26 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
     let op = base + caplen;
     let rt = base + (mmio_read32(base, CAP_RTSOFF) & !0x1f) as u64;
     let db = base + (mmio_read32(base, CAP_DBOFF) & !0x3) as u64;
-    // BIOS hand-off (USB legacy support extended capability).
+    // BIOS hand-off (USB legacy support extended capability); the
+    // Supported Protocol capabilities say which ports are USB2 or USB3.
+    let mut proto = alloc::vec![0u8; (hcs1 >> 24) as usize + 1];
+    let mut proto_log = Vec::new();
     let mut xecp = ((hcc1 >> 16) << 2) as u64;
     let mut guard = 0;
     while xecp != 0 && guard < 64 {
         let v = mmio_read32(base, xecp);
+        if v & 0xff == 2 {
+            let major = (v >> 24) as u8;
+            let minor = (v >> 16) as u8;
+            let ports = mmio_read32(base, xecp + 8);
+            let (first, count) = ((ports & 0xff) as usize, ((ports >> 8) & 0xff) as usize);
+            for p in first..(first + count).min(proto.len()) {
+                proto[p] = major;
+            }
+            if count > 0 {
+                proto_log.push(format!("{}-{} USB {major}.{}", first, first + count - 1, minor >> 4));
+            }
+        }
         if v & 0xff == 1 {
             mmio_write32(base, xecp, v | 1 << 24);
             if !wait_until(1000, || mmio_read32(base, xecp) & 1 << 16 == 0) {
@@ -914,6 +1054,7 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         rt,
         db,
         csz: if hcc1 & 4 != 0 { 64 } else { 32 },
+        proto,
         ports,
         dcbaa: dcbaa.1 as *mut u64,
         cmd,
@@ -925,7 +1066,14 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         pci_dir,
         bus,
     };
-    log::info!("xhci: {:?}: usb{bus}, {} ports, {max_slots} slots, {}-byte contexts", d.addr, x.ports, x.csz);
+    log::info!(
+        "xhci: {:?}: usb{bus}, {} ports ({}), {max_slots} slots, {}-byte contexts, port power {}",
+        d.addr,
+        x.ports,
+        proto_log.join(", "),
+        x.csz,
+        if hcc1 & HCC_PPC != 0 { "switched" } else { "always on" }
+    );
     // Power the ports if software controls their power (otherwise they
     // are on), let connections show and USB3 links train.
     if hcc1 & HCC_PPC != 0 {
@@ -935,15 +1083,22 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
                 mmio_write32(op, OP_PORTSC + 0x10 * (port as u64 - 1), (sc & PORT_KEEP) | PORT_PP);
             }
         }
-        wait_until(20, || false);
     }
-    wait_until(100, || false);
-    // A USB3 link in training shows Polling with no connection yet (a
-    // USB2 port shows Polling with a device waiting for its reset).
+    // Devices show up some time after power (the reset may have cut it):
+    // wait until no port's connection or link state has moved for 300 ms
+    // (at least 500 ms, at most 3 s). A USB3 link in training shows
+    // Polling with no connection yet (a USB2 port shows Polling with a
+    // device waiting for its reset).
+    let snap = |x: &Xhci| (1..=x.ports).map(|p| x.portsc(p) & (PORT_CCS | 0xf << 5)).collect::<Vec<u32>>();
+    if !settle(500, 3000, 300, || snap(&x)) {
+        log::warn!("xhci: usb{bus}: ports still changing after 3 s");
+    }
     let training = |x: &Xhci| (1..=x.ports).any(|p| x.portsc(p) & (PORT_CCS | 0xf << 5) == PLS_POLLING << 5);
-    if training(&x) && !wait_until(1000, || !training(&x)) {
-        log::warn!("xhci: usb{bus}: a USB3 link is still training after 1 s");
+    if training(&x) {
+        log::warn!("xhci: usb{bus}: a USB3 link is still training");
     }
+    let connected: Vec<String> = (1..=x.ports).filter(|&p| x.portsc(p) & PORT_CCS != 0).map(|p| format!("{p}")).collect();
+    log::info!("xhci: usb{bus}: devices on ports [{}]", connected.join(" "));
     for port in 1..=x.ports {
         x.attach_root(port);
     }
@@ -984,4 +1139,67 @@ fn usb_config_parse() {
     assert_eq!(f[0].eps.len(), 2);
     assert_eq!(f[0].eps[0], (0x81, 2, 1024, 0, 15));
     assert_eq!(f[0].eps[1], (0x02, 2, 1024, 0, 3));
+}
+
+/// The configuration descriptors of the real PC's devices (from Linux's
+/// sysfs `descriptors`): a low-speed Microdia keyboard on root port 1,
+/// and a full-speed 2.4G mouse receiver behind a high-speed hub on root
+/// port 11 (1-11.3) with a boot keyboard on if0 and its boot mouse on if2.
+#[cfg(test)]
+const REAL_KEYBOARD_CFG: [u8; 59] = [
+        0x09, 0x02, 0x3b, 0x00, 0x02, 0x01, 0x00, 0xa0, 0x32, 0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01,
+        0x01, 0x00, 0x09, 0x21, 0x00, 0x01, 0x00, 0x01, 0x22, 0x4e, 0x00, 0x07, 0x05, 0x81, 0x03, 0x08,
+        0x00, 0x0a, 0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x09, 0x21, 0x00, 0x01, 0x00,
+        0x01, 0x22, 0x85, 0x00, 0x07, 0x05, 0x82, 0x03, 0x08, 0x00, 0x0a,
+];
+#[cfg(test)]
+const REAL_RECEIVER_CFG: [u8; 84] = [
+        0x09, 0x02, 0x54, 0x00, 0x03, 0x01, 0x00, 0xa0, 0x31, 0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01,
+        0x01, 0x00, 0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x39, 0x00, 0x07, 0x05, 0x81, 0x03, 0x08,
+        0x00, 0x01, 0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x09, 0x21, 0x11, 0x01, 0x00,
+        0x01, 0x22, 0x96, 0x00, 0x07, 0x05, 0x82, 0x03, 0x11, 0x00, 0x01, 0x09, 0x04, 0x02, 0x00, 0x01,
+        0x03, 0x01, 0x02, 0x00, 0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x57, 0x00, 0x07, 0x05, 0x83,
+        0x03, 0x07, 0x00, 0x01,
+];
+
+#[test_case]
+fn usb_real_keyboard_binding() {
+    let f = parse_config(&REAL_KEYBOARD_CFG);
+    assert_eq!(f.len(), 2);
+    let b = boot_hid_interfaces(&f);
+    assert_eq!(b.len(), 1);
+    assert_eq!((b[0].0, b[0].2), (0, (0x81, 8, 10)));
+    assert!(matches!(b[0].1, hid::Kind::Keyboard));
+    // Low speed, bInterval 10 frames -> 2^6 x 125 us (8 ms).
+    assert_eq!(ep_interval(SPEED_LOW, 10), 6);
+    // On root port 1: no route, no TT.
+    let t = Topo { port: 1, route: 0, depth: 0, tt: None, path: "1".into() };
+    assert_eq!(slot_words(&t, SPEED_LOW, None, 3), [SPEED_LOW << 20 | 3 << 27, 1 << 16, 0]);
+}
+
+#[test_case]
+fn usb_real_receiver_binding() {
+    let f = parse_config(&REAL_RECEIVER_CFG);
+    assert_eq!(f.len(), 3);
+    let b = boot_hid_interfaces(&f);
+    // Both boot interfaces, the mouse being interface 2.
+    assert_eq!(b.len(), 2);
+    assert_eq!((b[0].0, b[0].2), (0, (0x81, 8, 1)));
+    assert!(matches!(b[0].1, hid::Kind::Keyboard));
+    assert_eq!((b[1].0, b[1].2), (2, (0x83, 7, 1)));
+    assert!(matches!(b[1].1, hid::Kind::Mouse));
+    // Full speed, bInterval 1 frame -> 2^3 x 125 us.
+    assert_eq!(ep_interval(SPEED_FULL, 1), 3);
+    // The single-TT high-speed hub on root port 11 (slot 2, 4 ports, TT
+    // think time 1), the receiver on its port 3 through its TT.
+    let hub = Topo { port: 11, route: 0, depth: 0, tt: None, path: "11".into() };
+    assert_eq!(slot_words(&hub, SPEED_HIGH, Some((4, 1)), 1), [SPEED_HIGH << 20 | 1 << 26 | 1 << 27, 11 << 16 | 4 << 24, 1 << 16]);
+    let tt = hub::child_tt(SPEED_HIGH, 2, None, 3, SPEED_FULL);
+    assert_eq!(tt, Some((2, 3)));
+    let rx = Topo { port: 11, route: 3, depth: 1, tt, path: "11.3".into() };
+    assert_eq!(slot_words(&rx, SPEED_FULL, None, 7), [3 | SPEED_FULL << 20 | 7 << 27, 11 << 16, 2 | 3 << 8]);
+    // A high-speed device behind it needs no TT; a full-speed one behind
+    // a full-speed hub keeps the TT above.
+    assert_eq!(hub::child_tt(SPEED_HIGH, 2, None, 2, SPEED_HIGH), None);
+    assert_eq!(hub::child_tt(SPEED_FULL, 5, Some((2, 3)), 1, SPEED_LOW), Some((2, 3)));
 }
