@@ -23,6 +23,7 @@
 //! | /dev/dma_heap/system | 249:0  | system dma-heap (`drivers::dma_buf`) |
 //! | /dev/input/eventN | 13:64+N   | evdev (`drivers::input`)             |
 //! | /dev/uinput     | 10:223      | uinput (`drivers::input::uinput`)    |
+//! | /dev/uhid       | 10:239      | uhid, Bluetooth HID (`drivers::input::uhid`) |
 //! | /dev/net/tun    | 10:200      | tun links without traffic (`net::tun`) |
 //! | /dev/hvc1..17   | 229:N       | host-less virtio-console stand-ins (`drivers::hvc`) |
 //! | /dev/ashmem<boot_id> | 10:126 | ashmem regions (`drivers::ashmem`) |
@@ -124,6 +125,7 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
         (crate::block::MISC_MAJOR, HWRNG_MINOR) => Dev::Random,
         (crate::block::MISC_MAJOR, crate::drivers::input::uinput::UINPUT_MINOR) => return crate::drivers::input::uinput::open(),
+        (crate::block::MISC_MAJOR, crate::drivers::input::uhid::UHID_MINOR) => return crate::drivers::input::uhid::open(),
         (crate::drivers::input::INPUT_MAJOR, minor) => return crate::drivers::input::open_evdev(minor),
         (crate::block::MISC_MAJOR, crate::drivers::dma_buf::sync_file::SW_SYNC_MINOR) => {
             return crate::drivers::dma_buf::sync_file::open_sw_sync();
@@ -150,7 +152,7 @@ pub fn console() -> Arc<OpenFile> {
 /// A new devtmpfs instance with the standard nodes.
 pub fn new_devtmpfs() -> Arc<TmpInode> {
     let root = TmpInode::new_fs(0o755);
-    let nodes: [(&[u8], u32, u32, u32); 14] = [
+    let nodes: [(&[u8], u32, u32, u32); 15] = [
         (b"null", 0o666, 1, 3),
         (b"zero", 0o666, 1, 5),
         (b"full", 0o666, 1, 7),
@@ -162,6 +164,7 @@ pub fn new_devtmpfs() -> Arc<TmpInode> {
         (b"ttyS0", 0o660, 4, 64),
         (b"ptmx", 0o666, 5, 2),
         (b"uinput", 0o660, 10, 223),
+        (b"uhid", 0o660, 10, 239),
         (b"userfaultfd", 0o600, 10, 124),
         (b"ashmem", 0o666, 10, 126),
         (b"hvc1", 0o600, 229, 1),

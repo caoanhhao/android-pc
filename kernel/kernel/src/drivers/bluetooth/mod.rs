@@ -88,6 +88,9 @@ struct Stats {
     dropped: AtomicU64,
     failed: AtomicU64,
     other: AtomicU64,
+    /// LE advertising reports and inquiry results (devices seen by scans).
+    adv: AtomicU64,
+    inquiry: AtomicU64,
 }
 
 static STATS: Stats = Stats {
@@ -98,8 +101,10 @@ static STATS: Stats = Stats {
     dropped: AtomicU64::new(0),
     failed: AtomicU64::new(0),
     other: AtomicU64::new(0),
+    adv: AtomicU64::new(0),
+    inquiry: AtomicU64::new(0),
 };
-static LAST_STATUS: Mutex<(u64, [u64; 7])> = Mutex::new((0, [0; 7]));
+static LAST_STATUS: Mutex<(u64, [u64; 9])> = Mutex::new((0, [0; 9]));
 
 fn wq() -> &'static Arc<WaitQueue> {
     static WQ: Once<Arc<WaitQueue>> = Once::new();
@@ -229,6 +234,15 @@ pub fn deliver(kind: u8, pkt: &[u8]) {
         H4_ACL => STATS.acl_in.fetch_add(1, Ordering::Relaxed),
         _ => STATS.other.fetch_add(1, Ordering::Relaxed),
     };
+    if kind == H4_EVENT {
+        match pkt {
+            // LE Meta: advertising report, extended advertising report.
+            [0x3e, _, 0x02 | 0x0d, ..] => _ = STATS.adv.fetch_add(1, Ordering::Relaxed),
+            // Inquiry result (standard, with RSSI, extended).
+            [0x02 | 0x22 | 0x2f, ..] => _ = STATS.inquiry.fetch_add(1, Ordering::Relaxed),
+            _ => {}
+        }
+    }
     if kind == H4_EVENT && n < SHOW_PACKETS {
         log::info!("bluetooth: event {:02x?}", &pkt[..pkt.len().min(24)]);
     }
@@ -279,19 +293,22 @@ fn status() {
         return;
     }
     let s = &STATS;
-    let v = [&s.cmds, &s.acl_out, &s.events, &s.acl_in, &s.dropped, &s.failed, &s.other].map(|a| a.load(Ordering::Relaxed));
+    let v = [&s.cmds, &s.acl_out, &s.events, &s.acl_in, &s.dropped, &s.failed, &s.other, &s.adv, &s.inquiry]
+        .map(|a| a.load(Ordering::Relaxed));
     if v == last.1 {
         return;
     }
     *last = (now, v);
     log::info!(
-        "bluetooth: hci0: {} commands, {} ACL out, {} events, {} ACL in, {} failed commands, {} dropped (HAL {})",
+        "bluetooth: hci0: {} commands, {} ACL out, {} events, {} ACL in, {} failed commands, {} dropped, {} LE advertising reports, {} inquiry results (HAL {})",
         v[0],
         v[1],
         v[2],
         v[3],
         v[5],
         v[4],
+        v[7],
+        v[8],
         if OPEN.load(Ordering::Relaxed) > 0 { "attached" } else { "not attached" }
     );
 }
@@ -357,7 +374,7 @@ pub fn write(data: &[u8]) -> KResult<usize> {
             _ => STATS.other.fetch_add(1, Ordering::Relaxed),
         };
         if kind == H4_CMD && n < SHOW_PACKETS {
-            log::info!("bluetooth: command {} {:02x?}", opcode_name(u16::from_le_bytes([p[0], p[1]])), &p[2..p.len().min(20)]);
+            log::info!("bluetooth: command {} {:02x?}", opcode_name(u16::from_le_bytes([p[0], p[1]])), &p[3..p.len().min(20)]);
         }
         if let Err(e) = c.send(kind, &p) {
             log::warn!("bluetooth: sending a type {kind} packet failed ({e:?})");

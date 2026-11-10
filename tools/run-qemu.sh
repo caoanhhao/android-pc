@@ -84,6 +84,15 @@
 #                                     (QEMU screendump). Without OVMF on
 #                                     the host it boots with BIOS and
 #                                     --fb=bochs (720x1280 VBE modes)
+#   tools/run-qemu.sh --aosp-bt-test  the boot test's machine plus Bluetooth (E7):
+#                                     AOSP's rootcanal (a software
+#                                     controller) runs on the host and a
+#                                     virtio-serial-pci (00:13.0) virtconsole
+#                                     on a socket chardev reaches its HCI
+#                                     port; the kernel makes it the H4
+#                                     controller behind /dev/hvc5 for the
+#                                     Bluetooth HAL. tools/aosp-bt-test.py
+#                                     checks Bluetooth turns on (and off)
 #   tools/run-qemu.sh --usb-boot-test AOSP from a USB stick image, as on a real
 #                                     PC (E3): tools/mkusb.sh stages the ESP
 #                                     (Limine BOOTX64.EFI, limine.conf with
@@ -199,6 +208,7 @@ while [[ $# -gt 0 ]]; do
         --aosp-gfx-test) mode=aosp-gfx-test ;;
         --aosp-input-test) mode=aosp-input-test ;;
         --aosp-boot-test) mode=aosp-boot-test ;;
+        --aosp-bt-test) mode=aosp-bt-test ;;
         --aosp-apk-test) mode=aosp-apk-test ;;
         --aosp-fb-test) mode=aosp-fb-test ;;
         --adb-port) adb_port="$2"; shift ;;
@@ -244,8 +254,8 @@ if [[ $mode == usb-boot-test ]]; then
 fi
 [[ -z $gpu_size ]] && gpu_size=720x1280
 [[ -z $density ]] && density=320
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-bt-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == aosp-bt-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -290,7 +300,7 @@ if [[ $mode == aosp-apk-test ]]; then
     # The APK under test, built from source (reproducible, a few seconds).
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test || $mode == aosp-bt-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -317,7 +327,7 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    big=0; [[ $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]] && big=1
+    big=0; [[ $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test || $mode == aosp-bt-test ]] && big=1
     [[ $big == 1 && $timeout == 300 ]] && timeout=900
     [[ $big == 1 && $mem == 2G ]] && mem=6G
     [[ $big == 1 && $smp == 4 ]] && smp=6
@@ -510,6 +520,32 @@ if [[ -n $monitor ]]; then
     args+=(-monitor "unix:$monitor,server,nowait")
 fi
 
+if [[ $mode == aosp-bt-test ]]; then
+    rootcanal="$aosp_top/out/host/linux-x86/bin/root-canal"
+    [[ -x $rootcanal ]] || { echo "run-qemu.sh: no $rootcanal (m root-canal in aosp/)" >&2; exit 1; }
+    # Four free ports in a row: HCI, then the link and LE link ports; the
+    # test channel separately.
+    read -r bt_hci_port bt_test_port < <(python3 - <<'PY'
+import socket
+def free(n):
+    for base in range(20000 + __import__("os").getpid() % 20000, 60000, 7):
+        socks = []
+        try:
+            for i in range(n):
+                s = socket.socket(); s.bind(("127.0.0.1", base + i)); socks.append(s)
+            return base
+        except OSError:
+            pass
+        finally:
+            for s in socks: s.close()
+b = free(4)
+print(b, b + 3)
+PY
+)
+    args+=(-chardev "socket,id=btuart,host=127.0.0.1,port=$bt_hci_port"
+           -device "virtio-serial-pci,id=btserial,addr=0x13,max_ports=1"
+           -device "virtconsole,bus=btserial.0,nr=0,chardev=btuart")
+fi
 if [[ $net == 1 ]]; then
     fwd=""
     [[ -n $adb_port ]] && fwd=",hostfwd=tcp:127.0.0.1:$adb_port-:5555"
@@ -596,6 +632,17 @@ elif [[ $mode == aosp-boot-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP boot test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == aosp-bt-test ]]; then
+    log="$work/aosp-bt-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 600)) python3 "$ROOT/tools/aosp-bt-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --rootcanal "$rootcanal" \
+        --hci-port "$bt_hci_port" --test-port "$bt_test_port" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP Bluetooth test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == aosp-apk-test ]]; then
     log="$work/aosp-apk-test.log"

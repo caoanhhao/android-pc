@@ -61,3 +61,5 @@ d3_timers
 d3_splice
 # E1: real-hardware-class controllers (NVMe, AHCI, xHCI HID; run-qemu.sh --hw-test, skipped without them)
 e1_hw
+# E7: Bluetooth HID (/dev/uhid with report descriptors; skipped without it)
+e7_uhid
