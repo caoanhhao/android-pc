@@ -108,7 +108,6 @@ pub fn init(memmap: &[&Entry]) {
                 | MEMMAP_EXECUTABLE_AND_MODULES
                 | MEMMAP_ACPI_RECLAIMABLE
                 | MEMMAP_ACPI_NVS
-                | MEMMAP_FRAMEBUFFER
                 | MEMMAP_MAPPED_RESERVED
         )
     };
@@ -132,6 +131,14 @@ pub fn init(memmap: &[&Entry]) {
     if let Some((s, r_end)) = run {
         unsafe { map_range(&mut pt, hhdm + s, s, r_end - s, data, gib) };
         direct_bytes += r_end - s;
+    }
+    // The boot framebuffer write-combining (PAT entry 1, see
+    // [`activate_kernel_tables`]): video memory is uncached by the MTRRs
+    // on real machines, which makes every blit crawl.
+    for e in memmap.iter().filter(|e| e.type_ == MEMMAP_FRAMEBUFFER) {
+        let (base, end) = (e.base & !(PAGE_SIZE - 1), (e.base + e.length).next_multiple_of(PAGE_SIZE));
+        unsafe { map_range(&mut pt, hhdm + base, base, end - base, data | F::WRITE_THROUGH, gib) };
+        direct_bytes += end - base;
     }
 
     // Kernel image, W^X per section.
@@ -198,6 +205,11 @@ pub fn init(memmap: &[&Entry]) {
 pub unsafe fn activate_kernel_tables() {
     let pml4 = PhysFrame::containing_address(PhysAddr::new(KERNEL_PML4.load(Ordering::Acquire)));
     unsafe {
+        // PAT as Linux sets it: WB, WC, UC-, UC, WB, WP, UC-, UC. Only
+        // entry 1 differs from the reset value (WT -> WC): PWT alone
+        // selects write-combining. Same on every CPU, before any mapping
+        // using it is live.
+        x86_64::registers::model_specific::Msr::new(0x277).write(0x0007_0506_0007_0106);
         Efer::update(|f| f.insert(EferFlags::NO_EXECUTE_ENABLE));
         Cr4::update(|f| f.insert(Cr4Flags::PAGE_GLOBAL));
         Cr0::update(|f| f.insert(Cr0Flags::WRITE_PROTECT));

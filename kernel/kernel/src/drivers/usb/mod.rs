@@ -1,27 +1,40 @@
-//! USB: the xHCI host controller (PCI class 0c.03.30), polled, and HID
-//! boot-protocol keyboards and mice on its root ports ([`hid`]), which
-//! become evdev input devices.
+//! USB: the xHCI host controller (PCI class 0c.03.30), polled; HID
+//! boot-protocol keyboards and mice ([`hid`]), which become evdev input
+//! devices; hubs ([`hub`]); and mass storage ([`storage`]: Bulk-Only
+//! Transport with SCSI commands), which becomes sd disks.
 //!
 //! Bring-up: BIOS hand-off (USB legacy support capability), halt and
 //! reset, device context base array (with scratchpad buffers if the
 //! controller wants them), a command ring and one event ring segment on
 //! interrupter 0 (interrupts stay off: [`tick`] polls the event ring),
-//! run. Then each connected root port is reset (USB2; USB3 ports enable
-//! themselves) and its device enumerated: Enable Slot, Address Device,
-//! the device and configuration descriptors and strings over EP0 control
-//! transfers, SET_CONFIGURATION, and for every HID interface of the boot
-//! subclass SET_PROTOCOL(boot) + SET_IDLE, Configure Endpoint for its
-//! interrupt IN endpoint, and a ring of Normal TRBs kept posted. Hubs and
-//! hot-plug are not supported (devices present at boot on root ports).
+//! run. Root ports are powered when the controller has port power
+//! control, and USB3 links are given up to a second to train. Then each
+//! connected root port is reset (USB2; USB3 ports enable themselves) and
+//! its device enumerated: Enable Slot, Address Device (route string, and
+//! the transaction translator of a high-speed hub for low/full-speed
+//! devices behind one), the device and configuration descriptors and
+//! strings over EP0 control transfers, SET_CONFIGURATION, then by class:
+//! a hub's ports are powered, reset and enumerated in turn (five tiers
+//! deep at most); a mass storage interface (SCSI, Bulk-Only) gets its two
+//! bulk endpoints configured and is probed as a disk; every HID interface
+//! of the boot subclass gets SET_PROTOCOL(boot) + SET_IDLE, Configure
+//! Endpoint for its interrupt IN endpoint, and a ring of Normal TRBs kept
+//! posted. Devices present at boot only (no hot-plug). Failures are
+//! logged and the device skipped, never fatal.
 //!
 //! Each returned interrupt transfer is a boot report, decoded by [`hid`]
 //! into events of an input device named like Linux's ("QEMU QEMU USB
 //! Keyboard", bus 0x03, the device's vendor/product), below
-//! `.../0000:00:0d.0/usb1/1-1/1-1:1.0/0003:VVVV:PPPP.000N/input/inputM`.
-//! The timer tick notices a new event TRB (as virtio-input does with its
-//! used ring) and the soft interrupt ([`softirq`]) delivers it.
+//! `.../0000:00:0d.0/usb1/1-1/1-1:1.0/0003:VVVV:PPPP.000N/input/inputM`
+//! (`1-1.2` for port 2 of a hub on root port 1). The timer tick notices a
+//! new event TRB (as virtio-input does with its used ring) and the soft
+//! interrupt ([`softirq`]) delivers it. Disk I/O runs synchronously on
+//! the caller with the controller locked, dispatching the HID events it
+//! meets meanwhile.
 
 pub mod hid;
+pub mod hub;
+pub mod storage;
 
 use alloc::format;
 use alloc::string::String;
@@ -39,6 +52,8 @@ const CAP_HCSPARAMS2: u64 = 0x08;
 const CAP_HCCPARAMS1: u64 = 0x10;
 const CAP_DBOFF: u64 = 0x14;
 const CAP_RTSOFF: u64 = 0x18;
+const HCC_AC64: u32 = 1 << 0;
+const HCC_PPC: u32 = 1 << 3;
 // Operational registers.
 const OP_USBCMD: u64 = 0x00;
 const OP_USBSTS: u64 = 0x04;
@@ -60,7 +75,10 @@ const STS_CNR: u32 = 1 << 11;
 const PORT_CCS: u32 = 1 << 0;
 const PORT_PED: u32 = 1 << 1;
 const PORT_PR: u32 = 1 << 4;
+const PORT_PP: u32 = 1 << 9;
 const PORT_PRC: u32 = 1 << 21;
+/// Port link state "Polling" (a USB3 link still training).
+const PLS_POLLING: u32 = 7;
 /// PORTSC bits written back unchanged (read-only and read/write-sticky
 /// ones; the change bits are write-1-to-clear and PED write-1-to-disable).
 const PORT_KEEP: u32 = 0x0e00_0000 | 0x4000_0000 | 0xc000 | 0x3c00 | 0x200 | 0x1e0 | 0x8 | 0x1;
@@ -76,17 +94,25 @@ const TRB_ADDRESS_DEVICE: u32 = 11;
 const TRB_CONFIGURE_EP: u32 = 12;
 const TRB_EVALUATE_CTX: u32 = 13;
 const TRB_RESET_EP: u32 = 14;
+const TRB_STOP_EP: u32 = 15;
 const TRB_SET_TR_DEQUEUE: u32 = 16;
 const TRB_TRANSFER_EVENT: u32 = 32;
 const TRB_COMMAND_COMPLETION: u32 = 33;
 
-const TRB_IOC: u32 = 1 << 5;
 const TRB_ISP: u32 = 1 << 2;
+const TRB_CH: u32 = 1 << 4;
+const TRB_IOC: u32 = 1 << 5;
 const TRB_IDT: u32 = 1 << 6;
 
 const CC_SUCCESS: u32 = 1;
 const CC_STALL: u32 = 6;
 const CC_SHORT_PACKET: u32 = 13;
+
+// xHCI port speeds (PORTSC, slot context).
+const SPEED_FULL: u32 = 1;
+const SPEED_LOW: u32 = 2;
+const SPEED_HIGH: u32 = 3;
+const SPEED_SUPER: u32 = 4;
 
 /// TRBs per ring page; the last one is the link back.
 const RING_TRBS: usize = 256;
@@ -95,13 +121,17 @@ const POSTED: usize = 16;
 /// Bytes of report buffer per ring slot.
 const REPORT_BUF: usize = 64;
 const TIMEOUT_MS: u64 = 1000;
-const MAX_CTRLS: usize = 4;
+const MAX_CTRLS: usize = 8;
 
 static NEXT_BUS: AtomicU32 = AtomicU32::new(1);
 static NEXT_HID: AtomicU32 = AtomicU32::new(1);
 
 fn trb_type(t: &[u32; 4]) -> u32 {
     (t[3] >> 10) & 0x3f
+}
+
+fn trb_ptr(t: &[u32; 4]) -> u64 {
+    t[0] as u64 | (t[1] as u64) << 32
 }
 
 /// A producer ring (command or transfer) of one page.
@@ -138,9 +168,10 @@ impl Ring {
         }
         self.idx += 1;
         if self.idx == RING_TRBS - 1 {
+            // The link carries the chain bit of a TD that wraps.
             unsafe {
                 let link = self.ptr.add(self.idx * 4 + 3);
-                core::ptr::write_volatile(link, TRB_LINK << 10 | 2 | self.cycle);
+                core::ptr::write_volatile(link, TRB_LINK << 10 | 2 | (t[3] & TRB_CH) | self.cycle);
             }
             self.idx = 0;
             self.cycle ^= 1;
@@ -207,14 +238,18 @@ impl HidEp {
     /// A transfer event for this endpoint: decode the report, re-post.
     fn complete(&mut self, ev: &[u32; 4]) {
         let code = ev[2] >> 24;
-        let trb = ev[0] as u64 | (ev[1] as u64) << 32;
+        let trb = trb_ptr(ev);
         if code == CC_SUCCESS || code == CC_SHORT_PACKET {
             let slot = (trb.wrapping_sub(self.ring.phys) / 16) as usize;
             let len = self.mps.saturating_sub(ev[2] & 0xff_ffff) as usize;
             if slot < RING_TRBS {
                 let r = unsafe { core::slice::from_raw_parts(self.bufs.1.add(slot * REPORT_BUF), len.min(REPORT_BUF)) };
                 let dev = &self.dev;
-                let mut emit = |t: u16, c: u16, v: i32| dev.event(t, c, v);
+                let mut pause = false;
+                let mut emit = |t: u16, c: u16, v: i32| {
+                    pause |= t == input::EV_KEY && c == hid::KEY_PAUSE && v == 1;
+                    dev.event(t, c, v)
+                };
                 let mut sent = false;
                 match self.kind {
                     hid::Kind::Keyboard => {
@@ -232,6 +267,10 @@ impl HidEp {
                 }
                 if sent {
                     dev.event(input::EV_SYN, input::SYN_REPORT, 0);
+                }
+                // Pause/Break shows or hides the kernel log on screen.
+                if pause {
+                    crate::drivers::fbcon::toggle_overlay();
                 }
             }
         } else {
@@ -255,21 +294,43 @@ struct Xhci {
     /// Control transfer data (one page).
     data: (u64, *mut u8),
     hids: Vec<HidEp>,
+    /// Mass storage devices; taken out while a command runs on one.
+    disks: Vec<Option<alloc::boxed::Box<storage::Msd>>>,
+    /// Disks found during bring-up, registered once the controller is
+    /// reachable through [`CTRLS`].
+    new_disks: Vec<storage::NewDisk>,
     pci_dir: String,
     bus: u32,
 }
 
 unsafe impl Send for Xhci {}
 
-/// A device being set up.
+/// Where a device hangs: its root port, route string and hub tier, and the
+/// transaction translator (hub slot, hub port) serving it if it is a
+/// low/full-speed device behind a high-speed hub.
+#[derive(Clone)]
+struct Topo {
+    port: u32,
+    route: u32,
+    depth: u32,
+    tt: Option<(u32, u32)>,
+    /// "3" or "3.1.2": the port path in sysfs names (1-3.1.2).
+    path: String,
+}
+
+/// An addressed device.
 struct UsbDev {
     slot: u32,
-    port: u32,
     speed: u32,
+    topo: Topo,
     input: (u64, *mut u8),
     ep0: Ring,
     mps0: u32,
+    /// Ports and think time (TTT) if the device is a hub.
+    hub: Option<(u32, u32)>,
 }
+
+unsafe impl Send for UsbDev {}
 
 /// Endpoint context index of an endpoint address (DCI).
 fn dci_of(addr: u8) -> u32 {
@@ -280,13 +341,63 @@ fn dci_of(addr: u8) -> u32 {
 fn ep_interval(speed: u32, b_interval: u8) -> u32 {
     match speed {
         // Full/low speed: bInterval in frames (1 ms).
-        1 | 2 => {
+        SPEED_FULL | SPEED_LOW => {
             let micro = (b_interval.max(1) as u32) * 8;
             (31 - micro.leading_zeros()).clamp(3, 10)
         }
         // High/super speed: 2^(bInterval - 1) microframes.
         _ => (b_interval.clamp(1, 16) - 1) as u32,
     }
+}
+
+fn speed_name(speed: u32) -> &'static str {
+    match speed {
+        SPEED_FULL => "full",
+        SPEED_LOW => "low",
+        SPEED_HIGH => "high",
+        SPEED_SUPER => "super",
+        5.. => "super+",
+        _ => "unknown",
+    }
+}
+
+/// An interface of the active configuration and its endpoints
+/// (address, attributes, max packet size, interval, SuperSpeed burst).
+struct Iface {
+    num: u8,
+    alt: u8,
+    class: (u8, u8, u8),
+    eps: Vec<(u8, u8, u16, u8, u8)>,
+}
+
+/// The interfaces listed in a configuration descriptor.
+fn parse_config(cfg: &[u8]) -> Vec<Iface> {
+    let mut out: Vec<Iface> = Vec::new();
+    let mut i = 0;
+    while i + 2 <= cfg.len() {
+        let (len, ty) = (cfg[i] as usize, cfg[i + 1]);
+        if len < 2 || i + len > cfg.len() {
+            break;
+        }
+        let d = &cfg[i..i + len];
+        match ty {
+            4 if len >= 9 => out.push(Iface { num: d[2], alt: d[3], class: (d[5], d[6], d[7]), eps: Vec::new() }),
+            5 if len >= 7 => {
+                if let Some(f) = out.last_mut() {
+                    f.eps.push((d[2], d[3], u16::from_le_bytes([d[4], d[5]]) & 0x7ff, d[6], 0));
+                }
+            }
+            // SuperSpeed endpoint companion: bMaxBurst.
+            0x30 if len >= 6 => {
+                if let Some(e) = out.last_mut().and_then(|f| f.eps.last_mut()) {
+                    e.4 = d[2].min(15);
+                }
+            }
+            _ => {}
+        }
+        i += len;
+    }
+    out
 }
 
 impl Xhci {
@@ -310,11 +421,11 @@ impl Xhci {
         }
     }
 
-    /// Poll the event ring until `want` matches an event (others are
-    /// dispatched).
-    fn wait_event(&mut self, mut want: impl FnMut(&[u32; 4]) -> bool) -> Option<[u32; 4]> {
+    /// Poll the event ring for up to `ms` until `want` matches an event
+    /// (others are dispatched).
+    fn wait_event(&mut self, ms: u64, mut want: impl FnMut(&[u32; 4]) -> bool) -> Option<[u32; 4]> {
         let mut found = None;
-        wait_until(TIMEOUT_MS, || {
+        wait_until(ms, || {
             while let Some(ev) = self.ev.pop() {
                 if want(&ev) {
                     found = Some(ev);
@@ -330,19 +441,30 @@ impl Xhci {
 
     /// Run a command; returns the completion event if it succeeded.
     fn command(&mut self, t: [u32; 4]) -> Option<[u32; 4]> {
-        let addr = self.cmd.push(t);
-        self.ring_doorbell(0, 0);
-        let ev = self.wait_event(|e| trb_type(e) == TRB_COMMAND_COMPLETION && (e[0] as u64 | (e[1] as u64) << 32) == addr);
-        match ev {
-            Some(e) if e[2] >> 24 == CC_SUCCESS => Some(e),
-            Some(e) => {
-                log::warn!("xhci: command {} failed: completion code {}", trb_type(&t), e[2] >> 24);
-                None
-            }
-            None => {
+        let r = self.command_code(t);
+        match r {
+            Ok(e) => Some(e),
+            Err(0) => {
                 log::warn!("xhci: command {} timed out", trb_type(&t));
                 None
             }
+            Err(code) => {
+                log::warn!("xhci: command {} failed: completion code {code}", trb_type(&t));
+                None
+            }
+        }
+    }
+
+    /// Run a command: the completion event, or its completion code (0 for
+    /// a timeout).
+    fn command_code(&mut self, t: [u32; 4]) -> Result<[u32; 4], u32> {
+        let addr = self.cmd.push(t);
+        self.ring_doorbell(0, 0);
+        let ev = self.wait_event(TIMEOUT_MS, |e| trb_type(e) == TRB_COMMAND_COMPLETION && trb_ptr(e) == addr);
+        match ev {
+            Some(e) if e[2] >> 24 == CC_SUCCESS => Ok(e),
+            Some(e) => Err(e[2] >> 24),
+            None => Err(0),
         }
     }
 
@@ -358,9 +480,16 @@ impl Xhci {
 
     fn slot_ctx(&self, d: &UsbDev, entries: u32) {
         let s = self.ctx(d.input.1, 1);
+        let t = &d.topo;
+        let (hub, ports, ttt) = match d.hub {
+            Some((n, ttt)) => (1, n, ttt),
+            None => (0, 0, 0),
+        };
+        let (tt_slot, tt_port) = t.tt.unwrap_or((0, 0));
         unsafe {
-            *s = d.speed << 20 | entries << 27;
-            *s.add(1) = d.port << 16;
+            *s = t.route & 0xf_ffff | d.speed << 20 | hub << 26 | entries << 27;
+            *s.add(1) = t.port << 16 | ports << 24;
+            *s.add(2) = tt_slot | tt_port << 8 | ttt << 16;
         }
     }
 
@@ -375,8 +504,13 @@ impl Xhci {
         }
     }
 
-    /// A control transfer on EP0; IN data lands in `self.data`.
+    /// A control transfer on EP0; IN data lands in `self.data`, OUT data
+    /// is taken from it.
     fn control(&mut self, d: &mut UsbDev, req_type: u8, req: u8, value: u16, index: u16, len: u16) -> bool {
+        self.control_quiet(d, req_type, req, value, index, len, false)
+    }
+
+    fn control_quiet(&mut self, d: &mut UsbDev, req_type: u8, req: u8, value: u16, index: u16, len: u16, quiet: bool) -> bool {
         let input = req_type & 0x80 != 0;
         let trt = if len == 0 { 0 } else if input { 3 } else { 2 };
         d.ep0.push([
@@ -389,23 +523,42 @@ impl Xhci {
             d.ep0.push([self.data.0 as u32, (self.data.0 >> 32) as u32, len as u32, TRB_DATA << 10 | (input as u32) << 16]);
         }
         let status_in = len == 0 || !input;
-        d.ep0.push([0, 0, 0, TRB_STATUS << 10 | TRB_IOC | (status_in as u32) << 16]);
+        let last = d.ep0.push([0, 0, 0, TRB_STATUS << 10 | TRB_IOC | (status_in as u32) << 16]);
         self.ring_doorbell(d.slot, 1);
         let slot = d.slot;
-        let ev = self.wait_event(|e| trb_type(e) == TRB_TRANSFER_EVENT && e[3] >> 24 == slot && (e[3] >> 16) & 0x1f == 1);
+        // The status stage's event, or an earlier one with an error.
+        let ev = self.wait_event(TIMEOUT_MS * 2, |e| {
+            trb_type(e) == TRB_TRANSFER_EVENT
+                && e[3] >> 24 == slot
+                && (e[3] >> 16) & 0x1f == 1
+                && (trb_ptr(e) == last || !matches!(e[2] >> 24, CC_SUCCESS | CC_SHORT_PACKET))
+        });
         let code = ev.map(|e| e[2] >> 24);
         match code {
             Some(CC_SUCCESS) | Some(CC_SHORT_PACKET) => true,
             _ => {
-                log::warn!("xhci: slot {slot}: control request {req:#x} failed ({code:?})");
-                if code == Some(CC_STALL) {
-                    // Clear the halt and skip what is left of the TD.
-                    self.command([0, 0, 0, TRB_RESET_EP << 10 | 1 << 16 | slot << 24]);
-                    let p = d.ep0.enqueue_ptr();
-                    self.command([p as u32, (p >> 32) as u32, 0, TRB_SET_TR_DEQUEUE << 10 | 1 << 16 | slot << 24]);
+                if !quiet {
+                    log::warn!("xhci: slot {slot}: control request {req:#x} failed ({code:?})");
                 }
+                // Clear the halt (or stop a timed-out request) and skip
+                // what is left of the TD.
+                self.recover_ep(slot, 1, d.ep0.enqueue_ptr(), code.is_none());
                 false
             }
+        }
+    }
+
+    /// Put an endpoint that halted (or whose transfer timed out) back in
+    /// service with its ring's dequeue pointer past everything posted.
+    fn recover_ep(&mut self, slot: u32, dci: u32, enqueue: u64, stop: bool) {
+        if stop {
+            let _ = self.command_code([0, 0, 0, TRB_STOP_EP << 10 | dci << 16 | slot << 24]);
+        }
+        // Fails with a context state error unless the endpoint halted.
+        let _ = self.command_code([0, 0, 0, TRB_RESET_EP << 10 | dci << 16 | slot << 24]);
+        let p = enqueue;
+        if let Err(code) = self.command_code([p as u32, (p >> 32) as u32, 0, TRB_SET_TR_DEQUEUE << 10 | dci << 16 | slot << 24]) {
+            log::warn!("xhci: slot {slot} endpoint {dci}: cannot reset the ring (code {code})");
         }
     }
 
@@ -426,8 +579,12 @@ impl Xhci {
         String::from_utf16_lossy(&units)
     }
 
+    fn portsc(&self, port: u32) -> u32 {
+        mmio_read32(self.op, OP_PORTSC + 0x10 * (port as u64 - 1))
+    }
+
     /// Reset (if needed) and enumerate the device on root port `port`.
-    fn attach(&mut self, port: u32) {
+    fn attach_root(&mut self, port: u32) {
         let reg = OP_PORTSC + 0x10 * (port as u64 - 1);
         let sc = mmio_read32(self.op, reg);
         if sc & PORT_CCS == 0 {
@@ -437,9 +594,11 @@ impl Xhci {
             mmio_write32(self.op, reg, (sc & PORT_KEEP) | PORT_PR);
             let op = self.op;
             if !wait_until(500, || mmio_read32(op, reg) & PORT_PRC != 0) {
-                log::warn!("xhci: port {port}: reset timed out");
+                log::warn!("xhci: port {port}: reset timed out ({:#x})", mmio_read32(op, reg));
                 return;
             }
+            // Reset recovery (TRSTRCY).
+            wait_until(10, || false);
         }
         let sc = mmio_read32(self.op, reg);
         mmio_write32(self.op, reg, (sc & PORT_KEEP) | (sc & 0x00fe_0000));
@@ -448,24 +607,37 @@ impl Xhci {
             return;
         }
         let speed = (sc >> 10) & 0xf;
+        let topo = Topo { port, route: 0, depth: 0, tt: None, path: format!("{port}") };
+        self.enumerate(topo, speed);
+    }
+
+    /// Address the device at `topo` and set it up by class.
+    fn enumerate(&mut self, topo: Topo, speed: u32) {
+        let path = topo.path.clone();
         let Some(ev) = self.command([0, 0, 0, TRB_ENABLE_SLOT << 10]) else { return };
         let slot = ev[3] >> 24;
-        let (Some(out), Some(input), Some(ep0)) = (pci::dma_alloc(1), pci::dma_alloc(1), Ring::new()) else { return };
+        let (Some(out), Some(input), Some(ep0)) = (pci::dma_alloc(1), pci::dma_alloc(1), Ring::new()) else {
+            log::warn!("xhci: {path}: out of memory");
+            return;
+        };
         unsafe { *self.dcbaa.add(slot as usize) = out.0 };
         let mps0 = match speed {
-            3 => 64,
-            4.. => 512,
+            SPEED_HIGH => 64,
+            SPEED_SUPER.. => 512,
             _ => 8,
         };
-        let mut d = UsbDev { slot, port, speed, input, ep0, mps0 };
+        let mut d = UsbDev { slot, speed, topo, input, ep0, mps0, hub: None };
         self.input_ctx(&d, 0b11);
         self.slot_ctx(&d, 1);
         self.ep0_ctx(&d);
         if self.command([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_ADDRESS_DEVICE << 10 | slot << 24]).is_none() {
+            log::warn!("xhci: {path}: device does not take an address");
             return;
         }
+        // Address recovery (TRSTRCY) before the first request.
+        wait_until(2, || false);
         let Some(dd) = self.get_descriptor(&mut d, 1, 0, 0, 8) else { return };
-        let mps = if speed >= 4 { 1u32 << dd[7] } else { dd[7] as u32 };
+        let mps = if speed >= SPEED_SUPER { 1u32 << dd[7].min(9) } else { dd[7] as u32 };
         if mps != d.mps0 && mps >= 8 {
             d.mps0 = mps;
             self.input_ctx(&d, 0b10);
@@ -474,57 +646,86 @@ impl Xhci {
             self.command([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_EVALUATE_CTX << 10 | slot << 24]);
         }
         let Some(dd) = self.get_descriptor(&mut d, 1, 0, 0, 18) else { return };
+        let dev_class = dd[4];
         let vendor = u16::from_le_bytes([dd[8], dd[9]]);
         let product = u16::from_le_bytes([dd[10], dd[11]]);
         let version = u16::from_le_bytes([dd[12], dd[13]]);
-        let (i_mfr, i_prod) = (dd[14], dd[15]);
+        let (i_mfr, i_prod, i_serial) = (dd[14], dd[15], dd[16]);
         let Some(cfg) = self.get_descriptor(&mut d, 2, 0, 0, 9) else { return };
-        let total = u16::from_le_bytes([cfg[2], cfg[3]]).min(4096);
+        let total = u16::from_le_bytes([cfg[2], cfg[3]]).clamp(9, 4096);
         let Some(cfg) = self.get_descriptor(&mut d, 2, 0, 0, total) else { return };
         let manufacturer = self.string(&mut d, i_mfr);
         let prod_name = self.string(&mut d, i_prod);
-        log::info!("xhci: port {port}: slot {slot}, speed {speed}, {vendor:04x}:{product:04x} {manufacturer} {prod_name}");
-
-        // Boot-protocol HID interfaces and their interrupt IN endpoints.
-        let mut ifaces: Vec<(u8, hid::Kind, Option<(u8, u16, u8)>)> = Vec::new();
-        let mut cur: Option<(u8, Option<hid::Kind>)> = None;
-        let mut i = 0;
-        while i + 2 <= cfg.len() {
-            let (len, ty) = (cfg[i] as usize, cfg[i + 1]);
-            if len < 2 || i + len > cfg.len() {
-                break;
-            }
-            let desc = &cfg[i..i + len];
-            if ty == 4 && len >= 9 {
-                let kind = match (desc[5], desc[6], desc[7]) {
-                    (3, 1, 1) => Some(hid::Kind::Keyboard),
-                    (3, 1, 2) => Some(hid::Kind::Mouse),
-                    _ => None,
-                };
-                cur = Some((desc[2], kind));
-                if let Some(k) = kind {
-                    ifaces.push((desc[2], k, None));
-                }
-            } else if ty == 5 && len >= 7 && desc[2] & 0x80 != 0 && desc[3] & 3 == 3 {
-                if let Some((num, Some(_))) = cur
-                    && let Some(f) = ifaces.iter_mut().find(|f| f.0 == num && f.2.is_none())
-                {
-                    f.2 = Some((desc[2], u16::from_le_bytes([desc[4], desc[5]]) & 0x7ff, desc[6]));
-                }
-            }
-            i += len;
+        let serial = self.string(&mut d, i_serial);
+        log::info!(
+            "xhci: usb{}-{path}: slot {slot}, {} speed, {vendor:04x}:{product:04x} {manufacturer} {prod_name}",
+            self.bus,
+            speed_name(speed)
+        );
+        let usbdev = format!("{}/usb{}/{}-{path}", self.pci_dir, self.bus, self.bus);
+        crate::fs::sysfs::set(&usbdev, "idVendor", &format!("{vendor:04x}\n"));
+        crate::fs::sysfs::set(&usbdev, "idProduct", &format!("{product:04x}\n"));
+        crate::fs::sysfs::set(&usbdev, "manufacturer", &format!("{manufacturer}\n"));
+        crate::fs::sysfs::set(&usbdev, "product", &format!("{prod_name}\n"));
+        crate::fs::sysfs::set(&usbdev, "speed", &format!("{}\n", [0, 12, 1, 480, 5000, 10000][speed.min(5) as usize]));
+        if !serial.is_empty() {
+            crate::fs::sysfs::set(&usbdev, "serial", &format!("{serial}\n"));
         }
-        if ifaces.iter().all(|f| f.2.is_none()) {
-            log::info!("xhci: port {port}: no boot keyboard or mouse, left unconfigured");
+
+        let ifaces = parse_config(&cfg);
+        let is_hub = dev_class == 9 || ifaces.iter().any(|f| f.class.0 == 9);
+        let msd = ifaces.iter().position(|f| f.alt == 0 && f.class == (8, 6, 0x50));
+        let hid_any = ifaces.iter().any(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1 && matches!(f.class.2, 1 | 2));
+        if !is_hub && msd.is_none() && !hid_any {
+            if ifaces.iter().any(|f| f.class.0 == 8) {
+                log::warn!("xhci: usb{}-{path}: mass storage without SCSI Bulk-Only (UAS-only?), not supported", self.bus);
+            } else {
+                log::info!("xhci: usb{}-{path}: no hub, disk, keyboard or mouse interface, left unconfigured", self.bus);
+            }
             return;
         }
         if !self.control(&mut d, 0x00, 9, cfg[5] as u16, 0, 0) {
             return;
         }
+        if is_hub {
+            self.hub(d, &usbdev);
+        } else if let Some(i) = msd {
+            let f = &ifaces[i];
+            let name = format!("{manufacturer} {prod_name}");
+            self.storage(d, f, &usbdev, name.trim());
+        } else {
+            let name = match (manufacturer.is_empty(), prod_name.is_empty()) {
+                (false, false) => format!("{manufacturer} {prod_name}"),
+                (true, false) => prod_name.clone(),
+                (false, true) => manufacturer.clone(),
+                (true, true) => format!("HID {vendor:04x}:{product:04x}"),
+            };
+            self.hid(d, &ifaces, &usbdev, &name, [vendor, product, version]);
+        }
+    }
+
+    /// Set up the boot-protocol keyboards and mice of a configured device.
+    fn hid(&mut self, mut d: UsbDev, ifaces: &[Iface], usbdev: &str, name: &str, ids: [u16; 3]) {
+        let [vendor, product, version] = ids;
+        let slot = d.slot;
+        let mut found: Vec<(u8, hid::Kind, (u8, u16, u8))> = Vec::new();
+        for f in ifaces.iter().filter(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1) {
+            let kind = match f.class.2 {
+                1 => hid::Kind::Keyboard,
+                2 => hid::Kind::Mouse,
+                _ => continue,
+            };
+            if let Some(&(addr, _, mps, interval, _)) = f.eps.iter().find(|e| e.0 & 0x80 != 0 && e.1 & 3 == 3) {
+                found.push((f.num, kind, (addr, mps, interval)));
+            }
+        }
+        if found.is_empty() {
+            log::info!("xhci: {name}: no interrupt endpoint, left unconfigured");
+            return;
+        }
         let mut add = 1u32;
         let mut max_dci = 1;
-        for &(num, _, ep) in &ifaces {
-            let Some((addr, _, _)) = ep else { continue };
+        for &(num, _, (addr, _, _)) in &found {
             self.control(&mut d, 0x21, 0x0b, 0, num as u16, 0); // SET_PROTOCOL(boot)
             self.control(&mut d, 0x21, 0x0a, 0, num as u16, 0); // SET_IDLE(0)
             add |= 1 << dci_of(addr);
@@ -533,15 +734,14 @@ impl Xhci {
         self.input_ctx(&d, add);
         self.slot_ctx(&d, max_dci);
         let mut eps = Vec::new();
-        for &(num, kind, ep) in &ifaces {
-            let Some((addr, mps, interval)) = ep else { continue };
+        for &(num, kind, (addr, mps, interval)) in &found {
             let dci = dci_of(addr);
             let (Some(ring), Some(bufs)) = (Ring::new(), pci::dma_alloc(RING_TRBS * REPORT_BUF / 4096)) else { return };
             let mps = (mps as u32).clamp(1, REPORT_BUF as u32);
             let e = self.ctx(d.input.1, dci as usize + 1);
             let tr = ring.enqueue_ptr();
             unsafe {
-                *e = ep_interval(speed, interval) << 16;
+                *e = ep_interval(d.speed, interval) << 16;
                 *e.add(1) = 3 << 1 | 7 << 3 | mps << 16;
                 *e.add(2) = tr as u32;
                 *e.add(3) = (tr >> 32) as u32;
@@ -549,27 +749,17 @@ impl Xhci {
             }
             eps.push((num, kind, dci, ring, bufs, mps));
         }
-        if self.command([input.0 as u32, (input.0 >> 32) as u32, 0, TRB_CONFIGURE_EP << 10 | slot << 24]).is_none() {
+        if self.command([d.input.0 as u32, (d.input.0 >> 32) as u32, 0, TRB_CONFIGURE_EP << 10 | slot << 24]).is_none() {
             return;
         }
-        let name = match (manufacturer.is_empty(), prod_name.is_empty()) {
-            (false, false) => format!("{manufacturer} {prod_name}"),
-            (true, false) => prod_name.clone(),
-            (false, true) => manufacturer.clone(),
-            (true, true) => format!("HID {vendor:04x}:{product:04x}"),
-        };
-        let usbdev = format!("{}/usb{}/{}-{port}", self.pci_dir, self.bus, self.bus);
-        crate::fs::sysfs::set(&usbdev, "idVendor", &format!("{vendor:04x}\n"));
-        crate::fs::sysfs::set(&usbdev, "idProduct", &format!("{product:04x}\n"));
-        crate::fs::sysfs::set(&usbdev, "manufacturer", &format!("{manufacturer}\n"));
-        crate::fs::sysfs::set(&usbdev, "product", &format!("{prod_name}\n"));
+        let path = &d.topo.path;
         for (num, kind, dci, ring, bufs, mps) in eps {
             let n = NEXT_HID.fetch_add(1, Ordering::Relaxed);
-            let parent = format!("{usbdev}/{}-{port}:1.{num}/0003:{vendor:04X}:{product:04X}.{n:04X}", self.bus);
-            let mut caps = hid::caps(kind, &name);
+            let parent = format!("{usbdev}/{}-{path}:1.{num}/0003:{vendor:04X}:{product:04X}.{n:04X}", self.bus);
+            let mut caps = hid::caps(kind, name);
             caps.id = [0x03, vendor, product, version];
             let slot_name = self.pci_dir.rsplit('/').next().unwrap_or("");
-            caps.phys = format!("usb-{slot_name}-{port}/input{num}");
+            caps.phys = format!("usb-{slot_name}-{path}/input{num}");
             let dev = match input::register(caps, &parent, None) {
                 Ok(dev) => dev,
                 Err(e) => {
@@ -647,6 +837,9 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
     let hcs1 = mmio_read32(base, CAP_HCSPARAMS1);
     let hcs2 = mmio_read32(base, CAP_HCSPARAMS2);
     let hcc1 = mmio_read32(base, CAP_HCCPARAMS1);
+    if caplen == 0 || hcs1 == u32::MAX {
+        return Err("registers read as all ones (device absent or powered down)");
+    }
     let op = base + caplen;
     let rt = base + (mmio_read32(base, CAP_RTSOFF) & !0x1f) as u64;
     let db = base + (mmio_read32(base, CAP_DBOFF) & !0x3) as u64;
@@ -678,10 +871,13 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
     if !wait_until(1000, || mmio_read32(op, OP_USBCMD) & CMD_HCRST == 0 && mmio_read32(op, OP_USBSTS) & STS_CNR == 0) {
         return Err("reset timed out");
     }
-    let max_slots = (hcs1 & 0xff).min(32);
-    let ports = hcs1 >> 24;
+    let max_slots = (hcs1 & 0xff).min(64);
+    let ports = (hcs1 >> 24).max(1);
     mmio_write32(op, OP_CONFIG, max_slots);
     let dcbaa = pci::dma_alloc(1).ok_or("out of memory")?;
+    if hcc1 & HCC_AC64 == 0 && dcbaa.0 >> 32 != 0 {
+        log::warn!("xhci: 32-bit controller with DMA memory above 4 GiB, it may not work");
+    }
     let scratch = ((hcs2 >> 27) & 0x1f) | ((hcs2 >> 21) & 0x1f) << 5;
     if scratch > 0 {
         let arr = pci::dma_alloc(1).ok_or("out of memory")?;
@@ -724,18 +920,40 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         ev: EventRing { phys: seg.0, ptr: seg.1 as *mut u32, idx: 0, cycle: 1 },
         data: pci::dma_alloc(1).ok_or("out of memory")?,
         hids: Vec::new(),
+        disks: Vec::new(),
+        new_disks: Vec::new(),
         pci_dir,
         bus,
     };
-    log::info!("xhci: {:?}: {} ports, {max_slots} slots, {}-byte contexts", d.addr, x.ports, x.csz);
-    // Let USB3 links train and connections show before looking.
-    wait_until(50, || false);
+    log::info!("xhci: {:?}: usb{bus}, {} ports, {max_slots} slots, {}-byte contexts", d.addr, x.ports, x.csz);
+    // Power the ports if software controls their power (otherwise they
+    // are on), let connections show and USB3 links train.
+    if hcc1 & HCC_PPC != 0 {
+        for port in 1..=x.ports {
+            let sc = x.portsc(port);
+            if sc & PORT_PP == 0 {
+                mmio_write32(op, OP_PORTSC + 0x10 * (port as u64 - 1), (sc & PORT_KEEP) | PORT_PP);
+            }
+        }
+        wait_until(20, || false);
+    }
+    wait_until(100, || false);
+    // A USB3 link in training shows Polling with no connection yet (a
+    // USB2 port shows Polling with a device waiting for its reset).
+    let training = |x: &Xhci| (1..=x.ports).any(|p| x.portsc(p) & (PORT_CCS | 0xf << 5) == PLS_POLLING << 5);
+    if training(&x) && !wait_until(1000, || !training(&x)) {
+        log::warn!("xhci: usb{bus}: a USB3 link is still training after 1 s");
+    }
     for port in 1..=x.ports {
-        x.attach(port);
+        x.attach_root(port);
     }
     x.update_erdp();
+    let disks = core::mem::take(&mut x.new_disks);
     CTRLS.lock().push(x);
     COUNT.store(index as u32 + 1, Ordering::Release);
+    for d in disks {
+        storage::register(index, d);
+    }
     Ok(())
 }
 
@@ -748,4 +966,22 @@ fn xhci_endpoint_math() {
     assert_eq!(ep_interval(2, 1), 3);
     // High speed bInterval 7 -> 2^6 microframes.
     assert_eq!(ep_interval(3, 7), 6);
+}
+
+#[test_case]
+fn usb_config_parse() {
+    // A mass storage interface (SCSI, Bulk-Only) with two bulk endpoints
+    // and SuperSpeed companions.
+    let cfg = [
+        9, 2, 44, 0, 1, 1, 0, 0x80, 50, //
+        9, 4, 0, 0, 2, 8, 6, 0x50, 0, //
+        7, 5, 0x81, 2, 0, 4, 0, 6, 0x30, 15, 0, 0, 0, //
+        7, 5, 0x02, 2, 0, 4, 0, 6, 0x30, 3, 0, 0, 0,
+    ];
+    let f = parse_config(&cfg);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].class, (8, 6, 0x50));
+    assert_eq!(f[0].eps.len(), 2);
+    assert_eq!(f[0].eps[0], (0x81, 2, 1024, 0, 15));
+    assert_eq!(f[0].eps[1], (0x02, 2, 1024, 0, 3));
 }

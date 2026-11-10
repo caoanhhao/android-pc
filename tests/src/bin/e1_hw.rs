@@ -1,15 +1,18 @@
 //! E1: real-hardware-class controllers, against QEMU's emulated ones
 //! (run-qemu.sh --hw-test): the C2 test disk on an NVMe controller
 //! (nvme0n1) and on an AHCI SATA port (sda), a USB keyboard and mouse on
-//! an xHCI controller.
+//! an xHCI controller; the same disk as a USB mass storage device (sdb)
+//! and the keyboard behind a USB hub.
 //!
 //! Disks: nodes and device numbers (NVMe on blkext 259:n, SATA 8:16n+p),
 //! sysfs paths below the controller's PCI function, GPT partitions on
-//! both, /proc/partitions, identical contents on the two disks (every
-//! byte), writes through the cache and around the 128 KiB transfer limit
-//! on each scratch partition (after BLKFLSBUF the data comes back from
-//! the device), and file systems mounted from the SATA disk (c2_fs covers
-//! NVMe through /dev/block/by-name).
+//! both, /proc/partitions, identical contents on the three disks (every
+//! byte), writes through the cache and around the 128 KiB (SATA) and
+//! 120 KiB (USB) transfer limits on each scratch partition (after
+//! BLKFLSBUF the data comes back from the device), and file systems
+//! mounted from the SATA and USB disks (c2_fs covers NVMe through
+//! /dev/block/by-name). The USB disk (8:16) sits below the xHCI function
+//! as on Linux (`usb1/1-1/1-1:1.0/host1/target1:0:0/1:0:0:0/block/sdb`).
 //!
 //! HID: the evdev nodes of "QEMU QEMU USB Keyboard"/"... Mouse" (bus USB,
 //! QEMU's ids, key and relative-axis bits), then the test prints
@@ -74,6 +77,9 @@ fn disks() {
     let sda = cpath!("/dev/block/sda");
     check_eq!(rdev_of(&sda), Some(makedev(8, 0)), "sata_node");
     check_eq!(rdev_of(&cpath!("/dev/block/sda3")), Some(makedev(8, 3)), "sata_partition_node");
+    let usb = cpath!("/dev/block/sdb");
+    check_eq!(rdev_of(&usb), Some(makedev(8, 16)), "usb_node");
+    check_eq!(rdev_of(&cpath!("/dev/block/sdb6")), Some(makedev(8, 22)), "usb_partition_node");
     let p1 = rdev_of(&cpath!("/dev/block/nvme0n1p1"));
     check!(p1.is_some_and(|r| r >> 8 & 0xfff == 259 && r != nv_rdev), "nvme_partition_node", "{:?}", p1);
 
@@ -84,6 +90,11 @@ fn disks() {
     let n = readlink(cpath!("/sys/block/sda").as_ptr(), &mut buf);
     let l = &buf[..n.max(0) as usize];
     check!(contains(l, b"/ata1/host") && contains(l, b"block/sda"), "sata_sysfs_path", "{}", Bytes(l));
+    let n = readlink(cpath!("/sys/block/sdb").as_ptr(), &mut buf);
+    let l = &buf[..n.max(0) as usize];
+    check!(contains(l, b"/0000:00:06.0/usb1/1-1/1-1:1.0/host1/target1:0:0/1:0:0:0/block/sdb"), "usb_sysfs_path", "{}", Bytes(l));
+    let n = slurp(&cpath!("/sys/class/block/sdb3/uevent"), &mut buf);
+    check!(contains(&buf[..n], b"PARTNAME=c2_erofs") && contains(&buf[..n], b"DEVNAME=sdb3"), "usb_partition_uevent", "{}", Bytes(&buf[..n]));
     let n = slurp(&cpath!("/sys/class/block/nvme0n1p3/uevent"), &mut buf);
     check!(contains(&buf[..n], b"PARTNAME=c2_erofs") && contains(&buf[..n], b"DEVNAME=nvme0n1p3"), "nvme_partition_uevent", "{}", Bytes(&buf[..n]));
     let n = slurp(&cpath!("/sys/class/block/sda6/uevent"), &mut buf);
@@ -92,11 +103,12 @@ fn disks() {
     let n = slurp(&cpath!("/proc/partitions"), &mut pp);
     check!(contains(&pp[..n], b" nvme0n1p6\n") && contains(&pp[..n], b" sda6\n"), "proc_partitions");
 
-    // Same image on both: compare every byte.
+    // Same image on all three: compare every byte.
     let a = open(nvme.as_ptr(), O_RDONLY, 0) as i32;
     let b = open(sda.as_ptr(), O_RDONLY, 0) as i32;
+    let c = open(usb.as_ptr(), O_RDONLY, 0) as i32;
     let size = size64(a);
-    check!(size > 0 && size == size64(b), "same_size", "{} {}", size, size64(b));
+    check!(size > 0 && size == size64(b) && size == size64(c), "same_size", "{} {} {}", size, size64(b), size64(c));
     let ba = alloc_pages(CHUNK);
     let bb = alloc_pages(CHUNK);
     let (ca, cb) = unsafe { (core::slice::from_raw_parts_mut(ba, CHUNK), core::slice::from_raw_parts_mut(bb, CHUNK)) };
@@ -106,8 +118,10 @@ fn disks() {
         let n = (size - off).min(CHUNK as u64) as usize;
         let (ra, rb) = (pread(a, &mut ca[..n], off as i64), pread(b, &mut cb[..n], off as i64));
         same = ra == n as isize && rb == n as isize && ca[..n] == cb[..n];
+        let rc = pread(c, &mut cb[..n], off as i64);
+        same &= rc == n as isize && ca[..n] == cb[..n];
         if !same {
-            println!("# differ in the MiB at {off}: reads {ra} {rb}");
+            println!("# differ in the MiB at {off}: reads {ra} {rb} {rc}");
         }
         off += n as u64;
     }
@@ -117,10 +131,11 @@ fn disks() {
     check!(&buf[..8] == b"EFI PART", "gpt_header");
     close(a);
     close(b);
+    close(c);
 
     // Writes on each scratch partition: 300 KiB at an odd sector (three
     // transfers), read back after dropping the caches.
-    for (dev, what) in [("nvme0n1p6", "nvme_write"), ("sda6", "sata_write")] {
+    for (dev, what) in [("nvme0n1p6", "nvme_write"), ("sda6", "sata_write"), ("sdb6", "usb_write")] {
         let p = cpath!("/dev/block/{}", dev);
         let fd = open(p.as_ptr(), O_RDWR, 0) as i32;
         let len = 300 * 1024;
@@ -142,14 +157,15 @@ fn disks() {
     }
 
     // File systems from the SATA disk.
-    for (part, fstype) in [("sda1", c"ext4"), ("sda2", c"ext4"), ("sda3", c"erofs"), ("sda4", c"erofs")] {
+    for (part, fstype) in [("sda1", c"ext4"), ("sda2", c"ext4"), ("sda3", c"erofs"), ("sda4", c"erofs"), ("sdb1", c"ext4"), ("sdb3", c"erofs")] {
         let mnt = cpath!("/tmp/e1-{}", part);
         mkdirat(AT_FDCWD, mnt.as_ptr(), 0o755);
         let src = cpath!("/dev/block/{}", part);
         let r = mount(src.as_ptr(), mnt.as_ptr(), fstype.as_ptr() as *const u8, MS_RDONLY, core::ptr::null());
         let mut b = [0u8; 16];
         let n = read_file(cpath!("{}/small.txt", Bytes(mnt.as_bytes())).as_ptr(), &mut b);
-        check!(r == 0 && n == 9 && &b[..9] == b"hello c2\n", name(&case("sata_mount_", part)), "mount {} read {}", errname(r), n);
+        let what = if part.starts_with("sdb") { "usb_mount_" } else { "sata_mount_" };
+        check!(r == 0 && n == 9 && &b[..9] == b"hello c2\n", name(&case(what, part)), "mount {} read {}", errname(r), n);
         umount2(mnt.as_ptr(), 0);
     }
 }
@@ -241,7 +257,8 @@ fn hid() {
     check!(bit(&mkeys, BTN_LEFT) && bit(&rel, REL_X) && bit(&rel, REL_Y), "mouse_bits");
     let mut phys = [0u8; 64];
     ioctl(kbd, eioc_read(0x07, 64), phys.as_mut_ptr() as usize);
-    check!(cfield(&phys).starts_with(b"usb-0000:00:"), "keyboard_phys", "{}", Bytes(cfield(&phys)));
+    // Behind the hub on root port 1 of usb2... as QEMU numbers them.
+    check!(cfield(&phys).starts_with(b"usb-0000:00:06.0-") && contains(cfield(&phys), b".1/input0"), "keyboard_phys_behind_hub", "{}", Bytes(cfield(&phys)));
 
     println!("E1-HID-READY");
     let fds = [kbd, mouse];

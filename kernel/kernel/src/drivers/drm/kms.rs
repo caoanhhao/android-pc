@@ -117,6 +117,10 @@ impl Output {
 /// Copy the `r` rectangle of `fb` to the boot framebuffer's top left
 /// corner, converting pixels to its channel layout.
 fn blit(out: &BootFramebuffer, fb: &Fb, r: Rect) -> KResult<()> {
+    crate::drivers::fbcon::release();
+    if crate::drivers::fbcon::holds_display() {
+        return Ok(());
+    }
     let (sr, sg, sb) = shifts(fb.format).ok_or(EINVAL)?;
     let (dr, dg, db) = out.shifts;
     let same = (sr, sg, sb) == (dr, dg, db);
@@ -557,6 +561,16 @@ impl Kms {
             extra.crtc_touched = true;
         }
         Ok(())
+    }
+
+    /// Show the current frame again on the boot framebuffer (after the
+    /// kernel log covered it).
+    pub fn redraw_boot(&self) {
+        if let Output::Boot(fb) = &self.out
+            && let Some((f, r)) = self.state.scanout()
+        {
+            let _ = blit(fb, &f, r);
+        }
     }
 
     /// Check a new state (Linux's atomic_check for this hardware).

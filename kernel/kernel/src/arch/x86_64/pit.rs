@@ -5,8 +5,10 @@ use x86_64::instructions::port::Port;
 const PIT_HZ: u64 = 1_193_182;
 
 /// Run `start`, wait `ms` milliseconds using PIT channel 2, then return
-/// `stop()`. Busy-waits; `ms` must be at most 54.
-pub fn measure<R>(ms: u64, start: impl FnOnce(), stop: impl FnOnce() -> R) -> R {
+/// `stop()`. Busy-waits; `ms` must be at most 54. None if the PIT never
+/// reaches the count (chipsets that gate the 8254 off): given up after
+/// about 2^34 TSC cycles (seconds on any CPU).
+pub fn measure<R>(ms: u64, start: impl FnOnce(), stop: impl FnOnce() -> R) -> Option<R> {
     let count = PIT_HZ * ms / 1000;
     assert!(count > 0 && count <= 0xffff, "PIT interval out of range");
     unsafe {
@@ -24,11 +26,16 @@ pub fn measure<R>(ms: u64, start: impl FnOnce(), stop: impl FnOnce() -> R) -> R 
 
         start();
         gate.write((saved & !0x02) | 0x01); // gate high: counting starts
+        let t0 = crate::time::rdtsc();
         while gate.read() & 0x20 == 0 {
+            if crate::time::rdtsc().wrapping_sub(t0) > 1 << 34 {
+                gate.write(saved);
+                return None;
+            }
             core::hint::spin_loop();
         }
         let result = stop();
         gate.write(saved);
-        result
+        Some(result)
     }
 }

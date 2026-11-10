@@ -11,6 +11,7 @@
 use super::super::input::{Caps, EV_KEY, EV_REL};
 
 pub const BTN_LEFT: u16 = 0x110;
+pub const KEY_PAUSE: u16 = 119;
 pub const REL_X: u16 = 0x00;
 pub const REL_Y: u16 = 0x01;
 pub const REL_WHEEL: u16 = 0x08;

@@ -9,7 +9,7 @@ use limine::memmap;
 use limine::mp::MpRespData;
 use limine::request::{
     BootloaderInfoRequest, DateAtBootRequest, ExecutableAddressRequest, ExecutableCmdlineRequest,
-    FirmwareTypeRequest, FramebufferRequest, HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest, StackSizeRequest,
+    ExecutableFileRequest, FirmwareTypeRequest, FramebufferRequest, HhdmRequest, MemmapRequest, ModulesRequest, MpRequest, RsdpRequest, StackSizeRequest,
 };
 
 /// Lowest base revision whose semantics this kernel relies on (HHDM covers
@@ -50,6 +50,11 @@ static EXECUTABLE_ADDRESS: ExecutableAddressRequest = ExecutableAddressRequest::
 #[used]
 #[unsafe(link_section = ".requests")]
 static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
+
+/// Where the kernel was loaded from (the GPT disk of the boot partition).
+#[used]
+#[unsafe(link_section = ".requests")]
+static EXECUTABLE_FILE: ExecutableFileRequest = ExecutableFileRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -110,6 +115,10 @@ pub fn init() {
     if STACK_SIZE.response().is_none() {
         log::warn!("bootloader ignored the stack size request");
     }
+    if let Some(f) = EXECUTABLE_FILE.response().map(|r| r.executable_file()) {
+        // No heap yet: nothing here may allocate.
+        log::info!("loaded from {} (partition {}, GPT disk {:02x?})", f.path(), boot_file_u32(56), boot_disk_guid());
+    }
     if let Some(cmdline) = CMDLINE.response()
         && !cmdline.cmdline().is_empty() {
             log::info!("cmdline: {}", cmdline.cmdline());
@@ -152,9 +161,40 @@ pub fn framebuffer() -> Option<BootFramebuffer> {
     })
 }
 
+/// The command line with values the kernel filled in after probing
+/// (`block::resolve_boot_disk`).
+static CMDLINE_OVERRIDE: spin::Once<&'static str> = spin::Once::new();
+
 /// Kernel command line ("" if none).
 pub fn cmdline() -> &'static str {
+    if let Some(s) = CMDLINE_OVERRIDE.get() {
+        return s;
+    }
     CMDLINE.response().map_or("", |c| c.cmdline())
+}
+
+/// Replace the command line (once, before init starts).
+pub fn set_cmdline(s: alloc::string::String) {
+    CMDLINE_OVERRIDE.call_once(|| alloc::boxed::Box::leak(s.into_boxed_str()));
+}
+
+/// The `struct limine_file` of the kernel, as bytes: the limine crate's
+/// `File` misses the `unused` field after `media_type`, so its fields past
+/// it are 4 bytes off; read them at the protocol's offsets instead.
+fn boot_file() -> Option<&'static [u8]> {
+    let f = EXECUTABLE_FILE.response()?.executable_file();
+    Some(unsafe { core::slice::from_raw_parts(f as *const limine::file::File as *const u8, 112) })
+}
+
+fn boot_file_u32(off: usize) -> u32 {
+    boot_file().map_or(0, |b| u32::from_le_bytes(b[off..off + 4].try_into().unwrap()))
+}
+
+/// The GPT disk GUID (on-disk byte order) of the disk Limine loaded the
+/// kernel from, if it was a GPT disk (`gpt_disk_uuid` at offset 64).
+pub fn boot_disk_guid() -> Option<[u8; 16]> {
+    let g: [u8; 16] = boot_file()?[64..80].try_into().unwrap();
+    (g != [0; 16]).then_some(g)
 }
 
 /// Contents of the first boot module (the initramfs), if any. It lives in
@@ -191,10 +231,12 @@ pub fn mp() -> Option<&'static MpRespData> {
     MP.response().map(|r| &**r)
 }
 
-/// ACPI RSDP address as handed over by Limine (needed later for ACPI/MADT).
-#[allow(dead_code)]
+/// Physical address of the ACPI RSDP.
 pub fn rsdp() -> Option<u64> {
-    RSDP.response().map(|r| r.address as u64)
+    // Physical in base revision 3, a direct-map address in the others.
+    let a = RSDP.response()?.address as u64;
+    let hhdm = hhdm_offset();
+    Some(if a >= hhdm { a - hhdm } else { a })
 }
 
 pub fn memmap_type_name(t: u64) -> &'static str {

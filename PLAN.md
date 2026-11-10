@@ -108,6 +108,13 @@ RTX 4070 của máy này không có driver mở khả dụng cho kernel tự vi�
 chạy phần cứng thật cần GPU Intel/AMD, hoặc chỉ dùng framebuffer UEFI GOP +
 render phần mềm.
 
+- **E1.** NVMe, AHCI, xHCI + bàn phím/chuột USB HID.
+- **E2.** simpledrm trên framebuffer của firmware (GOP/VBE).
+- **E3.** Boot từ USB stick trên PC thật: USB mass storage (Bulk-Only + SCSI),
+  hub USB, bảng ACPI (MADT, FADT/PM timer, HPET), hiệu chuẩn timer không cần
+  PIT, log kernel trên framebuffer, `tools/mkusb.sh`,
+  `run-qemu.sh --usb-boot-test`; hướng dẫn: `docs/usb-boot.md`.
+
 ## Rủi ro chính
 
 - Phạm vi cực lớn (Starnix mất nhiều năm với đội lớn). Ưu tiên chạy được từng mốc.

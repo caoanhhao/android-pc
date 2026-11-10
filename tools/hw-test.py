@@ -2,8 +2,9 @@
 """Run the E1 hardware test VM (run-qemu.sh --hw-test) and feed it input.
 
 Runs QEMU (the command after "--": the ktest initramfs with the C2 test
-disk on an NVMe controller and on an AHCI SATA port, and a qemu-xhci
-with usb-kbd and usb-mouse) with ktest-init running c2_fs and e1_hw. The
+disk on an NVMe controller, on an AHCI SATA port and as a usb-storage
+device, and a qemu-xhci with a usb-hub (usb-kbd behind it) and a
+usb-mouse) with ktest-init running c2_fs and e1_hw. The
 serial console is copied to stdout and the log. When e1_hw prints
 "E1-HID-READY" (its evdev nodes are open), the QEMU monitor sends
 `sendkey a`, then `mouse_move 10 -5`, `mouse_button 1`, `mouse_button 0`,

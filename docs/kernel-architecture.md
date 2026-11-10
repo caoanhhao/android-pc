@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -42,8 +42,12 @@ tools/run-qemu.sh --disk IMG[,rw|,snapshot][,legacy]   # attach raw images as vi
                                   # (PCI slots 00:04.0, 00:05.0, ... in order)
 tools/run-qemu.sh --nvme ...      # the same disks (and the AOSP boots' super/frp/misc) as NVMe
                                   # controllers: nvme0n1, nvme1n1, ... (E1)
-tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI, qemu-xhci with usb-kbd/usb-mouse;
-                                  # ktest c2_fs + e1_hw, keys/mouse sent through the monitor
+tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI + usb-storage, qemu-xhci with a usb-hub
+                                  # (usb-kbd behind it) and usb-mouse; ktest c2_fs + e1_hw, keys/mouse
+                                  # sent through the monitor
+tools/run-qemu.sh --usb-boot-test # E3: AOSP from a USB stick image (tools/mkusb.sh + tools/mkusbimg.py)
+                                  # under OVMF, no virtio disk/GPU/input; checked by aosp-fb-test.py --usb
+tools/mkusb.sh --esp /run/media/$USER/ANDROIDPC   # E3: fill a real stick's ESP (docs/usb-boot.md)
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes (UEFI through
                                   # OVMF is the default; --bios boots the same ISO via SeaBIOS)
@@ -148,16 +152,19 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
 
 ## Boot sequence (BSP)
 
-1. `serial::init`, `logger::init`.
-2. `boot::init`: check Limine base revision, log bootloader/cmdline.
+1. `serial::init` (if a UART answers), `fbcon::init` (kernel log on the
+   boot framebuffer), `serial=off` honoured, `logger::init` (`loglevel=`).
+2. `boot::init`: check Limine base revision, log bootloader/cmdline and
+   where the kernel was loaded from (GPT disk GUID).
 3. `arch::init_bsp_early`: static BSP `PerCpu` (GDT + TSS with a double-fault
    IST stack, GS base -> `PerCpu`), load the IDT, enable SSE/FXSR (+FSGSBASE)
    for user code and program STAR/LSTAR/SFMASK.
 4. `mm::init`: log memory map -> frame allocator -> new kernel page tables
    (all 256 kernel-half PDPTs pre-allocated) -> heap.
-5. `arch::init_bsp_late`: remap+mask the 8259 PIC, enable LAPIC, calibrate the
-   LAPIC timer and the TSC against PIT channel 2 (10 ms), start the periodic
-   timer, `sti`.
+5. `arch::init_bsp_late`: remap+mask the 8259 PIC, parse the ACPI tables,
+   enable LAPIC, calibrate the LAPIC timer and the TSC against the HPET or
+   ACPI PM timer (20 ms; else PIT channel 2, 10 ms; else CPUID's crystal
+   clock), start the periodic timer, `sti`.
 6. `smp::start_aps`: per AP allocate `PerCpu`, a 64 KiB stack and an IST
    stack, `MpInfo::bootstrap`. The AP loads the kernel CR3, switches stack,
    installs GDT/TSS/GS/IDT, user-mode support, its LAPIC and timer, then
@@ -166,7 +173,10 @@ Rule: generic code calls `crate::arch::*` re-exports, not `arch::x86_64::*`.
    into a tmpfs that becomes the root mount, fill in sysfs (mount
    points, memory/tty/misc character devices), create loop0-7 and the
    RAM disks asked for with `brd.rd_nr=` (`block::init`), enumerate PCI and bring up the virtio
-   devices, NVMe and AHCI disks with their partitions and xHCI USB keyboards/mice (`drivers::init`), start `/init` as pid 1 (cwd
+   devices, NVMe and AHCI disks with their partitions and xHCI USB
+   keyboards/mice/hubs/disks (`drivers::init`), fill in
+   `androidboot.*=auto` from the boot disk (`block::resolve_boot_disk`),
+   start `/init` as pid 1 (cwd
    `/`, umask 022) with fds 0-2 on the serial console, and enter the idle
    loop. When init exits the kernel logs its status and powers off.
 
@@ -886,8 +896,40 @@ for rings and bounce buffers, and register PCI sysfs directories with
   (protocol 1 keyboard, 2 mouse) gets SET_PROTOCOL(boot), SET_IDLE,
   Configure Endpoint for its interrupt IN endpoint (Interval from
   bInterval and speed) and 16 Normal TRBs kept posted. A stalled control
-  request is recovered with Reset Endpoint + Set TR Dequeue Pointer. No
-  hubs, no hot-plug, no LED output reports.
+  request is recovered with Reset Endpoint + Set TR Dequeue Pointer (a
+  timed-out one after Stop Endpoint). Since E3: root ports are powered
+  when HCCPARAMS1.PPC says software controls power, USB3 links get up to
+  1 s to leave Polling, the slot context carries the route string, hub
+  flag/port count/TT think time and, for low/full-speed devices behind a
+  high-speed hub, the TT hub slot and port; up to 8 controllers. No
+  hot-plug, no LED output reports.
+- **Hubs** (`drivers/usb/hub.rs`, E3): hub descriptor (0x29, SuperSpeed
+  0x2a), Configure Endpoint marking the slot as a hub, SET_HUB_DEPTH on
+  SuperSpeed hubs, PORT_POWER on every port, the power-on delay plus
+  100 ms, then per connected port: PORT_RESET until C_PORT_RESET (a
+  SuperSpeed port only if its link does not enable itself), change bits
+  cleared, speed from the port status, and the device enumerated with the
+  route string extended by the port (`1-2.3` in sysfs names). Five tiers
+  at most.
+- **Mass storage** (`drivers/usb/storage.rs`, E3): interfaces of class
+  8/6/0x50 (SCSI over Bulk-Only; UAS-only devices are logged and left
+  alone). Both bulk endpoints are configured (SuperSpeed max burst from
+  the companion descriptor). A command is the 31-byte CBW, the data stage
+  through a 120 KiB bounce buffer (240 sectors, Linux's usb-storage
+  default; Normal TRBs chained at 64 KiB boundaries, TD Size filled in,
+  the event matched by TRB address so a short packet's extra event is
+  harmless) and the 13-byte CSW (tag and signature checked). Stalls are
+  cleared on both sides (Reset Endpoint/Set TR Dequeue,
+  CLEAR_FEATURE(ENDPOINT_HALT)); transport errors, timeouts and phase
+  errors do Bulk-Only reset recovery; CHECK CONDITION fetches REQUEST
+  SENSE. Probe: INQUIRY, TEST UNIT READY for up to 10 s, READ
+  CAPACITY(10) or (16); 512-byte blocks only. I/O is READ/WRITE(10), or
+  (16) past 2^32 sectors, three tries; SYNCHRONIZE CACHE on flush. The
+  disk shares the sd names and 8:16n numbers with AHCI
+  (`block::next_sd`), below
+  `.../0000:00:07.0/usb1/1-1/1-1:1.0/host0/target0:0:0/0:0:0:0/block/sda`.
+  Disk I/O runs on the caller with the controller locked, dispatching the
+  HID events it meets.
 - **HID boot protocol** (`drivers/usb/hid.rs`): keyboard reports are
   diffed against the previous one (modifier bits, six usages, rollover
   errors ignored) and mapped with Linux's usbkbd table; mouse reports
@@ -898,11 +940,56 @@ for rings and bounce buffers, and register PCI sysfs directories with
   virtio-input, the BSP's timer tick sees the next event TRB's cycle bit
   flip and the soft interrupt (idle loop / return to user mode) decodes
   the reports and re-posts the TRBs.
+- **Boot disk** (`block::resolve_boot_disk`, E3): with
+  `androidboot.boot_devices=auto androidboot.partition_map=auto` the
+  kernel picks, after the disk drivers, the disk with a GPT partition
+  named `super` (preferring the one whose GPT disk GUID is the one Limine
+  loaded the kernel from, `boot::boot_disk_guid`), and rewrites the two
+  values to its controller's PCI prefix (what ueventd matches,
+  `pci0000:00/0000:00:14.0`) and `sda2,super;sda3,frp;sda4,misc`; the
+  command line and /proc/bootconfig show the result. All other hardware
+  disks become read-only.
 - **AOSP over NVMe**: `run-qemu.sh --nvme` attaches super, frp and misc as
   NVMe controllers at 00:04.0-00:06.0 (same `androidboot.boot_devices`)
   with `androidboot.partition_map=nvme0n1,super;nvme1n1,frp;nvme2n1,misc`;
   first-stage init finds `by-name/super` and maps the dynamic partitions
   as before.
+
+## Real PCs (`arch/x86_64/acpi.rs`, `drivers/fbcon.rs`, E3)
+
+What a PC without virtio devices or a serial port needs (see
+docs/usb-boot.md for booting one from a USB stick):
+
+- **ACPI tables** (`arch/x86_64/acpi.rs`): RSDP (physical in Limine's
+  base revision 3, else through the direct map) -> XSDT/RSDT; MADT
+  (enabled/online-capable local APIC and x2APIC ids, I/O APICs), FADT (PM
+  timer as I/O port or GAS, 24/32 bits; reset register; PM1a/b control;
+  DSDT, whose `\_S5_` package bytes give SLP_TYP for soft-off), HPET.
+  Tables are mapped uncached on demand; checksum errors are only logged.
+  `power_off` tries ACPI S5 first, `reboot` the FADT reset register.
+- **Timer calibration** (`arch/x86_64/apic.rs`): the LAPIC timer and the
+  TSC are measured over 20 ms of HPET time (enabled if the firmware left
+  it off), else ACPI PM timer, else (as before) 10 ms of PIT channel 2,
+  which Intel PCHs may gate off. When CPUID leaf 0x15 (crystal x ratio)
+  or 0x16 states the TSC frequency and the measurement is more than 2%
+  away, CPUID wins.
+- **SMP**: APs still start through Limine's MP response (built from the
+  MADT); the kernel compares it with the MADT and logs CPUs Limine did not
+  report, and uses at most `MAX_CPUS` (64).
+- **Framebuffer console** (`drivers/fbcon.rs`, `drivers/font.rs`): every
+  console print (the log, /dev/kmsg lines, panics) also goes to a text
+  grid in RAM drawn on the boot framebuffer with the 8x16 VGA font
+  (scaled 2x/3x from 2560/3840 pixels wide), colored by log level.
+  Scrolling moves the grid half a screen and redraws it, so the
+  framebuffer is only written. It draws until simpledrm shows its first
+  frame; then Pause/Break on a USB keyboard toggles the log over Android's
+  picture (scanout held meanwhile, repainted after). A panic always draws.
+- **Write-combining**: PAT is programmed as Linux does (entry 1 WC) on
+  every CPU, and the boot framebuffer's direct-map pages use it, since
+  real video memory is uncached by the MTRRs.
+- **Serial**: the console UART is used only if its scratch register
+  works; `serial=off` stops the log there (a 16550 with nothing attached
+  paces the log at 115200 baud). `loglevel=N` sets the log level.
 
 ## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
 
@@ -1389,6 +1476,22 @@ strings, xHCI endpoint math and HID report decoding. Disks also get
 `--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
 17/17, `--aosp-boot-test` 24/24, `--aosp-apk-test` 22/22 pass.
 
+E3 (USB stick on a real PC): USB mass storage (Bulk-Only + SCSI) and
+hubs on the xHCI driver, the boot disk found at run time
+(`androidboot.*=auto`, the PC's other disks read-only), ACPI tables
+(MADT check of the MP list, HPET/PM timer calibration with PIT and CPUID
+fallbacks, ACPI reset and S5), the kernel log on the framebuffer
+(Pause/Break toggles it over Android), write-combined framebuffer,
+`serial=off`, `loglevel=`. New `tools/mkusb.sh`, `tools/mkusbimg.py`,
+`tools/aosp-bootargs.sh` and `run-qemu.sh --usb-boot-test` 28/28 (OVMF
+boots Limine from the stick image's ESP, sys.boot_completed=1 in ~30 s,
+Launcher3 at 1920x1080; also with `--usb-dev bot`). `--hw-test` adds a
+usb-storage disk and a hub (e1_hw 28 cases). `--test` 36/36, `--ktest`
+50/50, `--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9,
+`--aosp-init-test` 41/41, `--aosp-adb-test` 21/21, `--aosp-gfx-test`
+22/22, `--aosp-input-test` 17/17, `--aosp-boot-test` 24/24,
+`--aosp-apk-test` 22/22, `--aosp-fb-test` 21/21 pass.
+
 Phase E2 (graphics on the firmware framebuffer, the real-hardware path
 for a machine whose GPU has no open driver): Limine's framebuffer and
 firmware-type requests (the kernel logs `firmware: UEFI|BIOS` and the
@@ -1409,21 +1512,38 @@ accepted. `--test` 33/33, `--ktest` 50/50, `--hw-test`,
 `--aosp-adb-test` 21/21, `--aosp-gfx-test` 22/22, `--aosp-input-test`
 17/17, `--aosp-boot-test` 24/24, `--aosp-apk-test` 22/22 pass.
 
+E3 (USB stick on a real PC): USB mass storage (Bulk-Only + SCSI) and
+hubs on the xHCI driver, the boot disk found at run time
+(`androidboot.*=auto`, the PC's other disks read-only), ACPI tables
+(MADT check of the MP list, HPET/PM timer calibration with PIT and CPUID
+fallbacks, ACPI reset and S5), the kernel log on the framebuffer
+(Pause/Break toggles it over Android), write-combined framebuffer,
+`serial=off`, `loglevel=`. New `tools/mkusb.sh`, `tools/mkusbimg.py`,
+`tools/aosp-bootargs.sh` and `run-qemu.sh --usb-boot-test` 28/28 (OVMF
+boots Limine from the stick image's ESP, sys.boot_completed=1 in ~30 s,
+Launcher3 at 1920x1080; also with `--usb-dev bot`). `--hw-test` adds a
+usb-storage disk and a hub (e1_hw 28 cases). `--test` 36/36, `--ktest`
+50/50, `--aosp-sh-test` 15/15, `--aosp-disk-test` 9/9,
+`--aosp-init-test` 41/41, `--aosp-adb-test` 21/21, `--aosp-gfx-test`
+22/22, `--aosp-input-test` 17/17, `--aosp-boot-test` 24/24,
+`--aosp-apk-test` 22/22, `--aosp-fb-test` 21/21 pass.
+
 ## Known gaps / next steps
 
 - Graphics follow-ups: virgl/3D and blob resources, interrupt-driven
   virtio-gpu with asynchronous commits (fences are signalled at once
   now), a cursor plane, hotplug.
 - E1 follow-ups: MSI-X interrupts and several commands in flight (NVMe
-  queues per CPU, AHCI NCQ), NVMe namespaces with 4 KiB LBAs, USB hubs and
-  hot-plug, HID report descriptors (non-boot devices such as usb-tablet,
-  touch screens), keyboard LEDs, USB mass storage; then real machines
-  (ACPI/IOAPIC, Intel/AMD GPUs).
-- E2 follow-ups: a page-attribute (PAT) write-combining mapping of the
-  boot framebuffer, copying only damaged rectangles, mode changes
-  (the firmware's mode is the only one), a native "simpledrm" backend
-  in userspace (today AOSP needs `simpledrm.name=virtio_gpu`), not yet
-  tried on the physical machine.
+  queues per CPU, AHCI NCQ), NVMe namespaces with 4 KiB LBAs, USB
+  hot-plug (hubs since E3), UAS and 4 KiB-sector USB disks, HID report descriptors (non-boot devices such as usb-tablet,
+  touch screens), keyboard LEDs; IOAPIC interrupts, Intel/AMD GPUs.
+- E2 follow-ups: copying only damaged rectangles, mode changes (the
+  firmware's mode is the only one), a native "simpledrm" backend in
+  userspace (today AOSP needs `simpledrm.name=virtio_gpu`).
+- E3 follow-ups: results from the physical PC (docs/usb-boot.md says what
+  to report); a persistent /data on the stick's userdata partition; a
+  network driver (Intel I225-V) for adb; starting APs without Limine
+  (INIT-SIPI from the MADT); AML for \_S5 beyond the byte pattern.
 - Input follow-ups: force feedback (EVIOCSFF), key autorepeat (EV_REP is
   only stored), EVIOCREVOKE semantics, /proc/bus/input/devices, uhid,
   interrupt-driven virtio-input. `input keyevent` and InputFlinger run

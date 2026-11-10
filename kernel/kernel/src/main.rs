@@ -39,6 +39,10 @@ use core::panic::PanicInfo;
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
     drivers::serial::init();
+    drivers::fbcon::init();
+    if boot::cmdline().split_ascii_whitespace().any(|w| w == "serial=off") {
+        drivers::serial::set_enabled(false);
+    }
     logger::init();
     log::info!("android-pc kernel {} booting", env!("CARGO_PKG_VERSION"));
 
@@ -59,6 +63,7 @@ extern "C" fn kmain() -> ! {
     fs::init(boot::initramfs());
     block::init();
     drivers::init();
+    block::resolve_boot_disk();
     start_init(boot::cmdline());
     sched::idle()
 }
@@ -104,7 +109,10 @@ fn start_init(cmdline: &str) {
 fn panic(info: &PanicInfo) -> ! {
     arch::interrupts_disable();
     // The panic may have happened while the serial port was locked.
-    unsafe { drivers::serial::force_unlock() };
+    unsafe {
+        drivers::serial::force_unlock();
+        drivers::fbcon::panic_takeover();
+    }
     kprintln!("\nKERNEL PANIC on cpu{}: {}", arch::cpu_index(), info);
     #[cfg(test)]
     {

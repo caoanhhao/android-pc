@@ -84,12 +84,32 @@
 #                                     (QEMU screendump). Without OVMF on
 #                                     the host it boots with BIOS and
 #                                     --fb=bochs (720x1280 VBE modes)
+#   tools/run-qemu.sh --usb-boot-test AOSP from a USB stick image, as on a real
+#                                     PC (E3): tools/mkusb.sh stages the ESP
+#                                     (Limine BOOTX64.EFI, limine.conf with
+#                                     the stick's command line, kernel,
+#                                     initramfs), tools/mkusbimg.py builds the
+#                                     GPT image (ESP, super, frp, misc,
+#                                     userdata) in out/usb/, attached through
+#                                     snapshot=on as a usb-storage device
+#                                     (--usb-dev storage, default; or bot:
+#                                     usb-bot + scsi-hd) on a qemu-xhci with a
+#                                     usb-kbd and usb-mouse; OVMF boots it
+#                                     (UEFI only), no virtio disk, GPU or
+#                                     input, a std VGA framebuffer of
+#                                     --gpu-size (default 1920x1080) for
+#                                     simpledrm. tools/aosp-fb-test.py --usb
+#                                     checks the USB disk and partition map,
+#                                     sys.boot_completed=1 and the launcher
+#                                     on screen (virtio-net stays for adb)
 #   tools/run-qemu.sh --hw-test       real-hardware-class controllers (E1):
 #                                     the ktest initramfs with the C2 test
 #                                     disk on an NVMe controller (00:04.0,
 #                                     nvme0n1) and on an AHCI SATA port
 #                                     (00:05.0, sda), a qemu-xhci (00:06.0)
-#                                     with usb-kbd and usb-mouse, no virtio
+#                                     with the same disk as usb-storage
+#                                     (sdb), a usb-hub with the usb-kbd
+#                                     behind it, and a usb-mouse; no virtio
 #                                     disks or input; ktest-init runs c2_fs
 #                                     (over NVMe) and e1_hw, and
 #                                     tools/hw-test.py types into the USB
@@ -127,6 +147,8 @@
 #          --no-net (no network card), --adb-port PORT (forward host
 #          127.0.0.1:PORT to the guest's TCP 5555, adbd; default 15555
 #          for --aosp-init*/--aosp-adb-test, none otherwise),
+#          --density N (androidboot.lcd_density; default 320, 240 for
+#          --usb-boot-test), --usb-dev storage|bot (--usb-boot-test),
 #          --sh-arg ARG (repeatable): extra argument for aosp-sh-test.py,
 #          e.g. --sh-arg --run --sh-arg "ls /dev/block".
 #          Extra args after `--` go to QEMU.
@@ -137,10 +159,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel"
+# shellcheck source=tools/aosp-bootargs.sh
+source "$ROOT/tools/aosp-bootargs.sh"
 
 mode=run profile=dev firmware="" kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
-gpu="" fb="" input="" gpu_size=720x1280 display=none monitor="" disk_bus=virtio
+gpu="" fb="" input="" gpu_size="" display=none monitor="" disk_bus=virtio density="" usb_dev=storage
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -158,6 +182,9 @@ while [[ $# -gt 0 ]]; do
         --disk) disks+=("$2"); shift ;;
         --nvme) disk_bus=nvme ;;
         --hw-test) mode=hw-test ;;
+        --usb-boot-test) mode=usb-boot-test ;;
+        --usb-dev) usb_dev="$2"; shift ;;
+        --density) density="$2"; shift ;;
         --sh-arg) sh_args+=("$2"); shift ;;
         --no-net) net=0 ;;
         --gpu) gpu=1 ;;
@@ -204,10 +231,19 @@ if [[ $mode == test-build ]]; then
     export RUN_QEMU_OPTS="${fwd_opts[*]}"
     exec bash -c 'cd "$1" && exec env -u RUSTUP_TOOLCHAIN cargo test --profile "$2"' _ "$KERNEL_DIR" "$profile"
 fi
-if [[ $mode == aosp-fb-test ]]; then
+if [[ $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
     [[ -z $gpu ]] && gpu=0
     [[ -z $fb ]] && fb=std
 fi
+if [[ $mode == usb-boot-test ]]; then
+    # The stick's defaults (tools/mkusb.sh); keyboard and mouse on USB.
+    [[ -z $gpu_size ]] && gpu_size=1920x1080
+    [[ -z $density ]] && density=240
+    [[ -z $input ]] && input=0
+    [[ $usb_dev == storage || $usb_dev == bot ]] || { echo "run-qemu.sh: --usb-dev storage or bot" >&2; exit 2; }
+fi
+[[ -z $gpu_size ]] && gpu_size=720x1280
+[[ -z $density ]] && density=320
 [[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test ) ]] && gpu=1
 [[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
@@ -234,7 +270,10 @@ if [[ $mode == hw-test ]]; then
              -drive "file=$img,format=raw,if=none,id=hwsata,snapshot=on,file.locking=off"
              -device "ide-hd,drive=hwsata,bus=hwahci.0"
              -device "qemu-xhci,id=hwxhci,addr=0x6"
-             -device "usb-kbd,bus=hwxhci.0" -device "usb-mouse,bus=hwxhci.0")
+             -drive "file=$img,format=raw,if=none,id=hwusb,snapshot=on,file.locking=off"
+             -device "usb-storage,bus=hwxhci.0,port=1,drive=hwusb,serial=RUSTPCUSB0"
+             -device "usb-hub,bus=hwxhci.0,port=2"
+             -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=3")
     qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
     [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi
@@ -251,7 +290,7 @@ if [[ $mode == aosp-apk-test ]]; then
     # The APK under test, built from source (reproducible, a few seconds).
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -263,66 +302,25 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     # factory reset protection partition ro.frp.pst names (system_server's
     # PersistentDataBlockService formats it), vdc (00:06.0) is misc (the
     # boot HAL keeps its A/B slot metadata there; vold waits for that HAL).
-    if [[ ${#disks[@]} -eq 0 ]]; then
+    if [[ ${#disks[@]} -eq 0 && $mode != usb-boot-test ]]; then
         mkdir -p "$ROOT/out"
         for p in frp misc; do
             [[ -f $ROOT/out/aosp-$p.img ]] || truncate -s 1M "$ROOT/out/aosp-$p.img"
         done
         disks=("$product/super.img" "$ROOT/out/aosp-frp.img,snapshot" "$ROOT/out/aosp-misc.img,snapshot")
     fi
-    # The disk is PCI 00:04.0 (see the -device loop below), so it is the
-    # boot device and vda is "super". Bootconfig values live on the
-    # command line; /proc/bootconfig shows the androidboot.* ones.
-    boot_args="init=/init androidboot.hardware=cutf_cvm androidboot.fstab_suffix=rustpc"
-    boot_args+=" androidboot.slot_suffix=_a androidboot.force_normal_boot=0"
-    boot_args+=" androidboot.boot_devices=pci0000:00/0000:00:04.0,pci0000:00/0000:00:05.0,pci0000:00/0000:00:06.0"
-    if [[ $disk_bus == nvme ]]; then
-        boot_args+=" androidboot.partition_map=nvme0n1,super;nvme1n1,frp;nvme2n1,misc"
-    else
-        boot_args+=" androidboot.partition_map=vda,super;vdb,frp;vdc,misc"
-    fi
-    # The fstab (with /misc) as a device-tree style fstab node: first
-    # stage mounts from it, and fs_mgr's default fstab keeps it afterwards
-    # (androidboot.android_dt_dir), see tools/mkaosp-init-initramfs.py.
-    boot_args+=" dtfstab=$(python3 "$ROOT/tools/mkaosp-init-initramfs.py" --dtfstab)"
-    boot_args+=" androidboot.android_dt_dir=/sys/firmware/devicetree/base/firmware/android/"
-    boot_args+=" androidboot.selinux=permissive androidboot.verifiedbootstate=orange"
-    boot_args+=" androidboot.veritymode=disabled androidboot.dynamic_partitions=true"
-    boot_args+=" androidboot.serialno=RUSTPC000001 androidboot.console=ttyS0 printk.devkmsg=on"
-    # RAM disks: the block devices of the tmpfs /metadata and /data.
-    boot_args+=" brd.rd_nr=2 brd.rd_size=4096"
-    boot_args+=" androidboot.hardware.gralloc=minigbm androidboot.hardware.hwcomposer=ranchu"
-    boot_args+=" androidboot.hardware.egl=angle androidboot.hardware.vulkan=pastel androidboot.lcd_density=320"
-    # The rest of cuttlefish's --gpu_mode=guest_swiftshader settings
-    # (ranchu composer on DRM, SwiftShader Vulkan under ANGLE).
-    boot_args+=" androidboot.hardware.hwcomposer.display_finder_mode=drm"
-    boot_args+=" androidboot.hardware.hwcomposer.display_framebuffer_format=rgba"
-    boot_args+=" androidboot.opengles.version=196609 androidboot.cpuvulkan.version=4202496"
-    boot_args+=" androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough"
-    boot_args+=" androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting"
-    boot_args+=" androidboot.enable_bootanimation=1"
-    # On the boot framebuffer, the DRM driver answers to the name the
-    # cuttlefish HALs look for (minigbm's backend, the ranchu composer).
-    [[ $gpu != 1 && -n $fb ]] && boot_args+=" simpledrm.name=virtio_gpu"
-    boot_args+=" androidboot.setupwizard_mode=DISABLED androidboot.hw_timeout_multiplier=3"
-    boot_args+=" androidboot.hypervisor.vm.supported=0 androidboot.hypervisor.protected_vm.supported=0"
-    # Cuttlefish picks one of several vendor APEX variants per module
-    # (the values cvd-1's bootconfig uses); apexd aborts on duplicates.
-    v="androidboot.vendor.apex"
-    boot_args+=" $v.com.android.hardware.gatekeeper=com.android.hardware.gatekeeper.nonsecure"
-    boot_args+=" $v.com.android.hardware.keymint=com.android.hardware.keymint.rust_nonsecure"
-    boot_args+=" $v.com.android.hardware.graphics.composer=com.android.hardware.graphics.composer.ranchu"
-    boot_args+=" $v.com.android.hardware.secure_element=com.android.hardware.secure_element"
-    boot_args+=" $v.com.android.hardware.strongbox=none $v.com.google.cf.disabled=none"
-    boot_args+=" $v.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal"
-    append="$boot_args $append"
+    simpledrm=0; [[ $gpu != 1 && -n $fb ]] && simpledrm=1
+    # The USB boot takes the stick's own command line (tools/mkusb.sh);
+    # --append adds to it.
+    [[ $mode != usb-boot-test ]] && append="$(aosp_boot_args "$disk_bus" "$simpledrm" "$density") $append"
     [[ $timeout == 120 ]] && timeout=300
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $timeout == 300 ]] && timeout=900
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $mem == 2G ]] && mem=6G
-    [[ ( $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && $smp == 4 ]] && smp=6
+    big=0; [[ $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]] && big=1
+    [[ $big == 1 && $timeout == 300 ]] && timeout=900
+    [[ $big == 1 && $mem == 2G ]] && mem=6G
+    [[ $big == 1 && $smp == 4 ]] && smp=6
     [[ $mode == aosp-init ]] && mode=run
 fi
 if [[ $mode == aosp-test || $mode == aosp ]]; then
@@ -375,6 +373,7 @@ if [[ -z $firmware ]]; then
         [[ $fb == std ]] && fb=bochs
     fi
 fi
+[[ $mode == usb-boot-test && $firmware != uefi ]] && { echo "run-qemu.sh: --usb-boot-test boots through UEFI only" >&2; exit 2; }
 [[ $firmware == uefi && -z $OVMF_CODE ]] && missing+=(edk2-ovmf)
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "run-qemu.sh: missing host packages. Install them with:" >&2
@@ -382,8 +381,28 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     exit 1
 fi
 
-# --- ISO image --------------------------------------------------------------
 work="$(dirname "$elf")/qemu-$(basename "$elf")"
+if [[ $mode == usb-boot-test ]]; then
+    # --- USB stick image ----------------------------------------------------
+    # The ESP as tools/mkusb.sh writes it on the real stick, with the
+    # kernel log also on the serial port for the test.
+    rm -rf "$work/esp"
+    "$ROOT/tools/mkusb.sh" --stage "$work/esp" --kernel "$elf" --serial --resolution "$gpu_size" \
+        --density "$density" ${append:+--append "$append"} >/dev/null
+    mkdir -p "$ROOT/out/usb"
+    stick="$ROOT/out/usb/usb-stick.img"
+    python3 "$ROOT/tools/mkusbimg.py" --esp "$work/esp" --super "$product/super.img" --out "$stick"
+    boot_media=(-drive "file=$stick,format=raw,if=none,id=stick,snapshot=on,file.locking=off"
+                -device "qemu-xhci,id=usbxhci,addr=0x7")
+    if [[ $usb_dev == bot ]]; then
+        boot_media+=(-device "usb-bot,id=usbbot,bus=usbxhci.0,port=1"
+                     -device "scsi-hd,bus=usbbot.0,scsi-id=0,lun=0,drive=stick,bootindex=1")
+    else
+        boot_media+=(-device "usb-storage,bus=usbxhci.0,port=1,drive=stick,bootindex=1")
+    fi
+    boot_media+=(-device "usb-kbd,bus=usbxhci.0,port=2" -device "usb-mouse,bus=usbxhci.0,port=3")
+else
+# --- ISO image --------------------------------------------------------------
 iso_root="$work/iso_root"
 rm -rf "$iso_root"
 mkdir -p "$iso_root/boot/limine" "$iso_root/EFI/BOOT"
@@ -421,11 +440,13 @@ xorriso -as mkisofs -R -r -J -b boot/limine/limine-bios-cd.bin \
     -efi-boot-part --efi-boot-image --protective-msdos-label \
     "$iso_root" -o "$iso" 2>/dev/null
 limine bios-install "$iso" 2>/dev/null
+boot_media=(-cdrom "$iso" -boot d)
+fi
 
 # --- QEMU -------------------------------------------------------------------
 args=(-machine q35 -smp "$smp" -m "$mem" -no-reboot
       -device isa-debug-exit,iobase=0xf4,iosize=0x04
-      -cdrom "$iso" -boot d)
+      "${boot_media[@]}")
 if [[ $kvm == auto && -r /dev/kvm && -w /dev/kvm ]]; then
     args+=(-enable-kvm -cpu host)
 else
@@ -483,7 +504,7 @@ if [[ $input == 1 ]]; then
            -device virtio-multitouch-pci,addr=0x12,disable-legacy=on)
 fi
 # Unix socket paths are limited to 107 bytes, too short for $work.
-[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+[[ ( $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ) && -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 if [[ -n $monitor ]]; then
     rm -f "$monitor"
     args+=(-monitor "unix:$monitor,server,nowait")
@@ -598,6 +619,17 @@ elif [[ $mode == aosp-fb-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP framebuffer test FAILED (serial log: $log, screenshots: $work/fb)" >&2
+    exit 1
+elif [[ $mode == usb-boot-test ]]; then
+    log="$work/usb-boot-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 300)) python3 "$ROOT/tools/aosp-fb-test.py" --usb --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --monitor "$monitor" --out "$work/usb" \
+        --firmware UEFI --size "$gpu_size" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: USB boot test FAILED (serial log: $log, screenshots: $work/usb)" >&2
     exit 1
 elif [[ $mode == test ]]; then
     args+=(-display "$display" -serial stdio)
