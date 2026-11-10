@@ -162,7 +162,9 @@ linux-firmware links to the same file) and hands the controller to
 Android's Bluetooth HAL as an H4 link on `/dev/hvc5`. In Android:
 Settings → Connected devices → Pair new device (Bluetooth turns on by
 itself after boot; the quick settings tile toggles it). Headphones
-(A2DP), phones, LE devices and Bluetooth keyboards/mice should pair.
+(A2DP), phones, LE devices and Bluetooth keyboards/mice should pair
+(the stack creates those through `/dev/uhid`; the kernel log then shows
+`uhid: "<name>" 0005:vvvv:pppp: … input N`).
 Not supported: voice over Bluetooth (SCO/HFP audio, which needs the
 isochronous USB endpoints), anything after suspend, and pairings do not
 survive a reboot (`/data` is in RAM). The AX211's antennas must be

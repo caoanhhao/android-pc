@@ -48,6 +48,8 @@ tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI + usb-storage, qe
 tools/run-qemu.sh --usb-boot-test # E3: AOSP from a USB stick image (tools/mkusb.sh + tools/mkusbimg.py)
                                   # under OVMF, no virtio disk/GPU/input; checked by aosp-fb-test.py --usb
 tools/mkusb.sh --esp /run/media/$USER/ANDROIDPC   # E3: fill a real stick's ESP (docs/usb-boot.md)
+tools/run-qemu.sh --aosp-bt-test  # E7: the boot test's machine with the host's rootcanal behind a
+                                  # virtconsole (H4 on /dev/hvc5): Bluetooth on/off, LE scan
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes (UEFI through
                                   # OVMF is the default; --bios boots the same ISO via SeaBIOS)
@@ -139,7 +141,8 @@ kernel/
                        protocol, mod); ashmem; hvc (host-less virtio-console
                        ports); pci (config space, enumeration, sysfs dirs, DMA
                        and MMIO helpers); nvme; ahci; usb/ (xHCI host + hid boot
-                       keyboards/mice); virtio/
+                       keyboards/mice, hubs, storage, btusb); bluetooth/ (H4
+                       bridge on /dev/hvc5, Intel firmware download); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
                        on virtio-gpu or the boot framebuffer: mod = files,
                        GEM, ioctls; kms = mode objects, properties, atomic
@@ -946,6 +949,22 @@ for rings and bounce buffers, and register PCI sysfs directories with
   virtio-input, the BSP's timer tick sees the next event TRB's cycle bit
   flip and the soft interrupt (idle loop / return to user mode) decodes
   the reports and re-posts the TRBs.
+- **Bluetooth** (`drivers/usb/btusb.rs`, `drivers/bluetooth/`, E7): a USB
+  controller (interface class e0/01/01) gets its interrupt IN (events)
+  and bulk IN/OUT (ACL) endpoints, IN transfers kept posted and cut into
+  HCI packets at their header lengths; commands go out as class requests
+  on EP0. Intel controllers of the TLV generation (AX201/AX211...) are
+  brought from their bootloader to the operational firmware at probe
+  (`bluetooth/intel.rs`: Read Version TLVs, Secure Send of
+  `ibt-<cnvi>-<cnvr>.sfi` over bulk OUT, Intel Reset to the firmware's
+  boot address, DDC records, event mask), the firmware being built in
+  (`build.rs` decompresses it from the build host's linux-firmware). The
+  controller becomes the H4 stream of `/dev/hvc5`, the port Cuttlefish's
+  Bluetooth HAL opens (`vendor.ser.bt-uart`); a virtio-console port
+  carrying H4 (QEMU's virtconsole to the host's rootcanal) is the other
+  kind of controller, for tests. Bluetooth HID devices come back through
+  `/dev/uhid` (`drivers/input/uhid.rs`), whose report descriptors
+  `drivers/input/hidrd.rs` turns into evdev keys and relative axes.
 - **Boot disk** (`block::resolve_boot_disk`, E3): with
   `androidboot.boot_devices=auto androidboot.partition_map=auto` the
   kernel picks, after the disk drivers, the disk with a GPT partition

@@ -301,6 +301,12 @@ if [[ $mode == aosp-apk-test ]]; then
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
 if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test || $mode == aosp-bt-test ]]; then
+    [[ -z $adb_port && $mode == aosp-bt-test ]] && adb_port=$(python3 -c '
+import socket
+for p in range(15565, 15655):
+    try:
+        s = socket.socket(); s.bind(("127.0.0.1", p)); s.close(); print(p); break
+    except OSError: pass')
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"

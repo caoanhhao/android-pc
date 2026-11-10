@@ -113,7 +113,7 @@ def main():
     ap.add_argument("--boot-timeout", type=float, default=900)
     ap.add_argument("--log", default=None)
     ap.add_argument("--port", type=int, default=15555)
-    ap.add_argument("--server-port", type=int, default=15037)
+    ap.add_argument("--server-port", type=int, default=15047)
     ap.add_argument("--adb", default=None)
     ap.add_argument("--rootcanal", required=True)
     ap.add_argument("--hci-port", type=int, required=True)

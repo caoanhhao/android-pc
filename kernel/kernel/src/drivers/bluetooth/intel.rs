@@ -427,8 +427,10 @@ pub fn setup<H: Hci>(
             let mut p = alloc::vec![0x00, 0x01, 0x00, 0x01];
             p.extend_from_slice(&boot_addr.to_le_bytes());
             let t1 = crate::time::monotonic_ns();
+            // The controller may not finish the transfer as it reboots:
+            // the bootup event is what counts.
             if !s.h.send_cmd(&cmd_packet(OP_RESET, &p), false) {
-                return Err("Intel Reset: transfer failed".into());
+                log::warn!("bluetooth: intel: Intel Reset transfer failed, waiting for the bootup event anyway");
             }
             s.vendor_event(VEV_BOOTUP, BOOT_TIMEOUT_MS).ok_or("firmware did not boot (no bootup event in 5 s)")?;
             log::info!("bluetooth: intel: firmware booted in {} ms", (crate::time::monotonic_ns() - t1) / 1_000_000);
