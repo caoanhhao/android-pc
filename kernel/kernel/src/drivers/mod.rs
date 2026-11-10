@@ -5,7 +5,8 @@
 //! one, the boot framebuffer drives the same DRM device) and
 //! virtio-input (with evdev and uinput on top), dma-bufs, the system
 //! dma-heap and sync files; real-hardware-class controllers: NVMe and
-//! AHCI disks, xHCI USB with HID boot keyboards and mice. Planned: more
+//! AHCI disks, xHCI USB with HID boot keyboards and mice; PC platform
+//! devices (CMOS RTC, ACPI power button, CPU thermal/cpufreq, AC power). Planned: more
 //! virtio (console).
 
 #[macro_use]
@@ -21,6 +22,7 @@ pub mod hvc;
 pub mod input;
 pub mod nvme;
 pub mod pci;
+pub mod platform;
 pub mod usb;
 pub mod virtio;
 
@@ -29,6 +31,7 @@ pub mod virtio;
 pub fn init() {
     crate::net::inet::init();
     dma_buf::init();
+    platform::init();
     pci::init();
     virtio::init();
     nvme::init();

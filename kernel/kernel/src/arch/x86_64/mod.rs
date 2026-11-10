@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod entry;
 pub mod fpu;
 pub mod gdt;
+pub mod idle;
 pub mod idt;
 pub mod pic;
 pub mod pit;
@@ -29,6 +30,7 @@ pub fn init_bsp_late() {
     pic::disable();
     acpi::init();
     apic::init_bsp();
+    idle::init();
     interrupts::enable();
 }
 
@@ -37,27 +39,65 @@ pub fn init_bsp_late() {
 /// halting.
 pub fn power_off() -> ! {
     use x86_64::instructions::port::Port;
+    log::info!("power off");
     interrupts::disable();
     acpi::power_off();
+    spin_ms(500);
+    log::warn!("power off: ACPI S5 did not take; trying QEMU's PM ports");
     unsafe {
         Port::<u16>::new(0x604).write(0x2000);
         Port::<u16>::new(0xb004).write(0x2000);
         Port::<u32>::new(0xf4).write(0x10);
     }
+    spin_ms(100);
+    log::error!("power off failed: halted (hold the power button)");
     halt_forever()
 }
 
-/// Reset the machine through the FADT reset register, then port 0xcf9 /
-/// the keyboard controller.
+/// Reset the machine through the FADT reset register, then port 0xcf9
+/// (full reset), the keyboard controller, and a triple fault.
 pub fn reboot() -> ! {
     use x86_64::instructions::port::Port;
+    log::info!("restarting");
     interrupts::disable();
     acpi::reset();
+    spin_ms(100);
+    log::warn!("restart: trying port 0xcf9");
     unsafe {
-        Port::<u8>::new(0xcf9).write(0x06);
-        Port::<u8>::new(0x64).write(0xfe);
+        let mut cf9 = Port::<u8>::new(0xcf9);
+        let v = cf9.read() & !0x0e;
+        cf9.write(v | 0x02);
+        spin_ms(1);
+        cf9.write(v | 0x0e);
+    }
+    spin_ms(100);
+    log::warn!("restart: trying the keyboard controller");
+    unsafe {
+        let mut status = Port::<u8>::new(0x64);
+        for _ in 0..10_000 {
+            if status.read() & 2 == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        status.write(0xfe);
+    }
+    spin_ms(100);
+    log::warn!("restart: triple fault");
+    unsafe {
+        let idt = x86_64::structures::DescriptorTablePointer { limit: 0, base: x86_64::VirtAddr::zero() };
+        x86_64::instructions::tables::lidt(&idt);
+        core::arch::asm!("int3");
     }
     halt_forever()
+}
+
+/// Busy-wait `ms` milliseconds on the TSC (interrupts may be off).
+fn spin_ms(ms: u64) {
+    let start = crate::time::monotonic_ns();
+    while crate::time::monotonic_ns() - start < ms * 1_000_000 {
+        core::hint::spin_loop();
+    }
 }
 
 /// Index of the executing CPU (0 = BSP), or 0 before per-CPU data exists.
