@@ -7,7 +7,7 @@ Runs QEMU (the command after "--", see run-qemu.sh --aosp-input-test: the
 connects the host adb the way aosp-adb-test.py does (own server,
 throw-away HOME). Then:
 
-- ueventd made /dev/input/event0..2 (13:64+, group input) from our
+- ueventd made /dev/input/event* (13:64+, group input) from our
   uevents, and /dev/uinput;
 - `getevent -lp` lists the three virtio devices with their keys and axes;
 - keys typed with the monitor's `sendkey` reach `getevent` on the
@@ -50,7 +50,8 @@ gfx = load("aosp_gfx_test", "aosp-gfx-test.py")
 
 MILESTONES = [
     ("second stage", rb"init: init second stage started!"),
-    ("virtio-input devices", rb"input: input2 \(event2\): \"QEMU Virtio MultiTouch\""),
+    # After the ACPI "Power Button" (input0 on a q35 machine).
+    ("virtio-input devices", rb"input: input\d+ \(event\d+\): \"QEMU Virtio MultiTouch\""),
     ("boot", rb"init: processing action \(boot\)"),
     ("adbd started", rb"init: \.\.\. started service 'adbd'"),
 ]

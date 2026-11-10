@@ -95,6 +95,15 @@
 #                                     (QEMU screendump). Without OVMF on
 #                                     the host it boots with BIOS and
 #                                     --fb=bochs (720x1280 VBE modes)
+#   tools/run-qemu.sh --aosp-bt-test  the boot test's machine plus Bluetooth (E7):
+#                                     AOSP's rootcanal (a software
+#                                     controller) runs on the host and a
+#                                     virtio-serial-pci (00:13.0) virtconsole
+#                                     on a socket chardev reaches its HCI
+#                                     port; the kernel makes it the H4
+#                                     controller behind /dev/hvc5 for the
+#                                     Bluetooth HAL. tools/aosp-bt-test.py
+#                                     checks Bluetooth turns on (and off)
 #   tools/run-qemu.sh --usb-boot-test AOSP from a USB stick image, as on a real
 #                                     PC (E3): tools/mkusb.sh stages the ESP
 #                                     (Limine BOOTX64.EFI, limine.conf with
@@ -113,6 +122,16 @@
 #                                     checks the USB disk and partition map,
 #                                     sys.boot_completed=1 and the launcher
 #                                     on screen (virtio-net stays for adb)
+#   tools/run-qemu.sh --aosp-audio-test
+#                                     the boot test's machine plus sound
+#                                     (--audio): tools/aosp-audio-test.py
+#                                     checks the HD Audio card (/dev/snd,
+#                                     /proc/asound, tinypcminfo, tinymix),
+#                                     tinyplay of a 1 kHz tone and a 440 Hz
+#                                     AudioTrack tone of apps/hello's
+#                                     ToneActivity through AudioFlinger and
+#                                     the audio HAL, both found in QEMU's
+#                                     WAV capture (E5)
 #   tools/run-qemu.sh --hw-test       real-hardware-class controllers (E1):
 #                                     the ktest initramfs with the C2 test
 #                                     disk on an NVMe controller (00:04.0,
@@ -124,7 +143,23 @@
 #                                     disks or input; ktest-init runs c2_fs
 #                                     (over NVMe) and e1_hw, and
 #                                     tools/hw-test.py types into the USB
-#                                     devices through the monitor
+#                                     devices through the monitor; then
+#                                     e9_platform (CMOS RTC, AC supply,
+#                                     cpufreq, thermal) and the ACPI power
+#                                     button pressed with the monitor's
+#                                     `system_powerdown`; ktest-init's power
+#                                     off must end QEMU through ACPI S5
+#                                     (exit status 0, not isa-debug-exit)
+#   tools/run-qemu.sh --power-test    restart and power off (E9): the ktest
+#                                     initramfs runs e9_power without
+#                                     -no-reboot; tools/power-test.py
+#                                     presses the power button
+#                                     (`system_powerdown`), the test restarts
+#                                     the machine with reboot(2) (FADT reset
+#                                     register), the second boot finds the
+#                                     marker it left in the CMOS alarm
+#                                     registers, and ktest-init's power off
+#                                     must make QEMU exit with status 0
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -155,6 +190,9 @@
 #          --aosp-gfx-test/--aosp-input-test boots), --no-input,
 #          --monitor PATH (QEMU monitor on a unix socket, e.g. for
 #          `echo "screendump out.ppm" | socat - UNIX:PATH`),
+#          --audio (an intel-hda controller at 00:08.0 with an
+#          hda-duplex codec; its output goes to a WAV file, by default
+#          <work dir>/audio.wav, or --audio-wav FILE),
 #          --no-net (no network card), --adb-port PORT (forward host
 #          127.0.0.1:PORT to the guest's TCP 5555, adbd; default 15555
 #          for --aosp-init*/--aosp-adb-test, none otherwise),
@@ -176,6 +214,7 @@ source "$ROOT/tools/aosp-bootargs.sh"
 mode=run profile=dev firmware="" kvm=auto smp=4 mem=2G gdb=0 timeout="" elf=""
 initrd="" append="" ktest_filters=() disks=() sh_args=() net=1 adb_port=
 gpu="" fb="" input="" gpu_size="" display=none monitor="" disk_bus=virtio density="" usb_dev=storage
+audio=0 audio_wav=
 qemu_extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -193,11 +232,14 @@ while [[ $# -gt 0 ]]; do
         --disk) disks+=("$2"); shift ;;
         --nvme) disk_bus=nvme ;;
         --hw-test) mode=hw-test ;;
+        --power-test) mode=power-test ;;
         --usb-boot-test) mode=usb-boot-test ;;
         --usb-dev) usb_dev="$2"; shift ;;
         --density) density="$2"; shift ;;
         --sh-arg) sh_args+=("$2"); shift ;;
         --no-net) net=0 ;;
+        --audio) audio=1 ;;
+        --audio-wav) audio=1; audio_wav="$2"; shift ;;
         --gpu) gpu=1 ;;
         --fb) fb=std ;;
         --fb=*) fb="${1#--fb=}" ;;
@@ -211,8 +253,10 @@ while [[ $# -gt 0 ]]; do
         --aosp-input-test) mode=aosp-input-test ;;
         --aosp-boot-test) mode=aosp-boot-test ;;
         --aosp-wifi-test) mode=aosp-wifi-test ;;
+        --aosp-bt-test) mode=aosp-bt-test ;;
         --aosp-apk-test) mode=aosp-apk-test ;;
         --aosp-fb-test) mode=aosp-fb-test ;;
+        --aosp-audio-test) mode=aosp-audio-test; audio=1 ;;
         --adb-port) adb_port="$2"; shift ;;
         --aosp-adb-test) mode=aosp-adb-test ;;
         --aosp-sh-test) mode=aosp-test ;;
@@ -230,6 +274,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 [[ -z $timeout ]] && { timeout=120; [[ $mode == ktest ]] && timeout=600; [[ $mode == hw-test ]] && timeout=300; }
+reboot_opt=(-no-reboot)
 
 # rust-toolchain.toml must win over a toolchain forced from the environment.
 cargo_() { (cd "$KERNEL_DIR" && env -u RUSTUP_TOOLCHAIN cargo "$@"); }
@@ -256,8 +301,8 @@ if [[ $mode == usb-boot-test ]]; then
 fi
 [[ -z $gpu_size ]] && gpu_size=720x1280
 [[ -z $density ]] && density=320
-[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test ) ]] && gpu=1
-[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test ) ]] && input=1
+[[ -z $gpu && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-audio-test || $mode == aosp-bt-test || $mode == aosp-wifi-test ) ]] && gpu=1
+[[ -z $input && ( $mode == ktest || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == aosp-audio-test || $mode == aosp-bt-test || $mode == aosp-wifi-test ) ]] && input=1
 if [[ $mode == ktest ]]; then
     "$ROOT/tools/mkinitramfs.sh" >/dev/null
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
@@ -273,7 +318,7 @@ if [[ $mode == hw-test ]]; then
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
     [[ -z $gpu ]] && gpu=0
     [[ -z $input ]] && input=0
-    append="$append -- c2_fs e1_hw"
+    append="$append e9.pwrbtn -- c2_fs e1_hw e9_platform"
     img="$ROOT/out/c2/c2-disk.img"
     # Fixed slots (sysfs paths), writes to throw-away overlays.
     qemu_hw=(-drive "file=$img,format=raw,if=none,id=hwnvme,snapshot=on,file.locking=off"
@@ -289,6 +334,16 @@ if [[ $mode == hw-test ]]; then
     qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
     [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi
+if [[ $mode == power-test ]]; then
+    "$ROOT/tools/mkinitramfs.sh" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
+    [[ -z $gpu ]] && gpu=0
+    [[ -z $input ]] && input=0
+    append="$append e9.reboot -- e9_power"
+    # The guest's restart must boot it again.
+    reboot_opt=()
+    [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+fi
 if [[ $mode == aosp-disk-test ]]; then
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -298,11 +353,17 @@ if [[ $mode == aosp-disk-test ]]; then
     sh_args=(--suite disk "${sh_args[@]}")
     mode=aosp-test
 fi
-if [[ $mode == aosp-apk-test ]]; then
+if [[ $mode == aosp-apk-test || $mode == aosp-audio-test ]]; then
     # The APK under test, built from source (reproducible, a few seconds).
     "$ROOT/apps/hello/build.sh" >/dev/null
 fi
-if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]]; then
+if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test || $mode == aosp-gfx-test || $mode == aosp-input-test || $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test || $mode == aosp-audio-test || $mode == aosp-bt-test || $mode == aosp-wifi-test ]]; then
+    [[ -z $adb_port && $mode == aosp-bt-test ]] && adb_port=$(python3 -c '
+import socket
+for p in range(15565, 15655):
+    try:
+        s = socket.socket(); s.bind(("127.0.0.1", p)); s.close(); print(p); break
+    except OSError: pass')
     [[ -z $adb_port ]] && adb_port=15555
     aosp_top="$(cd "$ROOT" && git worktree list --porcelain | sed -n '1s/^worktree //p')/aosp"
     product="${AOSP_PRODUCT_OUT:-$aosp_top/out/target/product/vsoc_x86_64_only}"
@@ -329,7 +390,7 @@ if [[ $mode == aosp-init || $mode == aosp-init-test || $mode == aosp-adb-test ||
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $timeout == 300 ]] && timeout=420
     [[ ( $mode == aosp-gfx-test || $mode == aosp-input-test ) && $mem == 2G ]] && mem=4G
     # zygote, system_server and ART's compiler need room and CPUs.
-    big=0; [[ $mode == aosp-boot-test || $mode == aosp-wifi-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test ]] && big=1
+    big=0; [[ $mode == aosp-boot-test || $mode == aosp-apk-test || $mode == aosp-fb-test || $mode == usb-boot-test || $mode == aosp-audio-test || $mode == aosp-bt-test || $mode == aosp-wifi-test ]] && big=1
     # The simulated Wi-Fi access points and their uplink card (00:09.0).
     [[ $mode == aosp-wifi-test ]] && append+=" wifisim=AndroidPC-WPA2:androidpc123@6,AndroidPC-Open@36 wifisim.uplink=00:09.0"
     [[ $big == 1 && $timeout == 300 ]] && timeout=900
@@ -458,7 +519,7 @@ boot_media=(-cdrom "$iso" -boot d)
 fi
 
 # --- QEMU -------------------------------------------------------------------
-args=(-machine q35 -smp "$smp" -m "$mem" -no-reboot
+args=(-machine q35 -smp "$smp" -m "$mem" "${reboot_opt[@]}"
       -device isa-debug-exit,iobase=0xf4,iosize=0x04
       "${boot_media[@]}")
 if [[ $kvm == auto && -r /dev/kvm && -w /dev/kvm ]]; then
@@ -524,6 +585,41 @@ if [[ -n $monitor ]]; then
     args+=(-monitor "unix:$monitor,server,nowait")
 fi
 
+if [[ $audio == 1 ]]; then
+    # QEMU's HD Audio: the controller at a fixed slot, a codec with a
+    # line out (and line in); the output is written to a WAV file at
+    # 48 kHz stereo S16 (the rate Android plays at, no resampling).
+    [[ -z $audio_wav ]] && audio_wav="$work/audio.wav"
+    args+=(-audiodev "wav,id=snd0,path=$audio_wav,out.frequency=48000,out.channels=2,out.format=s16"
+           -device "intel-hda,id=hda0,addr=0x8" -device "hda-duplex,bus=hda0.0,audiodev=snd0")
+fi
+
+if [[ $mode == aosp-bt-test ]]; then
+    rootcanal="$aosp_top/out/host/linux-x86/bin/root-canal"
+    [[ -x $rootcanal ]] || { echo "run-qemu.sh: no $rootcanal (m root-canal in aosp/)" >&2; exit 1; }
+    # Four free ports in a row: HCI, then the link and LE link ports; the
+    # test channel separately.
+    read -r bt_hci_port bt_test_port < <(python3 - <<'PY'
+import socket
+def free(n):
+    for base in range(20000 + __import__("os").getpid() % 20000, 60000, 7):
+        socks = []
+        try:
+            for i in range(n):
+                s = socket.socket(); s.bind(("127.0.0.1", base + i)); socks.append(s)
+            return base
+        except OSError:
+            pass
+        finally:
+            for s in socks: s.close()
+b = free(4)
+print(b, b + 3)
+PY
+)
+    args+=(-chardev "socket,id=btuart,host=127.0.0.1,port=$bt_hci_port"
+           -device "virtio-serial-pci,id=btserial,addr=0x13,max_ports=1"
+           -device "virtconsole,bus=btserial.0,nr=0,chardev=btuart")
+fi
 if [[ $net == 1 ]]; then
     fwd=""
     [[ -n $adb_port ]] && fwd=",hostfwd=tcp:127.0.0.1:$adb_port-:5555"
@@ -539,6 +635,15 @@ if [[ $mode == hw-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: hardware test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == power-test ]]; then
+    log="$work/power-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 30)) python3 "$ROOT/tools/power-test.py" --log "$log" --monitor "$monitor" \
+        --timeout "$timeout" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: power test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.
@@ -622,6 +727,17 @@ elif [[ $mode == aosp-wifi-test ]]; then
     fi
     echo "run-qemu.sh: AOSP Wi-Fi test FAILED (serial log: $log)" >&2
     exit 1
+elif [[ $mode == aosp-bt-test ]]; then
+    log="$work/aosp-bt-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 600)) python3 "$ROOT/tools/aosp-bt-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --rootcanal "$rootcanal" \
+        --hci-port "$bt_hci_port" --test-port "$bt_test_port" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP Bluetooth test FAILED (serial log: $log)" >&2
+    exit 1
 elif [[ $mode == aosp-apk-test ]]; then
     log="$work/aosp-apk-test.log"
     args+=(-display "$display" -serial stdio)
@@ -632,6 +748,17 @@ elif [[ $mode == aosp-apk-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: AOSP APK test FAILED (serial log: $log, screenshots: $work/apk)" >&2
+    exit 1
+elif [[ $mode == aosp-audio-test ]]; then
+    log="$work/aosp-audio-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 300)) python3 "$ROOT/tools/aosp-audio-test.py" --log "$log" \
+        --boot-timeout "$timeout" --port "$adb_port" --wav "$audio_wav" \
+        --apk "$ROOT/apps/hello/build/hello.apk" "${sh_args[@]}" \
+        -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: AOSP audio test FAILED (serial log: $log, audio: $audio_wav)" >&2
     exit 1
 elif [[ $mode == aosp-fb-test ]]; then
     log="$work/aosp-fb-test.log"

@@ -384,11 +384,10 @@ fn after_unlock() {
     }
 }
 
-/// Re-read the wlan links' carrier into the IP stack and tell rtnetlink
-/// listeners.
+/// A wlan link's carrier changed: the IP stack polls it and publishes
+/// the change (flags, sysfs, RTM_NEWLINK).
 fn refresh_links() {
-    crate::net::inet::with_net(|n| n.sync());
-    crate::net::rtnetlink::notify_links();
+    crate::net::inet::carrier_changed();
 }
 
 /// From the timer interrupt (BSP).
@@ -1117,7 +1116,11 @@ impl EthDevice for WlanDev {
         self.with(|w| w.set_up(up));
     }
 
-    fn carrier(&self) -> Option<bool> {
+    fn driver(&self) -> &'static str {
+        self.with(|w| w.caps().driver)
+    }
+
+    fn carrier(&mut self) -> Option<bool> {
         Some(self.with(|w| matches!(w.mlme, Mlme::Connected { .. })))
     }
 }

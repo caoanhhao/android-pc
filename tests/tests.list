@@ -61,3 +61,8 @@ d3_timers
 d3_splice
 # E1: real-hardware-class controllers (NVMe, AHCI, xHCI HID; run-qemu.sh --hw-test, skipped without them)
 e1_hw
+# E9: PC platform devices (CMOS RTC, AC power supply, cpufreq, thermal, ACPI power button; restart and power off with run-qemu.sh --power-test)
+e9_platform
+e9_power
+# E7: Bluetooth HID (/dev/uhid with report descriptors; skipped without it)
+e7_uhid

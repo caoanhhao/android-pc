@@ -142,7 +142,7 @@ fn enqueue_locked(rq: &mut VecDeque<Arc<Task>>, task: Arc<Task>) {
         // Wake one idle CPU (not ourselves) so the task starts right away.
         let idle = IDLE_CPUS.load(Ordering::SeqCst) & !(1u64 << cpu::index_fast());
         if idle != 0 {
-            tlb::kick(idle.trailing_zeros() as usize);
+            tlb::kick(crate::drivers::platform::cpu::pick_idle(idle));
         }
     }
 }
@@ -296,6 +296,14 @@ pub fn idle() -> ! {
             interrupts::enable();
             crate::net::wireless::softirq();
         }
+        if crate::drivers::platform::pending() {
+            interrupts::enable();
+            crate::drivers::platform::softirq();
+        }
+        if crate::drivers::virtio::console::pending() {
+            interrupts::enable();
+            crate::drivers::virtio::console::softirq();
+        }
         if process::ptimer::pending() {
             interrupts::enable();
             process::ptimer::run_due();
@@ -307,7 +315,7 @@ pub fn idle() -> ! {
             schedule();
             interrupts::enable();
         } else {
-            interrupts::enable_and_hlt();
+            crate::arch::x86_64::idle::wait();
             IDLE_CPUS.fetch_and(!bit, Ordering::SeqCst);
         }
     }
@@ -320,6 +328,7 @@ pub fn timer_interrupt(user: bool) {
     if let Some(t) = unsafe { (*this_cpu().current.get()).as_ref() } {
         if user { &t.utime } else { &t.stime }.fetch_add(1, Ordering::Relaxed);
     }
+    crate::drivers::platform::tick();
     if cpu::index_fast() == 0 {
         crate::time::tick();
         crate::fs::tty::poll_input();
@@ -328,6 +337,7 @@ pub fn timer_interrupt(user: bool) {
         crate::drivers::virtio::input::tick();
         crate::drivers::usb::tick();
         crate::net::wireless::tick();
+        crate::drivers::virtio::console::tick();
         expire_sleepers();
         timer::run_expired();
     }
@@ -351,6 +361,14 @@ pub fn exit_to_user(frame: &mut TrapFrame) {
     if crate::drivers::usb::pending() {
         interrupts::enable();
         crate::drivers::usb::softirq();
+    }
+    if crate::drivers::virtio::console::pending() {
+        interrupts::enable();
+        crate::drivers::virtio::console::softirq();
+    }
+    if crate::net::wireless::pending() {
+        interrupts::enable();
+        crate::net::wireless::softirq();
     }
     if process::ptimer::pending() {
         interrupts::enable();

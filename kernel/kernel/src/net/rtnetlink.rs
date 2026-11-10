@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 
 use super::inet::{
-    AF_INET, AF_INET6, IFF_LOWER_UP, IFF_RUNNING, IFF_UP, IfAddr, Link, Net, RT_SCOPE_HOST, RT_SCOPE_LINK,
+    AF_INET, AF_INET6, IFF_LOWER_UP, IFF_UP, IfAddr, Link, Net, RT_SCOPE_HOST, RT_SCOPE_LINK,
     RT_SCOPE_UNIVERSE, RT_TABLE_MAIN, Route, Stats, addr_bytes, with_net, with_net_nopoll,
 };
 use super::netlink::{self, NLM_F_ACK, NLM_F_DUMP, NLMSG_HDRLEN};
@@ -143,7 +143,7 @@ fn link_payload(l: &Link, st: Stats) -> Vec<u8> {
     attr(&mut p, IFLA_TXQLEN, &l.txqlen.to_le_bytes());
     let oper = if l.arptype == super::inet::ARPHRD_LOOPBACK {
         0
-    } else if l.flags & IFF_UP != 0 {
+    } else if l.flags & IFF_UP != 0 && l.carrier {
         6
     } else {
         2
@@ -458,11 +458,8 @@ fn set_link(body: &[u8]) -> KResult<()> {
         }
         if flags != 0 || change != 0 {
             let mask = if change == 0 { 0xffff } else { change };
-            let mut nf = (l.flags & !mask) | (flags & mask);
-            if l.arptype != super::inet::ARPHRD_LOOPBACK {
-                nf = if nf & IFF_UP != 0 { nf | IFF_RUNNING | IFF_LOWER_UP } else { nf & !(IFF_RUNNING | IFF_LOWER_UP) };
-            }
-            l.flags = nf;
+            let nf = (l.flags & !mask) | (flags & mask);
+            l.set_flags(nf);
         }
         n.sync();
         Ok(())
@@ -514,6 +511,13 @@ fn new_addr(body: &[u8], flags: u16) -> KResult<()> {
             Some(_) if flags & NLM_F_EXCL != 0 => return Err(EEXIST),
             Some(i) => l.addrs[i] = a,
             None => l.addrs.push(a),
+        }
+        // IPv4 addresses on cards (DHCP's result) go to the log: on a
+        // real PC the screen is the only way to learn them.
+        if let IpAddress::Ipv4(v) = a.addr
+            && !v.is_loopback()
+        {
+            log::info!("net: {} address {v}/{}", l.name, a.prefix);
         }
         let p = addr_payload(l, &a);
         n.sync();
@@ -594,7 +598,13 @@ fn new_route(body: &[u8], flags: u16) -> KResult<()> {
         match n.routes.iter().position(|x| same_route(x, &r)) {
             Some(_) if flags & NLM_F_EXCL != 0 => return Err(EEXIST),
             Some(i) => n.routes[i] = r.clone(),
-            None => n.routes.push(r.clone()),
+            None => {
+                if let (0, Some(IpAddress::Ipv4(g))) = (r.dst_len, r.gateway) {
+                    let dev = n.link(r.oif).map_or("?", |l| l.name.as_str());
+                    log::info!("net: default route via {g} dev {dev} table {}", r.table);
+                }
+                n.routes.push(r.clone())
+            }
         }
         n.sync();
         Ok(())
