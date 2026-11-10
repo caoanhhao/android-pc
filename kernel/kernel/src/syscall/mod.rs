@@ -1014,6 +1014,14 @@ fn sys_reboot(magic1: u32, magic2: u32, cmd: u32, arg: u64) -> KResult<u64> {
     if magic1 != REBOOT_MAGIC1 || !REBOOT_MAGIC2.contains(&magic2) {
         return Err(EINVAL);
     }
+    if matches!(cmd, CMD_POWER_OFF | CMD_HALT | CMD_RESTART | CMD_RESTART2) {
+        // Disks with a volatile write cache (NVMe, USB sticks) must have it
+        // on the medium before the power goes.
+        for d in crate::block::all() {
+            let _ = d.backend.flush();
+        }
+        crate::drivers::fbcon::show();
+    }
     match cmd {
         CMD_POWER_OFF | CMD_HALT => {
             log::info!("reboot(2): power off requested by pid {}", current().pid());

@@ -86,6 +86,7 @@ impl Tun {
                 arptype: ARPHRD_NONE,
                 addrs: alloc::vec::Vec::new(),
                 txqlen: 500,
+                carrier: true,
             });
             Ok((index, name))
         })?;

@@ -94,11 +94,7 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
             SIOCSIFFLAGS => {
                 let f = u16::from_le_bytes([r[16], r[17]]) as u32;
                 let keep = l.flags & !0xffff;
-                let mut nf = keep | (f & 0xffff);
-                if l.arptype != super::inet::ARPHRD_LOOPBACK {
-                    nf = if f & IFF_UP != 0 { nf | 0x10000 | 0x40 } else { nf & !(0x10000 | 0x40) };
-                }
-                l.flags = nf;
+                l.set_flags(keep | (f & 0xffff));
                 changed = true;
                 return Ok(None);
             }
@@ -172,9 +168,9 @@ fn ethtool(arg: u64) -> KResult<u64> {
     let mut c = [0u8; 4];
     mm.copy_in(data, &mut c)?;
     let cmd = u32::from_le_bytes(c);
-    let (up, mac, bus) = with_net_nopoll(|n| {
+    let (up, mac, bus, driver) = with_net_nopoll(|n| {
         let l = n.link_by_name(ifname(&r)).ok_or(ENODEV)?;
-        Ok::<_, Errno>((l.flags & IFF_UP != 0, l.mac, n.bus_info(l.index).map(alloc::string::String::from)))
+        Ok::<_, Errno>((l.flags & IFF_UP != 0 && l.carrier, l.mac, n.bus_info(l.index).map(alloc::string::String::from), n.driver(l.index)))
     })?;
     match cmd {
         ETHTOOL_GLINK => {
@@ -188,7 +184,7 @@ fn ethtool(arg: u64) -> KResult<u64> {
             let mut v = [0u8; 196];
             v[..4].copy_from_slice(&cmd.to_le_bytes());
             let mut put = |off: usize, s: &str| v[off..off + s.len().min(31)].copy_from_slice(&s.as_bytes()[..s.len().min(31)]);
-            put(4, "virtio_net");
+            put(4, driver.unwrap_or("virtio_net"));
             put(36, "1.0.0");
             put(100, &bus);
             mm.copy_out(data, &v)?;

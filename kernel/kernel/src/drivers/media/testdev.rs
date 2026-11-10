@@ -22,7 +22,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-use super::alsa::{self, CapturePcm, CaptureSource, HwFormat};
+use crate::drivers::sound::{self, capture::{CapturePcm, CaptureSource, HwFormat}};
 use super::v4l2::{self, Format, FrameSize, PIX_MJPEG, PIX_YUYV, Selection, VideoDev, VideoSource};
 use crate::errno::*;
 use crate::fs::poll::{POLLIN, WaitQueue};
@@ -269,7 +269,7 @@ pub fn register() {
     };
     v4l2::register("android-pc test camera", "testcam", "platform:testcam", "devices/platform/testcam", formats, Box::new(cam));
     let mic = TestMic { st: Mutex::new(MicState { running: false, start_ns: 0, sent: 0, armed: 0 }), waker: Arc::new(Waker(Once::new())) };
-    alsa::register("TestMic", "android-pc test microphone", "android-pc test microphone (testcam=1)", "testmic", "devices/platform/testmic", Box::new(mic));
+    sound::register_capture("devices/platform/testmic", "TestMic", "testmic", "android-pc test microphone", "android-pc test microphone (testcam=1)", Box::new(mic));
 }
 
 #[test_case]

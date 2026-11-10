@@ -23,9 +23,11 @@
 //! | /dev/dma_heap/system | 249:0  | system dma-heap (`drivers::dma_buf`) |
 //! | /dev/input/eventN | 13:64+N   | evdev (`drivers::input`)             |
 //! | /dev/uinput     | 10:223      | uinput (`drivers::input::uinput`)    |
+//! | /dev/uhid       | 10:239      | uhid, Bluetooth HID (`drivers::input::uhid`) |
 //! | /dev/net/tun    | 10:200      | tun links without traffic (`net::tun`) |
 //! | /dev/hvc1..17   | 229:N       | host-less virtio-console stand-ins (`drivers::hvc`) |
 //! | /dev/ashmem<boot_id> | 10:126 | ashmem regions (`drivers::ashmem`) |
+//! | /dev/rtc0       | 252:0       | the CMOS RTC (`drivers::platform::rtc`) |
 //! | /dev/userfaultfd | 10:124     | USERFAULTFD_IOC_NEW (`mm::userfaultfd`) |
 //! | /sys/kernel/debug/sync/sw_sync | 10:250 | sw_sync timelines (`drivers::dma_buf::sync_file`) |
 //!
@@ -124,14 +126,16 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         (crate::drivers::binder::BINDER_MAJOR, minor) => return crate::drivers::binder::open(minor),
         (crate::block::MISC_MAJOR, HWRNG_MINOR) => Dev::Random,
         (crate::block::MISC_MAJOR, crate::drivers::input::uinput::UINPUT_MINOR) => return crate::drivers::input::uinput::open(),
+        (crate::block::MISC_MAJOR, crate::drivers::input::uhid::UHID_MINOR) => return crate::drivers::input::uhid::open(),
         (crate::drivers::input::INPUT_MAJOR, minor) => return crate::drivers::input::open_evdev(minor),
         (crate::block::MISC_MAJOR, crate::drivers::dma_buf::sync_file::SW_SYNC_MINOR) => {
             return crate::drivers::dma_buf::sync_file::open_sw_sync();
         }
         (crate::drivers::hvc::HVC_MAJOR, minor) => return crate::drivers::hvc::open(minor),
+        (crate::drivers::platform::rtc::RTC_MAJOR, 0) => return crate::drivers::platform::rtc::open(),
         (crate::drivers::drm::DRM_MAJOR, minor) => return crate::drivers::drm::open(minor),
         (crate::drivers::media::VIDEO_MAJOR, minor) => return crate::drivers::media::v4l2::open(minor),
-        (crate::drivers::media::SOUND_MAJOR, minor) => return crate::drivers::media::alsa::open(minor),
+        (crate::drivers::sound::SOUND_MAJOR, minor) => return crate::drivers::sound::open(minor),
         (crate::drivers::dma_buf::HEAP_MAJOR, minor) => return crate::drivers::dma_buf::open_heap(minor),
         (crate::block::MISC_MAJOR, crate::net::tun::TUN_MINOR) => return crate::net::tun::open(),
         (crate::block::MISC_MAJOR, crate::drivers::ashmem::ASHMEM_MINOR) => return crate::drivers::ashmem::open(),
@@ -152,7 +156,7 @@ pub fn console() -> Arc<OpenFile> {
 /// A new devtmpfs instance with the standard nodes.
 pub fn new_devtmpfs() -> Arc<TmpInode> {
     let root = TmpInode::new_fs(0o755);
-    let nodes: [(&[u8], u32, u32, u32); 14] = [
+    let nodes: [(&[u8], u32, u32, u32); 15] = [
         (b"null", 0o666, 1, 3),
         (b"zero", 0o666, 1, 5),
         (b"full", 0o666, 1, 7),
@@ -164,6 +168,7 @@ pub fn new_devtmpfs() -> Arc<TmpInode> {
         (b"ttyS0", 0o660, 4, 64),
         (b"ptmx", 0o666, 5, 2),
         (b"uinput", 0o660, 10, 223),
+        (b"uhid", 0o660, 10, 239),
         (b"userfaultfd", 0o600, 10, 124),
         (b"ashmem", 0o666, 10, 126),
         (b"hvc1", 0o600, 229, 1),

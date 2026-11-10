@@ -22,8 +22,10 @@
 //! bulk endpoints configured and is probed as a disk; every HID interface
 //! of the boot subclass gets SET_PROTOCOL(boot) + SET_IDLE, Configure
 //! Endpoint for its interrupt IN endpoint, and a ring of Normal TRBs kept
-//! posted. Devices present at boot only (no hot-plug). Failures are
-//! logged and the device skipped, never fatal.
+//! posted; a Bluetooth controller (class e0/01/01) gets its event and
+//! ACL endpoints and, if Intel, its firmware ([`btusb`]). Devices
+//! present at boot only (no hot-plug). Failures are logged and the
+//! device skipped, never fatal.
 //!
 //! Each returned interrupt transfer is a boot report, decoded by [`hid`]
 //! into events of an input device named like Linux's ("QEMU QEMU USB
@@ -35,6 +37,7 @@
 //! the caller with the controller locked, dispatching the HID events it
 //! meets meanwhile.
 
+pub mod btusb;
 pub mod hid;
 pub mod hub;
 pub mod isoch;
@@ -375,6 +378,11 @@ struct Xhci {
     /// Devices with isochronous functions, and their streaming endpoints.
     media: Vec<Option<MediaDev>>,
     isochs: Vec<isoch::IsochEp>,
+    /// Bluetooth controllers ([`btusb`]).
+    bts: Vec<btusb::Bt>,
+    /// Those found during bring-up, handed to the Bluetooth core once the
+    /// controller is in [`CTRLS`].
+    new_bts: Vec<usize>,
     pci_dir: String,
     bus: u32,
     /// The last status line printed ([`Xhci::status`]).
@@ -571,7 +579,9 @@ impl Xhci {
                     After::Error(code) => self.hid_error(i, code),
                 }
             } else {
-                self.isoch_event(slot, dci, ev);
+                if !self.isoch_event(slot, dci, ev) {
+                    self.bt_dispatch(ev);
+                }
             }
         }
     }
@@ -963,7 +973,8 @@ impl Xhci {
         let hid_any = ifaces.iter().any(|f| f.alt == 0 && f.class.0 == 3 && f.class.1 == 1 && matches!(f.class.2, 1 | 2));
         // A camera (video control) or a microphone (audio streaming).
         let media = ifaces.iter().any(|f| f.alt == 0 && (f.class.0, f.class.1) == (14, 1) || (f.class.0, f.class.1) == (1, 2));
-        if !is_hub && msd.is_none() && !hid_any && !media {
+        let bt = ifaces.iter().position(|f| f.alt == 0 && f.class == (0xe0, 1, 1));
+        if !is_hub && msd.is_none() && !hid_any && bt.is_none() && !media {
             if ifaces.iter().any(|f| f.class.0 == 8) {
                 log::warn!("xhci: {name}: mass storage without SCSI Bulk-Only (UAS-only?), not supported");
             } else {
@@ -978,6 +989,13 @@ impl Xhci {
         }
         if is_hub {
             self.hub(d, &usbdev);
+        } else if let Some(i) = bt
+            && msd.is_none()
+            && !hid_any
+        {
+            let f = &ifaces[i];
+            let name = format!("{manufacturer} {prod_name}");
+            self.btusb(d, f, (vendor, product), name.trim());
         } else if let Some(i) = msd {
             let f = &ifaces[i];
             let name = format!("{manufacturer} {prod_name}");
@@ -1276,6 +1294,8 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         new_disks: Vec::new(),
         media: Vec::new(),
         isochs: Vec::new(),
+        bts: Vec::new(),
+        new_bts: Vec::new(),
         pci_dir,
         bus,
         last_status: String::new(),
@@ -1318,10 +1338,14 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
     }
     x.update_erdp();
     let disks = core::mem::take(&mut x.new_disks);
+    let bts: Vec<(usize, String)> = x.new_bts.drain(..).map(|i| (i, x.bts[i].label().into())).collect();
     CTRLS.lock().push(x);
     COUNT.store(index as u32 + 1, Ordering::Release);
     for d in disks {
         storage::register(index, d);
+    }
+    for (i, label) in bts {
+        btusb::register(index, i, label);
     }
     Ok(())
 }

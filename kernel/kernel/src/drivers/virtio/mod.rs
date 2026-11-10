@@ -5,11 +5,13 @@
 //! Drivers run their queues by polling: interrupts are suppressed
 //! (VRING_AVAIL_F_NO_INTERRUPT). virtio-blk and virtio-gpu spin on the
 //! used ring (`submit_and_wait`); virtio-net keeps buffers posted (`add`)
-//! and collects them later (`pop_used`).
+//! and collects them later (`pop_used`). virtio-console's port 0 is a
+//! Bluetooth H4 link ([`console`]).
 //! Ring memory comes straight from the frame allocator (physically
 //! contiguous, reached through the direct map).
 
 pub mod blk;
+pub mod console;
 pub mod gpu;
 pub mod input;
 pub mod net;
@@ -48,15 +50,17 @@ pub fn init() {
             0x1000..=0x103f => match d.device {
                 0x1000 => 1,
                 0x1001 => 2,
+                0x1003 => 3,
                 _ => 0,
             },
             0x1040..=0x107f => d.device - 0x1040,
             _ => 0,
         };
         let sysdev = sysfs_device(&d, ty);
-        if ty == 1 || ty == 2 || ty == 16 || ty == 18 {
+        if ty == 1 || ty == 2 || ty == 3 || ty == 16 || ty == 18 {
             match Transport::new(&d) {
                 Some(t) if ty == 1 => net::probe(t, sysdev),
+                Some(t) if ty == 3 => console::probe(t, sysdev),
                 Some(t) if ty == 16 => gpu::probe(t, sysdev),
                 Some(t) if ty == 18 => input::probe(t, sysdev),
                 Some(t) => blk::probe(t, sysdev),
@@ -79,6 +83,7 @@ fn sysfs_device(d: &pci::Device, ty: u16) -> alloc::string::String {
     let driver = match ty {
         1 => "net",
         2 => "blk",
+        3 => "console",
         16 => "gpu",
         18 => "input",
         _ => "unknown",

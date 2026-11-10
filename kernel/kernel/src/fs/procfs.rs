@@ -57,6 +57,9 @@ enum Node {
     NetFile(u8),
     PressureDir,
     Pressure(u8),
+    /// /proc/asound and its files (`drivers::sound::PROC_FILES`).
+    AsoundDir,
+    Asound(u8),
     /// /proc/sys entries (index into `sysctl::nodes`).
     Sys(u16),
 }
@@ -244,7 +247,8 @@ fn mode_of(node: Node) -> u32 {
         | Node::AttrDir(..)
         | Node::TaskDir(_)
         | Node::TaskTid(..)
-        | Node::PressureDir => S_IFDIR | 0o555,
+        | Node::PressureDir
+        | Node::AsoundDir => S_IFDIR | 0o555,
         Node::FdDir(_) | Node::NsDir(_) => S_IFDIR | 0o500 | 0o011,
         Node::FdInfoDir(_) => S_IFDIR | 0o555,
         Node::FdInfo(..) => S_IFREG | 0o444,
@@ -266,7 +270,7 @@ fn mode_of(node: Node) -> u32 {
             }
         }
         Node::Pressure(_) => S_IFREG | 0o666,
-        Node::Global(_) | Node::PidFile(..) | Node::TaskFile(..) | Node::NetUnix | Node::NetNetlink | Node::NetFile(_) => S_IFREG | 0o444,
+        Node::Global(_) | Node::Asound(_) | Node::PidFile(..) | Node::TaskFile(..) | Node::NetUnix | Node::NetNetlink | Node::NetFile(_) => S_IFREG | 0o444,
     }
 }
 
@@ -400,6 +404,7 @@ impl Inode for ProcInode {
                 b"net" => Node::NetDir,
                 b"sys" => Node::Sys(0),
                 b"pressure" => Node::PressureDir,
+                b"asound" => Node::AsoundDir,
                 _ => {
                     if let Some((_, g)) = GLOBALS.iter().find(|(n, _)| *n == name) {
                         Node::Global(*g)
@@ -471,6 +476,10 @@ impl Inode for ProcInode {
                 let i = PRESSURE.iter().position(|p| *p == name).ok_or(ENOENT)?;
                 Node::Pressure(i as u8)
             }
+            Node::AsoundDir => {
+                let i = crate::drivers::sound::PROC_FILES.iter().position(|p| *p == name).ok_or(ENOENT)?;
+                Node::Asound(i as u8)
+            }
             Node::Sys(i) => {
                 let n = &super::sysctl::nodes()[i as usize];
                 if n.file.is_some() {
@@ -498,6 +507,7 @@ impl Inode for ProcInode {
                 v.push(ent(b"net", Node::NetDir));
                 v.push(ent(b"sys", Node::Sys(0)));
                 v.push(ent(b"pressure", Node::PressureDir));
+                v.push(ent(b"asound", Node::AsoundDir));
                 for (n, g) in GLOBALS {
                     v.push(ent(n, Node::Global(g)));
                 }
@@ -559,6 +569,11 @@ impl Inode for ProcInode {
             Node::PressureDir => {
                 for (i, p) in PRESSURE.iter().enumerate() {
                     v.push(ent(p, Node::Pressure(i as u8)));
+                }
+            }
+            Node::AsoundDir => {
+                for (i, p) in crate::drivers::sound::PROC_FILES.iter().enumerate() {
+                    v.push(ent(p, Node::Asound(i as u8)));
                 }
             }
             Node::Sys(i) => {
@@ -633,6 +648,7 @@ impl Inode for ProcInode {
                 return Ok(Some(Box::new(ProcRw { node: self.node, data: Mutex::new(rw_contents(self.node)?) })));
             }
             Node::Global(Global::ConfigGz) => return Ok(Some(Box::new(SeqFile { data: config_gz() }))),
+            Node::Asound(i) => return Ok(Some(Box::new(SeqFile { data: crate::drivers::sound::proc_file(i as usize) }))),
             Node::Global(g) => global(g),
             Node::PidFile(pid, f) => pid_file(pid, pid, f)?,
             Node::TaskFile(pid, tid, f) => pid_file(pid, tid, f)?,

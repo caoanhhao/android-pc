@@ -27,7 +27,13 @@ a USB stick image on a qemu-xhci, no virtio disks), also:
   super/frp/misc partitions (the disk Limine loaded it from);
 - /dev/block/by-name/super is that disk's partition 2, below the xHCI
   function in sysfs; no virtio-blk disk exists;
-- the USB keyboard and mouse are evdev devices (no virtio-input).
+- the USB keyboard and mouse are evdev devices (no virtio-input);
+- the PC platform devices (E9): /dev/rtc0 with the host's time (QEMU's
+  RTC is in UTC), the AC power supply online (and BatteryService
+  plugged in), the "Power Button" input device, cpufreq; the ACPI power
+  button (`system_powerdown`) puts Android to sleep, KEYCODE_WAKEUP wakes
+  it; finally `svc power shutdown` (what the power menu's "Power off"
+  does) must end QEMU through ACPI S5 with exit status 0.
 
 Usage: aosp-fb-test.py [--boot-timeout SECS] [--log FILE] [--port PORT]
                        [--monitor SOCKET] [--out DIR] [--firmware UEFI|BIOS]
@@ -247,15 +253,66 @@ def main():
         time.sleep(10)
         r.check(sf != "" and r.sh("pidof surfaceflinger")[1].strip() == sf, "surfaceflinger keeps running", sf)
         r.check(ss != "" and r.sh("pidof system_server")[1].strip() == ss, "system_server keeps running (no restart)", ss)
-        with open(os.path.join(out_dir, "logcat.txt"), "w") as f:
-            f.write(r.sh("logcat -d -b all", timeout=120)[1])
-        adbt.adb(a, "disconnect", a.serial)
+        if a.usb:
+            platform(r, a, qemu, log)
+        if qemu.poll() is None:
+            with open(os.path.join(out_dir, "logcat.txt"), "w") as f:
+                f.write(r.sh("logcat -d -b all", timeout=120)[1])
+            adbt.adb(a, "disconnect", a.serial)
     finally:
         adbt.adb(a, "kill-server", timeout=20)
         qemu.kill()
         qemu.wait()
         shutil.rmtree(home, ignore_errors=True) if out_dir != home else None
     return report(r, log)
+
+
+def wakefulness(r):
+    m = re.search(r"mWakefulness=(\w+)", r.sh("dumpsys power | grep mWakefulness=")[1])
+    return m.group(1) if m else ""
+
+
+def platform(r, a, qemu, log):
+    """E9: the platform devices from Android, the power button, then power off."""
+    _, out, _ = r.sh("cat /sys/class/power_supply/AC/type /sys/class/power_supply/AC/online; dumpsys battery | grep 'AC powered'")
+    r.check(out.split()[:2] == ["Mains", "1"] and "AC powered: true" in out, "AC power supply online", out.strip())
+    _, out, _ = r.sh("ls -l /dev/rtc0; cat /sys/class/rtc/rtc0/name /sys/class/rtc/rtc0/since_epoch; date +%s")
+    host = int(time.time())
+    nums = [int(x) for x in out.split() if x.isdigit() and len(x) >= 9]
+    r.check("rtc_cmos" in out and len(nums) == 2 and abs(nums[0] - host) <= 10 and abs(nums[1] - host) <= 10,
+            "/dev/rtc0 and the wall clock have the host's time", f"{out.strip()} (host {host})")
+    _, out, _ = r.sh("getevent -p 2>/dev/null | grep -A3 'Power Button'")
+    r.check("Power Button" in out and "0074" in out, "Power Button input device with KEY_POWER", out.strip())
+    _, out, _ = r.sh("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq /sys/devices/system/cpu/cpufreq/policy0/scaling_driver")
+    r.check(len(out.split()) == 2 and out.split()[0].isdigit(), "cpufreq policy0", out.strip())
+
+    # The ACPI power button: a short press puts Android to sleep.
+    r.sh("input keyevent KEYCODE_WAKEUP")
+    before = wakefulness(r)
+    gfx.monitor_cmd(a.monitor, "system_powerdown")
+    state, deadline = before, time.monotonic() + 30
+    while time.monotonic() < deadline and state == "Awake":
+        time.sleep(1)
+        state = wakefulness(r)
+    r.check(before == "Awake" and state in ("Asleep", "Dozing"), "power button puts Android to sleep", f"{before} -> {state}")
+    r.check(b"power button pressed" in open(log, "rb").read(), "kernel saw the ACPI power button")
+    r.sh("input keyevent KEYCODE_WAKEUP")
+    state, deadline = "", time.monotonic() + 30
+    while time.monotonic() < deadline and state != "Awake":
+        time.sleep(1)
+        state = wakefulness(r)
+    r.check(state == "Awake", "wakes up again", state)
+
+    # Power off as the power menu does: the framework's shutdown, init's
+    # sys.powerctl, reboot(2), ACPI S5.
+    r.sh("svc power shutdown", timeout=30)
+    try:
+        code = qemu.wait(timeout=180)
+    except subprocess.TimeoutExpired:
+        code = None
+    text = open(log, "rb").read()
+    r.check(code == 0 and b"reboot(2): power off" in text and b"acpi: entering S5" in text,
+            "svc power shutdown powers off through ACPI S5", f"QEMU exit status {code}")
 
 
 def report(r, log):

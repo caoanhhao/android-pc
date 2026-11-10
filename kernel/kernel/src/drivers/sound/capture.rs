@@ -1,38 +1,30 @@
-//! A minimal ALSA core for capture devices (E8): sound cards with one
-//! capture PCM, `/dev/snd/pcmC<n>D0c` (116:n*32+24) and the card's
-//! control node `/dev/snd/controlC<n>` (116:n*32), enough for tinyalsa
-//! (AOSP's audio HAL through libalsautils) and alsa-lib's `arecord`.
+//! Capture PCMs (E8): `/dev/snd/pcmC<c>D<d>c` (116:32c+24+d) on the
+//! cards of [`super`], for USB audio class microphones
+//! (`drivers::usb::uac`) and the test microphone (`testcam=1`).
 //!
-//! NOTE: E5 (HD Audio) brings the full ALSA PCM core in parallel; this
-//! module is the capture subset the USB microphone needs, kept behind
-//! [`CaptureSource`] so that on merge the UAC driver can register with
-//! E5's core instead and this file can go. Both number cards from 0.
-//!
-//! The PCM: RW interleaved access, S16_LE, 1 or 2 channels at 8 to 48
-//! kHz whatever the device's own rate and channel count: the device's
-//! samples are converted on arrival (24/32-bit to 16, mono/stereo, rate:
-//! a box filter when decimating by 2 or more, linear interpolation
-//! otherwise), so the HAL's "Built-In Mic" at 16 kHz mono works on a 48
-//! kHz stereo webcam microphone. Ioctls: PVERSION, USER_PVERSION, INFO,
-//! TTSTAMP, HW_REFINE, HW_PARAMS (choosing the minimum of what is left
-//! open, like Linux), HW_FREE, SW_PARAMS (boundary returned), STATUS(_EXT),
-//! DELAY, HWSYNC, SYNC_PTR (status/control are not mmapped: tinyalsa
-//! falls back to it), PREPARE, RESET, START (a read in the PREPARED
-//! state starts too), DROP, DRAIN, READI_FRAMES; read(2) as well. A ring
-//! overflow is an overrun (EPIPE until PREPARE) unless the stop threshold
-//! is above the buffer size, when the oldest frames are dropped. The
-//! device stream starts at the first START and stops at DROP, HW_FREE or
-//! close. Control node: PVERSION, CARD_INFO, ELEM_LIST (no controls),
-//! SUBSCRIBE_EVENTS, PCM_NEXT_DEVICE, PCM_INFO, PCM_PREFER_SUBDEVICE.
+//! Unlike playback (`pcm`, a DMA ring the hardware reads), a capture
+//! source pushes packets as they arrive ([`CapturePcm::push`]), in its own
+//! format; they are converted on arrival to what the reader configured:
+//! S16_LE, 1 or 2 channels, 8 to 48 kHz (24/32-bit to 16, mono/stereo,
+//! rate: a box filter when decimating by 2 or more, linear interpolation
+//! otherwise), so AOSP's "Built-In Mic" at 16 kHz mono works on a 48 kHz
+//! stereo webcam microphone. Ioctls as tinyalsa and alsa-lib use them:
+//! PVERSION, USER_PVERSION, INFO, TTSTAMP, HW_REFINE, HW_PARAMS (choosing
+//! the minimum of what is left open, like Linux), HW_FREE, SW_PARAMS
+//! (boundary returned), STATUS(_EXT), DELAY, HWSYNC, SYNC_PTR (status and
+//! control are not mmapped), PREPARE, RESET, START (a read in the
+//! PREPARED state starts too), DROP, DRAIN, READI_FRAMES; read(2) too. A
+//! ring overflow is an overrun (EPIPE until PREPARE) unless the stop
+//! threshold is above the buffer size, when the oldest frames are
+//! dropped. The source streams from the first START until DROP, HW_FREE
+//! or close. One opener at a time (EBUSY), as one substream.
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
 use crate::errno::*;
@@ -40,8 +32,6 @@ use crate::fs::file::{FileOps, OpenFile};
 use crate::fs::poll::{POLLERR, POLLIN, POLLRDNORM, WaitQueue};
 use crate::sched::{self, Wake, WaitMode};
 
-pub const SOUND_MAJOR: u32 = 116;
-const MAX_CARDS: u32 = 8;
 const RATES: [u32; 7] = [8000, 11025, 16000, 22050, 32000, 44100, 48000];
 const MIN_PERIOD: u64 = 16;
 const MAX_PERIOD: u64 = 32768;
@@ -88,13 +78,6 @@ const PCM_START: u32 = ioc(0, b'A', 0x42, 0);
 const PCM_DROP: u32 = ioc(0, b'A', 0x43, 0);
 const PCM_DRAIN: u32 = ioc(0, b'A', 0x44, 0);
 const PCM_READI_FRAMES: u32 = ioc(R, b'A', 0x51, 24);
-const CTL_PVERSION: u32 = ioc(R, b'U', 0x00, 4);
-const CTL_CARD_INFO: u32 = ioc(R, b'U', 0x01, 376);
-const CTL_ELEM_LIST: u32 = ioc(R | W, b'U', 0x10, 80);
-const CTL_SUBSCRIBE_EVENTS: u32 = ioc(R | W, b'U', 0x16, 4);
-const CTL_PCM_NEXT_DEVICE: u32 = ioc(R, b'U', 0x30, 4);
-const CTL_PCM_INFO: u32 = ioc(R | W, b'U', 0x31, 288);
-const CTL_PCM_PREFER_SUBDEVICE: u32 = ioc(W, b'U', 0x32, 4);
 
 // struct snd_pcm_hw_params: interval parameters 8 (SAMPLE_BITS) to 19.
 const P_SAMPLE_BITS: usize = 8;
@@ -245,17 +228,6 @@ pub struct CapturePcm {
     pub wq: Arc<WaitQueue>,
 }
 
-pub struct Card {
-    pub index: u32,
-    pub id: String,
-    pub name: String,
-    pub longname: String,
-    pub driver: String,
-    pub pcm: Arc<CapturePcm>,
-}
-
-static CARDS: Mutex<Vec<Arc<Card>>> = Mutex::new(Vec::new());
-static NEXT_CARD: AtomicU32 = AtomicU32::new(0);
 
 fn put32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_le_bytes());
@@ -424,106 +396,55 @@ fn refine(b: &mut [u8; 608], choose: bool) -> KResult<Params> {
     })
 }
 
-/// Register a card with one capture PCM below the sysfs directory
-/// `parent` (a USB interface's, or a platform device's).
-pub fn register(id: &str, name: &str, longname: &str, driver: &str, parent: &str, source: Box<dyn CaptureSource>) -> Option<Arc<Card>> {
-    let index = NEXT_CARD.fetch_add(1, Ordering::Relaxed);
-    if index >= MAX_CARDS {
-        return None;
+/// Open of a capture node.
+pub fn open(pcm: Arc<CapturePcm>) -> KResult<Box<dyn FileOps>> {
+    let mut st = pcm.st.lock();
+    if st.open {
+        return Err(EBUSY);
     }
-    let pcm = Arc::new(CapturePcm {
-        card: index,
-        name: name.into(),
-        source,
-        st: Mutex::new(PState {
-            state: STATE_OPEN,
-            open: false,
-            params: None,
-            conv: None,
-            boundary: 0,
-            avail_min: 1,
-            start_threshold: 1,
-            stop_threshold: u64::MAX,
-            tstamp_type: 0,
-            hw_ptr: 0,
-            appl_ptr: 0,
-            ring: VecDeque::new(),
-            tstamp_ns: 0,
-            trigger_ns: 0,
-            source_running: false,
-            overruns: 0,
-            scratch: Vec::new(),
-            mark: (0, 0),
-            lines: 0,
-        }),
-        wq: WaitQueue::new(),
-    });
-    let card = Arc::new(Card { index, id: id.into(), name: name.into(), longname: longname.into(), driver: driver.into(), pcm });
-    use crate::fs::sysfs;
-    let dir = format!("{parent}/sound/card{index}");
-    sysfs::set(&dir, "id", &format!("{id}\n"));
-    sysfs::set(&dir, "number", &format!("{index}\n"));
-    sysfs::add_device(&dir, "sound", "class/sound", String::new(), true);
-    sysfs::symlink(&dir, "device", "../..");
-    let nodes = [(format!("controlC{index}"), index * 32), (format!("pcmC{index}D0c"), index * 32 + 24)];
-    for (node, minor) in &nodes {
-        let path = format!("{dir}/{node}");
-        if node.starts_with("pcm") {
-            sysfs::set(&path, "pcm_class", "generic\n");
-        }
-        sysfs::add_char_device(&path, "sound", node, &format!("snd/{node}"), SOUND_MAJOR, *minor);
-        sysfs::symlink(&path, "device", "..");
-        devtmpfs_node(node, *minor);
-    }
-    let hw = card.pcm.source.format();
-    log::info!(
-        "alsa: card {index} \"{name}\" ({driver}): capture pcmC{index}D0c, device {} Hz, {} channels, {}-bit",
-        hw.rate,
-        hw.channels,
-        hw.bytes * 8
-    );
-    CARDS.lock().push(card.clone());
-    Some(card)
-}
-
-fn devtmpfs_node(name: &str, minor: u32) {
-    use crate::fs::vfs::{S_IFCHR, S_IFDIR, encode_dev};
-    let root = crate::fs::devtmpfs_root();
-    let dir = match root.get(b"snd") {
-        Some(d) => Some(d),
-        None => root.add(b"snd", S_IFDIR | 0o755, 0, None).ok(),
-    };
-    if let Some(d) = dir {
-        let _ = d.add(name.as_bytes(), S_IFCHR | 0o660, encode_dev(SOUND_MAJOR, minor), None);
-    }
-}
-
-fn card(index: u32) -> Option<Arc<Card>> {
-    CARDS.lock().iter().find(|c| c.index == index).cloned()
-}
-
-/// Open of a /dev/snd node.
-pub fn open(minor: u32) -> KResult<Box<dyn FileOps>> {
-    let c = card(minor / 32).ok_or(ENODEV)?;
-    match minor % 32 {
-        0 => Ok(Box::new(CtlFile(c))),
-        24 => {
-            let mut st = c.pcm.st.lock();
-            if st.open {
-                return Err(EBUSY);
-            }
-            st.open = true;
-            st.state = STATE_OPEN;
-            st.params = None;
-            st.tstamp_type = 0;
-            drop(st);
-            Ok(Box::new(PcmFile(c.pcm.clone())))
-        }
-        _ => Err(ENODEV),
-    }
+    st.open = true;
+    st.state = STATE_OPEN;
+    st.params = None;
+    st.tstamp_type = 0;
+    drop(st);
+    Ok(Box::new(PcmFile(pcm)))
 }
 
 impl CapturePcm {
+    pub fn new(card: u32, name: &str, source: Box<dyn CaptureSource>) -> Arc<CapturePcm> {
+        Arc::new(CapturePcm {
+            card,
+            name: name.into(),
+            source,
+            st: Mutex::new(PState {
+                state: STATE_OPEN,
+                open: false,
+                params: None,
+                conv: None,
+                boundary: 0,
+                avail_min: 1,
+                start_threshold: 1,
+                stop_threshold: u64::MAX,
+                tstamp_type: 0,
+                hw_ptr: 0,
+                appl_ptr: 0,
+                ring: VecDeque::new(),
+                tstamp_ns: 0,
+                trigger_ns: 0,
+                source_running: false,
+                overruns: 0,
+                scratch: Vec::new(),
+                mark: (0, 0),
+                lines: 0,
+            }),
+            wq: WaitQueue::new(),
+        })
+    }
+
+    pub fn format(&self) -> HwFormat {
+        self.source.format()
+    }
+
     /// Device samples arriving (any context but interrupts).
     pub fn push(&self, data: &[u8]) {
         let mut guard = self.st.lock();
@@ -548,7 +469,7 @@ impl CapturePcm {
                 st.state = STATE_XRUN;
                 st.overruns += 1;
                 if st.overruns <= 3 || st.overruns.is_multiple_of(100) {
-                    log::warn!("alsa: card {}: capture overrun ({} so far)", self.card, st.overruns);
+                    log::warn!("sound: card {}: capture overrun ({} so far)", self.card, st.overruns);
                 }
             } else {
                 let drop = avail - p.buffer;
@@ -563,7 +484,7 @@ impl CapturePcm {
             st.lines = 0;
         } else if now - t0 >= if st.lines == 0 { 1_000_000_000 } else { 10_000_000_000 } {
             log::info!(
-                "alsa: card {}: capturing {} Hz {} ch: {} frames/s, {} overruns",
+                "sound: card {}: capturing {} Hz {} ch: {} frames/s, {} overruns",
                 self.card,
                 p.rate,
                 p.channels,
@@ -595,7 +516,7 @@ impl CapturePcm {
             let mut st = self.st.lock();
             st.state = STATE_PREPARED;
             st.source_running = false;
-            log::warn!("alsa: card {}: cannot start capture ({e:?})", self.card);
+            log::warn!("sound: card {}: cannot start capture ({e:?})", self.card);
             return Err(EIO);
         }
         Ok(())
@@ -630,7 +551,7 @@ impl CapturePcm {
     }
 
     /// struct snd_pcm_info (288 bytes).
-    fn info(&self) -> [u8; 288] {
+    pub(super) fn info(&self) -> [u8; 288] {
         let mut b = [0u8; 288];
         put32(&mut b, 8, 1); // capture
         put32(&mut b, 12, self.card);
@@ -791,7 +712,7 @@ impl CapturePcm {
                     st.ring.clear();
                     st.appl_ptr = st.hw_ptr;
                     log::info!(
-                        "alsa: card {}: hw_params {} Hz, {} ch, period {} frames, buffer {} frames",
+                        "sound: card {}: hw_params {} Hz, {} ch, period {} frames, buffer {} frames",
                         self.card,
                         p.rate,
                         p.channels,
@@ -963,63 +884,8 @@ impl Drop for PcmFile {
     }
 }
 
-pub struct CtlFile(Arc<Card>);
-
-impl FileOps for CtlFile {
-    fn ioctl(&self, _: &OpenFile, cmd: u32, arg: u64) -> KResult<u64> {
-        let c = &self.0;
-        match cmd {
-            CTL_PVERSION => copy_out(arg, &0x0002_0008u32.to_le_bytes()).map(|_| 0),
-            CTL_CARD_INFO => {
-                let mut b = [0u8; 376];
-                put32(&mut b, 0, c.index);
-                put_str(&mut b, 8, 16, &c.id);
-                put_str(&mut b, 24, 16, &c.driver);
-                put_str(&mut b, 40, 32, &c.name);
-                put_str(&mut b, 72, 80, &c.longname);
-                put_str(&mut b, 168, 80, &c.name);
-                copy_out(arg, &b).map(|_| 0)
-            }
-            CTL_ELEM_LIST => {
-                let mut b = [0u8; 80];
-                copy_in(arg, &mut b)?;
-                put32(&mut b, 8, 0); // used
-                put32(&mut b, 12, 0); // count
-                copy_out(arg, &b).map(|_| 0)
-            }
-            CTL_SUBSCRIBE_EVENTS => {
-                let mut b = [0u8; 4];
-                copy_in(arg, &mut b)?;
-                Ok(0)
-            }
-            CTL_PCM_NEXT_DEVICE => {
-                let mut b = [0u8; 4];
-                copy_in(arg, &mut b)?;
-                let cur = i32::from_le_bytes(b);
-                let next: i32 = if cur < 0 { 0 } else { -1 };
-                copy_out(arg, &next.to_le_bytes()).map(|_| 0)
-            }
-            CTL_PCM_INFO => {
-                let mut b = [0u8; 288];
-                copy_in(arg, &mut b)?;
-                // device 0, subdevice 0, capture only.
-                if get32(&b, 0) != 0 || get32(&b, 8) != 1 {
-                    return Err(ENOENT);
-                }
-                copy_out(arg, &c.pcm.info()).map(|_| 0)
-            }
-            CTL_PCM_PREFER_SUBDEVICE => Ok(0),
-            _ => Err(ENOTTY),
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 #[test_case]
-fn alsa_ioctl_numbers() {
+fn capture_ioctl_numbers() {
     // Values from Linux's <sound/asound.h> on x86_64.
     assert_eq!(PCM_INFO, 0x8120_4101);
     assert_eq!(PCM_HW_PARAMS, 0xc260_4111);
@@ -1028,8 +894,6 @@ fn alsa_ioctl_numbers() {
     assert_eq!(PCM_STATUS, 0x8098_4120);
     assert_eq!(PCM_READI_FRAMES, 0x8018_4151);
     assert_eq!(PCM_PREPARE, 0x4140);
-    assert_eq!(CTL_CARD_INFO, 0x8178_5501);
-    assert_eq!(CTL_ELEM_LIST, 0xc050_5510);
 }
 
 #[cfg(test)]

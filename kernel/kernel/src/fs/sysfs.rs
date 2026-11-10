@@ -210,6 +210,23 @@ impl PseudoFile for Attr {
     }
 }
 
+/// A read-only attribute computed by a closure when opened.
+struct FnAttr(alloc::boxed::Box<dyn Fn() -> String + Send + Sync>);
+
+impl PseudoFile for FnAttr {
+    fn read(&self) -> Vec<u8> {
+        (self.0)().into_bytes()
+    }
+}
+
+/// The attribute file `<dir>/<name>`, whose contents `f` computes each
+/// time it is opened (temperatures, frequencies, the RTC's time).
+pub fn set_fn(dir_path: &str, name: &str, f: impl Fn() -> String + Send + Sync + 'static) {
+    if let Some(d) = dir(dir_path) {
+        let _ = d.add_pseudo(name.as_bytes(), 0o444, Arc::new(FnAttr(alloc::boxed::Box::new(f))));
+    }
+}
+
 /// Fill in what exists from boot: mount points, kernel attributes, the
 /// memory/tty/misc character devices (so ueventd can create their nodes
 /// in a tmpfs /dev), the platform serial port.
@@ -282,6 +299,7 @@ pub fn init() {
         ("loop-control", "loop-control", crate::block::LOOP_CONTROL_MINOR),
         ("hw_random", "hw_random", super::dev::HWRNG_MINOR),
         ("uinput", "uinput", crate::drivers::input::uinput::UINPUT_MINOR),
+        ("uhid", "uhid", crate::drivers::input::uhid::UHID_MINOR),
         ("userfaultfd", "userfaultfd", crate::mm::userfaultfd::USERFAULTFD_MINOR),
         ("ashmem", "ashmem", crate::drivers::ashmem::ASHMEM_MINOR),
         ("tun", "net/tun", crate::net::tun::TUN_MINOR),

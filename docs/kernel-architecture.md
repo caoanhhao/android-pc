@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md; E8: xHCI isochronous transfers, UVC cameras as V4L2 devices, UAC microphones as ALSA capture cards)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md; E4: a Realtek RTL8125 2.5 GbE driver with link-state reporting, for wired networking on the real PC; E8: xHCI isochronous transfers, UVC cameras as V4L2 devices, UAC microphones as ALSA capture cards)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -48,6 +48,11 @@ tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI + usb-storage, qe
 tools/run-qemu.sh --usb-boot-test # E3: AOSP from a USB stick image (tools/mkusb.sh + tools/mkusbimg.py)
                                   # under OVMF, no virtio disk/GPU/input; checked by aosp-fb-test.py --usb
 tools/mkusb.sh --esp /run/media/$USER/ANDROIDPC   # E3: fill a real stick's ESP (docs/usb-boot.md)
+tools/run-qemu.sh --aosp-audio-test # E5: the boot test's machine + intel-hda/hda-duplex (--audio, output
+                                  # to a WAV file): /dev/snd, /proc/asound, tinypcminfo, tinymix,
+                                  # tinyplay and an AudioTrack tone via the audio HAL, found in the WAV
+tools/run-qemu.sh --aosp-bt-test  # E7: the boot test's machine with the host's rootcanal behind a
+                                  # virtconsole (H4 on /dev/hvc5): Bluetooth on/off, LE scan
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes (UEFI through
                                   # OVMF is the default; --bios boots the same ISO via SeaBIOS)
@@ -139,7 +144,10 @@ kernel/
                        protocol, mod); ashmem; hvc (host-less virtio-console
                        ports); pci (config space, enumeration, sysfs dirs, DMA
                        and MMIO helpers); nvme; ahci; usb/ (xHCI host + hid boot
-                       keyboards/mice); virtio/
+                       keyboards/mice); sound/ (ALSA PCM + control ABI, hda/
+                       controller + codec parser, E5); virtio/
+                       keyboards/mice, hubs, storage, btusb); bluetooth/ (H4
+                       bridge on /dev/hvc5, Intel firmware download); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
                        on virtio-gpu or the boot framebuffer: mod = files,
                        GEM, ioctls; kms = mode objects, properties, atomic
@@ -946,6 +954,22 @@ for rings and bounce buffers, and register PCI sysfs directories with
   virtio-input, the BSP's timer tick sees the next event TRB's cycle bit
   flip and the soft interrupt (idle loop / return to user mode) decodes
   the reports and re-posts the TRBs.
+- **Bluetooth** (`drivers/usb/btusb.rs`, `drivers/bluetooth/`, E7): a USB
+  controller (interface class e0/01/01) gets its interrupt IN (events)
+  and bulk IN/OUT (ACL) endpoints, IN transfers kept posted and cut into
+  HCI packets at their header lengths; commands go out as class requests
+  on EP0. Intel controllers of the TLV generation (AX201/AX211...) are
+  brought from their bootloader to the operational firmware at probe
+  (`bluetooth/intel.rs`: Read Version TLVs, Secure Send of
+  `ibt-<cnvi>-<cnvr>.sfi` over bulk OUT, Intel Reset to the firmware's
+  boot address, DDC records, event mask), the firmware being built in
+  (`build.rs` decompresses it from the build host's linux-firmware). The
+  controller becomes the H4 stream of `/dev/hvc5`, the port Cuttlefish's
+  Bluetooth HAL opens (`vendor.ser.bt-uart`); a virtio-console port
+  carrying H4 (QEMU's virtconsole to the host's rootcanal) is the other
+  kind of controller, for tests. Bluetooth HID devices come back through
+  `/dev/uhid` (`drivers/input/uhid.rs`), whose report descriptors
+  `drivers/input/hidrd.rs` turns into evdev keys and relative axes.
 - **Boot disk** (`block::resolve_boot_disk`, E3): with
   `androidboot.boot_devices=auto androidboot.partition_map=auto` the
   kernel picks, after the disk drivers, the disk with a GPT partition
@@ -997,7 +1021,7 @@ docs/usb-boot.md for booting one from a USB stick):
   works; `serial=off` stops the log there (a 16550 with nothing attached
   paces the log at 115200 baud). `loglevel=N` sets the log level.
 
-## Cameras and microphones (`drivers/usb/{isoch,uvc,uac}.rs`, `drivers/media/`, E8)
+## Cameras and microphones (`drivers/usb/{isoch,uvc,uac}.rs`, `drivers/media/`, `drivers/sound/capture.rs`, E8)
 
 - **Isochronous endpoints** (`drivers/usb/isoch.rs`): a transfer ring of
   several pages and a DMA buffer slot per ring position; one Isoch TRB per
@@ -1039,15 +1063,18 @@ docs/usb-boot.md for booting one from a USB stick):
   parsed; `usb.isoch_selftest=1` streams silence to one for 300 ms at
   bring-up (`--hw-test` does this with QEMU's usb-audio). UAC2 is not
   supported.
-- **ALSA capture core** (`drivers/media/alsa.rs`, to be replaced by E5's
-  ALSA core on merge): cards with `controlC<n>` (116:32n) and one capture
-  PCM `pcmC<n>D0c` (116:32n+24), the ioctls tinyalsa and alsa-lib use
+- **Capture PCMs** (`drivers/sound/capture.rs`, on E5's cards): one
+  capture PCM per microphone card (`sound::register_capture`,
+  `pcmC<n>D0c`, 116:32n+24), the ioctls tinyalsa and alsa-lib use
   (HW_REFINE/HW_PARAMS with Linux-like refinement and choice, SW_PARAMS
   with the boundary, SYNC_PTR since status/control are not mmapped,
   PREPARE/START/DROP, READI_FRAMES, STATUS, DELAY). The device's samples
   are converted on arrival to S16 at 8-48 kHz, mono or stereo (box filter
   when decimating by 2 or more, else linear interpolation), since AOSP's
   primary HAL opens card 0 device 0 at the app's rate and channel count.
+  Card 0 (HD Audio, probed before USB) has no capture of its own, so it
+  gets a `pcmC0D0c` recording from the first microphone card: Android
+  plays through HD Audio and records from the webcam.
 - **Test devices** (`drivers/media/testdev.rs`, `testcam=1`, set by
   `--ktest`): a camera sending UVC payloads (YUYV colour bars with the
   frame number, a fixed MJPEG) and a microphone (1 kHz triangle, 48 kHz
@@ -1055,6 +1082,67 @@ docs/usb-boot.md for booting one from a USB stick):
   waking it; `tests/src/bin/e8_media.rs` drives both like the camera HAL
   and tinyalsa do (and the V4L2 half runs against a real webcam on the
   Linux host).
+## Wired Ethernet: Realtek RTL8125 (`drivers/rtl8125.rs`, E4)
+
+The real PC's NIC (PCI `10ec:8125`, also the Killer E3000 `10ec:3000`).
+QEMU has no model of it, so it is only exercised on hardware; the ring
+logic has in-kernel unit tests (`--test`: `rtl8125_rx_ring`,
+`rtl8125_tx_ring`, `rtl8125_link_status`, the tests play the NIC on the
+descriptors) and `--hw-test` checks the probe is clean without the device
+(`rtl8125: no RTL8125 found`, nothing else).
+
+- **Probe**: the first memory BAR, memory decoding and bus mastering on,
+  INTx off. The XID (`TxConfig >> 20 & 0xfcf`) picks RTL8125A (0x609,
+  Linux's mac version 61) or RTL8125B (0x641, version 63; others are
+  driven as B with a warning). Then Linux r8169's `rtl_init_one` order:
+  Rx config, interrupts masked and acked, `rtl_hw_init_8125` (Rx gate,
+  OOB off, link-list FIFO), chip reset. The MAC comes from MAC0_BKP
+  (0x19e0), else MAC0, else a random local one, and is written to
+  MAC0/MAC4 (config registers unlocked through Cfg9346).
+- **Bring-up** (`rtl8169_up`): the PHY through the GPHY OCP window
+  (0xb8; standard registers at 0xa400 + 2 * reg, paged ones at page << 4
+  + 2 * (reg - 0x10)): soft reset, power-down cleared, Linux's RTL8125B
+  parameter writes (`rtl8125b_hw_phy_config` without the rtl_nic firmware
+  patch, ALDPS off, the EEE PHY bits), soft reset. Then the MAC: Rx gate,
+  reset, `rtl_hw_start_8125*` (ASPM and CLKREQ off, CPlusCmd without VLAN
+  or checksum, interrupt coalescing cleared, ASPM entry latency through
+  CSI since the legacy config mechanism stops at 256 bytes, the ePHY
+  table, the MAC OCP registers of `rtl_hw_start_8125_common` incl. the
+  classic descriptor format, exit-L1 events), RxMaxSize 2048, ring
+  addresses, Tx/Rx enable, RxConfig (fetch 8, DMA burst, pause slot on B),
+  TxConfig, and the filter: own MAC, broadcast, all multicast. Finally
+  auto-negotiation: 10/100 half and full with pause, 1000 full, 2.5G full
+  (page 0xa5d reg 0x12 bit 7), BMCR ANENABLE | ANRESTART.
+- **Rings**: 256 receive descriptors with one 2 KiB buffer each
+  (frames split over descriptors, i.e. bigger than that, and RxRES
+  errors are dropped and counted), 128 transmit descriptors with a 2 KiB
+  bounce buffer each (frames padded to 60 bytes, FirstFrag | LastFrag,
+  RingEnd on the last; the doorbell is TxPoll_8125 bit 0). 16-byte
+  descriptors, 64-bit addresses.
+- **Polled**: interrupts stay masked (no MSI in the kernel yet). The
+  timer tick checks the next receive descriptor's owner bit
+  (`rtl8125::rx_hint`, next to virtio-net's) and the stack's soft
+  interrupt collects frames; the event register is acked on each link
+  poll.
+- **Carrier** (generic, `inet`): `EthDevice::carrier` returns the link
+  state for cards that have one (here PHYstatus bit 1; virtio-net has
+  none and is always up). The stack polls it every `HZ / 4` ticks; a
+  change sets the link's `carrier`, so IFF_RUNNING | IFF_LOWER_UP follow
+  IFF_UP only while there is a link (also through SIOCSIFFLAGS and
+  RTM_SETLINK), and, after the stack's lock is dropped, rewrites sysfs
+  `carrier` / `operstate` and multicasts RTM_NEWLINK. Android's
+  EthernetTracker starts its IpClient (DHCP) on IFF_LOWER_UP, so a cable
+  plugged in later works too. QEMU's static 10.0.2.15 setup now only goes
+  to the last virtio-net card; ethtool's driver name is per card
+  (`r8169`, as Linux names it; sysfs `DRIVER=r8169`).
+- **Log** (also on the framebuffer): `rtl8125: probing …`, `rtl8125:
+  eth0: RTL8125B XID 641, MAC …`, `link up, 1000 Mb/s full-duplex …
+  (PHYstatus, PHYSR)` / `link down`, a counter line (`rx … pkts … B, …
+  err … drop; tx … pkts … B, … busy`) at most every 5 s while the
+  counters move, and `net: eth0 carrier on`, `net: eth0 address
+  192.168.1.23/24`, `net: default route via 192.168.1.1 dev eth0 table N`
+  when netd applies the DHCP result (rtnetlink logs IPv4 addresses and
+  default routes on any card).
 
 ## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
 
@@ -1103,6 +1191,55 @@ docs/usb-boot.md for booting one from a USB stick):
   00:11.0, virtio-multitouch-pci 00:12.0, modern only. The QEMU
   monitor's `sendkey` and `mouse_button` go to them once the driver is
   up (HMP's `mouse_move` is relative and goes to the PS/2 mouse).
+
+## Sound (`drivers/sound/`, E5)
+
+The Cuttlefish primary audio HAL (`android.hardware.audio.service-aidl.example`,
+`StreamPrimary` over `StreamAlsa`) plays through tinyalsa (libtinyalsav2) to
+ALSA card 0, device 0 with read/write access: `pcm_open` (INFO, HW_PARAMS,
+SW_PARAMS, TTSTAMP; the status/control pages are not mmappable, so tinyalsa
+uses SYNC_PTR), then WRITEI_FRAMES, SYNC_PTR/HWSYNC for positions and
+timestamps, DROP on standby. Its mixer looks for "Master Playback Volume" /
+"Switch". No AOSP change is needed: the kernel exposes a real card the way
+Linux does.
+
+- **Core** (`sound/mod.rs`): cards in probe order (bus 0's motherboard
+  controller first, so it is card 0); `/dev/snd/controlC<c>` (116:32c) and
+  `pcmC<c>D<d>p` (116:32c+16+d), class `sound` devices below
+  `.../0000:00:1f.3/sound/card0/` with DEVNAME=snd/..., so ueventd applies
+  `/dev/snd/* 0660 system audio`; devtmpfs nodes; `/proc/asound/{cards,
+  devices,pcm,version}`.
+- **PCM** (`sound/pcm.rs`): the playback ABI over a driver's `PcmHw` (a DMA
+  ring and its read position). HW_REFINE/HW_PARAMS narrow masks and
+  intervals (formats, channels, rates from the codec; 128-byte periods,
+  2..32 periods) and choose the smallest configuration left, like
+  tinyalsa's min-period request expects. While running, a kernel timer
+  (every 10 ms tick) reads the position, advances `hw_ptr` (elapsed time
+  resolves ring wraps), zeroes consumed frames (an underrun plays
+  silence), detects underruns (XRUN, EPIPE until PREPARE) and stalls
+  (position frozen 0.5 s), ends DRAIN and wakes writers. The hardware ring
+  is the buffer plus a two-period pre-roll played before the data
+  (counted in `delay`, not in `avail`): the HAL writes a whole 4096-frame
+  buffer per 85 ms burst, so without it every burst came just too late.
+- **Control** (`sound/control.rs`): CARD_INFO, ELEM_LIST/INFO/READ/WRITE,
+  TLV_READ (dB scale), PCM_NEXT_DEVICE/PCM_INFO.
+- **HD Audio** (`sound/hda/`): PCI class 04.03; Intel: TCSEL 0, snooped
+  DMA; NVIDIA: coherency bits, and the GPU's hidden audio function enabled
+  (config 0x488 bit 25 through ECAM from the host bridge's PCIEXBAR).
+  Reset, codec mask from STATESTS, CORB/RIRB polled (immediate command
+  registers as fallback), no interrupts. `codec.rs` reads the audio
+  function group (widget caps, connection lists with ranges, pin caps and
+  configuration defaults, amp caps), picks connected Line Out / Speaker /
+  Headphone (or HDMI/DP) pins and routes each to a DAC through mixers and
+  selectors (shared DACs preferred: ALC897 rear 0x14 and front 0x1b both
+  via 0x0c to DAC 0x02, both always playing), unmutes the path at 0 dB,
+  OUT_EN/HP_EN, EAPD. One PCM per codec on its own output stream (tag =
+  index + 1), BDL of whole periods over a fixed 256 KiB ring, position =
+  LPIB. HDMI: digital converters, DIGEN, a 2-channel audio InfoFrame/DP
+  SDP; HDMI PCMs are devices 3, 7, 8... (`snd.primary=hdmi` makes the GPU
+  card 0 / device 0). Probe, pins, routes, jack states, stream start/stop
+  and underruns go to the kernel log (rate-limited), i.e. also to the
+  framebuffer console.
 
 ## Binder (`drivers/binder/`)
 

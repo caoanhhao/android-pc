@@ -1,6 +1,6 @@
 //! USB Audio Class 1 capture (E8): a microphone's AudioStreaming
 //! interface (an isochronous IN endpoint carrying PCM, format type I)
-//! becomes an ALSA capture card (`drivers::media::alsa`).
+//! becomes an ALSA capture card (`drivers::sound::register_capture`).
 //!
 //! The alternate setting with the best PCM format is used (48 kHz if
 //! offered, else the highest rate; 16-bit preferred). Starting capture
@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 
 use super::isoch::{IsochDesc, IsochParams, IsochSink};
 use super::{CTRLS, MediaDev, Xhci};
-use crate::drivers::media::alsa::{self, CapturePcm, CaptureSource, HwFormat};
+use crate::drivers::sound::{self, capture::{CapturePcm, CaptureSource, HwFormat}};
 use crate::errno::*;
 
 const CS_INTERFACE: u8 = 0x24;
@@ -298,7 +298,8 @@ impl Xhci {
         let longname = format!("{name} at usb-{}-{path}, high speed", self.pci_dir.rsplit('/').next().unwrap_or(""));
         let src = UacSource { ctrl: self.index, media, alt: a, rate, label: label.clone() };
         let short: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).take(15).collect();
-        match alsa::register(if short.is_empty() { "Device" } else { &short }, name, &longname, "USB-Audio", &parent, Box::new(src)) {
+        let id = if short.is_empty() { "Device" } else { &short };
+        match sound::register_capture(&parent, id, "USB-Audio", name, &longname, Box::new(src)) {
             Some(c) => log::info!("uac: {label}: \"{name}\" is card {} (/dev/snd/pcmC{}D0c), {rate} Hz", c.index, c.index),
             None => log::warn!("uac: {label}: not registered"),
         }

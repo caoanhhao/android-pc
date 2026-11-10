@@ -269,6 +269,14 @@ pub fn toggle_overlay() {
     }
 }
 
+/// Bring the log back over the DRM picture for good (power off,
+/// restart: the last lines stay on screen if the machine does not go).
+pub fn show() {
+    if HANDED_OVER.load(Ordering::Acquire) && !DRAW.load(Ordering::Acquire) {
+        toggle_overlay();
+    }
+}
+
 /// From the panic handler: take the console whatever state it is in.
 ///
 /// # Safety
