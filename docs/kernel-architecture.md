@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md; E8: xHCI isochronous transfers, UVC cameras as V4L2 devices, UAC microphones as ALSA capture cards)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -996,6 +996,65 @@ docs/usb-boot.md for booting one from a USB stick):
 - **Serial**: the console UART is used only if its scratch register
   works; `serial=off` stops the log there (a 16550 with nothing attached
   paces the log at 115200 baud). `loglevel=N` sets the log level.
+
+## Cameras and microphones (`drivers/usb/{isoch,uvc,uac}.rs`, `drivers/media/`, E8)
+
+- **Isochronous endpoints** (`drivers/usb/isoch.rs`): a transfer ring of
+  several pages and a DMA buffer slot per ring position; one Isoch TRB per
+  service interval (wMaxPacketSize x high-bandwidth transactions, Max Burst
+  = mult - 1, TBC 0, TLBPC = packets - 1; SuperSpeed burst and Mult from
+  the companion), Start Isoch ASAP on every TD. IN TDs raise events when
+  short (ISP), failed or every `ioc_every`-th (IOC); the TDs are kept in
+  order, so an event also completes the silent full-length TDs before it,
+  and a sentinel byte (zeroed when posted) tells a never-filled buffer.
+  Errors (missed service, transaction errors, ring under/overruns) are
+  counted and hand the sink an empty interval; isochronous endpoints never
+  halt. `isoch_start` adds the endpoint (Configure Endpoint, dropping an
+  older context) then SET_INTERFACE, like Linux; `isoch_stop` stops and
+  drops it and selects alternate setting 0. A status line per second while
+  streaming (TDs, KiB, empty, errors). The event ring grew to 4096 entries
+  (half a second of a camera's 8000 completions a second).
+- **UVC** (`drivers/usb/uvc.rs`): the VideoControl/VideoStreaming pair of
+  a video interface collection; MJPEG, YUY2 and NV12 formats with their
+  frames and intervals (frame-based ones skipped); on STREAMON the
+  probe/commit negotiation (26/34/48 bytes by version) gives the largest
+  payload, and the smallest alternate setting carrying it is streamed
+  (`isoch`, IOC every 8 TDs, sentinel on). Bulk streaming is not supported.
+- **V4L2** (`drivers/media/v4l2.rs`): `/dev/videoN` (81:N) with
+  `.../<interface>/video4linux/videoN` in sysfs; single-planar capture
+  with MMAP streaming (QUERYCAP, ENUM_FMT, G/S/TRY_FMT, ENUM_FRAMESIZES,
+  ENUM_FRAMEINTERVALS, G/S_PARM, ENUMINPUT, G/S_INPUT, REQBUFS, QUERYBUF,
+  QBUF, DQBUF, STREAMON/OFF; controls EINVAL). Buffers are shmem objects
+  mapped at their QUERYBUF offsets; the buffers belong to the file that
+  asked for them (another file's REQBUFS is EBUSY; closing it stops the
+  stream). Payloads go through `FrameSync` (FID toggles, EOF bits, joining
+  at the first boundary); damaged frames (ERR bit, lost intervals, wrong
+  size for an uncompressed format, overflow) are dropped and their buffer
+  reused, as uvcvideo does. Status line per second (fps, KiB/frame,
+  dropped, damaged).
+- **UAC 1 capture** (`drivers/usb/uac.rs`): the AudioStreaming settings
+  of an audio function (format type I PCM, isochronous IN); the best one
+  (48 kHz, 16-bit) becomes an ALSA card, streamed on START with one event
+  per TD and SET_CUR SAMPLING_FREQ on the endpoint. Playback settings are
+  parsed; `usb.isoch_selftest=1` streams silence to one for 300 ms at
+  bring-up (`--hw-test` does this with QEMU's usb-audio). UAC2 is not
+  supported.
+- **ALSA capture core** (`drivers/media/alsa.rs`, to be replaced by E5's
+  ALSA core on merge): cards with `controlC<n>` (116:32n) and one capture
+  PCM `pcmC<n>D0c` (116:32n+24), the ioctls tinyalsa and alsa-lib use
+  (HW_REFINE/HW_PARAMS with Linux-like refinement and choice, SW_PARAMS
+  with the boundary, SYNC_PTR since status/control are not mmapped,
+  PREPARE/START/DROP, READI_FRAMES, STATUS, DELAY). The device's samples
+  are converted on arrival to S16 at 8-48 kHz, mono or stereo (box filter
+  when decimating by 2 or more, else linear interpolation), since AOSP's
+  primary HAL opens card 0 device 0 at the app's rate and channel count.
+- **Test devices** (`drivers/media/testdev.rs`, `testcam=1`, set by
+  `--ktest`): a camera sending UVC payloads (YUYV colour bars with the
+  frame number, a fixed MJPEG) and a microphone (1 kHz triangle, 48 kHz
+  stereo), produced on the clock when a reader looks, a kernel timer
+  waking it; `tests/src/bin/e8_media.rs` drives both like the camera HAL
+  and tinyalsa do (and the V4L2 half runs against a real webcam on the
+  Linux host).
 
 ## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
 

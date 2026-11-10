@@ -130,6 +130,8 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
         }
         (crate::drivers::hvc::HVC_MAJOR, minor) => return crate::drivers::hvc::open(minor),
         (crate::drivers::drm::DRM_MAJOR, minor) => return crate::drivers::drm::open(minor),
+        (crate::drivers::media::VIDEO_MAJOR, minor) => return crate::drivers::media::v4l2::open(minor),
+        (crate::drivers::media::SOUND_MAJOR, minor) => return crate::drivers::media::alsa::open(minor),
         (crate::drivers::dma_buf::HEAP_MAJOR, minor) => return crate::drivers::dma_buf::open_heap(minor),
         (crate::block::MISC_MAJOR, crate::net::tun::TUN_MINOR) => return crate::net::tun::open(),
         (crate::block::MISC_MAJOR, crate::drivers::ashmem::ASHMEM_MINOR) => return crate::drivers::ashmem::open(),

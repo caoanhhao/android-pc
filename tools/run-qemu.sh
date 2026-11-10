@@ -10,6 +10,8 @@
 #                                     such as b1) and exit 0 iff it reports
 #                                     "END ktest-init ... fail=0"; attaches
 #                                     the C2 test disk (out/c2/c2-disk.img)
+#                                     and the kernel's test camera and
+#                                     microphone (testcam=1, for e8_media)
 #   tools/run-qemu.sh --aosp-sh-test  build out/aosp-initramfs.cpio from the
 #                                     AOSP build (tools/mkaosp-initramfs.sh),
 #                                     boot it and run tools/aosp-sh-test.py:
@@ -109,7 +111,10 @@
 #                                     (00:05.0, sda), a qemu-xhci (00:06.0)
 #                                     with the same disk as usb-storage
 #                                     (sdb), a usb-hub with the usb-kbd and
-#                                     usb-mouse behind it; no virtio
+#                                     usb-mouse behind it, a usb-audio
+#                                     speaker that the kernel streams
+#                                     silence to at bring-up (E8's
+#                                     isochronous self-test); no virtio
 #                                     disks or input; ktest-init runs c2_fs
 #                                     (over NVMe) and e1_hw, and
 #                                     tools/hw-test.py types into the USB
@@ -254,6 +259,8 @@ if [[ $mode == ktest ]]; then
     if [[ ${#disks[@]} -eq 0 && -f $ROOT/out/c2/c2-disk.img ]]; then
         disks=("$ROOT/out/c2/c2-disk.img,snapshot" "$ROOT/out/c2/c2-disk.img,legacy")
     fi
+    # The test camera and microphone for e8_media (E8).
+    append="testcam=1${append:+ $append}"
     [[ ${#ktest_filters[@]} -gt 0 ]] && append="$append -- ${ktest_filters[*]}"
 fi
 if [[ $mode == hw-test ]]; then
@@ -261,7 +268,8 @@ if [[ $mode == hw-test ]]; then
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
     [[ -z $gpu ]] && gpu=0
     [[ -z $input ]] && input=0
-    append="$append -- c2_fs e1_hw"
+    # E8: stream to the usb-audio speaker at bring-up (isochronous OUT).
+    append="usb.isoch_selftest=1${append:+ $append} -- c2_fs e1_hw"
     img="$ROOT/out/c2/c2-disk.img"
     # Fixed slots (sysfs paths), writes to throw-away overlays.
     qemu_hw=(-drive "file=$img,format=raw,if=none,id=hwnvme,snapshot=on,file.locking=off"
@@ -273,7 +281,8 @@ if [[ $mode == hw-test ]]; then
              -drive "file=$img,format=raw,if=none,id=hwusb,snapshot=on,file.locking=off"
              -device "usb-storage,bus=hwxhci.0,port=1,drive=hwusb,serial=RUSTPCUSB0"
              -device "usb-hub,bus=hwxhci.0,port=2"
-             -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=2.3")
+             -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=2.3"
+             -audiodev "none,id=hwsnd" -device "usb-audio,bus=hwxhci.0,port=3,audiodev=hwsnd")
     qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
     [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi

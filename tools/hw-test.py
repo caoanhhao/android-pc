@@ -10,7 +10,10 @@ serial console is copied to stdout and the log. When e1_hw prints
 `sendkey a`, then `mouse_move 10 -5`, `mouse_button 1`, `mouse_button 0`,
 which only the USB devices can receive (the VM has no virtio-input).
 On "E1-HID-STRESS" it floods 3000 `mouse_move 1 0` and a `sendkey a` per
-20 moves, then a right click (the USB rings wrap many times).
+20 moves, then a right click (the USB rings wrap many times). The kernel's
+isochronous OUT self-test on the usb-audio speaker (E8,
+usb.isoch_selftest=1) must report at least 200 TDs in its 300 ms and no
+errors.
 
 Usage: hw-test.py --monitor SOCKET [--log FILE] [--timeout SECS] -- qemu-system-x86_64 ...
 Exit status 0 iff ktest-init reports "END ktest-init pass=N fail=0" with
@@ -82,6 +85,7 @@ def main():
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     end_line = None
     injected = False
+    isoch = None
     deadline = time.time() + a.timeout
     timer = threading.Timer(a.timeout, p.kill)
     timer.start()
@@ -96,6 +100,9 @@ def main():
             if b"E1-HID-READY" in line and not injected:
                 injected = True
                 threading.Thread(target=inject, args=(a.monitor,), daemon=True).start()
+            m = re.search(rb"isoch OUT self-test: (\d+) TDs in \d+ ms \(\d+ bytes each\), (\d+) errors", line)
+            if m:
+                isoch = (int(m.group(1)), int(m.group(2)))
             m = re.search(rb"^END ktest-init pass=(\d+) fail=(\d+)", line)
             if m:
                 end_line = m
@@ -109,6 +116,10 @@ def main():
         print("hw-test: e1_hw never became ready for input", file=sys.stderr)
         return 1
     print(f"hw-test: ktest-init pass={passed} fail={failed}")
+    if isoch is None or isoch[0] < 200 or isoch[1] != 0:
+        print(f"hw-test: isochronous self-test FAILED: {isoch} (TDs, errors)", file=sys.stderr)
+        return 1
+    print(f"hw-test: isochronous self-test: {isoch[0]} TDs, no errors")
     return 0 if failed == 0 and passed > 0 else 1
 
 

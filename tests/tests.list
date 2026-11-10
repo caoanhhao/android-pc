@@ -61,3 +61,5 @@ d3_timers
 d3_splice
 # E1: real-hardware-class controllers (NVMe, AHCI, xHCI HID; run-qemu.sh --hw-test, skipped without them)
 e1_hw
+# E8: video and audio capture (V4L2, ALSA) on the test camera and microphone (testcam=1; the host: V4L2 on a real webcam)
+e8_media
