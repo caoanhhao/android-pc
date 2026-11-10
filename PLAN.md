@@ -113,7 +113,19 @@ render phần mềm.
 - **E3.** Boot từ USB stick trên PC thật: USB mass storage (Bulk-Only + SCSI),
   hub USB, bảng ACPI (MADT, FADT/PM timer, HPET), hiệu chuẩn timer không cần
   PIT, log kernel trên framebuffer, `tools/mkusb.sh`,
-  `run-qemu.sh --usb-boot-test`; hướng dẫn: `docs/usb-boot.md`.
+  `run-qemu.sh --usb-boot-test`; hướng dẫn: `docs/usb-boot.md`. Đã chạy trên
+  PC thật (Z790): màn hình, bàn phím/chuột USB (sửa doorbell xHCI, TT cho hub).
+- **E4.** Mạng có dây Realtek RTL8125 2.5 GbE (`drivers/rtl8125.rs`), báo
+  trạng thái carrier trong lớp netdev cho EthernetTracker/DHCP.
+- **E5.** Âm thanh: Intel HD Audio (codec Realtek ALC897, HDMI của NVIDIA) với
+  ABI ALSA PCM/control; `run-qemu.sh --aosp-audio-test`.
+- **E7.** Bluetooth Intel AX211 qua USB (btusb + nạp firmware Intel), nối HAL
+  qua `/dev/hvc5`, `/dev/uhid` cho HID Bluetooth; `run-qemu.sh --aosp-bt-test`.
+- **E8.** Webcam USB: isochronous xHCI, UVC thành V4L2 `/dev/video0`, micro
+  UAC trên lõi ALSA của E5 (Android ghi âm được); ứng dụng Camera cần sửa
+  vendor image.
+- **E9.** Nền tảng PC: tắt máy/khởi động lại qua ACPI, nút nguồn, RTC CMOS
+  (`/dev/rtc0`), nhiệt độ CPU, HWP/cpufreq, idle MWAIT, nguồn AC.
 - **E6.** Wi-Fi: generic netlink + nl80211, lớp kiểu cfg80211/mac80211 cho
   wpa_supplicant (SME phía user), rfkill, radio mô phỏng (`wifisim=`, AP
   WPA2 nối ra virtio-net) với `run-qemu.sh --aosp-wifi-test`; driver
