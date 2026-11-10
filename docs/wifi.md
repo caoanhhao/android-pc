@@ -38,6 +38,9 @@ Read from `device/google/cuttlefish` and `system/connectivity/wificond`
   NEW_KEY, the port with SET_STATION(AUTHORIZED), EAPOL through an
   AF_PACKET socket on `wlan0`, REGISTER_FRAME / FRAME for action frames,
   `/dev/rfkill` if present.
+- NetworkStack's IpClient needs `/proc/sys/net/ipv{4,6}/conf/wlan0/*`;
+  wpa_supplicant's l2_packet needs the interface ioctls on its packet
+  socket and a classic BPF filter reading `pkt_type`.
 - hostapd (soft AP) is not supported (no AP iftype is advertised).
 
 ## 2. Kernel side
@@ -91,9 +94,14 @@ yet):
   lists networks;
 - firmware errors: the LMAC/UMAC error tables are dumped to the log.
 
-Not done yet: association and data (STA_CONFIG, PHY context, session
-protection, TX queues and the TX command, SEC_KEY, rate control), so
-connecting fails with "association is not implemented yet".
+- association and data, written from Linux's MLD mvm path but not yet
+  run on the hardware: PHY context + RLC config, link activated,
+  STA_CONFIG for the AP, one TX queue (TID 8) for management and non-QoS
+  data, session protection while authenticating, TX_CMD v10 without a
+  fixed rate (the firmware picks), after association MAC/LINK/STA
+  updates and TLC with the AP's legacy rates, keys through SEC_KEY_CMD
+  (the firmware encrypts and decrypts). Legacy rates only: no HT/VHT/HE,
+  QoS or aggregation yet, so throughput is at most 54 Mb/s.
 
 Log lines to look for on the boot screen (photograph them):
 `iwlwifi: hw_rev … rf_id …`, `firmware: … from the boot media`,
@@ -101,6 +109,10 @@ Log lines to look for on the boot screen (photograph them):
 0xcafe …`, `iwlwifi: PNVM loaded`, `iwlwifi: NVM: …`, `iwlwifi: regulatory
 …`, `iwlwifi: ready, address …`, `wifi: phy0 (iwlwifi) is wlan0`, and
 after turning Wi-Fi on in Settings `wifi: wlan0 scan done (N BSS)` /
-`iwlwifi: scan done (status …, N frames)`. On failure: `iwlwifi: no ALIVE
+`iwlwifi: scan done (status …, N frames)`; when connecting
+`iwlwifi: joining …`, `iwlwifi: joined: queue N, session protection …`,
+`wifi: wlan0 auth reply … status 0`, `… assoc reply … status 0 aid N`,
+`iwlwifi: associated`, `iwlwifi: pairwise key 0 installed`,
+`wifi: wlan0 connected to …, port authorized`. On failure: `iwlwifi: no ALIVE
 …` (with secure-boot CPU status), `FIRMWARE ERROR` and the two error
 table lines.
