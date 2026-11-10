@@ -123,7 +123,23 @@
 #                                     disks or input; ktest-init runs c2_fs
 #                                     (over NVMe) and e1_hw, and
 #                                     tools/hw-test.py types into the USB
-#                                     devices through the monitor
+#                                     devices through the monitor; then
+#                                     e9_platform (CMOS RTC, AC supply,
+#                                     cpufreq, thermal) and the ACPI power
+#                                     button pressed with the monitor's
+#                                     `system_powerdown`; ktest-init's power
+#                                     off must end QEMU through ACPI S5
+#                                     (exit status 0, not isa-debug-exit)
+#   tools/run-qemu.sh --power-test    restart and power off (E9): the ktest
+#                                     initramfs runs e9_power without
+#                                     -no-reboot; tools/power-test.py
+#                                     presses the power button
+#                                     (`system_powerdown`), the test restarts
+#                                     the machine with reboot(2) (FADT reset
+#                                     register), the second boot finds the
+#                                     marker it left in the CMOS alarm
+#                                     registers, and ktest-init's power off
+#                                     must make QEMU exit with status 0
 #   tools/run-qemu.sh [opts] <ELF>    boot a given kernel ELF (cargo runner)
 #
 # Every VM has a virtio-net card (PCI 00:03.0) on QEMU's user-mode network:
@@ -196,6 +212,7 @@ while [[ $# -gt 0 ]]; do
         --disk) disks+=("$2"); shift ;;
         --nvme) disk_bus=nvme ;;
         --hw-test) mode=hw-test ;;
+        --power-test) mode=power-test ;;
         --usb-boot-test) mode=usb-boot-test ;;
         --usb-dev) usb_dev="$2"; shift ;;
         --density) density="$2"; shift ;;
@@ -235,6 +252,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 [[ -z $timeout ]] && { timeout=120; [[ $mode == ktest ]] && timeout=600; [[ $mode == hw-test ]] && timeout=300; }
+reboot_opt=(-no-reboot)
 
 # rust-toolchain.toml must win over a toolchain forced from the environment.
 cargo_() { (cd "$KERNEL_DIR" && env -u RUSTUP_TOOLCHAIN cargo "$@"); }
@@ -278,7 +296,7 @@ if [[ $mode == hw-test ]]; then
     [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
     [[ -z $gpu ]] && gpu=0
     [[ -z $input ]] && input=0
-    append="$append -- c2_fs e1_hw"
+    append="$append e9.pwrbtn -- c2_fs e1_hw e9_platform"
     img="$ROOT/out/c2/c2-disk.img"
     # Fixed slots (sysfs paths), writes to throw-away overlays.
     qemu_hw=(-drive "file=$img,format=raw,if=none,id=hwnvme,snapshot=on,file.locking=off"
@@ -292,6 +310,16 @@ if [[ $mode == hw-test ]]; then
              -device "usb-hub,bus=hwxhci.0,port=2"
              -device "usb-kbd,bus=hwxhci.0,port=2.1" -device "usb-mouse,bus=hwxhci.0,port=2.3")
     qemu_extra=("${qemu_hw[@]}" "${qemu_extra[@]}")
+    [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
+fi
+if [[ $mode == power-test ]]; then
+    "$ROOT/tools/mkinitramfs.sh" >/dev/null
+    [[ -z $initrd ]] && initrd="$ROOT/out/ktest-initramfs.cpio"
+    [[ -z $gpu ]] && gpu=0
+    [[ -z $input ]] && input=0
+    append="$append e9.reboot -- e9_power"
+    # The guest's restart must boot it again.
+    reboot_opt=()
     [[ -z $monitor ]] && monitor="${XDG_RUNTIME_DIR:-/tmp}/android-pc-monitor-$$.sock"
 fi
 if [[ $mode == aosp-disk-test ]]; then
@@ -461,7 +489,7 @@ boot_media=(-cdrom "$iso" -boot d)
 fi
 
 # --- QEMU -------------------------------------------------------------------
-args=(-machine q35 -smp "$smp" -m "$mem" -no-reboot
+args=(-machine q35 -smp "$smp" -m "$mem" "${reboot_opt[@]}"
       -device isa-debug-exit,iobase=0xf4,iosize=0x04
       "${boot_media[@]}")
 if [[ $kvm == auto && -r /dev/kvm && -w /dev/kvm ]]; then
@@ -550,6 +578,15 @@ if [[ $mode == hw-test ]]; then
         exit 0
     fi
     echo "run-qemu.sh: hardware test FAILED (serial log: $log)" >&2
+    exit 1
+elif [[ $mode == power-test ]]; then
+    log="$work/power-test.log"
+    args+=(-display "$display" -serial stdio)
+    if timeout --foreground $((timeout + 30)) python3 "$ROOT/tools/power-test.py" --log "$log" --monitor "$monitor" \
+        --timeout "$timeout" -- qemu-system-x86_64 "${args[@]}" "${qemu_extra[@]}"; then
+        exit 0
+    fi
+    echo "run-qemu.sh: power test FAILED (serial log: $log)" >&2
     exit 1
 elif [[ $mode == ktest ]]; then
     # Serial to stdout and a log; the verdict is ktest-init's END line.

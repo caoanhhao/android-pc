@@ -26,6 +26,7 @@
 //! | /dev/net/tun    | 10:200      | tun links without traffic (`net::tun`) |
 //! | /dev/hvc1..17   | 229:N       | host-less virtio-console stand-ins (`drivers::hvc`) |
 //! | /dev/ashmem<boot_id> | 10:126 | ashmem regions (`drivers::ashmem`) |
+//! | /dev/rtc0       | 252:0       | the CMOS RTC (`drivers::platform::rtc`) |
 //! | /dev/userfaultfd | 10:124     | USERFAULTFD_IOC_NEW (`mm::userfaultfd`) |
 //! | /sys/kernel/debug/sync/sw_sync | 10:250 | sw_sync timelines (`drivers::dma_buf::sync_file`) |
 //!
@@ -129,6 +130,7 @@ pub fn open_chr(rdev: u64) -> KResult<Box<dyn FileOps>> {
             return crate::drivers::dma_buf::sync_file::open_sw_sync();
         }
         (crate::drivers::hvc::HVC_MAJOR, minor) => return crate::drivers::hvc::open(minor),
+        (crate::drivers::platform::rtc::RTC_MAJOR, 0) => return crate::drivers::platform::rtc::open(),
         (crate::drivers::drm::DRM_MAJOR, minor) => return crate::drivers::drm::open(minor),
         (crate::drivers::sound::SOUND_MAJOR, minor) => return crate::drivers::sound::open(minor),
         (crate::drivers::dma_buf::HEAP_MAJOR, minor) => return crate::drivers::dma_buf::open_heap(minor),

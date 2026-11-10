@@ -52,7 +52,8 @@ extern "C" fn kmain() -> ! {
     arch::init_bsp_late();
     arch::smp::start_aps();
 
-    if let Some(t) = boot::boot_time() {
+    // The CMOS RTC (UTC) for the wall clock, else the bootloader's time.
+    if let Some(t) = drivers::platform::init_early().map(|t| t - (time::monotonic_ns() / time::NSEC_PER_SEC) as i64).or_else(boot::boot_time) {
         time::set_boot_epoch(t);
     }
 

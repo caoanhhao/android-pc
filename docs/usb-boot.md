@@ -135,9 +135,6 @@ runs without authentication on this build). Pulling the cable logs
 `link down` and `net: eth0 carrier off`; plugging it back in gets a new
 DHCP lease.
 
-Power off with the power button (or hold it); nothing on the stick needs
-a clean shutdown.
-
 ### Sound (phase E5)
 
 Android plays through the motherboard's HD Audio (Realtek ALC897): the
@@ -172,7 +169,54 @@ in a row (with crackling) or `DMA position stalled` mean the stream does
 not run: report them with the `hda` lines above. If nothing is heard but
 the stream starts, report which jack you used and the `pin` lines.
 
-## 5. When something fails: what to report
+Power off and restart from Android (hold the power key or use the power
+menu's **Power off** / **Restart**); see section 5. Holding the case's
+power button for 4 s still cuts the power whatever the software does;
+nothing on the stick needs a clean shutdown.
+
+## 5. Power, clock, temperatures (phase E9)
+
+The kernel log shows one line per platform device at boot:
+
+- `acpi: … reset 0xcf9=0x6, S5 (…)`: what power off and restart use.
+  **Power off** (Android's power menu, `adb shell reboot -p`, `svc power
+  shutdown`) ends in `reboot(2): power off`, `power off`, `acpi: entering
+  S5 (SLP_TYPa … SLP_TYPb …)` and the PC turns off (ACPI S5 from the
+  DSDT's `\_S5` package, no AML interpreter, so no `_PTS`). **Restart**
+  ends in `restarting`, `acpi: reset register 0xcf9 (space 1) <- 0x6`; if
+  that does nothing, `restart: trying port 0xcf9`, `… the keyboard
+  controller`, `… triple fault` follow 100 ms apart. Both bring the log
+  back over Android's picture first, so a PC that does not turn off or
+  restart shows why (photograph the last lines).
+- `acpi: switched to ACPI mode` (or `already in ACPI mode`) and `power
+  button: ACPI fixed feature, PM1a_EVT 0x1800, SCI IRQ 9 masked, inputN`:
+  the case's power button is the input device "Power Button" (KEY_POWER).
+  A short press puts Android to sleep (screen off) and wakes it again;
+  each press logs `power button pressed`. A long press of a fixed-feature
+  button only sends one press (the hardware reports no release), so the
+  power menu comes from the keyboard or `adb shell input keyevent
+  --longpress POWER`.
+- `rtc: CMOS RTC 2026-11-10 13:05:59 UTC (BCD, 24-hour, century reg
+  0x32)`: the wall clock at boot, and /dev/rtc0 for Android (alarms,
+  `hwclock`). The RTC is read as **UTC**, as Linux keeps it; a PC whose
+  Windows keeps local time in the RTC needs `--append "rtc_offset=SECONDS"`
+  for `tools/mkusb.sh` (e.g. `rtc_offset=25200` for UTC+7).
+- `cpu: digital thermal sensors + package (TjMax 100 C), HWP on (EPP
+  balance_performance), APERF/MPERF yes, hybrid P/E cores, base 3400 MHz`
+  and `cpufreq: 24 policies (intel_pstate, HWP), 16 P + 8 E CPUs online`
+  (or similar): HWP lets the P-cores turbo; the scheduler wakes idle
+  P-cores first. `thermal: x86_pkg_temp thermal_zone0, coretemp 16 cores,
+  package 35 C`: the temperatures in /sys/class/thermal and
+  /sys/class/hwmon/hwmon0 (`adb shell cat
+  /sys/class/thermal/thermal_zone0/temp`). `nohwp` on the command line
+  leaves the firmware's P-states.
+- `idle: mwait, hint 0x20 (MWAIT C3)`: idle CPUs use deep C-states (C6)
+  instead of `hlt`; `idle=hlt` on the command line goes back to `hlt`
+  (try it if the PC freezes when idle), `idle=c1` stays in C1.
+- `power supply: AC (Mains) online, no battery`: Android's battery icon
+  shows the PC as plugged in.
+
+## 6. When something fails: what to report
 
 There is no network and no serial port, so the screen is the log. Please
 send:
@@ -197,7 +241,7 @@ send:
    and the endpoint state (1 running, 2 halted).
 4. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
    especially `xhci:`, `usb-storage:`, `boot disk:`, `SMP:`, `acpi:`,
-   `simpledrm:`.
+   `simpledrm:`, `rtc:`, `power button:`, `cpu:`, `idle:`.
 5. Which USB port the stick was in (rear/front, USB 2 black or USB 3
    blue/red/teal), what keyboard and mouse were plugged in and where, and
    the monitor's resolution.
@@ -227,3 +271,8 @@ Common cases:
 - *Link up but no `net: eth0 address`*: DHCP got no answer; the counter
   line shows whether frames arrive (rx) and leave (tx); `err` counts
   receive errors.
+- *Power off leaves the PC on* (the log shows `acpi: entering S5` and then
+  `power off: ACPI S5 did not take`): photograph the `acpi:` lines from
+  the start of the log (the `S5` values and the tables) and hold the
+  power button.
+- *The PC freezes once Android is idle*: add `idle=hlt` (deep C-states).

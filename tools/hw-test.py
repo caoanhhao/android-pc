@@ -11,6 +11,9 @@ serial console is copied to stdout and the log. When e1_hw prints
 which only the USB devices can receive (the VM has no virtio-input).
 On "E1-HID-STRESS" it floods 3000 `mouse_move 1 0` and a `sendkey a` per
 20 moves, then a right click (the USB rings wrap many times).
+On "E9-PWRBTN-READY" (e9_platform) it presses the ACPI power button with
+`system_powerdown`. At the end ktest-init powers off: QEMU must exit by
+itself with status 0 (ACPI S5; the isa-debug-exit fallback gives 33).
 
 The VM has no RTL8125 (QEMU has no model of it): the kernel must log
 "rtl8125: no RTL8125 found" and nothing else from that driver (E4: the
@@ -18,7 +21,7 @@ driver probes cleanly without its device).
 
 Usage: hw-test.py --monitor SOCKET [--log FILE] [--timeout SECS] -- qemu-system-x86_64 ...
 Exit status 0 iff ktest-init reports "END ktest-init pass=N fail=0" with
-N > 0 and the RTL8125 check passed.
+N > 0, the RTL8125 check passed and QEMU then exits with status 0.
 """
 import argparse
 import os
@@ -99,6 +102,9 @@ def main():
             sys.stdout.flush()
             if b"E1-HID-STRESS" in line:
                 threading.Thread(target=flood, args=(a.monitor,), daemon=True).start()
+            if b"E9-PWRBTN-READY" in line:
+                threading.Thread(target=lambda: (time.sleep(0.5), print(f"hw-test: monitor `system_powerdown`", flush=True),
+                                                 gfx.monitor_cmd(a.monitor, "system_powerdown")), daemon=True).start()
             if b"E1-HID-READY" in line and not injected:
                 injected = True
                 threading.Thread(target=inject, args=(a.monitor,), daemon=True).start()
@@ -109,7 +115,7 @@ def main():
             m = re.search(rb"^END ktest-init pass=(\d+) fail=(\d+)", line)
             if m:
                 end_line = m
-    p.wait()
+    code = p.wait()
     timer.cancel()
     if end_line is None:
         print(f"hw-test: no END line ({'timed out' if time.time() >= deadline else 'QEMU exited'})", file=sys.stderr)
@@ -118,11 +124,14 @@ def main():
     if not injected:
         print("hw-test: e1_hw never became ready for input", file=sys.stderr)
         return 1
-    print(f"hw-test: ktest-init pass={passed} fail={failed}")
+    print(f"hw-test: ktest-init pass={passed} fail={failed}, QEMU exit status {code}")
     if not rtl_absent or rtl_other:
         print(f"hw-test: rtl8125 probe without the device: FAIL (absent line {'seen' if rtl_absent else 'missing'}, other: {rtl_other})", file=sys.stderr)
         return 1
     print("hw-test: rtl8125 probes cleanly without the device")
+    if code != 0:
+        print("hw-test: the power off did not end QEMU through ACPI S5", file=sys.stderr)
+        return 1
     return 0 if failed == 0 and passed > 0 else 1
 
 
