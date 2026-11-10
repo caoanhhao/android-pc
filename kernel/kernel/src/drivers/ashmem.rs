@@ -146,8 +146,14 @@ impl FileOps for Ashmem {
         Ok(n)
     }
 
-    fn lseek_ok(&self) -> bool {
+    /// Seeks move in the region, SEEK_END is its size (what AudioFlinger's
+    /// checkIMemory measures a shared buffer with).
+    fn seekable(&self) -> bool {
         true
+    }
+
+    fn size(&self, _: &OpenFile) -> u64 {
+        self.0.lock().size
     }
 
     fn link_name(&self) -> Option<Vec<u8>> {

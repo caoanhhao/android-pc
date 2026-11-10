@@ -48,6 +48,9 @@ tools/run-qemu.sh --hw-test       # E1: C2 disk on NVMe + AHCI + usb-storage, qe
 tools/run-qemu.sh --usb-boot-test # E3: AOSP from a USB stick image (tools/mkusb.sh + tools/mkusbimg.py)
                                   # under OVMF, no virtio disk/GPU/input; checked by aosp-fb-test.py --usb
 tools/mkusb.sh --esp /run/media/$USER/ANDROIDPC   # E3: fill a real stick's ESP (docs/usb-boot.md)
+tools/run-qemu.sh --aosp-audio-test # E5: the boot test's machine + intel-hda/hda-duplex (--audio, output
+                                  # to a WAV file): /dev/snd, /proc/asound, tinypcminfo, tinymix,
+                                  # tinyplay and an AudioTrack tone via the audio HAL, found in the WAV
 tools/run-qemu.sh --initrd out/b1_hello.cpio --append "strace"   # other initramfs, kernel cmdline
 tools/run-qemu.sh --bios --no-kvm --smp 2 --mem 512M   # other machine shapes (UEFI through
                                   # OVMF is the default; --bios boots the same ISO via SeaBIOS)
@@ -139,7 +142,8 @@ kernel/
                        protocol, mod); ashmem; hvc (host-less virtio-console
                        ports); pci (config space, enumeration, sysfs dirs, DMA
                        and MMIO helpers); nvme; ahci; usb/ (xHCI host + hid boot
-                       keyboards/mice); virtio/
+                       keyboards/mice); sound/ (ALSA PCM + control ABI, hda/
+                       controller + codec parser, E5); virtio/
                        (transports + virtqueues, blk, net, gpu); drm/ (DRM device
                        on virtio-gpu or the boot framebuffer: mod = files,
                        GEM, ioctls; kms = mode objects, properties, atomic
@@ -1044,6 +1048,55 @@ docs/usb-boot.md for booting one from a USB stick):
   00:11.0, virtio-multitouch-pci 00:12.0, modern only. The QEMU
   monitor's `sendkey` and `mouse_button` go to them once the driver is
   up (HMP's `mouse_move` is relative and goes to the PS/2 mouse).
+
+## Sound (`drivers/sound/`, E5)
+
+The Cuttlefish primary audio HAL (`android.hardware.audio.service-aidl.example`,
+`StreamPrimary` over `StreamAlsa`) plays through tinyalsa (libtinyalsav2) to
+ALSA card 0, device 0 with read/write access: `pcm_open` (INFO, HW_PARAMS,
+SW_PARAMS, TTSTAMP; the status/control pages are not mmappable, so tinyalsa
+uses SYNC_PTR), then WRITEI_FRAMES, SYNC_PTR/HWSYNC for positions and
+timestamps, DROP on standby. Its mixer looks for "Master Playback Volume" /
+"Switch". No AOSP change is needed: the kernel exposes a real card the way
+Linux does.
+
+- **Core** (`sound/mod.rs`): cards in probe order (bus 0's motherboard
+  controller first, so it is card 0); `/dev/snd/controlC<c>` (116:32c) and
+  `pcmC<c>D<d>p` (116:32c+16+d), class `sound` devices below
+  `.../0000:00:1f.3/sound/card0/` with DEVNAME=snd/..., so ueventd applies
+  `/dev/snd/* 0660 system audio`; devtmpfs nodes; `/proc/asound/{cards,
+  devices,pcm,version}`.
+- **PCM** (`sound/pcm.rs`): the playback ABI over a driver's `PcmHw` (a DMA
+  ring and its read position). HW_REFINE/HW_PARAMS narrow masks and
+  intervals (formats, channels, rates from the codec; 128-byte periods,
+  2..32 periods) and choose the smallest configuration left, like
+  tinyalsa's min-period request expects. While running, a kernel timer
+  (every 10 ms tick) reads the position, advances `hw_ptr` (elapsed time
+  resolves ring wraps), zeroes consumed frames (an underrun plays
+  silence), detects underruns (XRUN, EPIPE until PREPARE) and stalls
+  (position frozen 0.5 s), ends DRAIN and wakes writers. The hardware ring
+  is the buffer plus a two-period pre-roll played before the data
+  (counted in `delay`, not in `avail`): the HAL writes a whole 4096-frame
+  buffer per 85 ms burst, so without it every burst came just too late.
+- **Control** (`sound/control.rs`): CARD_INFO, ELEM_LIST/INFO/READ/WRITE,
+  TLV_READ (dB scale), PCM_NEXT_DEVICE/PCM_INFO.
+- **HD Audio** (`sound/hda/`): PCI class 04.03; Intel: TCSEL 0, snooped
+  DMA; NVIDIA: coherency bits, and the GPU's hidden audio function enabled
+  (config 0x488 bit 25 through ECAM from the host bridge's PCIEXBAR).
+  Reset, codec mask from STATESTS, CORB/RIRB polled (immediate command
+  registers as fallback), no interrupts. `codec.rs` reads the audio
+  function group (widget caps, connection lists with ranges, pin caps and
+  configuration defaults, amp caps), picks connected Line Out / Speaker /
+  Headphone (or HDMI/DP) pins and routes each to a DAC through mixers and
+  selectors (shared DACs preferred: ALC897 rear 0x14 and front 0x1b both
+  via 0x0c to DAC 0x02, both always playing), unmutes the path at 0 dB,
+  OUT_EN/HP_EN, EAPD. One PCM per codec on its own output stream (tag =
+  index + 1), BDL of whole periods over a fixed 256 KiB ring, position =
+  LPIB. HDMI: digital converters, DIGEN, a 2-channel audio InfoFrame/DP
+  SDP; HDMI PCMs are devices 3, 7, 8... (`snd.primary=hdmi` makes the GPU
+  card 0 / device 0). Probe, pins, routes, jack states, stream start/stop
+  and underruns go to the kernel log (rate-limited), i.e. also to the
+  framebuffer console.
 
 ## Binder (`drivers/binder/`)
 

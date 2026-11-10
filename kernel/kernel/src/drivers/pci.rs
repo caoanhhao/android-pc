@@ -198,6 +198,18 @@ pub fn devices() -> Vec<Device> {
     DEVICES.lock().clone()
 }
 
+/// Probe one function again (a device a quirk just made visible) and add
+/// it to the list if it is new.
+pub fn rescan_function(a: Address) -> Option<Device> {
+    let d = probe(a)?;
+    let mut devs = DEVICES.lock();
+    if !devs.iter().any(|x| x.addr == a) {
+        log::debug!("pci {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}.{:02x} (rescanned)", a.bus, a.dev, a.func, d.vendor, d.device, d.class, d.subclass);
+        devs.push(d.clone());
+    }
+    Some(d)
+}
+
 /// The sysfs directory of a PCI function (`devices/pci0000:00/0000:00:04.0`,
 /// relative to /sys), created with its uevent (DRIVER=`driver`), ids and
 /// the /sys/bus/pci/devices link.

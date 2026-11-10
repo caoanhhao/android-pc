@@ -109,6 +109,40 @@ mouse in before powering on.
 Power off with the power button (or hold it); nothing on the stick needs
 a clean shutdown.
 
+### Sound (phase E5)
+
+Android plays through the motherboard's HD Audio (Realtek ALC897): the
+rear green Line Out and the front-panel headphone jack play the same
+sound at the same time (no automatic muting). The kernel log (Pause/Break)
+shows, shortly after the `xhci:` lines:
+
+```
+hda 0000:00:1f.3: 8086:7a50 (class 04.03.00)
+hda 0000:00:1f.3: HDA 1.0, N input / N output streams, 64-bit true
+hda 0000:00:1f.3: codec mask 0x0001          (0x0005 if the iGPU's HDMI codec is on)
+hda 0000:00:1f.3: codec 0: Realtek ALC897 (10ec:0897 ...), AFG 0x01, NN widgets
+hda 0000:00:1f.3:   pin 0x14 01014010 Line Out Rear Green jack ...
+hda 0000:00:1f.3:   pin 0x1b 02214020 HP Out Front Green jack ...   (numbers vary by board)
+hda 0000:00:1f.3:   LineOut: 0x14 -> 0x0c -> 0x02
+hda 0000:00:1f.3:   Headphone: 0x1b -> 0x0c -> 0x02
+hda 0000:00:1f.3: Front Headphone Jack (pin 0x1b): plugged|empty
+hda 0000:00:1f.3: card 0 pcm 0 (Realtek Analog): stream N tag 1, 1 DAC(s), volume 0..87 (0 dB at 87)
+```
+
+and, for the graphics card's HDMI/DP audio (card 1, device 3; Android does
+not use it unless the command line has `snd.primary=hdmi`):
+`hda: NVIDIA ... audio function ... enabled`, `hda 0000:01:00.1: codec
+0: Nvidia HDMI/DP ...`, `HDMI: 0x05 -> 0x04` lines, `card 1 pcm 3`.
+
+When Android plays something (a key click in the launcher, a video, an
+alarm preview in Settings > Sound) the log gets `snd: pcmC0D0p hw_params
+48000 Hz, 2 ch, S16_LE, 4 x 1024 frames` and `hda 0000:00:1f.3: stream 1
+start`; Android stops the stream ~3 s after the sound ends (`stream 1
+stop`). `snd: pcmC0D0p underrun` lines now and then are harmless; many
+in a row (with crackling) or `DMA position stalled` mean the stream does
+not run: report them with the `hda` lines above. If nothing is heard but
+the stream starts, report which jack you used and the `pin` lines.
+
 ## 5. When something fails: what to report
 
 There is no network and no serial port, so the screen is the log. Please
