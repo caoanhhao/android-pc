@@ -65,6 +65,8 @@ pub const EISCONN: Errno = Errno(106);
 pub const ENOTCONN: Errno = Errno(107);
 pub const ECONNREFUSED: Errno = Errno(111);
 pub const EALREADY: Errno = Errno(114);
+pub const ENOLINK: Errno = Errno(67);
+pub const ERFKILL: Errno = Errno(132);
 pub const EINPROGRESS: Errno = Errno(115);
 pub const ETIMEDOUT: Errno = Errno(110);
 /// EFSCORRUPTED in Linux file systems.

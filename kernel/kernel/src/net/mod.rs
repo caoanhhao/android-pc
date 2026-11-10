@@ -9,6 +9,7 @@
 //! whose inode is an anonymous S_IFSOCK inode (`socket:[ino]` in
 //! /proc/<pid>/fd). The syscalls are in `syscall/net.rs`.
 
+pub mod genl;
 pub mod ifreq;
 pub mod inet;
 pub mod netlink;
@@ -16,6 +17,7 @@ pub mod packet;
 pub mod rtnetlink;
 pub mod tun;
 pub mod unix;
+pub mod wireless;
 
 pub const AF_UNSPEC: u16 = 0;
 pub const AF_UNIX: u16 = 1;

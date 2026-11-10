@@ -28,6 +28,7 @@ const SIOCGIFMETRIC: u32 = 0x891d;
 const SIOCGIFMTU: u32 = 0x8921;
 const SIOCSIFMTU: u32 = 0x8922;
 const SIOCGIFHWADDR: u32 = 0x8927;
+const SIOCSIFHWADDR: u32 = 0x8924;
 const SIOCGIFINDEX: u32 = 0x8933;
 const SIOCGIFTXQLEN: u32 = 0x8942;
 const SIOCSIFTXQLEN: u32 = 0x8943;
@@ -69,7 +70,7 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
         SIOCETHTOOL => return ethtool(arg),
         SIOCGIFNAME | SIOCGIFFLAGS | SIOCSIFFLAGS | SIOCGIFADDR | SIOCSIFADDR | SIOCGIFDSTADDR | SIOCGIFBRDADDR
         | SIOCSIFBRDADDR | SIOCGIFNETMASK | SIOCSIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCSIFMTU | SIOCGIFHWADDR
-        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCSIFTXQLEN | SIOCGIFMAP => {}
+        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCSIFTXQLEN | SIOCGIFMAP | SIOCSIFHWADDR => {}
         _ => return Err(ENOTTY),
     }
     let mm = current().mm();
@@ -86,6 +87,14 @@ pub fn ioctl(cmd: u32, arg: u64) -> KResult<u64> {
             return Ok(Some(o));
         }
         let idx = n.link_by_name(ifname(&r)).ok_or(ENODEV)?.index;
+        if cmd == SIOCSIFHWADDR {
+            if u16::from_le_bytes([r[16], r[17]]) != super::inet::ARPHRD_ETHER {
+                return Err(EINVAL);
+            }
+            n.set_mac(idx, r[18..24].try_into().unwrap())?;
+            changed = true;
+            return Ok(None);
+        }
         let mut o = r;
         let l = n.link_mut(idx).unwrap();
         let v4 = first_v4(&l.addrs);

@@ -16,7 +16,10 @@
 # any USB port and next to other disks.
 #
 # ESP contents: EFI/BOOT/BOOTX64.EFI (Limine), boot/limine/limine.conf,
-# boot/kernel, boot/initramfs.cpio. Only those files are written.
+# boot/kernel, boot/initramfs.cpio, and device firmware in boot/firmware/
+# (the AX211 Wi-Fi's iwlwifi .ucode and .pnvm from the host's
+# /lib/firmware, decompressed; Limine loads them as modules and the
+# kernel's drivers find them by name). Only those files are written.
 #
 # Options: --resolution WxH (GOP mode Limine sets, default 1920x1080; the
 #          firmware's default mode if it has no such mode),
@@ -43,7 +46,7 @@ while [[ $# -gt 0 ]]; do
         --append) extra="$2"; shift ;;
         --kernel) elf="$2"; shift ;;
         --release) profile=release ;;
-        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
         *) echo "mkusb.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
     esac
     shift
@@ -122,6 +125,23 @@ mkdir -p "$out/EFI/BOOT" "$out/boot/limine"
 cp "$LIMINE_DIR/BOOTX64.EFI" "$out/EFI/BOOT/BOOTX64.EFI"
 cp "$elf" "$out/boot/kernel"
 cp "$initrd" "$out/boot/initramfs.cpio"
+# Device firmware (redistributable linux-firmware files, zstd on the
+# host): the Intel AX211's (E6).
+FIRMWARE=(iwlwifi-so-a0-gf-a0-89.ucode iwlwifi-so-a0-gf-a0.pnvm)
+FW_DIR="${FW_DIR:-/lib/firmware/intel/iwlwifi}"
+mkdir -p "$out/boot/firmware"
+modules=""
+for f in "${FIRMWARE[@]}"; do
+    if [[ -f $FW_DIR/$f.zst ]]; then
+        zstd -dqf "$FW_DIR/$f.zst" -o "$out/boot/firmware/$f"
+    elif [[ -f $FW_DIR/$f ]]; then
+        cp "$FW_DIR/$f" "$out/boot/firmware/$f"
+    else
+        echo "mkusb.sh: warning: no $FW_DIR/$f(.zst); that device will stay off" >&2
+        continue
+    fi
+    modules+="    module_path: boot():/boot/firmware/$f"$'\n'
+done
 cat > "$out/boot/limine/limine.conf" <<CONF
 # android-pc: AOSP on the Rust kernel (written by tools/mkusb.sh).
 timeout: 3
@@ -131,7 +151,7 @@ verbose: yes
     protocol: limine
     path: boot():/boot/kernel
     module_path: boot():/boot/initramfs.cpio
-    resolution: ${resolution}x32
+${modules}    resolution: ${resolution}x32
     cmdline: $cmdline
 CONF
 
@@ -144,7 +164,7 @@ fi
 need=$(du -sb "$out" | cut -f1)
 free=$(df -B1 --output=avail "$esp" | tail -1 | tr -dc 0-9)
 (( need < free )) || { echo "mkusb.sh: $esp has $free bytes free, need $need" >&2; exit 1; }
-for f in EFI/BOOT/BOOTX64.EFI boot/limine/limine.conf boot/kernel boot/initramfs.cpio; do
+for f in EFI/BOOT/BOOTX64.EFI boot/limine/limine.conf boot/kernel boot/initramfs.cpio $(cd "$out" && ls boot/firmware/* 2>/dev/null); do
     mkdir -p "$esp/$(dirname "$f")"
     cp "$out/$f" "$esp/$f.new"
     mv -f "$esp/$f.new" "$esp/$f"

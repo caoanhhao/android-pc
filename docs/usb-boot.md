@@ -242,13 +242,18 @@ send:
    shows the controller status, the event ring position and, per keyboard
    or mouse, reports, errors, the last completion code, queued transfers
    and the endpoint state (1 running, 2 halted).
-4. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
+4. For Wi-Fi: every `iwlwifi:` and `wifi:` line (firmware version,
+   `ALIVE status`, `PNVM`, `NVM`, `regulatory`, `ready`, scans, joining,
+   auth/assoc replies with their status codes, `FIRMWARE ERROR` and the
+   two error-table lines). Turn Wi-Fi on and try to connect first, then
+   Pause/Break and photograph the log.
+5. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
    especially `xhci:`, `usb-storage:`, `boot disk:`, `SMP:`, `acpi:`,
    `simpledrm:`, `rtc:`, `power button:`, `cpu:`, `idle:`.
-5. Which USB port the stick was in (rear/front, USB 2 black or USB 3
+6. Which USB port the stick was in (rear/front, USB 2 black or USB 3
    blue/red/teal), what keyboard and mouse were plugged in and where, and
    the monitor's resolution.
-6. For the network: every `rtl8125:` and `net:` line (probe, XID, MAC,
+7. For the network: every `rtl8125:` and `net:` line (probe, XID, MAC,
    `link up`/`link down` with PHYstatus/PHYSR, the counter lines) and
    whether the port's LEDs light up.
 
@@ -333,3 +338,13 @@ rootcanal (a software controller) on the host behind a virtio-console
 port, which the kernel treats like the USB controller; the firmware
 download is covered by the in-kernel tests (`--test`,
 `bluetooth_intel_download`, against a simulated Intel bootloader).
+
+## 8. Wi-Fi (Intel AX211, phase E6)
+
+`tools/mkusb.sh` also copies `boot/firmware/iwlwifi-so-a0-gf-a0-89.ucode`
+and `…gf-a0.pnvm` (decompressed from the host's
+`/lib/firmware/intel/iwlwifi`); Limine loads them as modules. In Android,
+Settings → Network & internet → Internet lists the networks once Wi-Fi is
+on; pick one and enter its password. The driver has not run on this PC
+yet: report the `iwlwifi:` and `wifi:` lines (section 6, item 4). Details
+and the expected log lines: `docs/wifi.md`.

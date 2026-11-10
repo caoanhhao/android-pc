@@ -206,6 +206,13 @@ pub fn initramfs() -> Option<&'static [u8]> {
     Some(m.data())
 }
 
+/// The boot module whose path ends with `/name` (device firmware put
+/// next to the kernel, see `drivers::firmware`).
+pub fn module(name: &str) -> Option<&'static [u8]> {
+    let modules = MODULES.response()?.modules();
+    modules.iter().find(|m| m.path().rsplit('/').next() == Some(name)).map(|m| m.data())
+}
+
 /// Wall-clock time at boot (seconds since the epoch), if the firmware knew.
 pub fn boot_time() -> Option<i64> {
     DATE_AT_BOOT.response().map(|d| d.timestamp)

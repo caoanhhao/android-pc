@@ -114,6 +114,10 @@ render phần mềm.
   hub USB, bảng ACPI (MADT, FADT/PM timer, HPET), hiệu chuẩn timer không cần
   PIT, log kernel trên framebuffer, `tools/mkusb.sh`,
   `run-qemu.sh --usb-boot-test`; hướng dẫn: `docs/usb-boot.md`.
+- **E6.** Wi-Fi: generic netlink + nl80211, lớp kiểu cfg80211/mac80211 cho
+  wpa_supplicant (SME phía user), rfkill, radio mô phỏng (`wifisim=`, AP
+  WPA2 nối ra virtio-net) với `run-qemu.sh --aosp-wifi-test`; driver
+  iwlwifi cho Intel AX211 (firmware 89, MLD API) — xem `docs/wifi.md`.
 
 ## Rủi ro chính
 

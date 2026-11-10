@@ -72,9 +72,16 @@ pub trait EthDevice: Send {
     fn send(&mut self, frame: &[u8]) -> bool;
     /// Whether `send` has room for a frame now.
     fn can_send(&mut self) -> bool;
-    /// Whether a cable is plugged in and the link negotiated; None for a
-    /// card that always has carrier (virtio-net). Polled a few times a
-    /// second ([`CARRIER_POLL_TICKS`]).
+    /// Change the card's address (link down); false: not supported.
+    fn set_mac(&mut self, _mac: [u8; 6]) -> bool {
+        false
+    }
+    /// The link went up or down (Wi-Fi starts and stops its radio).
+    fn set_up(&mut self, _up: bool) {}
+    /// Whether a cable is plugged in and the link negotiated (Wi-Fi:
+    /// associated); None for a card that always has carrier
+    /// (virtio-net). Polled a few times a second ([`CARRIER_POLL_TICKS`])
+    /// and on [`carrier_changed`].
     fn carrier(&mut self) -> Option<bool> {
         None
     }
@@ -582,25 +589,33 @@ fn sysfs_link_files(dir: &str, index: u32, mac: [u8; 6], mtu: u32, ty: u16, carr
     sysfs::set(dir, "tx_queue_len", "1000\n");
 }
 
-/// The N of the eth<N> the next card will be.
+/// The N of the eth<N> the next Ethernet card will be (Wi-Fi links do
+/// not count).
 pub fn next_eth_index() -> usize {
-    NET.lock().as_ref().map_or(0, |n| n.dev.ports.len())
+    NET.lock().as_ref().map_or(0, |n| n.links.iter().filter(|l| l.name.starts_with("eth")).count())
 }
 
 /// A card was probed: it becomes eth<N> (up, no address yet; running
 /// once it has carrier).
-pub fn add_ethernet(mut dev: Box<dyn EthDevice>, sysdev: String) {
+pub fn add_ethernet(dev: Box<dyn EthDevice>, sysdev: String) {
+    let name = alloc::format!("eth{}", next_eth_index());
+    add_link(dev, &sysdev, &name, "", true);
+}
+
+/// Add a card as link `name` (administratively up or down, no address
+/// yet; running while up with carrier); its index. `uevent` has extra
+/// lines for the net device's uevent (DEVTYPE=wlan).
+pub fn add_link(mut dev: Box<dyn EthDevice>, sysdev: &str, name: &str, uevent: &str, up: bool) -> u32 {
     let mac = dev.mac();
     let driver = dev.driver();
     let carrier = dev.carrier();
-    let (index, name, dir) = {
+    let dir = alloc::format!("{sysdev}/net/{name}");
+    let index = {
         let mut g = NET.lock();
         let Some(n) = g.as_mut() else {
-            return;
+            return 0;
         };
         let index = n.links.iter().map(|l| l.index).max().unwrap_or(LO) + 1;
-        let name = alloc::format!("eth{}", n.dev.ports.len());
-        let dir = alloc::format!("{sysdev}/net/{name}");
         let bus = sysdev.split('/').find(|c| c.starts_with("0000:")).unwrap_or("").into();
         n.dev.ports.push(Port {
             link: index,
@@ -621,7 +636,7 @@ pub fn add_ethernet(mut dev: Box<dyn EthDevice>, sysdev: String) {
         let ll = IpAddress::Ipv6(ndisc::link_local(mac));
         let mut link = Link {
             index,
-            name: name.clone(),
+            name: String::from(name),
             mac,
             mtu: 1500,
             flags: 0,
@@ -630,7 +645,7 @@ pub fn add_ethernet(mut dev: Box<dyn EthDevice>, sysdev: String) {
             txqlen: 1000,
             carrier: carrier.unwrap_or(true),
         };
-        link.set_flags(IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
+        link.set_flags(IFF_BROADCAST | IFF_MULTICAST | if up { IFF_UP } else { 0 });
         n.links.push(link);
         n.routes.push(Route {
             dst: IpAddress::Ipv6(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
@@ -645,10 +660,24 @@ pub fn add_ethernet(mut dev: Box<dyn EthDevice>, sysdev: String) {
             prefsrc: None,
         });
         n.sync();
-        (index, name, dir)
+        index
     };
-    crate::fs::sysfs::add_device(&dir, "net", "class/net", alloc::format!("INTERFACE={name}\nIFINDEX={index}\n"), false);
+    crate::fs::sysfs::add_device(&dir, "net", "class/net", alloc::format!("INTERFACE={name}\nIFINDEX={index}\n{uevent}"), false);
     sysfs_link_files(&dir, index, mac, 1500, ARPHRD_ETHER, carrier.unwrap_or(true));
+    index
+}
+
+/// Request a deferred poll (a driver queued received frames outside the
+/// timer tick's view).
+pub fn request_poll() {
+    PENDING.store(true, Ordering::Relaxed);
+}
+
+/// A card's carrier changed (Wi-Fi association): poll it now rather than
+/// at the next carrier tick.
+pub fn carrier_changed() {
+    CARRIER_DUE.store(true, Ordering::Relaxed);
+    PENDING.store(true, Ordering::Relaxed);
 }
 
 /// Some card reports its carrier ([`EthDevice::carrier`]).
@@ -723,6 +752,26 @@ pub fn configure_static() {
 }
 
 impl Net {
+    /// Change a link's hardware address (SIOCSIFHWADDR, IFLA_ADDRESS).
+    pub fn set_mac(&mut self, index: u32, mac: [u8; 6]) -> crate::errno::KResult<()> {
+        let p = self.dev.port(index).ok_or(crate::errno::EOPNOTSUPP)?;
+        if p.mac == mac {
+            return Ok(());
+        }
+        if !p.eth.set_mac(mac) {
+            return Err(crate::errno::EBUSY);
+        }
+        p.mac = mac;
+        let l = self.link_mut(index).unwrap();
+        l.mac = mac;
+        let ll = IpAddress::Ipv6(ndisc::link_local(mac));
+        if let Some(a) = l.addrs.iter_mut().find(|a| a.scope == RT_SCOPE_LINK && matches!(a.addr, IpAddress::Ipv6(_))) {
+            a.addr = ll;
+        }
+        self.sync();
+        Ok(())
+    }
+
     pub fn link(&self, index: u32) -> Option<&Link> {
         self.links.iter().find(|l| l.index == index)
     }
@@ -806,7 +855,11 @@ impl Net {
                 }
             }
             if let Some(p) = self.dev.port(l.index) {
-                p.up = l.flags & IFF_UP != 0;
+                let up = l.flags & IFF_UP != 0;
+                if up != p.up {
+                    p.eth.set_up(up);
+                }
+                p.up = up;
                 p.v4 = v4s;
                 p.v6 = v6s;
             }
