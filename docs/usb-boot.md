@@ -127,7 +127,11 @@ send:
    interfaces (`if0 alt 0 class 03/01/01 …`), what got bound (`if2 bound
    as Mouse`) and the first reports a keyboard or mouse sends (`report
    [..]`, press a key and move the mouse once Android is up, then
-   Pause/Break to show the log).
+   Pause/Break to show the log). If input stops working, the last
+   `xhci: usb1 status:` line (printed once a second while counters change)
+   shows the controller status, the event ring position and, per keyboard
+   or mouse, reports, errors, the last completion code, queued transfers
+   and the endpoint state (1 running, 2 halted).
 4. Any line with `KERNEL PANIC`, `ERROR` (red) or `WARN` (yellow),
    especially `xhci:`, `usb-storage:`, `boot disk:`, `SMP:`, `acpi:`,
    `simpledrm:`.

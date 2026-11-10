@@ -895,7 +895,13 @@ for rings and bounce buffers, and register PCI sysfs directories with
   descriptors, SET_CONFIGURATION; each HID interface of the boot subclass
   (protocol 1 keyboard, 2 mouse) gets SET_PROTOCOL(boot), SET_IDLE,
   Configure Endpoint for its interrupt IN endpoint (Interval from
-  bInterval and speed) and 16 Normal TRBs kept posted. A stalled control
+  bInterval and speed) and 64 Normal TRBs kept posted (refilled only
+  for events that name one of them, the doorbell rung after each refill:
+  a real controller that found the ring empty does not look again on its
+  own); a halted endpoint is reset (Reset Endpoint, Set TR Dequeue,
+  CLEAR_FEATURE after a stall) and refilled; once a second a status line
+  (USBSTS, event ring position, per-endpoint counters) is logged when it
+  changed. The event ring has 1024 entries. A stalled control
   request is recovered with Reset Endpoint + Set TR Dequeue Pointer (a
   timed-out one after Stop Endpoint). Since E3: root ports are powered
   when HCCPARAMS1.PPC says software controls power, USB3 links get up to

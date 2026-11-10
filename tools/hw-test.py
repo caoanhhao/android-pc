@@ -9,6 +9,8 @@ serial console is copied to stdout and the log. When e1_hw prints
 "E1-HID-READY" (its evdev nodes are open), the QEMU monitor sends
 `sendkey a`, then `mouse_move 10 -5`, `mouse_button 1`, `mouse_button 0`,
 which only the USB devices can receive (the VM has no virtio-input).
+On "E1-HID-STRESS" it floods 3000 `mouse_move 1 0` and a `sendkey a` per
+20 moves, then a right click (the USB rings wrap many times).
 
 Usage: hw-test.py --monitor SOCKET [--log FILE] [--timeout SECS] -- qemu-system-x86_64 ...
 Exit status 0 iff ktest-init reports "END ktest-init pass=N fail=0" with
@@ -17,6 +19,7 @@ N > 0.
 import argparse
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -35,6 +38,37 @@ def inject(monitor):
         out = gfx.monitor_cmd(monitor, cmd)
         print(f"hw-test: monitor `{cmd}`{': ' + out.strip().splitlines()[-1] if 'rror' in out else ''}", flush=True)
         time.sleep(0.3)
+
+
+def flood(monitor, moves=3000, key_every=20):
+    """After "E1-HID-STRESS": `moves` x `mouse_move 1 0` with a `sendkey a`
+    every `key_every` moves, then a right click, over one monitor
+    connection (each command waits for the prompt)."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(20)
+    s.connect(monitor)
+
+    def cmd(c):
+        buf = b""
+        s.sendall(c.encode() + b"\n")
+        while not buf.endswith(b"(qemu) "):
+            buf += s.recv(4096)
+
+    buf = b""
+    while b"(qemu) " not in buf:
+        buf += s.recv(4096)
+    start = time.time()
+    for i in range(moves):
+        cmd("mouse_move 1 0")
+        if i % key_every == key_every - 1:
+            cmd("sendkey a 10")
+            time.sleep(0.03)
+    time.sleep(1)
+    cmd("mouse_button 2")
+    time.sleep(0.2)
+    cmd("mouse_button 0")
+    s.close()
+    print(f"hw-test: flooded {moves} moves, {moves // key_every} keys in {time.time() - start:.1f}s", flush=True)
 
 
 def main():
@@ -57,6 +91,8 @@ def main():
             log.flush()
             sys.stdout.buffer.write(line)
             sys.stdout.flush()
+            if b"E1-HID-STRESS" in line:
+                threading.Thread(target=flood, args=(a.monitor,), daemon=True).start()
             if b"E1-HID-READY" in line and not injected:
                 injected = True
                 threading.Thread(target=inject, args=(a.monitor,), daemon=True).start()

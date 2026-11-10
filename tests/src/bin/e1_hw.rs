@@ -19,7 +19,9 @@
 //! "E1-HID-READY" and waits for what the host sends through the QEMU
 //! monitor (tools/hw-test.py: `sendkey a`, `mouse_move 10 -5`,
 //! `mouse_button 1`, `mouse_button 0`): KEY_A down and up, the motion,
-//! BTN_LEFT down and up, each packet ending in SYN_REPORT.
+//! BTN_LEFT down and up, each packet ending in SYN_REPORT. Then
+//! "E1-HID-STRESS": the host floods 3000 mouse moves and 150 key presses
+//! (rings wrap many times over) and a right click; all must arrive.
 //!
 //! Without these devices (plain --ktest, the host) the cases are skipped.
 #![no_std]
@@ -38,6 +40,11 @@ const EV_KEY: u16 = 1;
 const EV_REL: u16 = 2;
 const KEY_A: u16 = 30;
 const BTN_LEFT: u16 = 0x110;
+const BTN_RIGHT: u16 = 0x111;
+/// The host's flood (tools/hw-test.py): this many `mouse_move 1 0`, one
+/// `sendkey a` per STRESS_KEY_EVERY moves, then a right click.
+const STRESS_MOVES: i32 = 3000;
+const STRESS_KEY_EVERY: i32 = 20;
 const REL_X: u16 = 0;
 const REL_Y: u16 = 1;
 
@@ -289,8 +296,60 @@ fn hid() {
     });
     check!(ok && dx == 10 && dy == -5, "mouse_motion", "dx {} dy {}", dx, dy);
     check!(ok && bdown && bup, "mouse_button", "down {} up {}", bdown, bup);
+    stress(&fds);
     close(kbd);
     close(mouse);
+}
+
+/// Thousands of reports, far more than the 256-entry transfer and event
+/// rings hold, so they wrap many times: every motion and key press must
+/// arrive, and the right click the host sends last too.
+fn stress(fds: &[i32]) {
+    println!("E1-HID-STRESS");
+    let (mut dx, mut keys, mut reports, mut right) = (0i32, 0i32, 0u32, false);
+    let ok = collect_quiet(fds, 120_000, |ty, code, v| {
+        match (ty, code) {
+            (EV_REL, REL_X) => dx += v,
+            (EV_KEY, KEY_A) if v == 1 => keys += 1,
+            (EV_SYN, _) => reports += 1,
+            (EV_KEY, BTN_RIGHT) if v == 1 => right = true,
+            _ => {}
+        }
+        right && ty == EV_SYN
+    });
+    println!("# stress: dx {} keys {} reports {} end marker {}", dx, keys, reports, right);
+    check!(ok && right, "stress_end_marker_arrives", "dx {} keys {} reports {}", dx, keys, reports);
+    check!(dx == STRESS_MOVES, "stress_all_motion", "dx {} of {}", dx, STRESS_MOVES);
+    check!(keys == STRESS_MOVES / STRESS_KEY_EVERY, "stress_all_keys", "{} of {}", keys, STRESS_MOVES / STRESS_KEY_EVERY);
+    check!(reports > 600, "stress_rings_wrap", "{} reports", reports);
+}
+
+/// [`collect`] without a line per event.
+fn collect_quiet(fds: &[i32], ms: i64, mut done: impl FnMut(u16, u16, i32) -> bool) -> bool {
+    let end = now_ns() + ms * 1_000_000;
+    loop {
+        let left = (end - now_ns()) / 1_000_000;
+        if left <= 0 {
+            return false;
+        }
+        let mut p = [Pollfd { fd: fds[0], events: POLLIN, revents: 0 }, Pollfd { fd: fds[1], events: POLLIN, revents: 0 }];
+        poll(&mut p, left as i32);
+        for fd in fds {
+            let mut e = [0u8; 24 * 64];
+            let r = read(*fd, &mut e);
+            if r <= 0 {
+                continue;
+            }
+            for ev in e[..r as usize].chunks(24) {
+                let ty = u16::from_le_bytes([ev[16], ev[17]]);
+                let code = u16::from_le_bytes([ev[18], ev[19]]);
+                let value = i32::from_le_bytes(ev[20..24].try_into().unwrap());
+                if done(ty, code, value) {
+                    return true;
+                }
+            }
+        }
+    }
 }
 
 fn main() {

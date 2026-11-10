@@ -70,7 +70,10 @@ const IR0_ERDP: u64 = 0x38;
 const CMD_RS: u32 = 1;
 const CMD_HCRST: u32 = 2;
 const STS_HCH: u32 = 1;
+const STS_HSE: u32 = 1 << 2;
+const STS_EINT: u32 = 1 << 3;
 const STS_CNR: u32 = 1 << 11;
+const STS_HCE: u32 = 1 << 12;
 
 const PORT_CCS: u32 = 1 << 0;
 const PORT_PED: u32 = 1 << 1;
@@ -117,8 +120,11 @@ const SPEED_SUPER: u32 = 4;
 
 /// TRBs per ring page; the last one is the link back.
 const RING_TRBS: usize = 256;
-/// Interrupt transfers kept posted per endpoint.
-const POSTED: usize = 16;
+/// Event ring entries (one segment of four pages): room for a second of
+/// 1 kHz reports from several devices if the soft interrupt is late.
+const EVENT_TRBS: usize = 1024;
+/// Interrupt transfers kept posted per endpoint: 64 ms of a 1 kHz mouse.
+const POSTED: usize = 64;
 /// Bytes of report buffer per ring slot.
 const REPORT_BUF: usize = 64;
 const TIMEOUT_MS: u64 = 1000;
@@ -192,6 +198,7 @@ struct EventRing {
     ptr: *mut u32,
     idx: usize,
     cycle: u32,
+    wraps: u64,
 }
 
 impl EventRing {
@@ -208,9 +215,10 @@ impl EventRing {
         fence(Ordering::SeqCst);
         let t = unsafe { [core::ptr::read_volatile(p), core::ptr::read_volatile(p.add(1)), core::ptr::read_volatile(p.add(2)), dw3] };
         self.idx += 1;
-        if self.idx == RING_TRBS {
+        if self.idx == EVENT_TRBS {
             self.idx = 0;
             self.cycle ^= 1;
+            self.wraps += 1;
         }
         Some(t)
     }
@@ -229,6 +237,27 @@ struct HidEp {
     dev: Arc<InputDev>,
     /// Reports logged so far (the first few show what the device sends).
     shown: u8,
+    /// TRBs posted and not completed yet.
+    outstanding: usize,
+    /// "1-11.3 if2 Mouse", for the status line.
+    label: String,
+    /// The device's EP0 (CLEAR_FEATURE after a stall), shared by its
+    /// interfaces: index into `Xhci::hid_devs`.
+    dev_idx: usize,
+    reports: u64,
+    errors: u64,
+    last_cc: u32,
+    recovering: bool,
+}
+
+/// What a transfer event asks of the controller.
+enum After {
+    Nothing,
+    /// TRBs were re-posted: ring the endpoint's doorbell (a controller
+    /// that found the ring empty only looks again when told to).
+    Doorbell,
+    /// An error completion: check whether the endpoint halted.
+    Error(u32),
 }
 
 impl HidEp {
@@ -236,16 +265,35 @@ impl HidEp {
     fn post(&mut self) {
         let buf = self.bufs.0 + (self.ring.idx * REPORT_BUF) as u64;
         self.ring.push([buf as u32, (buf >> 32) as u32, self.mps, TRB_NORMAL << 10 | TRB_IOC | TRB_ISP]);
+        self.outstanding += 1;
+    }
+
+    /// Keep POSTED transfers queued; whether any was added.
+    fn refill(&mut self) -> bool {
+        let mut added = false;
+        while self.outstanding < POSTED {
+            self.post();
+            added = true;
+        }
+        added
     }
 
     /// A transfer event for this endpoint: decode the report, re-post.
-    fn complete(&mut self, ev: &[u32; 4]) {
+    /// Only an event naming one of our TRBs gives one back (an event
+    /// without a TRB must not make the producer lap the controller).
+    fn complete(&mut self, ev: &[u32; 4]) -> After {
         let code = ev[2] >> 24;
         let trb = trb_ptr(ev);
+        let slot = (trb.wrapping_sub(self.ring.phys) / 16) as usize;
+        let ours = trb >= self.ring.phys && slot < RING_TRBS - 1;
+        if ours {
+            self.outstanding = self.outstanding.saturating_sub(1);
+        }
+        self.last_cc = code;
         if code == CC_SUCCESS || code == CC_SHORT_PACKET {
-            let slot = (trb.wrapping_sub(self.ring.phys) / 16) as usize;
+            self.reports += 1;
             let len = self.mps.saturating_sub(ev[2] & 0xff_ffff) as usize;
-            if slot < RING_TRBS {
+            if ours {
                 let r = unsafe { core::slice::from_raw_parts(self.bufs.1.add(slot * REPORT_BUF), len.min(REPORT_BUF)) };
                 if self.shown < 3 {
                     self.shown += 1;
@@ -281,9 +329,10 @@ impl HidEp {
                 }
             }
         } else {
-            log::warn!("xhci: slot {} endpoint {}: transfer error {code}", self.slot, self.dci);
+            self.errors += 1;
+            return After::Error(code);
         }
-        self.post();
+        if self.refill() { After::Doorbell } else { After::Nothing }
     }
 }
 
@@ -301,6 +350,8 @@ struct Xhci {
     /// Control transfer data (one page).
     data: (u64, *mut u8),
     hids: Vec<HidEp>,
+    /// EP0 of each HID device (for CLEAR_FEATURE after a stall).
+    hid_devs: Vec<Option<UsbDev>>,
     /// Mass storage devices; taken out while a command runs on one.
     disks: Vec<Option<alloc::boxed::Box<storage::Msd>>>,
     /// Disks found during bring-up, registered once the controller is
@@ -308,6 +359,8 @@ struct Xhci {
     new_disks: Vec<storage::NewDisk>,
     pci_dir: String,
     bus: u32,
+    /// The last status line printed ([`Xhci::status`]).
+    last_status: String,
     /// USB major revision of each root port (index = port number), from
     /// the Supported Protocol capabilities; 0 if unlisted.
     proto: Vec<u8>,
@@ -482,6 +535,10 @@ impl Xhci {
 
     fn update_erdp(&self) {
         mmio_write64(self.rt, IR0_ERDP, (self.ev.phys + self.ev.idx as u64 * 16) | 8);
+        // Acknowledge the event interrupt (interrupts stay off; IP and EINT
+        // are write-1-to-clear).
+        mmio_write32(self.rt, IR0_IMAN, 1);
+        mmio_write32(self.op, OP_USBSTS, STS_EINT);
         NEXT_EVENT[self.index].store(self.ev.peek_addr() | self.ev.cycle as u64, Ordering::Release);
     }
 
@@ -489,10 +546,88 @@ impl Xhci {
     fn dispatch(&mut self, ev: &[u32; 4]) {
         if trb_type(ev) == TRB_TRANSFER_EVENT {
             let (slot, dci) = (ev[3] >> 24, (ev[3] >> 16) & 0x1f);
-            if let Some(h) = self.hids.iter_mut().find(|h| h.slot == slot && h.dci == dci) {
-                h.complete(ev);
+            if let Some(i) = self.hids.iter().position(|h| h.slot == slot && h.dci == dci) {
+                match self.hids[i].complete(ev) {
+                    After::Nothing => {}
+                    After::Doorbell => self.ring_doorbell(slot, dci),
+                    After::Error(code) => self.hid_error(i, code),
+                }
             }
         }
+    }
+
+    /// Once a second: the controller status, the event ring position and
+    /// every HID endpoint's counters, printed when anything changed (so
+    /// the screen shows where input stopped, if it does).
+    fn status(&mut self) {
+        let sts = mmio_read32(self.op, OP_USBSTS);
+        let mut line = format!(
+            "xhci: usb{} status: USBSTS {sts:#x}, event ring {}/{EVENT_TRBS} ({} wraps)",
+            self.bus, self.ev.idx, self.ev.wraps
+        );
+        for i in 0..self.hids.len() {
+            let h = &self.hids[i];
+            let state = self.ep_state(h.slot, h.dci);
+            line += &format!(
+                "; {}: {} reports, {} errors, last code {}, {} queued, state {state}",
+                h.label, h.reports, h.errors, h.last_cc, h.outstanding
+            );
+        }
+        if sts & (STS_HCH | STS_HSE | STS_HCE) != 0 {
+            log::error!("xhci: usb{}: controller halted or in error (USBSTS {sts:#x})", self.bus);
+        }
+        if line != self.last_status {
+            log::info!("{line}");
+            self.last_status = line;
+        }
+    }
+
+    /// The state of an endpoint in the device's output context (1
+    /// running, 2 halted, 3 stopped, 4 error).
+    fn ep_state(&self, slot: u32, dci: u32) -> u32 {
+        let out = unsafe { *self.dcbaa.add(slot as usize) };
+        if out == 0 {
+            return 0;
+        }
+        let v = crate::mm::paging::phys_to_virt(x86_64::PhysAddr::new(out)).as_u64() + (dci as usize * self.csz) as u64;
+        unsafe { core::ptr::read_volatile(v as *const u32) & 7 }
+    }
+
+    /// A HID transfer failed: if the endpoint halted (stall, babble,
+    /// transaction or split errors do that), reset it, clear a stall on
+    /// the device, and queue the transfers afresh; otherwise just top the
+    /// ring up again.
+    fn hid_error(&mut self, i: usize, code: u32) {
+        if self.hids[i].recovering {
+            return;
+        }
+        let (slot, dci) = (self.hids[i].slot, self.hids[i].dci);
+        let errors = self.hids[i].errors;
+        let state = self.ep_state(slot, dci);
+        if errors <= 5 || errors % 100 == 0 {
+            log::warn!(
+                "xhci: {}: transfer error, completion code {code}, endpoint state {state} ({errors} errors so far)",
+                self.hids[i].label
+            );
+        }
+        if state == 2 || state == 4 {
+            self.hids[i].recovering = true;
+            let enq = self.hids[i].ring.enqueue_ptr();
+            self.recover_ep(slot, dci, enq, false);
+            if code == CC_STALL {
+                let di = self.hids[i].dev_idx;
+                let addr = (dci / 2) as u16 | 0x80;
+                if let Some(mut d) = self.hid_devs.get_mut(di).and_then(Option::take) {
+                    self.control_quiet(&mut d, 0x02, 1, 0, addr, 0, true);
+                    self.hid_devs[di] = Some(d);
+                }
+            }
+            // Everything posted was skipped by Set TR Dequeue.
+            self.hids[i].outstanding = 0;
+            self.hids[i].recovering = false;
+        }
+        self.hids[i].refill();
+        self.ring_doorbell(slot, dci);
     }
 
     /// Poll the event ring for up to `ms` until `want` matches an event
@@ -892,14 +1027,32 @@ impl Xhci {
                     continue;
                 }
             };
-            let mut h = HidEp { slot, dci, ring, bufs, mps, kind, prev: [0; 8], dev, shown: 0 };
-            for _ in 0..POSTED {
-                h.post();
-            }
+            let label = format!("usb{}-{path} if{num} {kind:?}", self.bus);
+            let dev_idx = self.hid_devs.len();
+            let mut h = HidEp {
+                slot,
+                dci,
+                ring,
+                bufs,
+                mps,
+                kind,
+                prev: [0; 8],
+                dev,
+                shown: 0,
+                outstanding: 0,
+                label,
+                dev_idx,
+                reports: 0,
+                errors: 0,
+                last_cc: 0,
+                recovering: false,
+            };
+            h.refill();
             self.ring_doorbell(slot, dci);
             log::info!("xhci: {name}: if{num} bound as {kind:?} (slot {slot}, DCI {dci}, {mps}-byte reports)");
             self.hids.push(h);
         }
+        self.hid_devs.push(Some(d));
     }
 }
 
@@ -908,9 +1061,16 @@ static CTRLS: Mutex<Vec<Xhci>> = Mutex::new(Vec::new());
 static NEXT_EVENT: [AtomicU64; MAX_CTRLS] = [const { AtomicU64::new(0) }; MAX_CTRLS];
 static COUNT: AtomicU32 = AtomicU32::new(0);
 static PENDING: AtomicBool = AtomicBool::new(false);
+/// A second has passed: print the status lines ([`Xhci::status`]).
+static STATUS_DUE: AtomicBool = AtomicBool::new(false);
+static TICKS: AtomicU32 = AtomicU32::new(0);
 
 /// From the timer interrupt (BSP): is there a new event?
 pub fn tick() {
+    if TICKS.fetch_add(1, Ordering::Relaxed) % crate::time::HZ as u32 == 0 && COUNT.load(Ordering::Acquire) > 0 {
+        STATUS_DUE.store(true, Ordering::Relaxed);
+        PENDING.store(true, Ordering::Relaxed);
+    }
     for i in 0..COUNT.load(Ordering::Acquire) as usize {
         let v = NEXT_EVENT[i].load(Ordering::Acquire);
         if v != 0 && unsafe { core::ptr::read_volatile(((v & !1) + 12) as *const u32) } & 1 == (v & 1) as u32 {
@@ -936,6 +1096,11 @@ pub fn softirq() {
         }
         if any {
             x.update_erdp();
+        }
+    }
+    if STATUS_DUE.swap(false, Ordering::Relaxed) {
+        for x in ctrls.iter_mut().filter(|x| !x.hids.is_empty()) {
+            x.status();
         }
     }
 }
@@ -1030,13 +1195,13 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
     mmio_write64(op, OP_DCBAAP, dcbaa.0);
     let cmd = Ring::new().ok_or("out of memory")?;
     mmio_write64(op, OP_CRCR, cmd.phys | 1);
-    let seg = pci::dma_alloc(1).ok_or("out of memory")?;
+    let seg = pci::dma_alloc(EVENT_TRBS * 16 / 4096).ok_or("out of memory")?;
     let erst = pci::dma_alloc(1).ok_or("out of memory")?;
     unsafe {
         let e = erst.1 as *mut u32;
         *e = seg.0 as u32;
         *e.add(1) = (seg.0 >> 32) as u32;
-        *e.add(2) = RING_TRBS as u32;
+        *e.add(2) = EVENT_TRBS as u32;
     }
     mmio_write32(rt, IR0_ERSTSZ, 1);
     mmio_write64(rt, IR0_ERDP, seg.0);
@@ -1058,13 +1223,15 @@ fn probe(d: &pci::Device) -> Result<(), &'static str> {
         ports,
         dcbaa: dcbaa.1 as *mut u64,
         cmd,
-        ev: EventRing { phys: seg.0, ptr: seg.1 as *mut u32, idx: 0, cycle: 1 },
+        ev: EventRing { phys: seg.0, ptr: seg.1 as *mut u32, idx: 0, cycle: 1, wraps: 0 },
         data: pci::dma_alloc(1).ok_or("out of memory")?,
         hids: Vec::new(),
+        hid_devs: Vec::new(),
         disks: Vec::new(),
         new_disks: Vec::new(),
         pci_dir,
         bus,
+        last_status: String::new(),
     };
     log::info!(
         "xhci: {:?}: usb{bus}, {} ports ({}), {max_slots} slots, {}-byte contexts, port power {}",
