@@ -12,9 +12,13 @@ which only the USB devices can receive (the VM has no virtio-input).
 On "E1-HID-STRESS" it floods 3000 `mouse_move 1 0` and a `sendkey a` per
 20 moves, then a right click (the USB rings wrap many times).
 
+The VM has no RTL8125 (QEMU has no model of it): the kernel must log
+"rtl8125: no RTL8125 found" and nothing else from that driver (E4: the
+driver probes cleanly without its device).
+
 Usage: hw-test.py --monitor SOCKET [--log FILE] [--timeout SECS] -- qemu-system-x86_64 ...
 Exit status 0 iff ktest-init reports "END ktest-init pass=N fail=0" with
-N > 0.
+N > 0 and the RTL8125 check passed.
 """
 import argparse
 import os
@@ -82,6 +86,8 @@ def main():
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     end_line = None
     injected = False
+    rtl_absent = False
+    rtl_other = []
     deadline = time.time() + a.timeout
     timer = threading.Timer(a.timeout, p.kill)
     timer.start()
@@ -96,6 +102,10 @@ def main():
             if b"E1-HID-READY" in line and not injected:
                 injected = True
                 threading.Thread(target=inject, args=(a.monitor,), daemon=True).start()
+            if b"rtl8125: no RTL8125 found" in line:
+                rtl_absent = True
+            elif b"rtl8125:" in line:
+                rtl_other.append(line.decode(errors="replace").strip())
             m = re.search(rb"^END ktest-init pass=(\d+) fail=(\d+)", line)
             if m:
                 end_line = m
@@ -109,6 +119,10 @@ def main():
         print("hw-test: e1_hw never became ready for input", file=sys.stderr)
         return 1
     print(f"hw-test: ktest-init pass={passed} fail={failed}")
+    if not rtl_absent or rtl_other:
+        print(f"hw-test: rtl8125 probe without the device: FAIL (absent line {'seen' if rtl_absent else 'missing'}, other: {rtl_other})", file=sys.stderr)
+        return 1
+    print("hw-test: rtl8125 probes cleanly without the device")
     return 0 if failed == 0 and passed > 0 else 1
 
 

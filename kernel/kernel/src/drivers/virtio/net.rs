@@ -83,6 +83,10 @@ impl EthDevice for VirtioNet {
         self.mac
     }
 
+    fn driver(&self) -> &'static str {
+        "virtio_net"
+    }
+
     fn recv(&mut self) -> Option<Vec<u8>> {
         let (head, len) = self.rx.pop_used()?;
         RX_LAST[self.card].store(self.rx.last_used() as u64, Ordering::Relaxed);

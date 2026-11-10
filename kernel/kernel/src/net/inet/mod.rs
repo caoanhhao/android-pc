@@ -17,7 +17,7 @@
 //! The links, their addresses and the routing table are kernel state
 //! here, changed through rtnetlink and the interface ioctls
 //! (`net::rtnetlink`, `net::ifreq`); only the addresses and the default
-//! route are mirrored into smoltcp. The last card starts up with QEMU
+//! route are mirrored into smoltcp. The last virtio-net card starts up with QEMU
 //! user-mode networking's addresses ([`configure_static`]): 10.0.2.15/24,
 //! default route via 10.0.2.2.
 //!
@@ -61,16 +61,27 @@ pub const RT_SCOPE_HOST: u8 = 254;
 pub const RT_TABLE_MAIN: u32 = 254;
 pub const RT_TABLE_LOCAL: u32 = 255;
 
-/// A network card below the stack (virtio-net).
+/// A network card below the stack (virtio-net, RTL8125).
 pub trait EthDevice: Send {
     fn mac(&self) -> [u8; 6];
+    /// The driver's name (ethtool's, Linux's).
+    fn driver(&self) -> &'static str;
     /// The next received Ethernet frame.
     fn recv(&mut self) -> Option<Vec<u8>>;
     /// Queue a frame; false when it was dropped.
     fn send(&mut self, frame: &[u8]) -> bool;
     /// Whether `send` has room for a frame now.
     fn can_send(&mut self) -> bool;
+    /// Whether a cable is plugged in and the link negotiated; None for a
+    /// card that always has carrier (virtio-net). Polled a few times a
+    /// second ([`CARRIER_POLL_TICKS`]).
+    fn carrier(&mut self) -> Option<bool> {
+        None
+    }
 }
+
+/// Timer ticks between carrier polls.
+const CARRIER_POLL_TICKS: u64 = crate::time::HZ / 4;
 
 #[derive(Clone, Copy, Default)]
 pub struct Stats {
@@ -98,6 +109,24 @@ pub struct Link {
     pub arptype: u16,
     pub addrs: Vec<IfAddr>,
     pub txqlen: u32,
+    /// The card has a link (always for `lo` and virtio-net): IFF_RUNNING
+    /// and IFF_LOWER_UP follow IFF_UP only while it does.
+    pub carrier: bool,
+}
+
+impl Link {
+    /// Set the administrative flags: IFF_RUNNING and IFF_LOWER_UP follow
+    /// IFF_UP and the carrier (on cards; `lo` keeps what it has).
+    pub fn set_flags(&mut self, mut flags: u32) {
+        if self.arptype != ARPHRD_LOOPBACK {
+            flags = if flags & IFF_UP != 0 && self.carrier {
+                flags | IFF_RUNNING | IFF_LOWER_UP
+            } else {
+                flags & !(IFF_RUNNING | IFF_LOWER_UP)
+            };
+        }
+        self.flags = flags;
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -137,6 +166,11 @@ struct Port {
     stats: Stats,
     /// PCI address of the card ("0000:00:03.0", ethtool's bus_info).
     bus: String,
+    driver: &'static str,
+    /// Its /sys directory (devices/.../net/eth0).
+    sysdir: String,
+    /// Polled carrier ([`EthDevice::carrier`]), None if always up.
+    carrier: Option<bool>,
 }
 
 fn mask(p: u8) -> u32 {
@@ -516,6 +550,7 @@ pub fn init() {
             IfAddr { addr: IpAddress::Ipv6(Ipv6Address::LOCALHOST), prefix: 128, scope: RT_SCOPE_HOST, flags: 0x80 },
         ],
         txqlen: 1000,
+        carrier: true,
     };
     let mut n = Net {
         iface,
@@ -529,10 +564,10 @@ pub fn init() {
     n.sync();
     *NET.lock() = Some(n);
     crate::fs::sysfs::add_device("devices/virtual/net/lo", "net", "class/net", String::from("INTERFACE=lo\nIFINDEX=1\n"), false);
-    sysfs_link_files("devices/virtual/net/lo", 1, [0; 6], 65536, ARPHRD_LOOPBACK);
+    sysfs_link_files("devices/virtual/net/lo", 1, [0; 6], 65536, ARPHRD_LOOPBACK, true);
 }
 
-fn sysfs_link_files(dir: &str, index: u32, mac: [u8; 6], mtu: u32, ty: u16) {
+fn sysfs_link_files(dir: &str, index: u32, mac: [u8; 6], mtu: u32, ty: u16, carrier: bool) {
     use crate::fs::sysfs;
     use alloc::format;
     let m = format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -541,35 +576,62 @@ fn sysfs_link_files(dir: &str, index: u32, mac: [u8; 6], mtu: u32, ty: u16) {
     sysfs::set(dir, "address", &m);
     sysfs::set(dir, "mtu", &format!("{mtu}\n"));
     sysfs::set(dir, "type", &format!("{ty}\n"));
-    sysfs::set(dir, "operstate", if ty == ARPHRD_LOOPBACK { "unknown\n" } else { "up\n" });
-    sysfs::set(dir, "carrier", "1\n");
+    sysfs::set(dir, "operstate", if ty == ARPHRD_LOOPBACK { "unknown\n" } else if carrier { "up\n" } else { "down\n" });
+    sysfs::set(dir, "carrier", if carrier { "1\n" } else { "0\n" });
     sysfs::set(dir, "flags", "0x1003\n");
     sysfs::set(dir, "tx_queue_len", "1000\n");
 }
 
-/// A card was probed: it becomes eth<N> (up, no address yet).
-pub fn add_ethernet(dev: Box<dyn EthDevice>, sysdev: String) {
+/// The N of the eth<N> the next card will be.
+pub fn next_eth_index() -> usize {
+    NET.lock().as_ref().map_or(0, |n| n.dev.ports.len())
+}
+
+/// A card was probed: it becomes eth<N> (up, no address yet; running
+/// once it has carrier).
+pub fn add_ethernet(mut dev: Box<dyn EthDevice>, sysdev: String) {
     let mac = dev.mac();
-    let (index, name) = {
+    let driver = dev.driver();
+    let carrier = dev.carrier();
+    let (index, name, dir) = {
         let mut g = NET.lock();
         let Some(n) = g.as_mut() else {
             return;
         };
         let index = n.links.iter().map(|l| l.index).max().unwrap_or(LO) + 1;
         let name = alloc::format!("eth{}", n.dev.ports.len());
+        let dir = alloc::format!("{sysdev}/net/{name}");
         let bus = sysdev.split('/').find(|c| c.starts_with("0000:")).unwrap_or("").into();
-        n.dev.ports.push(Port { link: index, eth: dev, mac, up: false, v4: Vec::new(), v6: Vec::new(), stats: Stats::default(), bus });
+        n.dev.ports.push(Port {
+            link: index,
+            eth: dev,
+            mac,
+            up: false,
+            v4: Vec::new(),
+            v6: Vec::new(),
+            stats: Stats::default(),
+            bus,
+            driver,
+            sysdir: dir.clone(),
+            carrier,
+        });
+        if carrier.is_some() {
+            CARRIER_POLL.store(true, Ordering::Relaxed);
+        }
         let ll = IpAddress::Ipv6(ndisc::link_local(mac));
-        n.links.push(Link {
+        let mut link = Link {
             index,
             name: name.clone(),
             mac,
             mtu: 1500,
-            flags: IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST | IFF_LOWER_UP,
+            flags: 0,
             arptype: ARPHRD_ETHER,
             addrs: alloc::vec![IfAddr { addr: ll, prefix: 64, scope: RT_SCOPE_LINK, flags: 0x80 }],
             txqlen: 1000,
-        });
+            carrier: carrier.unwrap_or(true),
+        };
+        link.set_flags(IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
+        n.links.push(link);
         n.routes.push(Route {
             dst: IpAddress::Ipv6(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
             dst_len: 64,
@@ -583,14 +645,38 @@ pub fn add_ethernet(dev: Box<dyn EthDevice>, sysdev: String) {
             prefsrc: None,
         });
         n.sync();
-        (index, name)
+        (index, name, dir)
     };
-    let dir = alloc::format!("{sysdev}/net/{name}");
     crate::fs::sysfs::add_device(&dir, "net", "class/net", alloc::format!("INTERFACE={name}\nIFINDEX={index}\n"), false);
-    sysfs_link_files(&dir, index, mac, 1500, ARPHRD_ETHER);
+    sysfs_link_files(&dir, index, mac, 1500, ARPHRD_ETHER, carrier.unwrap_or(true));
 }
 
-/// After probing: the last card gets QEMU user-mode networking's static
+/// Some card reports its carrier ([`EthDevice::carrier`]).
+static CARRIER_POLL: AtomicBool = AtomicBool::new(false);
+/// A carrier poll is due (set by [`tick`]).
+static CARRIER_DUE: AtomicBool = AtomicBool::new(false);
+/// Carrier changes for [`after_poll_unlocked`]: (sysfs dir, carrier).
+static CARRIER_EVENTS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+static CARRIER_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// After the stack's lock is dropped: publish carrier changes (sysfs
+/// `carrier`/`operstate`, RTM_NEWLINK to rtnetlink listeners such as
+/// netd and EthernetTracker).
+fn after_poll_unlocked() {
+    if !CARRIER_PENDING.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let events = core::mem::take(&mut *CARRIER_EVENTS.lock());
+    for (dir, on) in &events {
+        crate::fs::sysfs::set(dir, "carrier", if *on { "1\n" } else { "0\n" });
+        crate::fs::sysfs::set(dir, "operstate", if *on { "up\n" } else { "down\n" });
+    }
+    if !events.is_empty() {
+        crate::net::rtnetlink::notify_links();
+    }
+}
+
+/// After probing: the last virtio-net card gets QEMU user-mode networking's static
 /// configuration (10.0.2.15/24, default route via 10.0.2.2), like Linux's
 /// `ip=` autoconfiguration (which also leaves the card up: Cuttlefish's
 /// vendor init then fails to rename eth0 to buried_eth0, as renaming an
@@ -600,9 +686,10 @@ pub fn configure_static() {
     let Some(n) = g.as_mut() else {
         return;
     };
-    let Some(index) = n.dev.ports.last().map(|p| p.link) else {
+    let Some(i) = n.dev.ports.iter().rposition(|p| p.driver == "virtio_net") else {
         return;
     };
+    let index = n.dev.ports[i].link;
     let me = v4cidr([10, 0, 2, 15]);
     n.link_mut(index).unwrap().addrs.push(IfAddr { addr: me, prefix: 24, scope: RT_SCOPE_UNIVERSE, flags: 0x80 });
     n.routes.push(Route {
@@ -631,7 +718,6 @@ pub fn configure_static() {
     });
     n.sync();
     // IPv6 addresses and router come from the router advertisement.
-    let i = n.dev.ports.len() - 1;
     n.dev.router_solicit(i);
     log::info!("net: {} is 10.0.2.15/24, default route via 10.0.2.2", n.link(index).unwrap().name);
 }
@@ -652,6 +738,36 @@ impl Net {
     /// The PCI address of a card's link (None for `lo`).
     pub fn bus_info(&self, index: u32) -> Option<&str> {
         self.dev.ports.iter().find(|p| p.link == index).map(|p| p.bus.as_str())
+    }
+
+    /// The driver of a card's link (None for `lo`).
+    pub fn driver(&self, index: u32) -> Option<&'static str> {
+        self.dev.ports.iter().find(|p| p.link == index).map(|p| p.driver)
+    }
+
+    /// Poll the cards that report carrier; a change updates the link's
+    /// flags here and is queued for [`after_poll_unlocked`].
+    fn poll_carrier(&mut self) {
+        for i in 0..self.dev.ports.len() {
+            let p = &mut self.dev.ports[i];
+            if p.carrier.is_none() {
+                continue;
+            }
+            let now = p.eth.carrier();
+            if now == p.carrier {
+                continue;
+            }
+            p.carrier = now;
+            let (link, dir, on) = (p.link, p.sysdir.clone(), now.unwrap_or(true));
+            if let Some(l) = self.link_mut(link) {
+                l.carrier = on;
+                let f = l.flags;
+                l.set_flags(f);
+                log::info!("net: {} carrier {}", l.name, if on { "on" } else { "off" });
+            }
+            CARRIER_EVENTS.lock().push((dir, on));
+            CARRIER_PENDING.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn stats(&self, index: u32) -> Stats {
@@ -816,6 +932,9 @@ impl Net {
     /// changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
+        if CARRIER_DUE.swap(false, Ordering::Relaxed) {
+            self.poll_carrier();
+        }
         // A few packets at a time, topping up the listening pools in
         // between: each packet takes at most one listening socket.
         for _ in 0..256 {
@@ -853,6 +972,7 @@ pub fn with_net<R>(f: impl FnOnce(&mut Net) -> R) -> R {
         let r = f(n);
         (r, n.poll())
     };
+    after_poll_unlocked();
     if changed {
         socket::wake_all();
     }
@@ -868,7 +988,14 @@ pub fn with_net_nopoll<R>(f: impl FnOnce(&mut Net) -> R) -> R {
 /// From the timer interrupt (BSP): request a poll when frames arrived or
 /// a smoltcp timer is due.
 pub fn tick() {
-    if crate::drivers::virtio::net::rx_hint() || crate::time::monotonic_ns() >= NEXT_POLL.load(Ordering::Relaxed) {
+    if crate::drivers::virtio::net::rx_hint()
+        || crate::drivers::rtl8125::rx_hint()
+        || crate::time::monotonic_ns() >= NEXT_POLL.load(Ordering::Relaxed)
+    {
+        PENDING.store(true, Ordering::Relaxed);
+    }
+    if CARRIER_POLL.load(Ordering::Relaxed) && crate::time::ticks() % CARRIER_POLL_TICKS == 0 {
+        CARRIER_DUE.store(true, Ordering::Relaxed);
         PENDING.store(true, Ordering::Relaxed);
     }
 }
@@ -894,6 +1021,7 @@ pub fn softirq() {
             None => false,
         }
     };
+    after_poll_unlocked();
     if changed {
         socket::wake_all();
     }

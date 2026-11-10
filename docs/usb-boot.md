@@ -10,8 +10,11 @@ What works on real hardware: UEFI boot through Limine, SMP from the ACPI
 MADT, timers calibrated against the HPET or ACPI PM timer, the GOP
 framebuffer as the display (simpledrm, also showing the kernel log), the
 stick itself (USB mass storage, USB 2 or 3, also behind a hub), USB
-keyboards and mice (boot protocol). What does not: networking (no driver
-for the Intel I225-V / Wi-Fi, so no adb), sound, the GPU's acceleration
+keyboards and mice (boot protocol), and (E4, not yet tried on the PC)
+wired Ethernet on the board's Realtek RTL8125 2.5 GbE port: Android's
+EthernetService gets an address by DHCP, so DNS, the browser and `adb
+connect <address>:5555` should work. What does not: Wi-Fi and Bluetooth
+(Intel AX211), sound, the GPU's acceleration
 (Android renders in software, SwiftShader), suspend, hot-plug (plug
 keyboard and mouse in before booting). `/data` is in RAM, so nothing
 persists between boots.
@@ -106,6 +109,32 @@ mouse in before powering on.
    pointer, the keyboard types. **Pause/Break** shows the kernel log over Android and
    hides it again.
 
+### Wired network (E4)
+
+Plug a cable from the board's 2.5 GbE port (RTL8125) into a router with
+DHCP before or after booting. In the kernel log (Pause/Break once
+Android is up):
+
+- early, after `pci:`: `rtl8125: probing 04:00.0 10ec:8125 rev 05`,
+  then `rtl8125: eth0: RTL8125B XID 641, MAC xx:xx:…:xx (MAC0_BKP),
+  BAR2 …, polled, no firmware` and `rtl8125: eth0: up, waiting for link`;
+- a few seconds later: `rtl8125: eth0: link up, 1000 Mb/s full-duplex`
+  (or 2500 / 100, as the router negotiates; with the PHYstatus and PHYSR
+  values) and `net: eth0 carrier on`;
+- once Android's framework runs (a minute or more into the boot):
+  `net: eth0 address 192.168.x.y/24` and `net: default route via
+  192.168.x.1 dev eth0 table …`: DHCP worked;
+- every few seconds while traffic flows: `rtl8125: eth0: rx N pkts …
+  B, E err D drop; tx N pkts … B, B busy`. Rising rx and tx counts with
+  0 err mean the card works.
+
+Then the status bar shows the Ethernet icon (`<··>`), Chrome/the browser
+loads pages, and from another machine on the LAN `adb connect
+192.168.x.y:5555` followed by `adb shell` works (accept nothing: adbd
+runs without authentication on this build). Pulling the cable logs
+`link down` and `net: eth0 carrier off`; plugging it back in gets a new
+DHCP lease.
+
 Power off with the power button (or hold it); nothing on the stick needs
 a clean shutdown.
 
@@ -138,6 +167,9 @@ send:
 5. Which USB port the stick was in (rear/front, USB 2 black or USB 3
    blue/red/teal), what keyboard and mouse were plugged in and where, and
    the monitor's resolution.
+6. For the network: every `rtl8125:` and `net:` line (probe, XID, MAC,
+   `link up`/`link down` with PHYstatus/PHYSR, the counter lines) and
+   whether the port's LEDs light up.
 
 Common cases:
 
@@ -150,3 +182,14 @@ Common cases:
   rear USB 2 port) or partition 2 is not named `super`.
 - *Android stops at `init: … Failed to mount /system`* or similar:
   partition 2 does not hold `super.img` (re-run the `dd`).
+- *No `rtl8125:` line at all*: the card is disabled in the firmware setup
+  (Settings → IO Ports → Onboard LAN Controller) or has another PCI id
+  (`rtl8125: no RTL8125 found`).
+- *`rtl8125: … link up` never comes*: check the cable and the router's
+  port LEDs; the driver loads no rtl_nic firmware patch, which Linux
+  applies when available. If the link stays down or flaps (`link up` /
+  `link down` repeating), that patch may be needed: report the PHYstatus
+  values.
+- *Link up but no `net: eth0 address`*: DHCP got no answer; the counter
+  line shows whether frames arrive (rx) and leave (tx); `err` counts
+  receive errors.

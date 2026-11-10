@@ -1,4 +1,4 @@
-# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md)
+# Kernel architecture (phase D3b state: AOSP boots to sys.boot_completed=1 and Launcher3 draws; an APK built from source installs with `adb install` and its Activity runs on screen; zygote runs ART's userfaultfd GC; SurfaceFlinger composites on virtio-gpu; virtio-input devices reach getevent; E1: NVMe, AHCI and xHCI USB keyboard/mouse drivers, AOSP boots from NVMe; E2: a simpledrm-style DRM driver on the firmware framebuffer, AOSP boots to the launcher on it under UEFI; E3: USB mass storage and hubs, ACPI tables, timer calibration without the PIT, the kernel log on the framebuffer; AOSP boots from a USB stick image under OVMF, docs/usb-boot.md; E4: a Realtek RTL8125 2.5 GbE driver with link-state reporting, for wired networking on the real PC)
 
 The kernel in `kernel/` is a `no_std` Rust binary for `x86_64-unknown-none`,
 booted by Limine. Goal (see `PLAN.md`): implement the Linux x86_64 syscall ABI
@@ -996,6 +996,68 @@ docs/usb-boot.md for booting one from a USB stick):
 - **Serial**: the console UART is used only if its scratch register
   works; `serial=off` stops the log there (a 16550 with nothing attached
   paces the log at 115200 baud). `loglevel=N` sets the log level.
+
+## Wired Ethernet: Realtek RTL8125 (`drivers/rtl8125.rs`, E4)
+
+The real PC's NIC (PCI `10ec:8125`, also the Killer E3000 `10ec:3000`).
+QEMU has no model of it, so it is only exercised on hardware; the ring
+logic has in-kernel unit tests (`--test`: `rtl8125_rx_ring`,
+`rtl8125_tx_ring`, `rtl8125_link_status`, the tests play the NIC on the
+descriptors) and `--hw-test` checks the probe is clean without the device
+(`rtl8125: no RTL8125 found`, nothing else).
+
+- **Probe**: the first memory BAR, memory decoding and bus mastering on,
+  INTx off. The XID (`TxConfig >> 20 & 0xfcf`) picks RTL8125A (0x609,
+  Linux's mac version 61) or RTL8125B (0x641, version 63; others are
+  driven as B with a warning). Then Linux r8169's `rtl_init_one` order:
+  Rx config, interrupts masked and acked, `rtl_hw_init_8125` (Rx gate,
+  OOB off, link-list FIFO), chip reset. The MAC comes from MAC0_BKP
+  (0x19e0), else MAC0, else a random local one, and is written to
+  MAC0/MAC4 (config registers unlocked through Cfg9346).
+- **Bring-up** (`rtl8169_up`): the PHY through the GPHY OCP window
+  (0xb8; standard registers at 0xa400 + 2 * reg, paged ones at page << 4
+  + 2 * (reg - 0x10)): soft reset, power-down cleared, Linux's RTL8125B
+  parameter writes (`rtl8125b_hw_phy_config` without the rtl_nic firmware
+  patch, ALDPS off, the EEE PHY bits), soft reset. Then the MAC: Rx gate,
+  reset, `rtl_hw_start_8125*` (ASPM and CLKREQ off, CPlusCmd without VLAN
+  or checksum, interrupt coalescing cleared, ASPM entry latency through
+  CSI since the legacy config mechanism stops at 256 bytes, the ePHY
+  table, the MAC OCP registers of `rtl_hw_start_8125_common` incl. the
+  classic descriptor format, exit-L1 events), RxMaxSize 2048, ring
+  addresses, Tx/Rx enable, RxConfig (fetch 8, DMA burst, pause slot on B),
+  TxConfig, and the filter: own MAC, broadcast, all multicast. Finally
+  auto-negotiation: 10/100 half and full with pause, 1000 full, 2.5G full
+  (page 0xa5d reg 0x12 bit 7), BMCR ANENABLE | ANRESTART.
+- **Rings**: 256 receive descriptors with one 2 KiB buffer each
+  (frames split over descriptors, i.e. bigger than that, and RxRES
+  errors are dropped and counted), 128 transmit descriptors with a 2 KiB
+  bounce buffer each (frames padded to 60 bytes, FirstFrag | LastFrag,
+  RingEnd on the last; the doorbell is TxPoll_8125 bit 0). 16-byte
+  descriptors, 64-bit addresses.
+- **Polled**: interrupts stay masked (no MSI in the kernel yet). The
+  timer tick checks the next receive descriptor's owner bit
+  (`rtl8125::rx_hint`, next to virtio-net's) and the stack's soft
+  interrupt collects frames; the event register is acked on each link
+  poll.
+- **Carrier** (generic, `inet`): `EthDevice::carrier` returns the link
+  state for cards that have one (here PHYstatus bit 1; virtio-net has
+  none and is always up). The stack polls it every `HZ / 4` ticks; a
+  change sets the link's `carrier`, so IFF_RUNNING | IFF_LOWER_UP follow
+  IFF_UP only while there is a link (also through SIOCSIFFLAGS and
+  RTM_SETLINK), and, after the stack's lock is dropped, rewrites sysfs
+  `carrier` / `operstate` and multicasts RTM_NEWLINK. Android's
+  EthernetTracker starts its IpClient (DHCP) on IFF_LOWER_UP, so a cable
+  plugged in later works too. QEMU's static 10.0.2.15 setup now only goes
+  to the last virtio-net card; ethtool's driver name is per card
+  (`r8169`, as Linux names it; sysfs `DRIVER=r8169`).
+- **Log** (also on the framebuffer): `rtl8125: probing …`, `rtl8125:
+  eth0: RTL8125B XID 641, MAC …`, `link up, 1000 Mb/s full-duplex …
+  (PHYstatus, PHYSR)` / `link down`, a counter line (`rx … pkts … B, …
+  err … drop; tx … pkts … B, … busy`) at most every 5 s while the
+  counters move, and `net: eth0 carrier on`, `net: eth0 address
+  192.168.1.23/24`, `net: default route via 192.168.1.1 dev eth0 table N`
+  when netd applies the DHCP result (rtnetlink logs IPv4 addresses and
+  default routes on any card).
 
 ## Input (`drivers/input/`, `drivers/virtio/input.rs`, D2)
 
