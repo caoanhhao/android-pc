@@ -131,6 +131,56 @@ render phần mềm.
   WPA2 nối ra virtio-net) với `run-qemu.sh --aosp-wifi-test`; driver
   iwlwifi cho Intel AX211 (firmware 89, MLD API) — xem `docs/wifi.md`.
 
+### Phase F — AOSP 17 from source + Rust HALs
+
+Goal: move the AOSP tree to **android-17.0.0_r1**, built from source, and add
+our own **vendor HALs written in Rust** (AIDL, `rust_binary` in Soong) for the
+PC hardware that phase E drives. Decisions (2026-11-10): upgrade `aosp/` **in
+place** (only ~52 GB free on `/`, so no second tree); the Rust drivers are
+**Android HALs in userspace**, not kernel modules.
+
+Every step runs in its own sub-session. Builds stay **sequential** (one at a
+time, `tools/limited-build.sh`, see CLAUDE.md), so the HAL steps after F2 can
+be coded in parallel but must take turns building.
+
+- **F1. AOSP 17 in place.** Keep the AOSP 16 images the `tools/aosp-*-test.py`
+  scripts need in `out/aosp16-images/`, delete `aosp/out/`, `repo init -b
+  android-17.0.0_r1` with the same partial-clone flags, `repo sync -j4`,
+  re-check the local fixes from `docs/aosp-build.md` (`RELEASE_USE_DEX_V41`,
+  `trim.xml`), build `aosp_cf_x86_64_only_phone` image by image, boot it on
+  Cuttlefish with the android17 GKI. Done when: `sys.boot_completed=1`, `adb
+  shell` works, `docs/aosp-build.md` describes AOSP 17.
+  **Done (2026-11-11):** `aosp_cf_x86_64_only_phone-cp2a-userdebug`
+  (CP2A.260605.016) with GKI `6.18.16-android17` boots in ~40 s, built by
+  `tools/aosp17-build.sh`. The DEX v41 fix is gone; `trim.xml` keeps
+  `device/generic/car`; Soong needs a `GOMEMLIMIT` patch and siso takes no
+  `-jN`; guest RAM must be 4 GB (ramoops at 0x150000000). AOSP 16 images are
+  in `out/aosp16-images/`.
+- **F2. Our product + Rust HAL scaffolding.** A device tree kept in this repo
+  (`aosp-device/`, linked into `aosp/device/android-pc/pc_x86_64` by a local
+  manifest or symlink) for `aosp_pc_x86_64` inheriting the Cuttlefish
+  x86_64_only phone; a shared Rust crate (`libpchal`: logging, binder service
+  registration, sysfs/devfs helpers); VINTF manifest fragments, init `.rc`,
+  SELinux policy for HAL services; one trivial Rust HAL as proof. Done when:
+  the product builds and the proof HAL is registered (`lshal`/`service list`).
+- **F3. Kernel Rust on AOSP 17 userspace.** Point `tools/aosp-*-test.py` at
+  the AOSP 17 images, fix the syscalls/ioctls Android 17 adds, so the HALs
+  below can be tested against phase E hardware in QEMU. Done when: the
+  existing `--aosp-*-test` suites pass again.
+- **F4. Health + power + thermal HALs (Rust)** — `android.hardware.health`,
+  `power`, `thermal` over the AC supply, thermal zones and cpufreq from E9.
+- **F5. Bluetooth HAL (Rust)** — `android.hardware.bluetooth` H4 over
+  `/dev/hvc5` (E7), replacing the C++ default HAL.
+- **F6. Audio HAL (Rust)** — AIDL `android.hardware.audio.core` over the ALSA
+  PCM/control ABI (E5, E8 microphone).
+- **F7. Camera HAL (Rust)** — AIDL camera provider over V4L2 UVC
+  `/dev/video0` (E8), so the stock Camera app works.
+- **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
+  (E6), next to wpa_supplicant.
+
+Order: F1 → F2 → F3; F4–F8 after F2 (each needs F3 to be tested on real
+hardware paths, but can be built and smoke-tested on Cuttlefish first).
+
 ## Rủi ro chính
 
 - Phạm vi cực lớn (Starnix mất nhiều năm với đội lớn). Ưu tiên chạy được từng mốc.

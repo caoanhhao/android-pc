@@ -1,0 +1,15 @@
+diff --git a/ui/build/soong.go b/ui/build/soong.go
+index 4521b4a..f3f152f 100644
+--- a/ui/build/soong.go
++++ b/ui/build/soong.go
+@@ -230,6 +230,10 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
+ 		// https://github.com/golang/proposal/blob/master/design/24543-non-cooperative-preemption.md
+ 		invocationEnv["GODEBUG"] = "asyncpreemptoff=1"
+ 	}
++	// Local (android-pc): soft heap cap so analysis fits a memory-limited cgroup.
++	if v := os.Getenv("SOONG_GOMEMLIMIT"); v != "" {
++		invocationEnv["GOMEMLIMIT"] = v
++	}
+ 
+ 	var allArgs []string
+ 	allArgs = append(allArgs, pb.specificArgs...)

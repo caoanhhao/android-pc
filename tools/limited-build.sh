@@ -17,7 +17,7 @@ if (( $(free_gb) < DISK_FLOOR_GB )); then
 fi
 
 unit="limited-build-$$"
-export NINJA_ARGS="${NINJA_ARGS:--j${CORES}}"
+export NINJA_ARGS="${NINJA_ARGS--j${CORES}}"   # set NINJA_ARGS= (empty) for siso (AOSP 17), which rejects -jN
 export CARGO_BUILD_JOBS="${CORES}"
 export MAKEFLAGS="-j${CORES}"
 
