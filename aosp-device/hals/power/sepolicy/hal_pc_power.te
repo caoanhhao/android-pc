@@ -1,0 +1,9 @@
+# Power HAL: android.hardware.power-service.pc
+pc_hal_service(hal_pc_power, hal_power)
+
+# intel_pstate knobs (cpufreq/policy*/energy_performance_preference and
+# intel_pstate/*_perf_pct, no_turbo); every domain may already read them.
+allow hal_pc_power sysfs_devices_system_cpu:file w_file_perms;
+
+# CPU headroom from /proc/stat.
+allow hal_pc_power proc_stat:file r_file_perms;

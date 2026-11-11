@@ -27,6 +27,13 @@ dump() {
         echo "== dumpsys window"; timeout 10 dumpsys window displays 2>&1 | head -60
         echo "== dumpsys ethernet"; timeout 10 dumpsys ethernet 2>&1 | head -60
         echo "== services"; timeout 10 service list 2>&1
+        echo "== dumpsys battery"; timeout 10 dumpsys battery 2>&1
+        echo "== dumpsys thermalservice"; timeout 10 dumpsys thermalservice 2>&1
+        echo "== dumpsys power"; timeout 10 dumpsys power 2>&1 | grep -iE "hal|mode|boost|battery|plugged"
+        echo "== sysfs power"; ls -lZ /sys/class/power_supply/ /sys/class/hwmon/ 2>&1
+        grep -H . /sys/class/hwmon/hwmon*/name /sys/class/thermal/thermal_zone*/type 2>&1
+        grep -H . /sys/devices/system/cpu/intel_pstate/* /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference /sys/devices/system/cpu/cpufreq/policy0/scaling_driver 2>&1
+        ls -lZ /sys/devices/system/cpu/intel_pstate/ /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>&1
         echo "== avc"; dmesg | grep -c 'avc: denied'
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null

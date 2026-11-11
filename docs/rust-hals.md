@@ -1,4 +1,4 @@
-# Rust vendor HALs (phase F2)
+# Rust vendor HALs (phases F2, F4)
 
 Status (2026-11-11): `aosp_pc_x86_64-cp2a-userdebug` builds and boots on Cuttlefish
 (`sys.boot_completed=1`). The Rust lights HAL runs as `u:r:hal_pc_light:s0`, is listed by
@@ -76,7 +76,10 @@ Links do not work:
 |---|---|
 | `pchal::init_logging(tag)` | `log` → logcat via `liblogger`; logs panics (HAL stderr goes to /dev/null) |
 | `pchal::Service::new(descriptor, instance)` | builder: `.registration(Registration::Lazy)`, `.extra_threads(n)`, `.serve(binder)` registers with servicemanager and joins the thread pool |
-| `pchal::sysfs::{read_string, read, write, entries}` | sysfs attributes: newline stripped, parse via `FromStr`, missing class dir = empty list |
+| `pchal::sysfs::{read_string, read, read_optional, write, entries}` | sysfs attributes: newline stripped, parse via `FromStr`, `read_optional` maps a missing file to `None`, missing class dir = empty list |
+| `pchal::Callbacks<dyn ICallback, F>` | client callback list: `add` rejects the same binder twice and `remove` an unknown one (`EX_ILLEGAL_ARGUMENT`, as the VTS of every HAL with callbacks checks), `notify(filter, call)` calls outside the lock and drops callbacks that return `DEAD_OBJECT`; `F` is a per-callback filter (a temperature type, ...) |
+| `pchal::uevent::{UeventSocket, Uevent}` | kernel uevents (`NETLINK_KOBJECT_UEVENT` group 1, kernel sender only), parsed into `ACTION`/`DEVPATH`/`SUBSYSTEM`/`KEY=value`; for hotplug (power supplies now, sound cards/cameras/Bluetooth later) |
+| `pchal::procstat::CpuTimes` | aggregate CPU busy/total ticks from `/proc/stat`, `usage_since` = busy % between two samples |
 | `pchal::devfs::open(path, Access)` | open a `/dev` node with `O_CLOEXEC | O_NOCTTY` |
 | `pchal::Error` / `pchal::Result` | every error carries its path; `From<Error> for binder::Status` (ILLEGAL_STATE + message), so AIDL methods can use `?` |
 
@@ -113,6 +116,130 @@ backlight), is small, and Cuttlefish does not depend on it. Cuttlefish's own lig
 candidate, vibrator, has no PC hardware behind it. On Cuttlefish there are no LEDs or
 backlights, so the HAL registers and reports an empty list. The service log says
 `found N lights`.
+
+## F4: health, thermal, power
+
+Status (2026-11-11): the three HALs replace Cuttlefish's on `aosp_pc_x86_64`. On Cuttlefish
+(SELinux enforcing) they run as `hal_pc_health`, `hal_pc_thermal`, `hal_pc_power` with no AVC
+denials; VTS: `VtsHalHealthTargetTest` 25/25 passed, `VtsHalThermalTargetTest` 9 passed +
+2 skipped (skin thresholds and forecast: emulator / not supported),
+`VtsHalPowerTargetTest` 10 passed + 13 skipped (no hint sessions). Unit tests: host
+`libpchal_test` 14, `*_supply_test` 5, `*_sensors_test` 4, `*_pstate_test` 4; device
+`*-service.pc_test` health 8, thermal 6, power 8.
+
+Real PC (Z790, one boot from the F4 stick, permissive): `dumpsys battery` AC powered,
+present false, level 100; `dumpsys thermalservice` CPU0 and VIRTUAL-SKIN 74 °C with
+thresholds `[NaN, 90, 95, 100, 101, 103, 105]`, 16 `processor-*` and 5 `fan-*` cooling
+devices; the power HAL found `intel_pstate` active with 16 policies and switched EPP; no
+AVC denials from the HALs. That boot showed two bugs, fixed since and verified on
+Cuttlefish only: the global `intel_pstate` limits were not writable (now opened in the
+power HAL's `.rc`, see below), and the ACPI thermal zones appeared after the thermal HAL
+had probed (it now probes again when the class directories change). The re-check on the
+PC is part of the combined F4–F8 USB test.
+
+| HAL | Binary / instance | Replaces (switch in `hal.mk`) |
+|---|---|---|
+| health V5 | `android.hardware.health-service.pc`, `IHealth/default` | `com.google.cf.health` (`LOCAL_HEALTH_PRODUCT_PACKAGE`; recovery keeps Cuttlefish's) |
+| thermal V3 | `android.hardware.thermal-service.pc`, `IThermal/default` | `com.android.hardware.thermal` (`LOCAL_THERMAL_HAL_PRODUCT_PACKAGE`) |
+| power V7 | `android.hardware.power-service.pc`, `IPower/default` | `com.android.hardware.power` (no switch: `overrides` in `Android.bp`; its power.stats half, `android.hardware.power.stats-service.example`, is installed on its own) |
+
+Versions are the newest the framework matrix for target level 202604 accepts (health 3-5,
+power 5-7, thermal 3).
+
+### Health (`hals/health`)
+
+`supply.rs` reads `/sys/class/power_supply`: `Mains` = AC, `USB*`/`BrickID` = USB,
+`Wireless`; the system battery is the first present `Battery` whose `scope` is not `Device`
+(a wireless mouse's is). Energy-based ACPI batteries (`energy_*` µWh, `power_now` µW) are
+converted to charge and current at `voltage_min_design`; currents are negative while
+discharging; the charge counter falls back to `charge_full * capacity / 100`.
+
+A desktop with no supply at all (the Z790 PC) is reported as AC online, battery not
+present, status/health UNKNOWN, level 100, capacity level UNSUPPORTED. That is what Android
+expects of battery-less devices: `BatteryService` never shuts down a device without a
+battery, VTS requires status UNKNOWN for it, and SystemUI shows its "battery unknown" icon
+when `EXTRA_PRESENT` is false. Level 100 instead of healthd's 0 so apps that display the
+level do not show an empty battery.
+
+Updates: a uevent thread (`pchal::uevent`) pushes new info on every `power_supply` event; a
+battery is also re-read every 60 s. `getBatteryHealthData` must succeed from vendor level
+202604, so it returns zeros without a battery. Storage info, disk stats, hinge info and
+charging policies are `EX_UNSUPPORTED_OPERATION`. Kernel: `CONFIG_ACPI_AC=m`,
+`CONFIG_ACPI_BATTERY=m` (`ac.ko`, `battery.ko`) so laptops get their supplies.
+
+### Thermal (`hals/thermal`)
+
+`sensors.rs` probes once at start:
+
+- hwmon drivers `coretemp`/`k10temp`/`zenpower` → CPU (`Package id N`/`Tctl`, named `CPU0`...,
+  TjMax from `tempN_crit`, default 100 °C), GPU drivers (`amdgpu`, `nouveau`, `i915`, `xe`,
+  `radeon`) → GPU, `nvme` → UNKNOWN; other hwmon drivers (board WMI, DIMM, NIC) are skipped;
+- thermal zones: `x86_pkg_temp` → CPU only without coretemp (same sensor), `iwlwifi_*` →
+  WIFI, ACPI `acpitz` and the rest → UNKNOWN;
+- `VIRTUAL-SKIN` (SKIN) = the hottest CPU package. Android takes its thermal status and
+  headroom from the single SKIN sensor, and on a PC the CPU package is what throttles.
+
+Thresholds (°C): CPU and skin LIGHT TjMax-10, MODERATE TjMax-5, SEVERE TjMax (the CPU
+throttles itself there), CRITICAL +1, EMERGENCY +3, SHUTDOWN +5. The sensor never reads
+above TjMax, so the framework's thermal shutdown (CPU/GPU/SKIN at SHUTDOWN) is left to the
+CPU's THERMTRIP. hwmon `max`/`crit`/`emergency` → SEVERE/CRITICAL/EMERGENCY; ACPI trips
+`passive`/`hot`/`critical` → SEVERE/EMERGENCY/SHUTDOWN, ignoring trips below 40 °C (the Z790
+firmware has a 20.8 °C critical trip on a zone that always reads 16.8 °C).
+
+Cooling devices: `Fan` → FAN, `Processor`/`intel_powerclamp`/`TCC Offset` → CPU, `iwlwifi*`
+→ WIFI, others COMPONENT, named `<type>-<N>`. A poll thread (5 s, 1 s while anything is
+above NONE) sends `notifyThrottling` on severity changes and `notifyCoolingDeviceChanged` on
+state changes, filtered by the type each callback registered for. Each poll first compares
+the entries of `/sys/class/thermal` and `/sys/class/hwmon` with the last probe and probes
+again if they changed: ACPI `thermal.ko`, `coretemp` and `iwlwifi` are modules that can
+load after the HAL starts (on the Z790 the two `acpitz` zones did).
+`forecastSkinTemperature` is unsupported. AIDL thermal has no CPU usage call; `/proc/stat`
+is used by the power HAL's CPU headroom instead.
+
+### Power (`hals/power`)
+
+`pstate.rs` drives `intel_pstate` in active (HWP) mode: `energy_performance_preference` of
+every `cpufreq/policy*`, and `intel_pstate/{min_perf_pct,max_perf_pct,no_turbo}`. The values
+at start are the balanced defaults. Hints → profile (highest priority first) → settings:
+
+| Hint | Profile | Settings |
+|---|---|---|
+| `FIXED_PERFORMANCE` | Fixed | EPP performance, no turbo, min = max perf |
+| `LOW_POWER` (battery saver) | PowerSave | EPP power, no turbo |
+| `INTERACTIVE` off, `DEVICE_IDLE`, `DISPLAY_INACTIVE` | Idle | EPP power |
+| `SUSTAINED_PERFORMANCE` | Sustained | no turbo |
+| `INTERACTION` boost (200 ms default, 5 s max), `LAUNCH`, `GAME_LOADING` | Boost | EPP performance, min perf ≥ 50 % |
+| `GAME` | Game | EPP performance |
+| none | Balanced | boot defaults |
+
+A worker thread applies a profile only when it changes and wakes when a boost ends; EPP
+values the CPU lacks fall back to `balance_performance`/`balance_power`. Without
+`intel_pstate` active (Cuttlefish, AMD, `acpi-cpufreq`) the hints change nothing, but
+`FIXED_PERFORMANCE` is still reported (VTS requires it). The knobs are root-owned 0644:
+`ueventd.pc.rc` (installed as `/odm/etc/ueventd.rc`, which `/system/etc/ueventd.rc` imports)
+makes each CPU's `energy_performance_preference` group `system` writable on its uevent; the
+global `intel_pstate/*` files belong to no device that sends uevents, so the HAL's `.rc`
+opens them `on boot`. A failed write is logged once per file.
+
+Hint sessions (ADPF) are not implemented: the 202604 matrix does not require them, and
+with sessions VTS also requires the FMQ session channel. `getCpuHeadroom` returns the global
+idle share over the requested window from `/proc/stat` (the binder thread waits for the
+window, 50 ms to 10 s); GPU headroom and composition data are unsupported.
+
+### SELinux
+
+- `pc_hal_service(hal_pc_<name>, hal_<name>)` per HAL; health also needs
+  `typeattribute ... bpfdomain` (every `hal_health_server` is one).
+- `/sys/class/*` entries are `sysfs` symlinks: `allow <domain> sysfs:lnk_file read`.
+- Thermal zones and cooling devices: `genfscon sysfs /devices/virtual/thermal` →
+  `sysfs_thermal`.
+- Paths that depend on the firmware or bus layout are labelled by **file_contexts regexes
+  on `/sys`**, which ueventd applies (recursive restorecon at coldboot, then per uevent):
+  `/sys/devices/.*/power_supply(/.*)?` → `sysfs_batteryinfo` (wakeup nodes stay
+  `sysfs_wakeup`), `/sys/devices/.*/hwmon[0-9]+(/.*)?` → `sysfs_hwmon_pc` (our type; the
+  platform has none). Cuttlefish labels its virtio paths the same way.
+- intel_pstate knobs keep the platform's `sysfs_devices_system_cpu`; the power HAL gets
+  `w_file_perms` on it and reads `proc_stat`.
 
 ## Adding a HAL
 
@@ -178,6 +305,21 @@ HALs in `class hal` start before logd, so their first log lines (`found N lights
 re-registers the instance, and when it exits the name is gone until the service restarts.
 
 ## Notes for F3–F8
+
+- Clippy runs with `-D warnings` on every Rust module (`dead_code`, `unused_imports`,
+  `double_ended_iterator_last`, ...); keep sysfs parsing in a module without AIDL types and
+  give it a `rust_test_host` with that file as crate root (the HAL crates' AIDL libraries
+  are not all host-supported).
+- AIDL parcelable constants live in the parcelable's module, not on the struct:
+  `HealthInfo::{HealthInfo, BATTERY_CHARGE_TIME_TO_FULL_NOW_SECONDS_UNSUPPORTED}`; parcelables
+  do not implement `PartialEq`.
+- A HAL that needs root-owned sysfs files writable adds lines to
+  `hals/power/ueventd.pc.rc` (the only `/odm/etc/ueventd.rc`) for device attributes, or
+  `chown`/`chmod` in its `.rc` for files outside any device (ueventd never sees them).
+- Probe again when class directories change: vendor modules load in parallel with
+  `class hal`, so a HAL may start before its devices exist.
+- `out/target/product/pc_x86_64/installed-files-*.txt` are stale in this Soong-only build;
+  check an image with `fsck.erofs --extract=DIR vendor.img`.
 
 - The product out directory is now `aosp/out/target/product/pc_x86_64`. The
   `tools/aosp-*-test.py` scripts still read `vsoc_x86_64_only` (F3 should switch them).

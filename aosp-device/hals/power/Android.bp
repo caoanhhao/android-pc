@@ -1,0 +1,61 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+rust_defaults {
+    name: "android.hardware.power-service.pc_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: ["android.hardware.power-V7-rust"],
+}
+
+rust_binary {
+    name: "android.hardware.power-service.pc",
+    defaults: ["android.hardware.power-service.pc_defaults"],
+    init_rc: ["android.hardware.power-service.pc.rc"],
+    vintf_fragment_modules: ["android.hardware.power-service.pc.xml"],
+    // Cuttlefish's power APEX bundles the example power and power.stats HALs; hal.mk
+    // installs the power.stats one on its own.
+    overrides: ["com.android.hardware.power"],
+    visibility: ["//visibility:public"],
+}
+
+vintf_fragment {
+    name: "android.hardware.power-service.pc.xml",
+    src: "android.hardware.power-service.pc.xml",
+    vendor: true,
+}
+
+prebuilt_etc {
+    name: "ueventd.pc.rc",
+    src: "ueventd.pc.rc",
+    filename: "ueventd.rc",
+    device_specific: true,
+    visibility: ["//visibility:public"],
+}
+
+// Whole HAL, on the device.
+rust_test {
+    name: "android.hardware.power-service.pc_test",
+    defaults: ["android.hardware.power-service.pc_defaults"],
+    rustlibs: ["libtempfile"],
+    test_options: {
+        unit_test: true,
+    },
+}
+
+// The intel_pstate logic alone, on the host.
+rust_test_host {
+    name: "android.hardware.power-service.pc_pstate_test",
+    crate_name: "pstate",
+    srcs: ["src/pstate.rs"],
+    edition: "2021",
+    rustlibs: [
+        "liblog_rust",
+        "libpchal",
+        "libtempfile",
+    ],
+    test_options: {
+        unit_test: true,
+    },
+}

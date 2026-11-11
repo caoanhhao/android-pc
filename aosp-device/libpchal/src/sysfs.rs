@@ -37,6 +37,23 @@ pub fn read<T: FromStr>(path: impl AsRef<Path>) -> Result<T> {
     value.trim().parse().map_err(|_| Error::Parse { path: path.to_owned(), value })
 }
 
+/// Reads and parses an attribute that a device may not have.
+///
+/// Returns `Ok(None)` if the file does not exist, so optional attributes such as a
+/// battery's `charge_full_design` need no separate existence check.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the file exists but cannot be read and [`Error::Parse`] if
+/// its contents do not parse as `T`.
+pub fn read_optional<T: FromStr>(path: impl AsRef<Path>) -> Result<Option<T>> {
+    match read(path) {
+        Ok(value) => Ok(Some(value)),
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 /// Writes `value` to an attribute.
 ///
 /// # Errors
@@ -94,6 +111,16 @@ mod tests {
             Err(Error::Parse { value, .. }) => assert_eq!(value, "bright"),
             other => panic!("expected a parse error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_optional_maps_missing_file_to_none() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("capacity");
+        assert_eq!(read_optional::<u32>(&path)?, None);
+        fs::write(&path, "87\n").expect("write fixture");
+        assert_eq!(read_optional::<u32>(&path)?, Some(87));
+        Ok(())
     }
 
     #[test]

@@ -1,0 +1,5 @@
+/vendor/bin/hw/android\.hardware\.thermal-service\.pc    u:object_r:hal_pc_thermal_exec:s0
+
+# hwmon devices sit below their parent device (platform coretemp.0/hwmon/, PCI GPUs,
+# nvme/nvme0/), so they are matched by pattern; ueventd relabels them when they appear.
+/sys/devices/.*/hwmon[0-9]+(/.*)?    u:object_r:sysfs_hwmon_pc:s0

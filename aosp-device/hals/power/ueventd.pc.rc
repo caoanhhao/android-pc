@@ -1,0 +1,5 @@
+# /odm/etc/ueventd.rc (imported by /system/etc/ueventd.rc): lets the power HAL (user
+# system) write each CPU's energy/performance preference, which the kernel creates
+# root-owned 0644. Applied on every CPU's uevent (coldboot, CPU hotplug). The global
+# intel_pstate knobs get no uevent; android.hardware.power-service.pc.rc opens them.
+/sys/devices/system/cpu/cpu*     cpufreq/energy_performance_preference        0664 root system

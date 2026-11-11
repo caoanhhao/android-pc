@@ -41,3 +41,6 @@ CONFIG_SENSORS_CORETEMP=m
 CONFIG_X86_PKG_TEMP_THERMAL=m
 CONFIG_ACPI_THERMAL=m
 CONFIG_ACPI_FAN=m
+# AC adapter and batteries (laptops; power_supply class for the health HAL)
+CONFIG_ACPI_AC=m
+CONFIG_ACPI_BATTERY=m

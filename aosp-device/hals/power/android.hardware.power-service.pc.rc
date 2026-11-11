@@ -1,0 +1,15 @@
+service vendor.power-pc /vendor/bin/hw/android.hardware.power-service.pc
+    class hal
+    user system
+    group system
+
+# intel_pstate's global limits are root-owned 0644 and, unlike the per-CPU files
+# (ueventd.pc.rc), belong to no device with uevents. This runs at boot, long before the
+# framework sends the first hint.
+on boot && property:ro.boot.android_pc=1
+    chown root system /sys/devices/system/cpu/intel_pstate/min_perf_pct
+    chmod 0664 /sys/devices/system/cpu/intel_pstate/min_perf_pct
+    chown root system /sys/devices/system/cpu/intel_pstate/max_perf_pct
+    chmod 0664 /sys/devices/system/cpu/intel_pstate/max_perf_pct
+    chown root system /sys/devices/system/cpu/intel_pstate/no_turbo
+    chmod 0664 /sys/devices/system/cpu/intel_pstate/no_turbo

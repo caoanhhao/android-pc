@@ -195,6 +195,14 @@ be coded in parallel but must take turns building.
     again and the F4–F8 HALs work on the Rust kernel too.
 - **F4. Health + power + thermal HALs (Rust)** — `android.hardware.health`,
   `power`, `thermal` over the AC supply, thermal zones and cpufreq from E9.
+  *Done on Cuttlefish 2026-11-11:* `hals/{health,thermal,power}` (health V5, thermal V3,
+  power V7) replace Cuttlefish's HALs; SELinux enforcing with no AVC denials; VTS health
+  25/25, thermal 9 + 2 skipped, power 10 + 13 skipped (no hint sessions); `libpchal` gained
+  `Callbacks`, `uevent`, `procstat`. Kernel: `ACPI_AC`/`ACPI_BATTERY` modules. A first boot
+  on the Z790 PC showed battery-less AC, CPU0/skin 74 °C, EPP switching; the two bugs it
+  found (intel_pstate limits not writable, ACPI zones loaded after the HAL) are fixed but
+  not yet re-checked there. The real-PC check moves to the combined F4–F8 USB test. See
+  `docs/rust-hals.md`.
 - **F5. Bluetooth HAL (Rust)** — `android.hardware.bluetooth` H4 over
   `/dev/hvc5` (E7), replacing the C++ default HAL.
 - **F6. Audio HAL (Rust)** — AIDL `android.hardware.audio.core` over the ALSA

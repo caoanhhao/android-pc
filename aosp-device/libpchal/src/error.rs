@@ -28,6 +28,12 @@ pub enum Error {
         /// Its contents, without the trailing newline.
         value: String,
     },
+    /// Creating, binding or reading the kernel uevent netlink socket failed.
+    #[error("uevent socket: {source}")]
+    Uevent {
+        /// The underlying OS error.
+        source: io::Error,
+    },
     /// servicemanager rejected the service registration.
     #[error("cannot register {name}: {status:?}")]
     Register {

@@ -61,6 +61,8 @@ _VIRT_MODULES = [
 # Modules for the PC hardware (pc_x86_64.fragment). The HD Audio codec menus enable every
 # codec of their family; all are installed (only the ones a codec matches bind).
 _PC_MODULES = [
+    "drivers/acpi/ac.ko",
+    "drivers/acpi/battery.ko",
     "drivers/acpi/fan.ko",
     "drivers/acpi/thermal.ko",
     "drivers/ata/ahci.ko",

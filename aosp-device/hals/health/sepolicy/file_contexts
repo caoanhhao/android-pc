@@ -1,0 +1,7 @@
+/vendor/bin/hw/android\.hardware\.health-service\.pc    u:object_r:hal_pc_health_exec:s0
+
+# Power supplies of the real PC or a laptop: ACPI AC adapter (ACPI0003), ACPI batteries
+# (PNP0C0A, below the embedded controller), USB-C UCSI ports. Their paths depend on the
+# firmware, so they are matched by pattern; ueventd relabels them when they appear.
+/sys/devices/.*/power_supply(/.*)?                        u:object_r:sysfs_batteryinfo:s0
+/sys/devices/.*/power_supply/[^/]+/wakeup[0-9]*(/.*)?     u:object_r:sysfs_wakeup:s0

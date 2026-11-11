@@ -1,0 +1,9 @@
+# Health HAL: android.hardware.health-service.pc
+pc_hal_service(hal_pc_health, hal_health)
+
+# hal_health_server may run vendor BPF programs; every such domain must be a bpfdomain.
+typeattribute hal_pc_health bpfdomain;
+
+# hal_health_server already reads sysfs_batteryinfo and opens a uevent socket; the
+# /sys/class/power_supply entries are symlinks in plain sysfs.
+allow hal_pc_health sysfs:lnk_file read;

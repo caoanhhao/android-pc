@@ -1,0 +1,2 @@
+# hwmon devices (CPU package temperatures, GPUs, disks); the platform policy has no type.
+type sysfs_hwmon_pc, sysfs_type, fs_type;

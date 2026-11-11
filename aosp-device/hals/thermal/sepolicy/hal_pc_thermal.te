@@ -1,0 +1,8 @@
+# Thermal HAL: android.hardware.thermal-service.pc
+pc_hal_service(hal_pc_thermal, hal_thermal)
+
+# /sys/class/thermal and /sys/class/hwmon hold symlinks into /sys/devices.
+allow hal_pc_thermal sysfs:dir r_dir_perms;
+allow hal_pc_thermal sysfs:lnk_file read;
+r_dir_file(hal_pc_thermal, sysfs_thermal)
+r_dir_file(hal_pc_thermal, sysfs_hwmon_pc)

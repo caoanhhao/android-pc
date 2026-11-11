@@ -1,0 +1,50 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+rust_defaults {
+    name: "android.hardware.thermal-service.pc_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: ["android.hardware.thermal-V3-rust"],
+}
+
+rust_binary {
+    name: "android.hardware.thermal-service.pc",
+    defaults: ["android.hardware.thermal-service.pc_defaults"],
+    init_rc: ["android.hardware.thermal-service.pc.rc"],
+    vintf_fragment_modules: ["android.hardware.thermal-service.pc.xml"],
+    visibility: ["//visibility:public"],
+}
+
+vintf_fragment {
+    name: "android.hardware.thermal-service.pc.xml",
+    src: "android.hardware.thermal-service.pc.xml",
+    vendor: true,
+}
+
+// Whole HAL, on the device.
+rust_test {
+    name: "android.hardware.thermal-service.pc_test",
+    defaults: ["android.hardware.thermal-service.pc_defaults"],
+    rustlibs: ["libtempfile"],
+    test_options: {
+        unit_test: true,
+    },
+}
+
+// The sysfs discovery alone, on the host.
+rust_test_host {
+    name: "android.hardware.thermal-service.pc_sensors_test",
+    crate_name: "sensors",
+    srcs: ["src/sensors.rs"],
+    edition: "2021",
+    rustlibs: [
+        "liblog_rust",
+        "libpchal",
+        "libtempfile",
+    ],
+    test_options: {
+        unit_test: true,
+    },
+}

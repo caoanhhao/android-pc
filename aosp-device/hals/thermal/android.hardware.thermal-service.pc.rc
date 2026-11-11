@@ -1,0 +1,5 @@
+service vendor.thermal-pc /vendor/bin/hw/android.hardware.thermal-service.pc
+    class hal
+    user system
+    group system
+    shutdown critical

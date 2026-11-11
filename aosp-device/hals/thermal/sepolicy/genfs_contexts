@@ -1,0 +1,2 @@
+# Thermal zones and cooling devices (thermal_zoneN, cooling_deviceN, their hwmon).
+genfscon sysfs /devices/virtual/thermal u:object_r:sysfs_thermal:s0
