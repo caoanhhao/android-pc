@@ -1,0 +1,16 @@
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64:__subpackages__"],
+}
+
+// Shared Soong defaults for every android-pc Rust HAL binary.
+rust_defaults {
+    name: "pc_hal_defaults",
+    relative_install_path: "hw",
+    vendor: true,
+    prefer_rlib: true,
+    rustlibs: [
+        "libbinder_rs",
+        "liblog_rust",
+        "libpchal",
+    ],
+}

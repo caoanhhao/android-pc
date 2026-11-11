@@ -1,0 +1,7 @@
+# Lights HAL: android.hardware.light-service.pc
+pc_hal_service(hal_pc_light, hal_light)
+
+# Enumerate and drive LED class devices and backlights.
+r_dir_file(hal_pc_light, sysfs_leds)
+allow hal_pc_light sysfs_leds:file w_file_perms;
+allow hal_pc_light sysfs:dir r_dir_perms;

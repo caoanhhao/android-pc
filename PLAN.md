@@ -163,6 +163,14 @@ be coded in parallel but must take turns building.
   registration, sysfs/devfs helpers); VINTF manifest fragments, init `.rc`,
   SELinux policy for HAL services; one trivial Rust HAL as proof. Done when:
   the product builds and the proof HAL is registered (`lshal`/`service list`).
+  **Done (2026-11-11):** `aosp-device/` (copied into `aosp/device/android-pc/pc_x86_64`
+  by `tools/aosp-device-link.sh`; symlinks leak into the image) defines
+  `aosp_pc_x86_64-cp2a-userdebug` (`PRODUCT_DEVICE pc_x86_64`, own BoardConfig for
+  vendor sepolicy), `libpchal`, and the `hals/<name>/` pattern (hal.mk, rc, VINTF
+  fragment, sepolicy via `pc_hal_service`). Proof HAL: Rust `android.hardware.light`
+  over `/sys/class/leds` + `/sys/class/backlight`, replacing Cuttlefish's lights HAL;
+  boots, registered, VINTF clean. `tools/aosp17-build.sh` takes `PRODUCT`; see
+  `docs/rust-hals.md`.
 - **F3. Kernel Rust on AOSP 17 userspace.** Point `tools/aosp-*-test.py` at
   the AOSP 17 images, fix the syscalls/ioctls Android 17 adds, so the HALs
   below can be tested against phase E hardware in QEMU. Done when: the

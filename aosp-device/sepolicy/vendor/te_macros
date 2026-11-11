@@ -1,0 +1,11 @@
+#####################################
+# pc_hal_service(domain, hal_attribute)
+# Declares a vendor HAL server domain started by init from /vendor/bin/hw:
+# the domain, its <domain>_exec file type, the HAL server attribute and the
+# init domain transition. Label the binary <domain>_exec in file_contexts.
+define(`pc_hal_service', `
+type $1, domain;
+hal_server_domain($1, $2)
+type $1_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain($1)
+')

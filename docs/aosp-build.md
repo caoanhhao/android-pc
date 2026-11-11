@@ -57,6 +57,8 @@ see below). It stops retrying on a Soong analysis error, which is deterministic.
 tools/aosp17-build.sh                         # all steps
 STEPS="system.img vendor.img" tools/aosp17-build.sh
 ```
+`PRODUCT` selects the lunch product: `aosp_pc_x86_64` (default since F2, our device tree,
+see [rust-hals.md](rust-hals.md)) or `aosp_cf_x86_64_only_phone` (stock).
 Default steps: `system.img system_ext.img product.img vendor.img odm.img`,
 `boot+init_boot+vendor_boot`, the `*_dlkm + vbmeta* + super` group, `userdata.img`,
 `hosttools` (cvd host package, adb, root-canal, mkfs/fsck.erofs, lz4, unpack_bootimg),

@@ -1,0 +1,35 @@
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64:__subpackages__"],
+}
+
+rust_defaults {
+    name: "libpchal_defaults",
+    crate_name: "pchal",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libbinder_rs",
+        "liblibc",
+        "liblog_rust",
+        "liblogger",
+        "libthiserror",
+    ],
+}
+
+// Shared building blocks for the android-pc Rust HALs: logging, binder service
+// registration, sysfs/devfs access and a common error type.
+rust_library {
+    name: "libpchal",
+    defaults: ["libpchal_defaults"],
+    host_supported: true,
+    vendor_available: true,
+}
+
+rust_test_host {
+    name: "libpchal_test",
+    defaults: ["libpchal_defaults"],
+    rustlibs: ["libtempfile"],
+    test_options: {
+        unit_test: true,
+    },
+}
