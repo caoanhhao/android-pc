@@ -205,6 +205,14 @@ be coded in parallel but must take turns building.
   `docs/rust-hals.md`.
 - **F5. Bluetooth HAL (Rust)** — `android.hardware.bluetooth` H4 over
   `/dev/hvc5` (E7), replacing the C++ default HAL.
+  *Done on Cuttlefish/QEMU 2026-11-11:* `hals/bluetooth` replaces the interim C++ HAL
+  (`aosp-device-vendor/`, removed): `IBluetoothHci/default` over an HCI user channel to the
+  kernel's `hci0` on the PC, or H4 on a UART (`--h4 /dev/hvc5`, Cuttlefish's rootcanal) for
+  VTS. Cuttlefish enforcing: `VtsHalBluetoothTargetTest` 16/16, the stack turns ON on it,
+  no AVC denials; QEMU USB boot (no controller): the HAL reports `UNABLE_TO_OPEN_INTERFACE`
+  after 3 s, the stack gives up after 6 restarts (state OFF). `libpchal` gained `poll`. The
+  real-PC check (AX211 scan/pairing) is part of the combined F4–F8 USB test. See
+  `docs/rust-hals.md`.
 - **F6. Audio HAL (Rust)** — AIDL `android.hardware.audio.core` over the ALSA
   PCM/control ABI (E5, E8 microphone).
 - **F7. Camera HAL (Rust)** — AIDL camera provider over V4L2 UVC

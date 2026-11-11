@@ -20,7 +20,7 @@ UVC webcam. See [usb-boot.md](usb-boot.md) for the same machine under the Rust k
 | Build | `tools/gki-build.sh` | Kleaf builds through `tools/limited-build.sh`, installs into `aosp/device/android-pc/` |
 | Vendor kernel package | `aosp-device/kernel/` | `BUILD.bazel` (`//android-pc`), `pc_x86_64.fragment`, `pcfb/`, `pchvc/` |
 | Product glue | `aosp-device/pc/`, `aosp-device/BoardConfig.mk` | `init.pc.rc`, `pclog.sh`, firmware, sepolicy |
-| Bluetooth HAL | `aosp-device-vendor/bluetooth/` (mirrored to `aosp/vendor/android-pc/`) | AOSP's default HAL over an HCI user channel |
+| Bluetooth HAL | `aosp-device/hals/bluetooth/` | our Rust HAL (F5) over an HCI user channel |
 | Apps | `tools/fetch-apps.sh` | Chromium and F-Droid as prebuilt `/product` apps |
 | Stick image | `tools/mkusb-aosp17.sh` | GPT image file with Limine, kernel, initrd and the Android partitions |
 | QEMU test | `tools/run-qemu-aosp17-usb.sh` | boots the image as on the PC |
@@ -176,18 +176,16 @@ images still boot on Cuttlefish unchanged.
   - `on boot`: stops Cuttlefish's Bluetooth HAL `bt_hci` (H4 to a host over `/dev/hvc5`)
     and starts `vendor.bluetooth-pc` (below). A trigger on `init.svc.bt_hci` does not work
     from a vendor rc: vendor_init may not read `init.svc.*`.
-- Bluetooth HAL `android.hardware.bluetooth-service.pc` (`aosp-device-vendor/bluetooth`):
-  AOSP's default `BluetoothHci` (`hardware/interfaces/bluetooth/aidl/default`), whose
-  `NetBluetoothMgmt` finds the kernel's `hci0` (AX211, `btusb` + `btintel`) and opens it
-  through an HCI user channel; our `service.cpp` only differs in its log tag. It serves the
-  `IBluetoothHci/default` instance that Cuttlefish's `com.google.cf.bt` APEX declares, so it
-  has no VINTF fragment. It lives under `vendor/` because `libbluetooth_offload_hal` is
-  only visible to `vendor/`, `hardware/interfaces/bluetooth` and Cuttlefish's own HAL;
-  `tools/aosp-device-link.sh` mirrors `aosp-device-vendor/` to `aosp/vendor/android-pc/`.
-  Domain `hal_bluetooth_btlinux` (from the platform policy) plus `net_admin` and socket
-  options; the `ioctl` permission on `bluetooth_socket` is a platform neverallow and is not
-  needed. On the PC: `HCI Reset successful`, adapter `ON` within 3 s of the stack starting.
-  (`/dev/rfkill` cannot be opened by the HAL, which logs it and goes on.)
+- Bluetooth HAL `android.hardware.bluetooth-service.pc` (`aosp-device/hals/bluetooth`, Rust,
+  phase F5; see [rust-hals.md](rust-hals.md)): finds the kernel's `hci0` (AX211, `btusb` +
+  `btintel`) on the management channel and opens it through an HCI user channel. It serves
+  the `IBluetoothHci/default` instance that Cuttlefish's `com.google.cf.bt` APEX declares,
+  so it has no VINTF fragment. Domain `hal_pc_bluetooth`. Until F5 this was AOSP's default
+  C++ HAL, built from `aosp-device-vendor/` (mirrored to `aosp/vendor/android-pc/`, which
+  `tools/aosp-device-link.sh` now deletes); with it the PC showed `HCI Reset successful` and
+  the adapter `ON` within 3 s of the stack starting. Without a controller (QEMU) the Rust
+  HAL reports `UNABLE_TO_OPEN_INTERFACE` after 3 s and the stack stops retrying after 6
+  restarts.
 - Wi-Fi needs nothing PC-specific: Cuttlefish's legacy Wi-Fi HAL and wpa_supplicant use
   `wlan0` through nl80211 like any Linux Wi-Fi card.
 - Apps (`tools/fetch-apps.sh` → `aosp/device/android-pc/apps/<Name>/`, installed by
@@ -335,7 +333,7 @@ the panic is in `/sys/fs/pstore` on the next Linux boot (efi-pstore).
 | HAL | Device / sysfs | Notes |
 |---|---|---|
 | F4 health/power/thermal (done, see [rust-hals.md](rust-hals.md)) | `/sys/class/power_supply` (empty on the desktop even with `ac.ko`/`battery.ko`: the HAL reports AC online, no battery), `/sys/class/thermal/thermal_zone*` (`x86_pkg_temp`, ACPI `thermal`), `/sys/class/hwmon/hwmon*` (`coretemp`), `/sys/devices/system/cpu/cpufreq/policy*` (`intel_pstate`), `/sys/class/rtc/rtc0` | labels: `genfscon` for `/devices/virtual/thermal`, `/sys` regexes in `file_contexts` for hwmon and power_supply |
-| F5 Bluetooth | AX211 on USB `8087:0033`: the kernel's `btusb`+`btintel` take it as `hci0` (firmware `ibt-1040-0041`); an HCI user channel socket (`AF_BLUETOOTH`, `HCI_CHANNEL_USER`) after the management channel powers it down | works today with AOSP's default C++ HAL (`android.hardware.bluetooth-service.pc`, domain `hal_bluetooth_btlinux`); the Rust HAL replaces that binary and its `init.pc.rc` start |
+| F5 Bluetooth | AX211 on USB `8087:0033`: the kernel's `btusb`+`btintel` take it as `hci0` (firmware `ibt-1040-0041`); an HCI user channel socket (`AF_BLUETOOTH`, `HCI_CHANNEL_USER`) after the management channel powers it down | the Rust HAL (F5, domain `hal_pc_bluetooth`) replaced AOSP's default C++ HAL under the same binary name; real-PC check in the combined F4–F8 test |
 | F6 audio | ALSA card 0 = HD Audio PCH (`pcmC0D0p`/`pcmC0D1p` playback, `pcmC0D0c` capture; ALC897 Line Out, Front headphone, Mic), card 1 = RTX 4070 HDMI/DP (`pcmC1D3p`, `D7p`, `D8p`, `D9p`), card 2 = the webcam's microphone (`pcmC2D0c`); `/dev/snd/*` are `system:audio` 0660 | `audio_device` label from the platform policy |
 | F7 camera | `/dev/video0`–`video2` (`system:camera` 0660) from `uvcvideo` | `video_device` |
 | F8 Wi-Fi | `wlan0` from `iwlmvm` (nl80211, firmware API 89 + PNVM); `/dev/socket/wpa_wlan0` | works today with Cuttlefish's legacy Wi-Fi HAL (`vendor.wifi_hal_legacy`) + wpa_supplicant; no `regulatory.db` |

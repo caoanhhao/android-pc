@@ -1,0 +1,17 @@
+# Started by init.pc.rc on the real PC instead of Cuttlefish's bt_hci; serves the same
+# IBluetoothHci/default instance, which the com.google.cf.bt APEX declares.
+service vendor.bluetooth-pc /vendor/bin/hw/android.hardware.bluetooth-service.pc
+    class hal
+    capabilities BLOCK_SUSPEND NET_ADMIN SYS_NICE
+    user bluetooth
+    group bluetooth net_admin net_bt_admin
+    task_profiles HighPerformance
+    disabled
+
+# The same HAL on Cuttlefish's virtual controller, for VTS:
+#   stop bt_hci; start vendor.bluetooth-pc-h4
+service vendor.bluetooth-pc-h4 /vendor/bin/hw/android.hardware.bluetooth-service.pc --h4 ${vendor.ser.bt-uart}
+    class hal
+    user bluetooth
+    group bluetooth
+    disabled

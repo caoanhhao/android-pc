@@ -8,7 +8,8 @@
 //!    [`Service::serve`], which registers it with servicemanager and serves calls.
 //!
 //! Client callbacks (`I*Callback` interfaces) are kept in [`Callbacks`], hotplug and
-//! state changes arrive through [`uevent`], and [`procstat`] measures CPU usage.
+//! state changes arrive through [`uevent`], [`procstat`] measures CPU usage, and worker
+//! threads wait on device file descriptors with [`poll`].
 //!
 //! Failures are reported as [`Error`], which converts into a [`binder::Status`] so AIDL
 //! methods can use `?` on library calls.
@@ -17,6 +18,7 @@ mod callbacks;
 pub mod devfs;
 mod error;
 mod logging;
+pub mod poll;
 pub mod procstat;
 mod service;
 pub mod sysfs;

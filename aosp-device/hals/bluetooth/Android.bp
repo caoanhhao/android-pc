@@ -1,0 +1,52 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+rust_defaults {
+    name: "android.hardware.bluetooth-service.pc_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: [
+        "android.hardware.bluetooth-V1-rust",
+        "liblibc",
+    ],
+}
+
+// No VINTF fragment: IBluetoothHci/default is declared by Cuttlefish's com.google.cf.bt
+// APEX, whose bt_hci service init.pc.rc replaces with this one on the real PC.
+rust_binary {
+    name: "android.hardware.bluetooth-service.pc",
+    defaults: ["android.hardware.bluetooth-service.pc_defaults"],
+    init_rc: ["android.hardware.bluetooth-service.pc.rc"],
+    visibility: ["//visibility:public"],
+}
+
+// Whole HAL, on the device.
+rust_test {
+    name: "android.hardware.bluetooth-service.pc_test",
+    defaults: ["android.hardware.bluetooth-service.pc_defaults"],
+    test_options: {
+        unit_test: true,
+    },
+}
+
+// H4 framing and the management protocol, on the host.
+rust_test_host {
+    name: "android.hardware.bluetooth-service.pc_packet_test",
+    crate_name: "packet",
+    srcs: ["src/packet.rs"],
+    edition: "2021",
+    test_options: {
+        unit_test: true,
+    },
+}
+
+rust_test_host {
+    name: "android.hardware.bluetooth-service.pc_mgmt_test",
+    crate_name: "mgmt",
+    srcs: ["src/mgmt.rs"],
+    edition: "2021",
+    test_options: {
+        unit_test: true,
+    },
+}

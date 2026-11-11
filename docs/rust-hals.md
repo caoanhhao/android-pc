@@ -1,4 +1,4 @@
-# Rust vendor HALs (phases F2, F4)
+# Rust vendor HALs (phases F2, F4, F5)
 
 Status (2026-11-11): `aosp_pc_x86_64-cp2a-userdebug` builds and boots on Cuttlefish
 (`sys.boot_completed=1`). The Rust lights HAL runs as `u:r:hal_pc_light:s0`, is listed by
@@ -80,6 +80,7 @@ Links do not work:
 | `pchal::Callbacks<dyn ICallback, F>` | client callback list: `add` rejects the same binder twice and `remove` an unknown one (`EX_ILLEGAL_ARGUMENT`, as the VTS of every HAL with callbacks checks), `notify(filter, call)` calls outside the lock and drops callbacks that return `DEAD_OBJECT`; `F` is a per-callback filter (a temperature type, ...) |
 | `pchal::uevent::{UeventSocket, Uevent}` | kernel uevents (`NETLINK_KOBJECT_UEVENT` group 1, kernel sender only), parsed into `ACTION`/`DEVPATH`/`SUBSYSTEM`/`KEY=value`; for hotplug (power supplies now, sound cards/cameras/Bluetooth later) |
 | `pchal::procstat::CpuTimes` | aggregate CPU busy/total ticks from `/proc/stat`, `usage_since` = busy % between two samples |
+| `pchal::poll::readable(fd, timeout)` | `poll(2)` for `POLLIN` with a timeout (`EINTR` = timeout); reader threads use it to notice a stop flag |
 | `pchal::devfs::open(path, Access)` | open a `/dev` node with `O_CLOEXEC | O_NOCTTY` |
 | `pchal::Error` / `pchal::Result` | every error carries its path; `From<Error> for binder::Status` (ILLEGAL_STATE + message), so AIDL methods can use `?` |
 
@@ -241,6 +242,64 @@ window, 50 ms to 10 s); GPU headroom and composition data are unsupported.
 - intel_pstate knobs keep the platform's `sysfs_devices_system_cpu`; the power HAL gets
   `w_file_perms` on it and reads `proc_stat`.
 
+## F5: Bluetooth (`hals/bluetooth`)
+
+Status (2026-11-11): `android.hardware.bluetooth-service.pc` (IBluetoothHci V1) replaces the
+interim C++ HAL of F3a (AOSP's default `BluetoothHci`, which lived in `aosp-device-vendor/`
+and is gone). On Cuttlefish (enforcing), running on the virtual controller
+(`stop bt_hci; start vendor.bluetooth-pc-h4`): `VtsHalBluetoothTargetTest` 16/16 passed
+(loopback, bandwidth, VSR 4.2/5 requirements included), the Bluetooth stack turns ON on it,
+no AVC denials. Unit tests: host `*_packet_test` 6, `*_mgmt_test` 3, `libpchal_test` 16;
+device `*-service.pc_test` 10. The real-PC check (AX211) is part of the combined F4–F8 test.
+
+Transports (`src/transport.rs`):
+
+| Transport | Selected by | Framing |
+|---|---|---|
+| HCI user channel | no arguments (service `vendor.bluetooth-pc`, started by `init.pc.rc` on the PC) | one H4 frame per datagram |
+| H4 UART | `--h4 <tty>` (service `vendor.bluetooth-pc-h4`, `${vendor.ser.bt-uart}` = `/dev/hvc5` on Cuttlefish, started by hand for VTS) | byte stream, split by `H4Decoder` |
+
+- **Finding the controller** (`src/mgmt.rs`): on the management channel
+  (`HCI_CHANNEL_CONTROL`) it sends `Read Controller Index List` every 500 ms and takes
+  `hci0`, or the lowest index above it (a re-plugged dongle comes back as `hci1`), from the
+  reply or an `Index Added` event. It gives up after 3 s (`OPEN_TIMEOUT`); AOSP's default HAL
+  waits forever.
+- **User channel**: `bind(HCI_CHANNEL_USER)` makes the kernel stack let go of the
+  controller (it powers it down first); `EBUSY`/`EALREADY` while the kernel is still in setup
+  (firmware download) is retried every 100 ms until the deadline. Closing the socket gives the
+  controller back. Needs `CAP_NET_ADMIN` (`.rc` capabilities, `net_admin` in the domain).
+- **Initialize**: open, send HCI_Reset and wait up to 2 s for its Command Complete
+  (dropping anything older), link to the client's death, start the `hci-reader` thread,
+  then `initializationComplete(SUCCESS)` — called after the session lock is released, since
+  the stack sends its first command from inside the callback. A second `initialize` gets
+  `ALREADY_INITIALIZED` (VTS checks it). Failures map to `UNABLE_TO_OPEN_INTERFACE` (no
+  controller) or `HARDWARE_INITIALIZATION_ERROR` (no reset answer).
+- **Reader thread**: polls with `pchal::poll::readable` every 100 ms so `close` (or client
+  death) can stop and join it. If the link breaks (USB controller unplugged) it sends the
+  stack an HCI Hardware Error event, which makes the stack restart Bluetooth.
+- **Sends** hold the session lock for one `write` per packet, so frames never interleave on
+  the UART; a failed write is logged, not returned (the reader reports the broken link).
+- No VINTF fragment: the `IBluetoothHci/default` instance is declared by Cuttlefish's
+  `com.google.cf.bt` APEX, whose `bt_hci` service `init.pc.rc` stops on the PC. The
+  binary keeps the C++ HAL's name, so `pc.mk` and `init.pc.rc` did not change.
+- AOSP's `libbluetooth_offload_hal` (`HciHal` trait + `HciProxy`, used by Cuttlefish's own
+  Rust HAL) is not used: it is only visible to `vendor/` and Cuttlefish, and its LE audio
+  software offload needs an audio HAL that offloads. Our HAL implements `IBluetoothHci`
+  directly and lives in the normal `hals/` layout.
+
+Without a controller (QEMU, a PC without Bluetooth) the HAL answers
+`UNABLE_TO_OPEN_INTERFACE` after 3 s and keeps running. The stack
+(`system/gd/hal/hci_backend_aidl.cc`) asserts on any status but SUCCESS (and on a HAL
+that does not answer within 3 s, `bluetooth.gd.start_timeout`), so `com.android.bluetooth`
+aborts; `BluetoothManagerService` restarts it 6 times and then leaves Bluetooth OFF. This is
+the stack's behaviour with any HAL, AOSP's default included.
+
+SELinux: domain `hal_pc_bluetooth` (`pc_hal_service(hal_pc_bluetooth, hal_bluetooth)`):
+`bluetooth_socket { create bind read write }`, `net_admin`, and `bt_device` for the H4
+service. No `ioctl`/`setopt` on the socket (the former is a platform neverallow) and no
+`/dev/rfkill` (unlabelled `device`; the user channel works with the radio as the kernel
+left it).
+
 ## Adding a HAL
 
 1. Create `aosp-device/hals/<name>/` with:
@@ -306,6 +365,8 @@ re-registers the instance, and when it exits the name is gone until the service 
 
 ## Notes for F3–F8
 
+- `pchal::devfs::open` returns `pchal::Error`; code that works in `io::Result` wraps it
+  with `io::Error::other` (keeps the path in the message).
 - Clippy runs with `-D warnings` on every Rust module (`dead_code`, `unused_imports`,
   `double_ended_iterator_last`, ...); keep sysfs parsing in a module without AIDL types and
   give it a `rust_test_host` with that file as crate root (the HAL crates' AIDL libraries

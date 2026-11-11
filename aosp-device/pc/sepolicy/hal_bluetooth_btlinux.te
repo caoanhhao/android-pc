@@ -1,4 +1,0 @@
-# android.hardware.bluetooth-service.pc (AOSP's default Bluetooth HAL): opens hci0 through
-# the management and user channels of an AF_BLUETOOTH socket.
-allow hal_bluetooth_btlinux self:capability net_admin;
-allow hal_bluetooth_btlinux self:bluetooth_socket { getopt setopt };

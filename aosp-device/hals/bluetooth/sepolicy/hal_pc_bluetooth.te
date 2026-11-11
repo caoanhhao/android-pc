@@ -1,0 +1,9 @@
+# Bluetooth HAL: android.hardware.bluetooth-service.pc
+pc_hal_service(hal_pc_bluetooth, hal_bluetooth)
+
+# HCI management channel (find the controller) and user channel (drive it); binding the
+# user channel needs CAP_NET_ADMIN.
+allow hal_pc_bluetooth self:bluetooth_socket { create bind read write };
+allow hal_pc_bluetooth self:global_capability_class_set net_admin;
+# Cuttlefish's virtual controller (vendor.bluetooth-pc-h4, VTS only).
+allow hal_pc_bluetooth bt_device:chr_file rw_file_perms;
