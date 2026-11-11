@@ -15,8 +15,6 @@ PC_FIRMWARE_DIR := device/android-pc/firmware
 PRODUCT_COPY_FILES += $(foreach f,$(shell cd $(PC_FIRMWARE_DIR) 2>/dev/null && find . -type f | sed 's|^\./||' | sort),\
     $(PC_FIRMWARE_DIR)/$(f):$(TARGET_COPY_OUT_VENDOR)/firmware/$(f))
 
-# Chromium (the only real browser: AOSP ships just the WebView test shell), set up in
-# device/android-pc/chromium by tools/fetch-chromium.sh.
-ifneq (,$(wildcard device/android-pc/chromium/ChromePublic.apk))
-PRODUCT_PACKAGES += Chromium
-endif
+# Third-party apps (Chromium: AOSP ships only the WebView test shell as a browser; F-Droid),
+# set up in device/android-pc/apps/<Name> by tools/fetch-apps.sh.
+PRODUCT_PACKAGES += $(notdir $(wildcard device/android-pc/apps/*))
