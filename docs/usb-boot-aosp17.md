@@ -1,10 +1,11 @@
 # AOSP 17 from a USB stick on the real PC, stock GKI kernel (phase F3a)
 
-Status (2026-11-11): the stick image boots to the lock screen / launcher in QEMU the way
-the PC boots it (UEFI/OVMF, the image as a USB mass-storage stick on xHCI, the GOP
-framebuffer as the only display, USB keyboard + tablet, e1000e with DHCP), with SELinux
-permissive and enforcing. Cuttlefish still boots `aosp_pc_x86_64` with the same kernel
-and images. **Not yet tried on the real PC** (section 7 tracks that).
+Status (2026-11-11): **AOSP 17 runs on the real PC from the USB stick** with the stock
+GKI kernel (section 7): launcher at the monitor's 2560x1080, USB keyboard and mouse,
+Ethernet (RTL8125, DHCP), Wi-Fi (AX211), Bluetooth (AX211), HD Audio as ALSA card 0, the
+webcam as `/dev/video*`, Chromium and F-Droid preinstalled. The same image boots in QEMU
+the way the PC boots it (SELinux permissive and enforcing), and Cuttlefish still boots
+`aosp_pc_x86_64` with the same kernel and images.
 
 The target is the phase E PC: Gigabyte Z790 AORUS ELITE AX, i7-13700K, RTX 4070 (the
 display; no open driver, so the UEFI GOP framebuffer is used), Realtek RTL8125B 2.5 GbE,
@@ -19,6 +20,8 @@ UVC webcam. See [usb-boot.md](usb-boot.md) for the same machine under the Rust k
 | Build | `tools/gki-build.sh` | Kleaf builds through `tools/limited-build.sh`, installs into `aosp/device/android-pc/` |
 | Vendor kernel package | `aosp-device/kernel/` | `BUILD.bazel` (`//android-pc`), `pc_x86_64.fragment`, `pcfb/`, `pchvc/` |
 | Product glue | `aosp-device/pc/`, `aosp-device/BoardConfig.mk` | `init.pc.rc`, `pclog.sh`, firmware, sepolicy |
+| Bluetooth HAL | `aosp-device-vendor/bluetooth/` (mirrored to `aosp/vendor/android-pc/`) | AOSP's default HAL over an HCI user channel |
+| Apps | `tools/fetch-apps.sh` | Chromium and F-Droid as prebuilt `/product` apps |
 | Stick image | `tools/mkusb-aosp17.sh` | GPT image file with Limine, kernel, initrd and the Android partitions |
 | QEMU test | `tools/run-qemu-aosp17-usb.sh` | boots the image as on the PC |
 | Logs | `tools/pclog-read.sh` | copies the boot logs from the stick's `pclog` partition |
@@ -61,11 +64,15 @@ the same kernel runs on Cuttlefish and on the PC (without it the prebuilts are u
 ### Vendor modules (`aosp-device/kernel`)
 
 `pc_x86_64` is a Kleaf mixed build on top of `//common:kernel_x86_64` with the two
-virtual-device fragments **plus** `pc_x86_64.fragment`. Using the same fragments keeps the
-config of modules both builds produce identical: the symbol CRCs of the 20 884 symbols the
-two `Module.symvers` share match, so `iwlwifi` built here loads against virtual-device's
-`cfg80211`/`mac80211`. `install` takes virtual-device's modules and adds the PC build's
-modules that virtual-device does not have.
+virtual-device fragments **plus** `pc_x86_64.fragment`, so its config is a superset of
+virtual-device's (the CRCs of the 20 884 symbols the two `Module.symvers` share match).
+`install` takes virtual-device's modules, then **replaces** them with every module of the
+PC build: equal CRCs are not enough, our options add exports. `IWLWIFI_LEDS` selects
+`MAC80211_LEDS`, and with virtual-device's `mac80211` the real PC logged `iwlmvm:
+Unresolved symbol __ieee80211_get_radio_led_name` and had no Wi-Fi. Only virtual-device's
+external modules (goldfish, v4l2loopback, virtio-media) stay. `cfg80211`/`mac80211` are
+also in the vendor ramdisk (first stage loads them), so after changing modules rebuild
+`vendor_boot.img` too, not only `vendor_dlkm`.
 
 Built into the GKI image already: NVMe, xHCI, usb-storage + UAS, USB HID + hid-generic,
 evdev, uvcvideo, snd-usb-audio, ACPI button, RTC CMOS, intel_pstate, intel_idle, VFAT,
@@ -77,7 +84,7 @@ efi-pstore. The fragment adds, as modules:
 | RTL8125 2.5 GbE | `r8169`, `realtek` (PHY) |
 | e1000e (QEMU tests) | `e1000e` |
 | HD Audio | `snd-hda-core`, `snd-hda-codec`, `snd-hda-intel`, `snd-hda-codec-generic`, the Realtek codecs (`snd-hda-codec-alc662` drives the ALC897) and the HDMI codecs (`-hdmi`, `-nvhdmi`, `-intelhdmi`, ...), `snd-ctl-led` |
-| AX211 Wi-Fi | `iwlwifi`, `iwlmvm` (`cfg80211`, `mac80211` from virtual-device) |
+| AX211 Wi-Fi | `iwlwifi`, `iwlmvm`, `cfg80211`, `mac80211` (with LED triggers) |
 | AX211 Bluetooth | `btusb`, `btintel`, `btrtl` (virtual-device), `bluetooth` (GKI) |
 | Sensors / ACPI | `hwmon`, `coretemp`, `x86_pkg_temp_thermal`, `thermal` (ACPI), `fan` |
 | Display | `pcfb` (below) |
@@ -166,9 +173,33 @@ images still boot on Cuttlefish unchanged.
   `logcat.txt`, `state-30/60/120/180/300/600.txt` (getprop, ps, lsmod, device nodes,
   addresses, SurfaceFlinger/window/ethernet dumps, service list) and copies
   `/data/tombstones`, syncing every 3 s. `PATH` must include `/system/bin` (vendor `sh`).
+  - `on boot`: stops Cuttlefish's Bluetooth HAL `bt_hci` (H4 to a host over `/dev/hvc5`)
+    and starts `vendor.bluetooth-pc` (below). A trigger on `init.svc.bt_hci` does not work
+    from a vendor rc: vendor_init may not read `init.svc.*`.
+- Bluetooth HAL `android.hardware.bluetooth-service.pc` (`aosp-device-vendor/bluetooth`):
+  AOSP's default `BluetoothHci` (`hardware/interfaces/bluetooth/aidl/default`), whose
+  `NetBluetoothMgmt` finds the kernel's `hci0` (AX211, `btusb` + `btintel`) and opens it
+  through an HCI user channel; our `service.cpp` only differs in its log tag. It serves the
+  `IBluetoothHci/default` instance that Cuttlefish's `com.google.cf.bt` APEX declares, so it
+  has no VINTF fragment. It lives under `vendor/` because `libbluetooth_offload_hal` is
+  only visible to `vendor/`, `hardware/interfaces/bluetooth` and Cuttlefish's own HAL;
+  `tools/aosp-device-link.sh` mirrors `aosp-device-vendor/` to `aosp/vendor/android-pc/`.
+  Domain `hal_bluetooth_btlinux` (from the platform policy) plus `net_admin` and socket
+  options; the `ioctl` permission on `bluetooth_socket` is a platform neverallow and is not
+  needed. On the PC: `HCI Reset successful`, adapter `ON` within 3 s of the stack starting.
+  (`/dev/rfkill` cannot be opened by the HAL, which logs it and goes on.)
+- Wi-Fi needs nothing PC-specific: Cuttlefish's legacy Wi-Fi HAL and wpa_supplicant use
+  `wlan0` through nl80211 like any Linux Wi-Fi card.
+- Apps (`tools/fetch-apps.sh` → `aosp/device/android-pc/apps/<Name>/`, installed by
+  `pc.mk` when present): **Chromium** (the Chromium project's `AndroidDesktop_x64`
+  snapshot, r1741609 = 160.0.8156.0, 406 MB; AOSP has only the WebView test shell, which
+  cannot download, and Chrome has no x86_64 APK outside the Play Store) and **F-Droid**
+  (2.0.2 from f-droid.org, signing certificate SHA-256 `43238d51…c9ccab` checked).
+  Presigned APKs with targetSdk ≥ 30 must be `preprocessed: true`, or the build rejects
+  them.
 - sepolicy (`pc/sepolicy`): `vendor_pc_prop` for the property above (it was in
   `vendor_default_prop`, which every app then failed to read), `init` may `mounton`
-  `vendor_configs_file`.
+  `vendor_configs_file`, the Bluetooth HAL's file label and rules.
 
 ### Boot parameters
 
@@ -191,20 +222,27 @@ PC needs:
 
 Kernel command line: the board's (`printk.devkmsg=on audit=1 binder.impl=rust cma=0
 loop.max_part=7 init=/init bootconfig ...`), with `panic=10` (instead of `-1`),
-`firmware_class.path=/vendor/firmware`, `pcfb.enable=1 pchvc.enable=1`.
+`firmware_class.path=/vendor/firmware`, `pcfb.enable=1 pchvc.enable=1`, and
+`snd_hda_intel.index=0,1 snd_usb_audio.index=2,3,4,5`: Cuttlefish's audio HAL plays to ALSA
+card 0, and the built-in `snd-usb-audio` otherwise numbered the webcam's microphone first
+(the HD Audio modules load later, from vendor_dlkm).
 
 ## 5. The stick image
 
 ```
-tools/mkusb-aosp17.sh                    # → out/aosp17-usb.img
+tools/mkusb-aosp17.sh --disk /dev/sda --resolution 2560x1080      # → out/aosp17-usb.img
 ```
 
-Options: `--userdata MiB` (default 4096), `--resolution WxH` (default 1920x1080),
-`--density N` (default 240), `--append "WORDS"`, `--enforcing` (makes the enforcing entry
-the default), `--product DIR`. The build's `super.img` is an Android sparse image (Cuttlefish
-unsparses it in place when it runs, so it may also be raw): the script handles both.
+Options: `--disk DEV` sizes the image for that stick (its size from `lsblk`, no root):
+`userdata` takes all the space left and the backup GPT sits at the stick's real end, so
+nothing of an older layout survives; without it `--userdata MiB` (default 4096) sets the
+size. `--resolution WxH` (default: Limine picks the monitor's preferred mode from its
+EDID), `--density N` (default 240), `--append "WORDS"`, `--enforcing` (SELinux enforcing;
+default permissive so `pclog.sh` runs), `--menu`, `--product DIR`. The build's `super.img`
+is an Android sparse image (Cuttlefish unsparses it in place when it runs, so it may also
+be raw): the script handles both.
 
-GPT layout (12.7 GiB; needs a stick of at least 14 GB, i.e. a "16 GB" stick):
+GPT layout (for the 57.3 GiB SanDisk of the tests):
 
 | Partition | Size | Contents |
 |---|---|---|
@@ -215,19 +253,25 @@ GPT layout (12.7 GiB; needs a stick of at least 14 GB, i.e. a "16 GB" stick):
 | `vbmeta_a`, `vbmeta_system_a`, `vbmeta_vendor_dlkm_a`, `vbmeta_system_dlkm_a` | 1 MiB | the build's images |
 | `boot_a`, `init_boot_a`, `vendor_boot_a` | 64/8/64 MiB | the build's images (AVB reads them) |
 | `super` | 8 GiB | `super.img` |
-| `userdata` | 4 GiB | zero (fs_mgr formats a wiped formattable partition) |
+| `userdata` | the rest (48.6 GiB) | zero (fs_mgr formats a wiped formattable partition) |
 
-Limine menu (5 s): **SELinux permissive** (default, logs to `pclog`), **SELinux
-enforcing**, **kernel log on screen** (`earlycon=efifb keep_bootcon`, slow, for boots
-that stop before Android draws), **no pcfb** (to tell a display problem from the rest).
+Limine: one entry, "Android 17", no menu (`timeout: 0`). `--menu` gives a 5 s menu with
+**SELinux permissive**, **SELinux enforcing**, **kernel log on screen**
+(`earlycon=efifb keep_bootcon`, slow, for boots that stop before Android draws) and
+**no pcfb** (to tell a display problem from the rest).
 
-Writing it (erases the whole stick):
+Writing it (erases the stick; the script prints the commands with the right numbers):
+everything up to the first 64 MiB of `userdata` (~9 GB, 3 min at 53 MB/s), then the
+backup GPT in the last MiB:
 
 ```bash
 lsblk -o NAME,SIZE,MODEL,TRAN
 ```
 ```bash
-sudo dd if=out/aosp17-usb.img of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress
+sudo dd if=out/aosp17-usb.img of=/dev/sda bs=1M count=8975 conv=fsync oflag=direct status=progress
+```
+```bash
+sudo dd if=out/aosp17-usb.img of=/dev/sda bs=1M skip=58673 seek=58673 count=1 conv=fsync oflag=direct
 ```
 
 Firmware settings as in [usb-boot.md](usb-boot.md) section 3 (Secure Boot off, CSM off,
@@ -250,9 +294,11 @@ Results (2026-11-11, 4 vCPUs, 6 GB): Limine → kernel → first stage finds the
 PARTUUID in ~1.5 s → second stage → boot animation at ~15 s → `Boot is finished` /
 `sys.boot_completed=1` → lock screen at 1920x1080 with the Ethernet icon; `eth0` (e1000e)
 gets 10.0.2.15 by DHCP; `ILights/default` registered by the F2 Rust HAL; the same with
-SELinux enforcing. Remaining noise: `com.android.bluetooth` crash-loops (Cuttlefish's BT HAL
-on the placeholder `hvc5` never answers HCI reset: F5 replaces it), and a few sysfs
-denials (USB HID `country`, wakeup source names, `discard_max_bytes`).
+SELinux enforcing. Remaining noise: a few sysfs denials (USB HID `country`, wakeup source
+names, `discard_max_bytes`), and `dlkm_loader` aborts at its end because `coretemp` and
+`x86_pkg_temp_thermal` find no sensor in QEMU (it loads every other module first).
+`run-qemu`'s QEMU has no Bluetooth controller, so the PC Bluetooth HAL falls back to its
+serial path there.
 
 Cuttlefish (`aosp/cvd-launch.sh`) with the same images: `sys.boot_completed=1`, Launcher3
 resumed, kernel `6.18.21-android17-5`, `pcfb`/`pchvc` loaded and idle, `virtio_gpu` card0
@@ -260,18 +306,37 @@ as before.
 
 ## 7. On the real PC
 
-Not tried yet. What to report after a boot: plug the stick back into the build host and
-run `tools/pclog-read.sh /dev/sdX` (or copy from the mounted `PCLOG` partition), plus
-photos of the screen if Android did not draw. If the PC rebooted after a kernel panic
-(`panic=10`), the panic is in `/sys/fs/pstore` on the next Linux boot (efi-pstore).
+Four boots on 2026-11-11 (logs read with `tools/pclog-read.sh` / the `PCLOG` partition
+after rebooting into the build host; the build host *is* the target PC):
+
+1. Boot completed; GOP framebuffer 1920x1080 (the monitor is 2560x1080), RTL8125 up with
+   DHCP (`eth0` 192.168.1.15, network validated), USB keyboard (FC900R) and mouse, HD Audio
+   and the NVIDIA HDMI codecs, webcam (`uvcvideo`, UGREEN Camera 4K), AX211 Bluetooth
+   firmware loaded. Broken: Wi-Fi (`iwlmvm` unresolved LED symbol), ALSA card 0 was the
+   webcam microphone, and the only "browser" was the WebView test shell.
+2. 2560x1080 (`pcfb: 2560x1080, 32 bpp, stride 16384`), HDA as card 0, Chromium and F-Droid
+   start. Wi-Fi still broken: `vendor_boot` had not been rebuilt with the new `mac80211`.
+3. Wi-Fi works (`iwlwifi … firmware version 89 … op_mode iwlmvm`, `wlan0`, Cuttlefish's
+   Wi-Fi HAL). Bluetooth does not (Cuttlefish's HAL talks to the placeholder `hvc5`).
+4. Bluetooth works with the default HAL: `opening hci interface 0`, `HCI Reset
+   successful`, adapter `ON`, Bluetooth on in Settings (pairing not tried yet).
+
+Not yet checked on the PC: SELinux enforcing (the default entry is permissive), sound
+output and microphone in practice (F6), the webcam in an app (F7: Cuttlefish's camera HAL is
+the emulated one), power off/restart, suspend.
+
+What to report after a boot: plug the stick back into the build host and run
+`tools/pclog-read.sh /dev/sdX` (or copy from the mounted `PCLOG` partition), plus photos of
+the screen if Android did not draw. If the PC rebooted after a kernel panic (`panic=10`),
+the panic is in `/sys/fs/pstore` on the next Linux boot (efi-pstore).
 
 ## 8. What the F4–F8 HALs will find (stock kernel)
 
 | HAL | Device / sysfs | Notes |
 |---|---|---|
 | F4 health/power/thermal | `/sys/class/power_supply` (none on the PC: no `ACPI_AC`/battery driver loaded; Cuttlefish's health HAL reports a fake battery), `/sys/class/thermal/thermal_zone*` (`x86_pkg_temp`, ACPI `thermal`), `/sys/class/hwmon/hwmon*` (`coretemp`), `/sys/devices/system/cpu/cpufreq/policy*` (`intel_pstate`), `/sys/class/rtc/rtc0` | labels: `sysfs_thermal`, `sysfs_hwmon` need `genfscon` for the PC's ACPI/PCI paths |
-| F5 Bluetooth | AX211 on USB `8087:0033`: the kernel's `btusb`+`btintel` take it as `hci0` (firmware `ibt-0040-0041`/`ibt-1040-0041`); a Rust HAL can use it through an HCI user channel socket (`AF_BLUETOOTH`, `HCI_CHANNEL_USER`) | Cuttlefish's HAL uses `/dev/hvc5` (here `pchvc`, never answers) |
-| F6 audio | ALSA `/dev/snd/controlC0`, `pcmC0D0p` (ALC897 analog), HDMI PCMs of the RTX 4070 on another card; the webcam's microphone as its own card (`snd-usb-audio`) | `audio_device` label from the platform policy |
-| F7 camera | `/dev/video0` (+ metadata node) from `uvcvideo` | `video_device` |
-| F8 Wi-Fi | `wlan0` from `iwlmvm` (nl80211, firmware API 89 + PNVM) | Cuttlefish's Wi-Fi HAL expects `mac80211_hwsim`; `androidboot.wifi_impl` is not set on the PC |
+| F5 Bluetooth | AX211 on USB `8087:0033`: the kernel's `btusb`+`btintel` take it as `hci0` (firmware `ibt-1040-0041`); an HCI user channel socket (`AF_BLUETOOTH`, `HCI_CHANNEL_USER`) after the management channel powers it down | works today with AOSP's default C++ HAL (`android.hardware.bluetooth-service.pc`, domain `hal_bluetooth_btlinux`); the Rust HAL replaces that binary and its `init.pc.rc` start |
+| F6 audio | ALSA card 0 = HD Audio PCH (`pcmC0D0p`/`pcmC0D1p` playback, `pcmC0D0c` capture; ALC897 Line Out, Front headphone, Mic), card 1 = RTX 4070 HDMI/DP (`pcmC1D3p`, `D7p`, `D8p`, `D9p`), card 2 = the webcam's microphone (`pcmC2D0c`); `/dev/snd/*` are `system:audio` 0660 | `audio_device` label from the platform policy |
+| F7 camera | `/dev/video0`–`video2` (`system:camera` 0660) from `uvcvideo` | `video_device` |
+| F8 Wi-Fi | `wlan0` from `iwlmvm` (nl80211, firmware API 89 + PNVM); `/dev/socket/wpa_wlan0` | works today with Cuttlefish's legacy Wi-Fi HAL (`vendor.wifi_hal_legacy`) + wpa_supplicant; no `regulatory.db` |
 | lights (F2) | `/sys/class/leds`, `/sys/class/backlight` (the desktop has none) | registered, 0 lights |

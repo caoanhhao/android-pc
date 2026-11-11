@@ -181,11 +181,14 @@ be coded in parallel but must take turns building.
     `aosp_pc_x86_64` (`vendor_dlkm`/`vendor_boot`), and boot AOSP 17 from a
     USB stick on the real PC. Done when: AOSP 17 reaches the launcher on the
     Z790 PC from USB with display, input, network; Cuttlefish still boots.
-    *Status 2026-11-11:* kernel 6.18.21 GKI + vendor modules built from source
-    (`tools/gki-build.sh`), `pcfb` (UEFI framebuffer as DRM `virtio_gpu`) and
-    `pchvc` (placeholder Cuttlefish ports), stick image `tools/mkusb-aosp17.sh`;
-    boots to the lock screen in QEMU as a USB stick (permissive and enforcing),
-    Cuttlefish still boots. Real PC: pending. See `docs/usb-boot-aosp17.md`.
+    *Done 2026-11-11:* on the Z790 PC from USB: launcher at 2560x1080, USB
+    keyboard/mouse, Ethernet, Wi-Fi (AX211, Cuttlefish's Wi-Fi HAL), Bluetooth
+    (AOSP's default HAL over an HCI user channel), HD Audio as card 0, webcam
+    node, Chromium + F-Droid preinstalled; Cuttlefish still boots. Kernel 6.18.21
+    GKI + vendor modules from source (`tools/gki-build.sh`), `pcfb` (UEFI
+    framebuffer as DRM `virtio_gpu`), `pchvc` (placeholder Cuttlefish ports),
+    stick `tools/mkusb-aosp17.sh`. Open: SELinux enforcing on the PC, real
+    sound/camera use (F6/F7). See `docs/usb-boot-aosp17.md`.
   - **F3b. Rust kernel on AOSP 17 userspace (later).** Point
     `tools/aosp-*-test.py` at the AOSP 17 images, fix the syscalls/ioctls
     Android 17 adds. Done when: the existing `--aosp-*-test` suites pass
