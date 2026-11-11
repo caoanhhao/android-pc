@@ -4,3 +4,4 @@ out/
 *.img
 *.iso
 __pycache__/
+gki/

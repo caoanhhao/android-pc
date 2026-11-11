@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Make a USB stick image that boots AOSP 17 (aosp_pc_x86_64) with the stock GKI kernel on
+# a real UEFI PC (phase F3a, docs/usb-boot-aosp17.md). Needs no root: it writes an image
+# file only; writing it to a stick is the user's step (the script prints the command).
+#
+#   tools/mkusb-aosp17.sh [options] [OUT.img]     default OUT: out/aosp17-usb.img
+#
+# The image is GPT:
+#   ESP (FAT32 "ANDROIDPC17": Limine as EFI/BOOT/BOOTX64.EFI, boot/limine/limine.conf,
+#        android/kernel, android/initrd.img = vendor ramdisk + generic ramdisk + bootconfig),
+#   pclog (FAT32 "PCLOG": boot logs written by pclog.sh, readable on any PC),
+#   misc, frp, metadata (zeroed; fs_mgr formats metadata and userdata on first boot),
+#   boot_a, init_boot_a, vendor_boot_a, vbmeta*_a (the build's images: first-stage init
+#   verifies the vbmeta chain itself, in AVB permissive mode since the stick is "unlocked"),
+#   super (super.img), userdata (zeroed head, formatted on first boot).
+# First-stage init finds the stick by the ESP's partition UUID
+# (androidboot.boot_part_uuid), whatever USB port or controller it is on.
+#
+# Options: --product DIR   images (default aosp/out/target/product/pc_x86_64)
+#          --userdata SIZE userdata partition size, MiB (default 4096)
+#          --resolution WxH GOP mode for Android (default 1920x1080)
+#          --density N     androidboot.lcd_density (default 240)
+#          --append "WORDS" extra kernel command line for every entry
+#          --enforcing     make the SELinux-enforcing entry the default
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+product=$ROOT/aosp/out/target/product/pc_x86_64
+host=$ROOT/aosp/out/host/linux-x86/bin
+userdata_mib=4096 resolution=1920x1080 density=240 extra="" default_entry=1 out=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --product) product="$2"; shift ;;
+        --userdata) userdata_mib="$2"; shift ;;
+        --resolution) resolution="$2"; shift ;;
+        --density) density="$2"; shift ;;
+        --append) extra="$2"; shift ;;
+        --enforcing) default_entry=2 ;;
+        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
+        *) out="$1" ;;
+    esac
+    shift
+done
+out=${out:-$ROOT/out/aosp17-usb.img}
+LIMINE_DIR="${LIMINE_DIR:-/usr/share/limine}"
+for f in "$LIMINE_DIR/BOOTX64.EFI" "$host/unpack_bootimg" "$host/mcopy" "$host/mmd"; do
+    [[ -e $f ]] || { echo "mkusb-aosp17.sh: missing $f" >&2; exit 1; }
+done
+for f in boot init_boot vendor_boot vbmeta vbmeta_system vbmeta_vendor_dlkm vbmeta_system_dlkm super; do
+    [[ -f $product/$f.img ]] || { echo "mkusb-aosp17.sh: no $product/$f.img (build AOSP first)" >&2; exit 1; }
+done
+command -v sfdisk >/dev/null && command -v mkfs.fat >/dev/null || { echo "mkusb-aosp17.sh: needs sfdisk and mkfs.fat" >&2; exit 1; }
+
+mkdir -p "$(dirname "$out")"
+work=$(mktemp -d "$(dirname "$out")/.mkusb-aosp17.XXXXXX")   # on disk: super.img may be unsparsed here
+trap 'rm -rf "$work"' EXIT
+
+# --- kernel and initrd from the Android boot images ----------------------------------
+"$host/unpack_bootimg" --boot_img "$product/boot.img" --out "$work/boot" >/dev/null
+"$host/unpack_bootimg" --boot_img "$product/init_boot.img" --out "$work/init_boot" >/dev/null
+"$host/unpack_bootimg" --boot_img "$product/vendor_boot.img" --out "$work/vendor_boot" >/dev/null
+# The board's command line (BOARD_KERNEL_CMDLINE) as stored in vendor_boot.
+board_cmdline=$("$host/unpack_bootimg" --boot_img "$product/vendor_boot.img" --format=mkbootimg 2>/dev/null |
+    sed -n "s/.*--vendor_cmdline '\([^']*\)'.*/\1/p")
+board_cmdline=${board_cmdline/panic=-1/panic=10}   # reboot 10 s after a panic (efi-pstore keeps the log)
+board_cmdline=${board_cmdline/firmware_class.path=\/vendor\/etc\//firmware_class.path=/vendor/firmware}
+
+# ESP partition UUID: fixed, so the bootconfig can name it.
+esp_uuid=a17c0de0-0017-4c0d-9e00-0000000000e5
+cat > "$work/bootconfig.txt" <<EOF
+androidboot.android_pc=1
+androidboot.force_normal_boot=1
+androidboot.android_pc.log=1
+androidboot.hardware=cutf_cvm
+androidboot.boot_part_uuid=$esp_uuid
+androidboot.slot_suffix=_a
+androidboot.verifiedbootstate=orange
+androidboot.vbmeta.device_state=unlocked
+androidboot.fstab_suffix=cf.f2fs.hctr2
+androidboot.serialno=ANDROIDPC17
+androidboot.lcd_density=$density
+androidboot.setupwizard_mode=DISABLED
+androidboot.enable_bootanimation=1
+androidboot.enable_confirmationui=0
+androidboot.serialconsole=0
+androidboot.openthread_node_id=1
+androidboot.hypervisor.vm.supported=0
+androidboot.hypervisor.protected_vm.supported=0
+androidboot.hardware.gralloc=minigbm
+androidboot.hardware.hwcomposer=ranchu
+androidboot.hardware.hwcomposer.display_finder_mode=drm
+androidboot.hardware.hwcomposer.display_framebuffer_format=rgba
+androidboot.hardware.egl=angle
+androidboot.hardware.vulkan=pastel
+androidboot.cpuvulkan.version=4202496
+androidboot.opengles.version=196609
+androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough
+androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting
+androidboot.vendor.apex.com.android.hardware.gatekeeper=com.android.hardware.gatekeeper.nonsecure
+androidboot.vendor.apex.com.android.hardware.graphics.composer=com.android.hardware.graphics.composer.ranchu
+androidboot.vendor.apex.com.android.hardware.keymint=com.android.hardware.keymint.rust_nonsecure
+androidboot.vendor.apex.com.android.hardware.secure_element=com.android.hardware.secure_element
+androidboot.vendor.apex.com.android.hardware.strongbox=none
+androidboot.vendor.apex.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal
+EOF
+# initrd = vendor ramdisk + generic ramdisk (each lz4; the kernel unpacks concatenated
+# archives) + the bootconfig block the kernel looks for at its end (with "bootconfig" on
+# the command line): data, NUL-padded to 4 bytes, u32 size, u32 checksum, "#BOOTCONFIG\n".
+cat "$work"/vendor_boot/vendor_ramdisk* "$work/init_boot/ramdisk" > "$work/initrd.img"
+python3 -I - "$work/bootconfig.txt" "$work/initrd.img" <<'EOF'
+import struct, sys
+data = open(sys.argv[1], 'rb').read()
+data += b'\0' * (-len(data) % 4 or 4)
+with open(sys.argv[2], 'ab') as f:
+    f.write(data + struct.pack('<II', len(data), sum(data) & 0xffffffff) + b'#BOOTCONFIG\n')
+EOF
+
+# --- Limine ---------------------------------------------------------------------------
+pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 $extra"
+pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
+entry() {   # entry NAME EXTRA-CMDLINE
+    cat <<EOF
+/$1
+    protocol: linux
+    path: boot():/android/kernel
+    module_path: boot():/android/initrd.img
+    resolution: ${resolution}x32
+    cmdline: $pc_cmdline $2
+
+EOF
+}
+{
+    echo "timeout: 5"
+    echo "default_entry: $default_entry"
+    echo
+    entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive"
+    entry "Android 17 (SELinux enforcing)" ""
+    entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
+    entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
+} > "$work/limine.conf"
+
+# --- partitions -------------------------------------------------------------------------
+# name size(MiB) type source   (source: file to copy, "fat:LABEL", or "zero")
+ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+MSDATA=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
+mib() {   # size in MiB, rounded up; for an Android sparse image, its unpacked size
+    python3 -I -c '
+import os, struct, sys
+with open(sys.argv[1], "rb") as f:
+    magic, _, _, _, _, blk_sz, total_blks = struct.unpack("<IHHHHII", f.read(20))
+size = blk_sz * total_blks if magic == 0xed26ff3a else os.path.getsize(sys.argv[1])
+print((size + 1048575) // 1048576)' "$1"
+}
+parts=(
+    "esp 256 $ESP fat:ANDROIDPC17"
+    "pclog 256 $MSDATA fat:PCLOG"
+    "misc 1 $LINUX zero"
+    "frp 1 $LINUX zero"
+    "metadata 64 $LINUX zero"
+    "vbmeta_a 1 $LINUX $product/vbmeta.img"
+    "vbmeta_system_a 1 $LINUX $product/vbmeta_system.img"
+    "vbmeta_vendor_dlkm_a 1 $LINUX $product/vbmeta_vendor_dlkm.img"
+    "vbmeta_system_dlkm_a 1 $LINUX $product/vbmeta_system_dlkm.img"
+    "boot_a $(mib "$product/boot.img") $LINUX $product/boot.img"
+    "init_boot_a $(mib "$product/init_boot.img") $LINUX $product/init_boot.img"
+    "vendor_boot_a $(mib "$product/vendor_boot.img") $LINUX $product/vendor_boot.img"
+    "super $(mib "$product/super.img") $LINUX $product/super.img"
+    "userdata $userdata_mib $LINUX zero"
+)
+total=2   # MiB: 1 before the first partition, 1 for the backup GPT
+for p in "${parts[@]}"; do set -- $p; total=$((total + $2)); done
+need_gb=$(( (total * 1048576 / 1000000000) + 1 ))
+mkdir -p "$(dirname "$out")"
+rm -f "$out"
+truncate -s "${total}M" "$out"
+{
+    echo "label: gpt"
+    echo "first-lba: 2048"
+    for p in "${parts[@]}"; do
+        set -- $p
+        uuid=""; [[ $1 == esp ]] && uuid=", uuid=$esp_uuid"
+        echo "size=${2}MiB, type=$3, name=$1$uuid"
+    done
+} | sfdisk --quiet "$out"
+
+start_of() { sfdisk --json "$out" | python3 -I -c "
+import json,sys
+for p in json.load(sys.stdin)['partitiontable']['partitions']:
+    if p['name'] == sys.argv[1]: print(p['start'] * 512 // 1048576)" "$1"; }
+
+i=0
+for p in "${parts[@]}"; do
+    set -- $p
+    off=$(start_of "$1")
+    case $4 in
+        fat:*)
+            fat=$work/$1.fat
+            truncate -s "${2}M" "$fat"
+            mkfs.fat -F 32 -n "${4#fat:}" "$fat" >/dev/null
+            if [[ $1 == esp ]]; then
+                export MTOOLS_SKIP_CHECK=1
+                "$host/mmd" -i "$fat" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine ::/android
+                "$host/mcopy" -i "$fat" "$LIMINE_DIR/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+                "$host/mcopy" -i "$fat" "$work/limine.conf" ::/boot/limine/limine.conf
+                "$host/mcopy" -i "$fat" "$work/boot/kernel" ::/android/kernel
+                "$host/mcopy" -i "$fat" "$work/initrd.img" ::/android/initrd.img
+                "$host/mcopy" -i "$fat" "$work/bootconfig.txt" ::/android/bootconfig.txt
+            fi
+            dd if="$fat" of="$out" bs=1M seek="$off" conv=notrunc,sparse status=none ;;
+        zero) ;;   # the image file is sparse zeros already
+        *)
+            src=$4
+            # Android sparse image (the build's super.img; Cuttlefish unsparses it in place)?
+            if [[ $(od -An -tx4 -N4 "$src" | tr -d ' ') == ed26ff3a ]]; then
+                "$host/simg2img" "$src" "$work/$1.raw"
+                src=$work/$1.raw
+            fi
+            dd if="$src" of="$out" bs=1M seek="$off" conv=notrunc,sparse status=none
+            rm -f "$work/$1.raw" ;;
+    esac
+done
+sfdisk --verify "$out" >/dev/null
+
+echo "Image: $out ($((total / 1024)).$(( (total % 1024) * 10 / 1024 )) GiB, needs a stick of at least $need_gb GB)"
+echo "Kernel: $(strings "$work/boot/kernel" | grep -m1 -o '^6\.18\.[^ ]*')"
+echo "Command line: $pc_cmdline"
+echo
+echo "Write it to the WHOLE stick (this erases the stick; check the device name with lsblk):"
+echo "  sudo dd if=$out of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress"

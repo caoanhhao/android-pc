@@ -9,6 +9,9 @@ $(foreach hal_mk,$(sort $(wildcard $(PC_DEVICE_DIR)/hals/*/hal.mk)),$(eval inclu
 
 $(call inherit-product, device/google/cuttlefish/vsoc_x86_64_only/phone/aosp_cf.mk)
 
+# Booting on the real PC from a USB stick (phase F3a).
+include $(PC_DEVICE_DIR)/pc/pc.mk
+
 PRODUCT_NAME := aosp_pc_x86_64
 PRODUCT_DEVICE := pc_x86_64
 PRODUCT_BRAND := Android

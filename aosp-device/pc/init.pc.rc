@@ -1,0 +1,22 @@
+# Real-PC boot (androidboot.android_pc=1, set by tools/mkusb-aosp17.sh); see
+# docs/usb-boot-aosp17.md. On Cuttlefish none of this runs.
+
+on early-init && property:ro.boot.android_pc=1
+    # Cuttlefish renames eth0 to buried_eth0 for its virtual Wi-Fi bridge; on the PC eth0 is
+    # the RTL8125 port and EthernetService must see it as is.
+    setprop ro.vendor.disable_rename_eth0 1
+    # Cuttlefish's sensors sub-HAL asks its host (over /dev/hvc*, which the PC lacks) for
+    # the sensor list and waits forever; with no sub-HAL the multi-HAL has no sensors.
+    mount none /vendor/etc/sensors/hals.pc.conf /vendor/etc/sensors/hals.conf bind
+
+on init && property:ro.boot.android_pc.log=1
+    start vendor.pclog
+
+# Saves the kernel log, logcat and a few state dumps to the stick's "pclog" partition (FAT),
+# so a boot on the real PC can be read afterwards on the build host.
+service vendor.pclog /vendor/bin/pclog.sh
+    user root
+    group root log system
+    seclabel u:r:su:s0
+    disabled
+    oneshot

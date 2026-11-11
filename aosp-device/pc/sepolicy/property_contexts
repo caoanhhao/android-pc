@@ -1,0 +1,1 @@
+ro.vendor.disable_rename_eth0 u:object_r:vendor_pc_prop:s0 exact bool

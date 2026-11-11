@@ -171,10 +171,25 @@ be coded in parallel but must take turns building.
   over `/sys/class/leds` + `/sys/class/backlight`, replacing Cuttlefish's lights HAL;
   boots, registered, VINTF clean. `tools/aosp17-build.sh` takes `PRODUCT`; see
   `docs/rust-hals.md`.
-- **F3. Kernel Rust on AOSP 17 userspace.** Point `tools/aosp-*-test.py` at
-  the AOSP 17 images, fix the syscalls/ioctls Android 17 adds, so the HALs
-  below can be tested against phase E hardware in QEMU. Done when: the
-  existing `--aosp-*-test` suites pass again.
+- **F3. Kernel for AOSP 17 on the real PC** — split in two options
+  (decision 2026-11-11: do F3a, then F4–F8 on it; F3b only after all of
+  that is finished).
+  - **F3a. Stock Linux kernel (GKI android17-6.18).** Build the GKI kernel
+    and vendor modules from source for the PC hardware of phase E (NVMe,
+    AHCI, xHCI/HID/usb-storage, simpledrm/i915, r8169/RTL8125, HD Audio,
+    iwlwifi + btusb AX211, uvcvideo, ACPI/thermal/RTC), pack them into
+    `aosp_pc_x86_64` (`vendor_dlkm`/`vendor_boot`), and boot AOSP 17 from a
+    USB stick on the real PC. Done when: AOSP 17 reaches the launcher on the
+    Z790 PC from USB with display, input, network; Cuttlefish still boots.
+    *Status 2026-11-11:* kernel 6.18.21 GKI + vendor modules built from source
+    (`tools/gki-build.sh`), `pcfb` (UEFI framebuffer as DRM `virtio_gpu`) and
+    `pchvc` (placeholder Cuttlefish ports), stick image `tools/mkusb-aosp17.sh`;
+    boots to the lock screen in QEMU as a USB stick (permissive and enforcing),
+    Cuttlefish still boots. Real PC: pending. See `docs/usb-boot-aosp17.md`.
+  - **F3b. Rust kernel on AOSP 17 userspace (later).** Point
+    `tools/aosp-*-test.py` at the AOSP 17 images, fix the syscalls/ioctls
+    Android 17 adds. Done when: the existing `--aosp-*-test` suites pass
+    again and the F4–F8 HALs work on the Rust kernel too.
 - **F4. Health + power + thermal HALs (Rust)** — `android.hardware.health`,
   `power`, `thermal` over the AC supply, thermal zones and cpufreq from E9.
 - **F5. Bluetooth HAL (Rust)** — `android.hardware.bluetooth` H4 over
@@ -186,8 +201,8 @@ be coded in parallel but must take turns building.
 - **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
   (E6), next to wpa_supplicant.
 
-Order: F1 → F2 → F3; F4–F8 after F2 (each needs F3 to be tested on real
-hardware paths, but can be built and smoke-tested on Cuttlefish first).
+Order: F1 → F2 → F3a → F4–F8 (tested on the stock kernel, real PC) → F3b
+(Rust kernel) last. F4–F8 can be built and smoke-tested on Cuttlefish first.
 
 ## Rủi ro chính
 

@@ -1,0 +1,166 @@
+# android-pc vendor kernel modules for the real PC (phase F3a, docs/usb-boot-aosp17.md).
+#
+# tools/gki-build.sh copies this directory to gki/android-pc/ (the android17-6.18 kernel
+# checkout), adds the virtual-device fragments and the generated pcfb sources, and builds
+#   //common:kernel_x86_64_dist                              GKI image + system_dlkm modules
+#   //common-modules/virtual-device:virtual_device_x86_64_dist   Cuttlefish modules
+#   //android-pc:pc_x86_64_dist                              this package
+# with --notrim, so vendor modules may use any exported symbol of the GKI image.
+
+load("@rules_pkg//pkg:install.bzl", "pkg_install")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
+load("//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_build", "kernel_modules_install")
+
+# In-tree modules of the virtual-device build (same fragments, so same config and symbol
+# CRCs); only the PC ones below are installed by tools/gki-build.sh, Cuttlefish's come
+# from virtual_device_x86_64.
+_VIRT_MODULES = [
+    "btintel.ko",
+    "btrtl.ko",
+    "btusb.ko",
+    "cfg80211.ko",
+    "dummy-cpufreq.ko",
+    "dummy_hcd.ko",
+    "failover.ko",
+    "goldfish_battery.ko",
+    "gs_usb.ko",
+    "hci_vhci.ko",
+    "mac80211.ko",
+    "mac80211_hwsim.ko",
+    "mt76.ko",
+    "mt76-usb.ko",
+    "mt76x0-common.ko",
+    "mt76x02-lib.ko",
+    "mt76x02-usb.ko",
+    "mt76x0u.ko",
+    "mt76x2-common.ko",
+    "mt76x2u.ko",
+    "nd_virtio.ko",
+    "net_failover.ko",
+    "pulse8-cec.ko",
+    "rtc-test.ko",
+    "snd-aloop.ko",
+    "system_heap.ko",
+    "test_meminit.ko",
+    "usbip-core.ko",
+    "v4l2-tpg.ko",
+    "vhci-hcd.ko",
+    "virt_wifi.ko",
+    "virtio-gpu.ko",
+    "virtio-rng.ko",
+    "virtio_dma_buf.ko",
+    "virtio_input.ko",
+    "virtio_net.ko",
+    "virtio_pmem.ko",
+    "virtio_snd.ko",
+    "vivid.ko",
+    "vkms.ko",
+]
+
+# Modules for the PC hardware (pc_x86_64.fragment). The HD Audio codec menus enable every
+# codec of their family; all are installed (only the ones a codec matches bind).
+_PC_MODULES = [
+    "drivers/acpi/fan.ko",
+    "drivers/acpi/thermal.ko",
+    "drivers/ata/ahci.ko",
+    "drivers/ata/libahci.ko",
+    "drivers/ata/libata.ko",
+    "drivers/hwmon/coretemp.ko",
+    "drivers/hwmon/hwmon.ko",
+    "drivers/net/ethernet/intel/e1000e/e1000e.ko",
+    "drivers/net/ethernet/realtek/r8169.ko",
+    "drivers/net/phy/realtek/realtek.ko",
+    "drivers/net/wireless/intel/iwlwifi/iwlwifi.ko",
+    "drivers/net/wireless/intel/iwlwifi/mvm/iwlmvm.ko",
+    "drivers/thermal/intel/x86_pkg_temp_thermal.ko",
+    "sound/core/snd-ctl-led.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-atihdmi.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-hdmi.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-intelhdmi.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-nvhdmi-mcp.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-nvhdmi.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-simplehdmi.ko",
+    "sound/hda/codecs/hdmi/snd-hda-codec-tegrahdmi.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc260.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc262.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc268.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc269.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc662.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc680.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc861.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc861vd.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc880.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-alc882.ko",
+    "sound/hda/codecs/realtek/snd-hda-codec-realtek-lib.ko",
+    "sound/hda/codecs/side-codecs/snd-hda-scodec-component.ko",
+    "sound/hda/codecs/snd-hda-codec-generic.ko",
+    "sound/hda/common/snd-hda-codec.ko",
+    "sound/hda/controllers/snd-hda-intel.ko",
+    "sound/hda/core/snd-hda-core.ko",
+]
+
+kernel_build(
+    name = "pc_x86_64",
+    srcs = ["//common:kernel_x86_64_sources"],
+    outs = [],
+    arch = "x86_64",
+    base_kernel = "//common:kernel_x86_64",
+    make_goals = ["modules"],
+    makefile = "//common:Makefile",
+    module_outs = _VIRT_MODULES + _PC_MODULES,
+    post_defconfig_fragments = [
+        "virtual_device_core.fragment",
+        "virtual_device.fragment",
+        "pc_x86_64.fragment",
+    ],
+    strip_modules = True,
+)
+
+# The UEFI GOP framebuffer as DRM driver "virtio_gpu" (see pcfb/pcfb.c).
+ddk_module(
+    name = "pcfb",
+    srcs = [
+        "pcfb/gen/drm_sysfb.c",
+        "pcfb/gen/drm_sysfb_helper.h",
+        "pcfb/gen/drm_sysfb_modeset.c",
+        "pcfb/gen/drm_sysfb_screen_info.c",
+        "pcfb/gen/efidrm_impl.h",
+        "pcfb/pcfb.c",
+        "pcfb/pcfb.h",
+        "pcfb/pcfb_blit.c",
+    ],
+    out = "pcfb.ko",
+    kernel_build = ":pc_x86_64",
+)
+
+# Placeholder /dev/hvc* ports for Cuttlefish's HALs (see pchvc/pchvc.c).
+ddk_module(
+    name = "pchvc",
+    srcs = ["pchvc/pchvc.c"],
+    out = "pchvc.ko",
+    kernel_build = ":pc_x86_64",
+)
+
+kernel_modules_install(
+    name = "pc_x86_64_modules_install",
+    kernel_build = ":pc_x86_64",
+    kernel_modules = [
+        ":pcfb",
+        ":pchvc",
+    ],
+)
+
+pkg_files(
+    name = "pc_x86_64_dist_files",
+    srcs = [
+        ":pc_x86_64",
+        ":pc_x86_64_modules_install",
+    ],
+    strip_prefix = strip_prefix.files_only(),
+)
+
+pkg_install(
+    name = "pc_x86_64_dist",
+    srcs = [":pc_x86_64_dist_files"],
+    destdir = "out/pc_x86_64/dist",
+)

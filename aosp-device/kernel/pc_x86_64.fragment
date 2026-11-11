@@ -1,0 +1,43 @@
+# android-pc: vendor modules for the real PC (Z790, i7-13700K, see docs/usb-boot-aosp17.md).
+# Applied on top of the GKI gki_defconfig plus the virtual-device fragments (copied next to
+# this file by tools/gki-build.sh), so the modules both builds share get the same config.
+# Only tristate options set to =m and driver-local bools: nothing here may change vmlinux,
+# which comes unmodified from //common:kernel_x86_64.
+#
+# Already built into the GKI image: NVMe, xHCI, usb-storage + UAS, USB HID + hid-generic,
+# evdev, uvcvideo, snd-usb-audio, ACPI button, RTC CMOS, intel_pstate, intel_idle, VFAT.
+
+# SATA disks (AHCI)
+CONFIG_ATA=m
+CONFIG_SATA_AHCI=m
+# CONFIG_ATA_SFF is not set
+
+# Wired network: Realtek RTL8125 (r8169) and, for QEMU tests, Intel e1000e
+CONFIG_R8169=m
+CONFIG_REALTEK_PHY=m
+CONFIG_NET_VENDOR_INTEL=y
+CONFIG_E1000E=m
+
+# HD Audio: Intel controller, Realtek ALC897 (ALC662 family), HDMI/DP codecs
+CONFIG_SND_HDA_INTEL=m
+CONFIG_SND_HDA_CODEC_REALTEK=m
+CONFIG_SND_HDA_CODEC_HDMI=m
+CONFIG_SND_HDA_CODEC_ALC662=m
+CONFIG_SND_HDA_CODEC_HDMI_GENERIC=m
+CONFIG_SND_HDA_CODEC_HDMI_INTEL=m
+CONFIG_SND_HDA_CODEC_HDMI_NVIDIA=m
+
+# Wi-Fi: Intel AX211 (iwlwifi + iwlmvm); cfg80211/mac80211 as in virtual_device.fragment
+CONFIG_WLAN_VENDOR_INTEL=y
+CONFIG_IWLWIFI=m
+CONFIG_IWLMVM=m
+
+# Bluetooth: AX211 over USB (btusb + btintel; btusb is also in virtual_device.fragment)
+CONFIG_BT_INTEL=m
+
+# Temperatures and ACPI platform devices
+CONFIG_HWMON=m
+CONFIG_SENSORS_CORETEMP=m
+CONFIG_X86_PKG_TEMP_THERMAL=m
+CONFIG_ACPI_THERMAL=m
+CONFIG_ACPI_FAN=m

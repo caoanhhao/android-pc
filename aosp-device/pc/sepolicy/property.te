@@ -1,0 +1,3 @@
+# Properties init.pc.rc sets on the real PC (read by vendor init only).
+vendor_internal_prop(vendor_pc_prop)
+set_prop(vendor_init, vendor_pc_prop)

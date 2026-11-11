@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- android-pc: drop projects not needed to build the x86_64 GKI + vendor modules -->
+<manifest>
+  <remove-project name="kernel/devices/google/raviole" />
+  <remove-project name="platform/external/u-boot" />
+  <remove-project name="platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9" />
+  <remove-project name="platform/prebuilts/fuchsia_sdk" />
+  <remove-project name="device/google/cuttlefish_vmm" />
+  <remove-project name="platform/bootable/libbootloader" />
+  <remove-project name="platform/external/arm-trusted-firmware" />
+  <remove-project name="platform/external/ltp" />
+  <remove-project name="platform/external/open-dice" />
+  <remove-project name="platform/external/mtools" />
+</manifest>

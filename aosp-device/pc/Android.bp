@@ -1,0 +1,32 @@
+// Real-PC boot support for aosp_pc_x86_64 (phase F3a, docs/usb-boot-aosp17.md).
+// Everything here only acts when the PC boot loader sets androidboot.android_pc=1, so the
+// same images keep booting on Cuttlefish.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+prebuilt_etc {
+    name: "init.pc.rc",
+    src: "init.pc.rc",
+    sub_dir: "init",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "pclog.sh",
+    src: "pclog.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+// Empty sensors multi-HAL config: init.pc.rc mounts it over /vendor/etc/sensors/hals.conf
+// on the PC, where Cuttlefish's sensors sub-HAL would wait forever for its host.
+prebuilt_etc {
+    name: "hals.pc.conf",
+    src: "hals.pc.conf",
+    sub_dir: "sensors",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
