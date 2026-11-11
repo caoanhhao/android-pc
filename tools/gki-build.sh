@@ -78,10 +78,11 @@ for s in $STEPS; do case $s in
     # GKI modules (system_dlkm), flat as in kernel/prebuilts/6.18/x86_64.
     cp "$D"/kernel_x86_64/dist/*.ko "$DEST.new/system_dlkm/" || exit 1
     cp "$D"/virtual_device_x86_64/dist/*.ko "$DEST.new/vendor/" || exit 1
-    # The PC build's modules except those virtual_device_x86_64 already has (same config).
-    for m in "$D"/pc_x86_64/dist/*.ko; do
-      [ -e "$DEST.new/vendor/${m##*/}" ] || cp "$m" "$DEST.new/vendor/" || exit 1
-    done
+    # Then every module of the PC build, replacing virtual-device's copies: its config is a
+    # superset (same fragments plus pc_x86_64.fragment), and the extra options can add
+    # exports (IWLWIFI_LEDS selects MAC80211_LEDS, whose LED triggers iwlmvm needs).
+    # Only virtual-device's external modules (goldfish, v4l2loopback, virtio-media) stay.
+    cp "$D"/pc_x86_64/dist/*.ko "$DEST.new/vendor/" || exit 1
     rm -rf "$DEST" && mv "$DEST.new" "$DEST"
     echo "installed into $DEST: $(ls "$DEST/system_dlkm" | wc -l) system_dlkm, $(ls "$DEST/vendor" | wc -l) vendor modules"
     strings "$DEST/kernel-6.18" | grep -m1 '^6\.18\.' ;;

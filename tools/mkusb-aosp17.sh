@@ -17,17 +17,23 @@
 # (androidboot.boot_part_uuid), whatever USB port or controller it is on.
 #
 # Options: --product DIR   images (default aosp/out/target/product/pc_x86_64)
-#          --userdata SIZE userdata partition size, MiB (default 4096)
-#          --resolution WxH GOP mode for Android (default 1920x1080)
+#          --disk DEV      size the image for this stick (lsblk size, no root needed):
+#                          userdata takes all the space left and the backup GPT sits at the
+#                          stick's real end; the printed commands write only the used part
+#          --userdata SIZE userdata partition size, MiB (default 4096; ignored with --disk)
+#          --resolution WxH GOP mode for Android (default: Limine picks the monitor's
+#                          preferred mode from its EDID)
 #          --density N     androidboot.lcd_density (default 240)
 #          --append "WORDS" extra kernel command line for every entry
-#          --enforcing     make the SELinux-enforcing entry the default
+#          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
+#          --menu          a Limine menu with debug entries (default: one entry, no menu):
+#                          permissive, enforcing, kernel log on screen, no pcfb
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
-userdata_mib=4096 resolution=1920x1080 density=240 extra="" default_entry=1 out=""
+userdata_mib=4096 resolution= density=240 extra="" enforcing=0 menu=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --product) product="$2"; shift ;;
@@ -35,8 +41,10 @@ while [[ $# -gt 0 ]]; do
         --resolution) resolution="$2"; shift ;;
         --density) density="$2"; shift ;;
         --append) extra="$2"; shift ;;
-        --enforcing) default_entry=2 ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        --enforcing) enforcing=1 ;;
+        --menu) menu=1 ;;
+        --disk) disk="$2"; shift ;;
+        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -117,7 +125,9 @@ with open(sys.argv[2], 'ab') as f:
 EOF
 
 # --- Limine ---------------------------------------------------------------------------
-pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 $extra"
+# ALSA card 0 must be the HD Audio controller (Cuttlefish's audio HAL plays to card 0):
+# snd-usb-audio is built in and would otherwise number a USB microphone (the webcam) first.
+pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 snd_hda_intel.index=0,1 snd_usb_audio.index=2,3,4,5 $extra"
 pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
 entry() {   # entry NAME EXTRA-CMDLINE
     cat <<EOF
@@ -125,20 +135,25 @@ entry() {   # entry NAME EXTRA-CMDLINE
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
-    resolution: ${resolution}x32
+$([[ -n $resolution ]] && echo "    resolution: ${resolution}x32")
     cmdline: $pc_cmdline $2
 
 EOF
 }
-{
-    echo "timeout: 5"
-    echo "default_entry: $default_entry"
-    echo
-    entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive"
-    entry "Android 17 (SELinux enforcing)" ""
-    entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
-    entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
-} > "$work/limine.conf"
+permissive=androidboot.selinux=permissive; [[ $enforcing == 1 ]] && permissive=
+if [[ $menu == 1 ]]; then
+    {
+        echo "timeout: 5"
+        echo "default_entry: $(( enforcing + 1 ))"
+        echo
+        entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive"
+        entry "Android 17 (SELinux enforcing)" ""
+        entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
+        entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
+    } > "$work/limine.conf"
+else
+    { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"
+fi
 
 # --- partitions -------------------------------------------------------------------------
 # name size(MiB) type source   (source: file to copy, "fat:LABEL", or "zero")
@@ -170,6 +185,13 @@ parts=(
 )
 total=2   # MiB: 1 before the first partition, 1 for the backup GPT
 for p in "${parts[@]}"; do set -- $p; total=$((total + $2)); done
+if [[ -n $disk ]]; then
+    disk_mib=$(( $(lsblk -bndo SIZE "$disk") / 1048576 ))
+    userdata_mib=$(( disk_mib - total + userdata_mib ))
+    (( userdata_mib >= 1024 )) || { echo "mkusb-aosp17.sh: $disk ($disk_mib MiB) is too small" >&2; exit 1; }
+    parts[-1]="userdata $userdata_mib $LINUX zero"
+    total=$disk_mib
+fi
 need_gb=$(( (total * 1048576 / 1000000000) + 1 ))
 mkdir -p "$(dirname "$out")"
 rm -f "$out"
@@ -226,5 +248,14 @@ echo "Image: $out ($((total / 1024)).$(( (total % 1024) * 10 / 1024 )) GiB, need
 echo "Kernel: $(strings "$work/boot/kernel" | grep -m1 -o '^6\.18\.[^ ]*')"
 echo "Command line: $pc_cmdline"
 echo
-echo "Write it to the WHOLE stick (this erases the stick; check the device name with lsblk):"
-echo "  sudo dd if=$out of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress"
+if [[ -n $disk ]]; then
+    # Everything up to userdata plus its first 64 MiB (zeros: fs_mgr formats a wiped
+    # userdata), then the backup GPT in the last MiB; the rest of the stick is userdata.
+    used=$(( $(start_of userdata) + 64 ))
+    echo "Write it to $disk (this erases the stick; check the device name with lsblk):"
+    echo "  sudo dd if=$out of=$disk bs=1M count=$used conv=fsync oflag=direct status=progress"
+    echo "  sudo dd if=$out of=$disk bs=1M skip=$(( total - 1 )) seek=$(( total - 1 )) count=1 conv=fsync oflag=direct"
+else
+    echo "Write it to the WHOLE stick (this erases the stick; check the device name with lsblk):"
+    echo "  sudo dd if=$out of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress"
+fi

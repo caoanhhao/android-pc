@@ -11,9 +11,10 @@ load("@rules_pkg//pkg:install.bzl", "pkg_install")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("//build/kernel/kleaf:kernel.bzl", "ddk_module", "kernel_build", "kernel_modules_install")
 
-# In-tree modules of the virtual-device build (same fragments, so same config and symbol
-# CRCs); only the PC ones below are installed by tools/gki-build.sh, Cuttlefish's come
-# from virtual_device_x86_64.
+# In-tree modules of the virtual-device build (same fragments plus ours, so a superset of
+# its config). tools/gki-build.sh installs these instead of virtual_device_x86_64's copies
+# (which lack exports our options add, e.g. mac80211's LED triggers for iwlmvm); only
+# virtual-device's external modules come from that build.
 _VIRT_MODULES = [
     "btintel.ko",
     "btrtl.ko",
