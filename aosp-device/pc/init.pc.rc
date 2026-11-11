@@ -9,6 +9,15 @@ on early-init && property:ro.boot.android_pc=1
     # the sensor list and waits forever; with no sub-HAL the multi-HAL has no sensors.
     mount none /vendor/etc/sensors/hals.pc.conf /vendor/etc/sensors/hals.conf bind
 
+# Bluetooth: Cuttlefish's HAL speaks H4 to a host over /dev/hvc5 (a pchvc placeholder here);
+# the PC's AX211 is hci0 in the kernel, which AOSP's default HAL drives through an HCI user
+# channel.
+# Runs after init.rc's own "on boot" (class_start hal); vendor init may not trigger on
+# init.svc.* properties.
+on boot && property:ro.boot.android_pc=1
+    stop bt_hci
+    start vendor.bluetooth-pc
+
 on init && property:ro.boot.android_pc.log=1
     start vendor.pclog
 

@@ -1,5 +1,5 @@
 # Real-PC boot support (phase F3a): init script, boot log saver and device firmware.
-PRODUCT_PACKAGES += init.pc.rc pclog.sh hals.pc.conf
+PRODUCT_PACKAGES += init.pc.rc pclog.sh hals.pc.conf android.hardware.bluetooth-service.pc
 
 # AX211 firmware from AOSP's external/linux-firmware: Wi-Fi (iwlmvm API 89 + PNVM) and
 # Bluetooth.

@@ -1,0 +1,9 @@
+# Started by init.pc.rc on the real PC instead of Cuttlefish's bt_hci (H4 to a host over
+# /dev/hvc5). Serves the same IBluetoothHci/default instance, which com.google.cf.bt declares.
+service vendor.bluetooth-pc /vendor/bin/hw/android.hardware.bluetooth-service.pc
+    class hal
+    capabilities BLOCK_SUSPEND NET_ADMIN SYS_NICE
+    user bluetooth
+    group bluetooth net_admin net_bt_admin
+    task_profiles HighPerformance
+    disabled
