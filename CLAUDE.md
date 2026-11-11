@@ -1,6 +1,7 @@
 # android-pc
 
-See `PLAN.md` for the overall plan (Rust kernel with Linux/Android ABI on x86_64).
+See `PLAN.md` for the overall plan (AOSP 17 on a real x86_64 PC with Rust HALs; the
+earlier Rust kernel lives on the `aosp-16` branch).
 
 ## Build rules (the machine hangs otherwise)
 

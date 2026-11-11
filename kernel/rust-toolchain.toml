@@ -1,7 +1,0 @@
-[toolchain]
-# Pinned nightly: the kernel uses unstable features (abi_x86_interrupt,
-# custom_test_frameworks). Bump deliberately, never float on "nightly".
-channel = "nightly-2026-11-07"
-components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
-targets = ["x86_64-unknown-none"]
-profile = "minimal"

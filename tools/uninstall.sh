@@ -24,7 +24,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # gỡ cùng nếu không còn gói nào khác cần.
 PACMAN_PKGS=(
 	qemu-desktop
-	libisoburn # cung cấp xorriso
 	edk2-ovmf
 	limine
 )

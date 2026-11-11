@@ -10,7 +10,7 @@ the way the PC boots it (SELinux permissive and enforcing), and Cuttlefish still
 The target is the phase E PC: Gigabyte Z790 AORUS ELITE AX, i7-13700K, RTX 4070 (the
 display; no open driver, so the UEFI GOP framebuffer is used), Realtek RTL8125B 2.5 GbE,
 Realtek ALC897 HD Audio, Intel AX211 Wi-Fi + Bluetooth (CNVi, BT on USB `8087:0033`), a
-UVC webcam. See [usb-boot.md](usb-boot.md) for the same machine under the Rust kernel.
+UVC webcam.
 
 ## 1. Pieces
 
@@ -272,8 +272,16 @@ sudo dd if=out/aosp17-usb.img of=/dev/sda bs=1M count=8975 conv=fsync oflag=dire
 sudo dd if=out/aosp17-usb.img of=/dev/sda bs=1M skip=58673 seek=58673 count=1 conv=fsync oflag=direct
 ```
 
-Firmware settings as in [usb-boot.md](usb-boot.md) section 3 (Secure Boot off, CSM off,
-Fast Boot off), then F12 and the `UEFI: <stick>` entry.
+Firmware settings (Gigabyte Z790, Del at power-on; other boards are similar):
+
+- Boot → Secure Boot: Disabled (Limine and the kernel are not signed).
+- Boot → CSM Support: Disabled (UEFI only).
+- Boot → Fast Boot: Disabled (otherwise USB devices may not be initialized before the OS).
+- Settings → IO Ports → USB Configuration → XHCI Hand-off: Enabled.
+
+Save with F10, then press F12 at power-on and pick the `UEFI: <stick>` entry (not the one
+without `UEFI:`). Use a rear USB port of the board, and plug the keyboard and mouse in
+before powering on.
 
 ## 6. Testing without the PC
 

@@ -4,9 +4,7 @@ Status (2026-11-11): **AOSP 17 boots.** `aosp_cf_x86_64_only_phone-cp2a-userdebu
 built from source reaches `sys.boot_completed=1` in about 40 s on Cuttlefish with the
 android17-6.18 GKI, `adb shell` works and Launcher3 is resumed.
 
-The previous AOSP 16 (android-16.0.0_r4) images are kept in `out/aosp16-images/`
-(see "AOSP 16 images" below); the syscall trace in [syscall-trace.md](syscall-trace.md)
-was taken on AOSP 16.
+AOSP 16 and the Rust kernel that ran on it live on the `aosp-16` branch.
 
 ## Source
 
@@ -40,8 +38,7 @@ was taken on AOSP 16.
 - **Release `cp2a`:** the release config of the tag (BUILD_ID `CP2A...`). On AOSP 16,
   `trunk_staging` enabled `RELEASE_USE_DEX_V41` (dex container v41) and zygote64
   crash-looped, so `build/release` needed a local fix. On AOSP 17 no release sets
-  that flag any more, so the fix is gone (the old diff is in
-  `aosp/f1-aosp16-dexv41.patch`). `cp2a` boots as is.
+  that flag any more, so the fix is gone. `cp2a` boots as is.
 - **Kernel:** Cuttlefish phones default to `TARGET_KERNEL_USE=6.12` (android16-6.12).
   The build sets `TARGET_KERNEL_USE=6.18` to use the android17 GKI
   `6.18.16-android17-1-gb61cd7ae4209-ab15097451` from `kernel/prebuilts/6.18/x86_64`
@@ -130,21 +127,6 @@ The host package `out/host/linux-x86/cvd-host_package.tar.gz` is extracted into
 - adb: `out/host/linux-x86/bin/adb -s 0.0.0.0:6520`. If you also ran `adb connect
   127.0.0.1:6520`, there are two transports for one device and `adb shell` can hang.
   Run `adb kill-server` and use only the `0.0.0.0:6520` serial.
-
-## AOSP 16 images (`out/aosp16-images/`)
-
-The `tools/aosp-*-test.py` / `run-qemu.sh` / `mk*` scripts still read
-`aosp/out/target/product/vsoc_x86_64_only` and `aosp/out/host/linux-x86/bin`. Those
-now hold AOSP 17. The AOSP 16 files they used are kept, 2.7 GB in total:
-
-- `out/aosp16-images/product/`: `super`, `system`, `vendor`, `init_boot`, `boot`,
-  `vendor_boot`, and the `vbmeta*` images; `system/{bin,lib64,build.prop}` and
-  `system/apex/com.android.runtime.apex` (used by `mkaosp-initramfs.sh`).
-- `out/aosp16-images/host/linux-x86/{bin,lib64}`: `adb`, `root-canal`, `mkfs.erofs`,
-  `fsck.erofs`, `lz4`, `unpack_bootimg` and their host libraries.
-
-`AOSP_PRODUCT_OUT=out/aosp16-images/product` (or `--product`) points the product
-side at them. The host-tool paths are still hardcoded to `aosp/out/host`.
 
 ## Flaky host
 
