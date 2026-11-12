@@ -112,6 +112,10 @@ it and runs on top of microG.
   certificate in their own `fake-signature` meta-data. An app installed later can never
   spoof. The real Play Store carries Google's real signature and no such meta-data, so it
   is reported unchanged.
+- `aosp-device/microg/microg.xml` (installed as `/product/etc/microg.xml`) turns on
+  microG's device registration (checkin) and cloud messaging by default. The Play Store
+  does not work without them (F9c below). GmsCore reads this file as the defaults for its
+  settings; a value the user sets in microG Settings still wins.
 
 After first boot:
 
@@ -214,3 +218,51 @@ Real PC (Z790, `out/aosp17-usb-f9.img`, logs in `out/pclog-f9/boot-2`), 2026-11-
   the read mapping sees the data. The patched boot reaches the launcher with
   SurfaceFlinger up and no new tombstones (only the known `dlkm_loader` abort). The USB
   image with the fix is `out/aosp17-usb-f9b.img`; TikTok on the real PC is not retested yet.
+
+### F9c: Play Store does not open past its first screen (microG checkin off)
+
+Real PC, `out/pclog-f9/boot-2/logcat.txt`: the Play Store shows `AssetBrowserActivity`
+several times with no crash and no ANR, but never gets further. A Google account was
+already added in microG (`GmsAuthenticator: getAuthToken: Account {...type=com.google}`),
+and the Play Store does bind to microG's services. The cause:
+
+- `GmsCheckinTrigger: Ignoring Intent { act=...BOOT_COMPLETED ... }: checkin is disabled`
+  and `GmsGcmTrigger: ... gcm is disabled`. microG 0.3.x ships with device registration
+  and cloud messaging off.
+- With no checkin there is no Android ID. The Play Store logs
+  `Unexpected android-id = 0` and `IllegalStateException: Cannot sync with 0 Android ID`
+  about a hundred times, cannot load its pages, and GCM registration fails with
+  `RuntimeException: Checkin disabled`.
+
+Signature spoofing, permissions and the GSF provider were not the problem.
+
+- **Fix.** microG's `SettingsProvider.getSettingsBoolean` reads its settings from the
+  user's preferences first, then from default files, then from the hard-coded default
+  (`false` for both). For an APK in `/product` the default files are
+  `/product/etc/com.google.android.gms/settings.xml` and `/product/etc/microg.xml`
+  (`gatherDefaultPreferences`, found with `dexdump` in GmsCore 0.3.17). So
+  `aosp-device/microg/microg.xml`, a SharedPreferences file with `checkin_enable_service`
+  and `gcm_enable_mcs_service` set to `true`, goes to `/product/etc/microg.xml`
+  (`aosp-device/microg/Android.bp`, `aosp-device/microg.mk`). A device that already ran
+  needs no data wipe, as long as the user never switched these options off in microG
+  Settings: the default applies on the next boot.
+- **Verification.** Cuttlefish, 2026-11-13. Cuttlefish here runs without network
+  (`--enable_tap_devices=false`), so for this test a QEMU wrapper added a user-mode NIC
+  (`-netdev user,id=pcnet -device virtio-net-pci,netdev=pcnet`). Cuttlefish renames that
+  NIC to `buried_eth0`, so it was renamed back to `eth0` with `adb root` + `ip link`.
+  Then, with no settings touched:
+  - microG checks in (`gservices.db` `android_id` 4333952229198825412) and logs in to
+    `mtalk.google.com:5228` (`GmsGcmMcsSvc: Logged in`);
+  - the Play Store logs no `android-id = 0` at all;
+  - Play Store "Sign in" leads to microG's "An app on your device is trying to sign in"
+    dialog, then to Google's own "Sign in / Email or phone" page;
+  - no AVC denials from microG or the Play Store.
+  
+  Signing in needs the user's own Google password, so the step past the sign-in page
+  (store pages loading with an account) is left to the user on the real PC.
+- **Aurora Store.** Its request to microG's `AskPackageOverrideActivity` is still refused
+  (the activity is not exported). Aurora's anonymous login does not need it; this does
+  not affect the Play Store.
+- **USB image.** `out/aosp17-usb-f9b.img` (built 2026-11-13 06:39 for F9b) already holds
+  this `product.img`: its super partition contains the new `microg.xml`. It has both
+  fixes.

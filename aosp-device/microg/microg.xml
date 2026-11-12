@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!-- microG GmsCore default settings (SharedPreferences format). GmsCore 0.3.x installed in
+     /product reads /product/etc/microg.xml as the defaults for its settings; a value the user
+     sets in microG Settings still wins. microG ships with device registration (checkin) and
+     cloud messaging off, which leaves the Play Store with Android ID 0 ("Cannot sync with
+     0 Android ID") and blank pages, so both are on here (docs/arm-translation.md). -->
+<map>
+    <boolean name="checkin_enable_service" value="true" />
+    <boolean name="gcm_enable_mcs_service" value="true" />
+</map>

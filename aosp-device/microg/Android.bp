@@ -12,3 +12,11 @@ prebuilt_etc {
     product_specific: true,
     visibility: ["//visibility:public"],
 }
+
+// Default microG settings, read by GmsCore from /product/etc/microg.xml.
+prebuilt_etc {
+    name: "microg.xml",
+    src: "microg.xml",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}
