@@ -165,5 +165,17 @@ Cuttlefish, 2026-11-12, SELinux enforcing:
   live memory, and every process crashed at random (system_server SIGSEGV loop,
   `Scudo ERROR: corrupted chunk header`).
 
-Real PC: the stick image is built by `tools/mkusb-aosp17.sh --resolution 2560x1080 --menu
-out/aosp17-usb-f9.img`. It still has to be tested with TikTok.
+Real PC (Z790, `out/aosp17-usb-f9.img`, logs in `out/pclog-f9/boot-2`), 2026-11-12:
+
+- TikTok 47.7.3 (arm64-only, installed with Aurora Store) now starts. The
+  `EM_AARCH64` errors are gone: 0, against every launch before F9. Its splash, sign-up
+  and web (Spark) screens come up.
+- One native crash in TikTok's video player. `libttmplayer.so` memcpy's a frame into a
+  gralloc buffer that is mapped read-only (`r--` on `/dev/dri/renderD128`, the
+  Cuttlefish minigbm gralloc), giving SIGSEGV `SEGV_ACCERR`. The next launches ran on.
+  This is a gralloc mapping issue (follow-up), not a translation failure.
+- "Sign in with Google" from TikTok opens microG's sign-in (`SignInHubActivity`), which
+  hit an input ANR once.
+- microG Settings and the Play Store open. Aurora Store's account request to microG's
+  `AskPackageOverrideActivity` is refused (not exported); this is expected for a
+  third-party store.
