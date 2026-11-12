@@ -1,0 +1,21 @@
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 706dee9..6370a7f 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -505,6 +505,16 @@ int32_t cros_gralloc_driver::lock(buffer_handle_t handle, int32_t acquire_fence,
+ 		return -EINVAL;
+ 	}
+ 
++	/*
++	 * android-pc: map CPU-writable buffers read-write even for a read-only lock. A
++	 * buffer that is already locked reuses its first mapping, so a read lock held by
++	 * one user (SwiftShader keeps every imported AHardwareBuffer locked for
++	 * CPU_READ) would hand an r-- mapping to a later write lock (ANativeWindow_lock)
++	 * in the same process, which then faults with SEGV_ACCERR.
++	 */
++	if (map_flags && (hnd->usage & GRALLOC_USAGE_SW_WRITE_MASK))
++		map_flags = BO_MAP_READ_WRITE;
++
+ 	return buffer->lock(rect, map_flags, addr);
+ }
+ 

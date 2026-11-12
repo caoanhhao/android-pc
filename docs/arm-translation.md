@@ -173,9 +173,44 @@ Real PC (Z790, `out/aosp17-usb-f9.img`, logs in `out/pclog-f9/boot-2`), 2026-11-
 - One native crash in TikTok's video player. `libttmplayer.so` memcpy's a frame into a
   gralloc buffer that is mapped read-only (`r--` on `/dev/dri/renderD128`, the
   Cuttlefish minigbm gralloc), giving SIGSEGV `SEGV_ACCERR`. The next launches ran on.
-  This is a gralloc mapping issue (follow-up), not a translation failure.
+  This is a gralloc mapping issue, not a translation failure; fixed in F9b (below).
 - "Sign in with Google" from TikTok opens microG's sign-in (`SignInHubActivity`), which
   hit an input ANR once.
 - microG Settings and the Play Store open. Aurora Store's account request to microG's
   `AskPackageOverrideActivity` is refused (not exported); this is expected for a
   third-party store.
+
+### F9b: TikTok video player crash (gralloc read-only mapping)
+
+`out/pclog-f9/boot-2/tombstones/tombstone_08`: thread `VOutle2-V0`, guest `memcpy` from
+`libttmplayer.so`, write fault in an `r--` mapping of `/dev/dri/renderD128` of size
+0xd8000.
+
+- **Which API.** The guest stack holds an `ANativeWindow_Buffer`
+  `{576, 1024, stride 576, YV12, bits = fault address}`; 576 x 1024 x 1.5 = 0xd8000. So
+  the player locked a Surface with `ANativeWindow_lock`, which is `Surface::lock`: it locks
+  the back buffer with `SW_READ_OFTEN | SW_WRITE_OFTEN`. The native-bridge proxies are not
+  involved: `ANativeWindow_lock` takes no usage bits, and the lock is made by the host
+  (x86_64) `libgui`.
+- **Why `r--`.** The Surface's consumer is a `SurfaceTexture` in the same process
+  (TextureView), drawn by ANGLE on SwiftShader Vulkan. SwiftShader imports each buffer as
+  `VkDeviceMemory` and keeps it locked for the memory's lifetime, with
+  `CPU_READ` only for a sampled image (`VkDeviceMemoryExternalAndroid.cpp`). minigbm's
+  `cros_gralloc_buffer::lock` hands every later lock of a buffer that is already locked
+  the first lock's mapping, whatever its flags. With the virtio-gpu 2D backend
+  (`drv_dumb_bo_map`), a read-only lock maps `PROT_READ`. So the producer's write lock got
+  SwiftShader's `r--` mapping. The tombstone shows every video buffer mapped twice, once
+  `r--` and once `rw-`.
+- **Fix.** `tools/patches/aosp17-minigbm-rw-lock.patch` (apply in `aosp/external/minigbm`
+  with `git apply`): `cros_gralloc_driver::lock` maps a buffer allocated with a
+  `SW_WRITE` usage read-write for every CPU lock. Then the shared mapping is always
+  writable. Buffers without CPU write usage are unchanged. It is built into the
+  `com.google.cf.gralloc` APEX (vendor image).
+- **Verification.** A small x86_64 NDK test locks one `CPU_READ_OFTEN | CPU_WRITE_OFTEN`
+  AHardwareBuffer for `CPU_READ`, keeps it locked (as SwiftShader does), locks it again
+  for `CPU_WRITE`, and writes. Cuttlefish (`guest_swiftshader`, the same virtio-gpu 2D
+  minigbm path as the real PC), 2026-11-13: before the patch, both locks return the same
+  address and the write dies with SIGSEGV (exit 139); after it, the write succeeds and
+  the read mapping sees the data. The patched boot reaches the launcher with
+  SurfaceFlinger up and no new tombstones (only the known `dlkm_loader` abort). The USB
+  image with the fix is `out/aosp17-usb-f9b.img`; TikTok on the real PC is not retested yet.
