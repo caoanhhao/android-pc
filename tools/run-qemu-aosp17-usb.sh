@@ -26,6 +26,7 @@ for d in /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/OVMF; do
     if [[ -f $d/OVMF_CODE.4m.fd ]]; then OVMF_CODE=$d/OVMF_CODE.4m.fd OVMF_VARS=$d/OVMF_VARS.4m.fd; break; fi
 done
 [[ -n $OVMF_CODE ]] || { echo "run-qemu-aosp17-usb.sh: install edk2-ovmf" >&2; exit 1; }
+. "$ROOT/tools/vm-wait.sh"
 vars=$ROOT/out/aosp17-usb-ovmf-vars.fd
 cp "$OVMF_VARS" "$vars"
 display=(-display gtk); [[ -n ${NO_WINDOW:-} ]] && display=(-display none)

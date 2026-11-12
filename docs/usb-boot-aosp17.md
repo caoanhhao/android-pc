@@ -327,9 +327,51 @@ after rebooting into the build host; the build host *is* the target PC):
 4. Bluetooth works with the default HAL: `opening hci interface 0`, `HCI Reset
    successful`, adapter `ON`, Bluetooth on in Settings (pairing not tried yet).
 
-Not yet checked on the PC: SELinux enforcing (the default entry is permissive), sound
-output and microphone in practice (F6), the webcam in an app (F7: Cuttlefish's camera HAL is
-the emulated one), power off/restart, suspend.
+### Combined F4–F8 test (2026-11-12)
+
+One stick with every Rust HAL (`tools/mkusb-aosp17.sh --disk /dev/sda --resolution 2560x1080
+--menu`; logs in `out/pclog-f4f8-2/` and `out/pclog-f4f8-3/`). All nine Rust HAL processes run
+in their own domains (`hal_pc_{audio,camera,health,light,power,thermal,wifi,bluetooth}`), and
+the permissive boots log **0 AVC denials** at all. The "SELinux enforcing" menu entry boots
+to the launcher and behaves like the permissive boot (user report; `pclog.sh` does not run
+in that mode, so no log).
+
+| HAL | Real PC result |
+|---|---|
+| F4 health/power/thermal | AC online, no battery, level 100; thermal service lists `acpitz`, `acpitz-1`, `CPU0`, `VIRTUAL-SKIN`, `iwlwifi_1` (the ACPI zones that loaded after the HAL now show up); `intel_pstate` `min_perf_pct` 50 and EPP `performance` writable |
+| F5 Bluetooth | `hci0: user channel open`, stack ON, inquiry + LE scan find devices; pairing with a phone: SSP numeric comparison → `BOND_BONDED` |
+| F6 audio | ALC897 as card 0 (Speaker/Mic ports), AudioFlinger 48 kHz output thread writes through the HAL (no delayed writes); tone/mic check not confirmed yet (see below) |
+| F7 camera | the UGREEN 4K UVC webcam is camera `100` (`/dev/video0`, MJPEG up to 4000x3000); preview and photo in the Camera app work. The CF emulated provider APEX is off (`...camera.provider.hal=none` in the boot config) |
+| F8 Wi-Fi | `wlan0` on phy0 with the AX211's combinations, scans return the nearby BSSes; **hotspot works** (`wlan1` created with `NEW_INTERFACE`, hostapd `AP-ENABLED`, a phone connected). Joining a network while the Ethernet cable is plugged in does nothing: ConnectivityService ranks Ethernet above Wi-Fi, so Wi-Fi's network offer gets no request and `ClientModeImpl` logs `CMD_START_CONNECT but no requests and not connected, bailing` (framework behaviour, not the HAL). Unplug Ethernet to test a Wi-Fi connection. |
+
+Fixes from this test:
+
+- Hotspot: hostapd (in Cuttlefish's `com.google.cf.wpa_supplicant` APEX) failed with
+  `Cannot read/write hostapd config /data/vendor/wifi/hostapd/hostapd_wlan1.conf`: Cuttlefish
+  creates that directory only for its hwsim radios. `init.pc.rc` creates it on the PC.
+- Chromium flickered black: its GPU process draws with Skia Graphite on Dawn/Vulkan, and on
+  the `pastel` (SwiftShader) Vulkan driver `vkGetSemaphoreFdKHR` fails
+  (`VK_ERROR_INVALID_EXTERNAL_HANDLE`), so the GPU process crashed and restarted every few
+  seconds. `init.pc.chromium.rc` (on `/product`, so it runs in init's own domain) writes
+  `/data/local/tmp/chrome-command-line` = `--disable-features=SkiaGraphite,VulkanFromANGLE`
+  when `ro.boot.hardware.vulkan=pastel`; Chromium reads it on debuggable builds and draws
+  with Ganesh on GL (ANGLE). Disabling `Vulkan` itself, or `--disable-gpu`, makes Chromium
+  exit ("GPU process isn't usable"). Checked in QEMU (same images): 11 GPU process crashes in
+  30 s before, none after, page renders and scrolls; on the PC no more flicker.
+- `pclog.sh` now also records `getenforce`, denials per source context, the HAL processes,
+  `dumpsys bluetooth_manager`/`wifi`/`media.camera`/`media.audio_flinger`, ALSA state and
+  `/data/media/0/DCIM`, at more times (up to 60 min). If `tools/mkusb-aosp17.sh` finds
+  `out/audio-check/classes.dex` (built by `tools/audio-check.sh`) it copies it to the
+  `pclog` partition and `pclog.sh` runs it at 240 s and 480 s (5 s of 440 Hz, then 10 s of
+  mic recording, results in `boot-N/audio-check.txt`). Both runs on the PC aborted
+  (`BOOTCLASSPATH and DEX2OATBOOTCLASSPATH must not be empty`): the service starts on `init`,
+  before init exports the class path. It now loads `/data/system/environ/classpath` before
+  each run (not yet run on the PC).
+
+Not yet checked on the PC: a Wi-Fi connection with Ethernet unplugged, the line-out tone
+and mic level (F6), power off/restart, suspend. ARM-only apps (e.g. TikTok:
+`libnxreword.so is for EM_AARCH64`) need an ARM64 native bridge, which the image does not
+have (`ro.dalvik.vm.native.bridge=0`); that and Google services are a separate task.
 
 What to report after a boot: plug the stick back into the build host and run
 `tools/pclog-read.sh /dev/sdX` (or copy from the mounted `PCLOG` partition), plus photos of

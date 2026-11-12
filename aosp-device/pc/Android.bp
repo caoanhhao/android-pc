@@ -31,3 +31,11 @@ prebuilt_etc {
     visibility: ["//visibility:public"],
 }
 
+// Chromium flags for the software Vulkan driver (init in its own domain, so on /product).
+prebuilt_etc {
+    name: "init.pc.chromium.rc",
+    src: "init.pc.chromium.rc",
+    sub_dir: "init",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}

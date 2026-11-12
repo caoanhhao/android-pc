@@ -110,7 +110,7 @@ androidboot.vendor.apex.com.android.hardware.graphics.composer=com.android.hardw
 androidboot.vendor.apex.com.android.hardware.keymint=com.android.hardware.keymint.rust_nonsecure
 androidboot.vendor.apex.com.android.hardware.secure_element=com.android.hardware.secure_element
 androidboot.vendor.apex.com.android.hardware.strongbox=none
-androidboot.vendor.apex.com.google.emulated.camera.provider.hal=com.google.emulated.camera.provider.hal
+androidboot.vendor.apex.com.google.emulated.camera.provider.hal=none
 EOF
 # initrd = vendor ramdisk + generic ramdisk (each lz4; the kernel unpacks concatenated
 # archives) + the bootconfig block the kernel looks for at its end (with "bootconfig" on
@@ -228,6 +228,9 @@ for p in "${parts[@]}"; do
                 "$host/mcopy" -i "$fat" "$work/boot/kernel" ::/android/kernel
                 "$host/mcopy" -i "$fat" "$work/initrd.img" ::/android/initrd.img
                 "$host/mcopy" -i "$fat" "$work/bootconfig.txt" ::/android/bootconfig.txt
+            elif [[ $1 == pclog && -f $ROOT/out/audio-check/classes.dex ]]; then
+                # pclog.sh runs it (tone + mic recording; tools/audio-check.sh builds it)
+                MTOOLS_SKIP_CHECK=1 "$host/mcopy" -i "$fat" "$ROOT/out/audio-check/classes.dex" ::/audio-check.dex
             fi
             dd if="$fat" of="$out" bs=1M seek="$off" conv=notrunc,sparse status=none ;;
         zero) ;;   # the image file is sparse zeros already

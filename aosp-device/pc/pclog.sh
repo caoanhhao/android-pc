@@ -34,12 +34,47 @@ dump() {
         grep -H . /sys/class/hwmon/hwmon*/name /sys/class/thermal/thermal_zone*/type 2>&1
         grep -H . /sys/devices/system/cpu/intel_pstate/* /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference /sys/devices/system/cpu/cpufreq/policy0/scaling_driver 2>&1
         ls -lZ /sys/devices/system/cpu/intel_pstate/ /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>&1
+        echo "== selinux"; getenforce
         echo "== avc"; dmesg | grep -c 'avc: denied'
+        echo "== avc by scontext"; dmesg | grep 'avc: denied' | grep -o 'scontext=[^ ]*' | sort | uniq -c
+        echo "== avc hal_pc"; dmesg | grep 'avc: denied' | grep 'hal_pc_'
+        echo "== hal services"; ps -AZ | grep -E 'hal_pc_|hal_health|hal_thermal|hal_power'
+        echo "== dumpsys bluetooth_manager"; timeout 10 dumpsys bluetooth_manager 2>&1 | head -150
+        echo "== dumpsys wifi"; timeout 10 dumpsys wifi 2>&1 | head -150
+        echo "== iw"; ip link show wlan0 2>&1; ip link show wlan1 2>&1
+        echo "== dumpsys media.camera"; timeout 10 dumpsys media.camera 2>&1 | head -150
+        echo "== dumpsys media.audio_flinger"; timeout 10 dumpsys media.audio_flinger 2>&1 | head -150
+        echo "== asound"; cat /proc/asound/cards /proc/asound/pcm 2>&1; grep -H . /proc/asound/card*/pcm*/sub0/status 2>&1
+        echo "== tinymix"; timeout 5 tinymix -D 0 2>&1 | head -80
+        echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
 }
 (while true; do sleep 3; sync; done) &
-for t in 30 60 120 180 300 600; do
+# Audio check (tools/audio-check/AudioCheck.java, copied to the pclog partition as
+# audio-check.dex by tools/mkusb-aosp17.sh): a 440 Hz tone, then a mic recording.
+if [ -f $mnt/audio-check.dex ]; then
+    (
+        for t in 240 480; do
+            sleep $((t - ${prev:-0}))
+            prev=$t
+            cp $mnt/audio-check.dex /data/local/tmp/audio-check.dex
+            # This service starts on "init", before /data is mounted and before init
+            # exports BOOTCLASSPATH & co. (derive_classpath writes them at post-fs-data);
+            # app_process aborts without them.
+            while read -r cmd name value; do
+                [ "$cmd" = export ] && export "$name=$value"
+            done < /data/system/environ/classpath
+            {
+                echo "== $t s: play 5 s 440 Hz"
+                CLASSPATH=/data/local/tmp/audio-check.dex timeout 30 app_process /system/bin AudioCheck play 5 440
+                echo "== $t s: record 10 s"
+                CLASSPATH=/data/local/tmp/audio-check.dex timeout 30 app_process /system/bin AudioCheck record 10
+            } >> $d/audio-check.txt 2>&1
+        done
+    ) &
+fi
+for t in 30 60 120 180 300 600 900 1200 1500 1800 2400 3000 3600; do
     sleep $((t - ${prev:-0}))
     prev=$t
     dump $t &

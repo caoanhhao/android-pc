@@ -18,6 +18,13 @@ on boot && property:ro.boot.android_pc=1
     stop bt_hci
     start vendor.bluetooth-pc
 
+# Wi-Fi hotspot: hostapd (Cuttlefish's com.google.cf.wpa_supplicant APEX) writes
+# hostapd_<iface>.conf here; Cuttlefish only creates the directory for its hwsim radios.
+on post-fs-data && property:ro.boot.android_pc=1
+    mkdir /data/vendor/wifi 0770 wifi wifi
+    mkdir /data/vendor/wifi/hostapd 0770 wifi wifi
+    mkdir /data/vendor/wifi/hostapd/sockets 0770 wifi wifi
+
 on init && property:ro.boot.android_pc.log=1
     start vendor.pclog
 

@@ -82,8 +82,9 @@ be coded in parallel but must take turns building.
     node, Chromium + F-Droid preinstalled; Cuttlefish still boots. Kernel 6.18.21
     GKI + vendor modules from source (`tools/gki-build.sh`), `pcfb` (UEFI
     framebuffer as DRM `virtio_gpu`), `pchvc` (placeholder Cuttlefish ports),
-    stick `tools/mkusb-aosp17.sh`. Open: SELinux enforcing on the PC, real
-    sound/camera use (F6/F7). See `docs/usb-boot-aosp17.md`.
+    stick `tools/mkusb-aosp17.sh`. SELinux enforcing and the webcam were checked
+    in the combined F4–F8 test; still open: real sound use (F6). See
+    `docs/usb-boot-aosp17.md`.
 - **F4. Health + power + thermal HALs (Rust)** — `android.hardware.health`,
   `power`, `thermal` over the AC supply, thermal zones and cpufreq from E9.
   *Done on Cuttlefish 2026-11-11:* `hals/{health,thermal,power}` (health V5, thermal V3,
@@ -144,8 +145,17 @@ be coded in parallel but must take turns building.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
-passes (results table in `docs/rust-hals.md`), no AVC denials, no fallback needed; next is
-the combined USB test on the real PC.
+passes (results table in `docs/rust-hals.md`), no AVC denials, no fallback needed.
+The combined USB test on the real PC (Z790, 2026-11-12) ran all nine Rust HALs with 0 AVC
+denials, and the SELinux enforcing entry boots normally: F4 (AC, ACPI + CPU zones, pstate
+limits), F5 (scan, pairing with a phone), F7 (webcam preview and photo in the Camera app) and
+F8 hotspot (after creating hostapd's data directory) work; F8 scans work, but a Wi-Fi
+connection was not tried with Ethernet unplugged (the framework will not join Wi-Fi while
+Ethernet is the validated default); F6 plays through the HAL, but the tone/mic check is not
+confirmed yet. Chromium's black flicker (Graphite/Dawn on SwiftShader Vulkan) is fixed by
+Chromium flags. No fallback kept: Cuttlefish's camera APEX is off on the PC, Wi-Fi runs
+the Rust HAL. Details in `docs/usb-boot-aosp17.md` §7. ARM-only apps and Google services
+are a separate task (no ARM64 native bridge in the image).
 
 ## Risks
 

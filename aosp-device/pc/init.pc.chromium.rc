@@ -1,0 +1,12 @@
+# Chromium command line (read from /data/local/tmp on debuggable builds) for the software
+# Vulkan driver (pastel, the real PC's androidboot.hardware.vulkan): Chromium's GPU process
+# otherwise draws with Skia Graphite on Dawn/Vulkan, whose vkGetSemaphoreFdKHR fails there,
+# so the GPU process crashes and restarts over and over and the window flickers black.
+# Ganesh (Skia's GL backend) on the system EGL (ANGLE) works; VulkanFromANGLE must go too,
+# and Vulkan itself must stay enabled, or the GPU process is declared unusable and the
+# browser exits (tried in QEMU with the same images).
+# Installed on /product so it runs in init's domain (vendor_init may not write
+# /data/local/tmp).
+on property:sys.boot_completed=1 && property:ro.boot.hardware.vulkan=pastel
+    write /data/local/tmp/chrome-command-line "_ --disable-features=SkiaGraphite,VulkanFromANGLE"
+    chmod 0644 /data/local/tmp/chrome-command-line

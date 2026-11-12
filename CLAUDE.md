@@ -13,3 +13,14 @@ earlier Rust kernel lives on the `aosp-16` branch).
 - Split builds into the smallest targets possible (e.g. AOSP: individual modules
   or one image at a time — `m -j12 <module>`, then `systemimage`, `vendorimage`,
   ... — not a full `m`), checking free disk between steps.
+
+## VM rule (Cuttlefish/QEMU hang the machine)
+
+- **Only one VM at a time** on this host — one Cuttlefish instance *or* one QEMU,
+  across all sessions. A session that needs a VM while another one runs **waits**
+  for it to stop; never start a second one, never stop another session's VM.
+- Start VMs only through `aosp/cvd-launch.sh` or `tools/run-qemu-aosp17-usb.sh`;
+  both source `tools/vm-wait.sh`, which takes a lock and waits until no
+  `qemu-system`/`crosvm`/`run_cvd` process is left. A new launcher must source it too.
+- Stop your VM as soon as the test is done (`cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`,
+  or quit QEMU), so the next session can go.
