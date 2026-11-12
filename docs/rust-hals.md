@@ -1,4 +1,4 @@
-# Rust vendor HALs (phases F2, F4, F5, F6)
+# Rust vendor HALs (phases F2, F4, F5, F6, F7)
 
 Status (2026-11-11): `aosp_pc_x86_64-cp2a-userdebug` builds and boots on Cuttlefish
 (`sys.boot_completed=1`). The Rust lights HAL runs as `u:r:hal_pc_light:s0`, is listed by
@@ -428,6 +428,102 @@ control selects. Check `logcat -s android.hardware.audio.service.pc` (`found car
 `Playback: ...`, mixer lines `card 0: Master Playback Switch = 1`), `tinymix -D 0`,
 `dumpsys media.audio_flinger`, and play/record with `tools/audio-check.sh`. HDMI on the
 RTX 4070 (card 1) and the webcam microphone (card 2) are not used.
+
+## F7: Camera (`hals/camera`)
+
+Status (2026-11-12): code done, Cuttlefish/VTS pending. `android.hardware.camera.provider-service.pc`,
+`libpccamera` and both test modules build in `aosp_pc_x86_64` (clippy `-D warnings`,
+rustfmt with AOSP's config), `vendor.img`/`super.img` build with it, and the host tests
+(`libpccamera_test`, 26: metadata codec, image conversion/scaling, JPEG round trips, V4L2
+struct layouts and ioctl numbers, sensor/metadata logic) pass. Not yet run on a device: the
+service start, SELinux denials, `VtsAidlHalCameraProvider_TargetTest` and the device unit
+test (`android.hardware.camera.provider-service.pc_test`, which checks every metadata
+buffer with `libcamera_metadata`'s `validate_camera_metadata_structure`). Those are part of
+the combined Cuttlefish round, then the real-PC photo with the Camera app.
+
+### What it serves
+
+`ICameraProvider/pc/0` (provider V4, labelled `hal_camera_service`), service
+`vendor.camera-pc` (user `cameraserver`, groups `camera system`), domain `hal_pc_camera`.
+Every `/dev/videoN` that is a V4L2 capture node with a YUYV or MJPEG mode at 5 fps or more
+becomes camera `100 + N`, device name `device@1.1/pc/<id>` (UVC metadata nodes are skipped).
+Ids start at 100, like AOSP's external camera HAL, so they never clash with another
+provider's. A `video4linux` uevent triggers a rescan (after 300 ms and 1.5 s, once ueventd
+has set owner and label) and `cameraDeviceStatusChange` PRESENT / NOT_PRESENT; `setCallback`
+reports the cameras present right away, inside the call, as VTS and cameraserver expect.
+
+Cuttlefish's own provider stays (a multi-install APEX chosen by the bootconfig
+`androidboot.vendor.apex.com.google.emulated.camera.provider.hal`: the emulated one, or
+`.v4l2` for AOSP's C++ external HAL, instance `external/0`). That is the fallback: it keeps
+serving its instance next to ours. On the real PC the boot config should set the property to
+`none` so the webcam is the only camera (a one-line change in `tools/mkusb-aosp17.sh`, left
+uncommitted in the working tree for the combined USB test; put back `.v4l2` there to use the
+C++ HAL instead of ours).
+
+### Camera model
+
+An `EXTERNAL` hardware level camera like AOSP's C++ `ExternalCameraDevice`: facing
+`EXTERNAL`, `BACKWARD_COMPATIBLE` only, 3A always reported converged (AE/AWB `CONVERGED`, AF
+`FOCUSED_LOCKED` after a trigger until cancelled), request settings echoed in results.
+`src/sensor.rs` keeps one V4L2 mode per landscape size (highest frame rate, YUYV on a tie)
+and builds the static characteristics, the four request templates (MANUAL and ZSL return
+`ILLEGAL_ARGUMENT`, which VTS accepts), results and session characteristics. Outputs are
+`YCBCR_420_888`/`IMPLEMENTATION_DEFINED` (2 processed streams) and `BLOB` JPEG (1 stall
+stream) at every mode size; fps ranges are `(fps/2, fps)` per mode.
+
+Per request the worker thread (`src/session.rs`) picks the smallest mode that covers every
+output, restarts streaming only when the mode or frame interval changes, takes a frame
+(4 tries, 1 s each), converts MJPEG or YUYV to I420, then centre-crops and scales it to each
+output buffer: YCbCr through the buffer's plane layout, JPEG with a `CameraBlob` trailer at
+the end of `Stream.bufferSize`. Shutter notify, buffers and the result go back through
+`processCaptureResult` with inline metadata; a failed frame sends `ERROR_REQUEST` and returns
+the buffers with their acquire fences as release fences. `flush` waits for requests in
+flight. No FMQs (`getCaptureRequestMetadataQueue`/`getCaptureResultMetadataQueue` return
+empty descriptors, so clients send and receive metadata inline), no HAL buffer manager, no
+offline sessions, no torch, no injection sessions.
+
+### Pieces
+
+| File | What |
+|---|---|
+| `src/metadata.rs`, `src/tags.rs` | `camera_metadata_t` encoder/decoder in Rust (sorted, 8-byte aligned data); typed `Tag<T>` constants generated from `camera_metadata_tags.h`/`camera_metadata_tag_info.c` |
+| `src/v4l2.rs` | V4L2 ioctls (`QUERYCAP`, `ENUM_FMT/FRAMESIZES/FRAMEINTERVALS`, `S_FMT`, `S_PARM`, mmap streaming); `Stream` stops and frees on drop, `Frame` re-queues its buffer on drop |
+| `src/image.rs` | YUYV → I420, JPEG planes of any subsampling → I420, crop + scale, write into a YCbCr layout |
+| `src/jpeg.rs` + `jpeg/pcjpeg.c` | JPEG decode/encode. AOSP's `libjpeg` (libjpeg-turbo) is built without `turbojpeg.c`, so a small C library, `libpcjpeg`, drives libjpeg's raw data interface and keeps its `setjmp`/`longjmp` error handling out of Rust |
+| `src/gralloc.rs` | stream buffers through the stable C `AIMapper` (IMapper 5, `dlopen` of `/vendor/lib64/hw/mapper.*.so`): import, lock for CPU writes, plane layouts from the `PLANE_LAYOUTS` metadata. `AHardwareBuffer_createFromHandle` was not usable: it checks a stride the HAL does not know |
+| `src/camera.rs`, `src/device.rs`, `src/provider.rs`, `src/main.rs` | probing, `ICameraDevice`, `ICameraProvider` with hotplug, service registration |
+
+`libpccamera` (everything except the AIDL and gralloc parts) is host-supported; its unit
+tests run as `libpccamera_test`.
+
+SELinux: `pc_hal_service(hal_pc_camera, hal_camera)` (the `hal_camera` attribute already
+grants `video_device`), a `netlink_kobject_uevent_socket` for hotplug, and
+`hal_client_domain(hal_pc_camera, hal_graphics_allocator)` for the buffers. Expect to add
+rules (for example GPU/dmabuf access of the mapper) from the first enforcing boot's denials.
+
+### Testing (pending, combined Cuttlefish round)
+
+Cuttlefish's `vendor_dlkm` loads `vivid.ko` (with `v4l2-tpg.ko`) and `v4l2loopback.ko`, so
+the guest should have virtual capture nodes; check `ls -l /dev/video*` and
+`logcat -s android.hardware.camera.provider-service.pc` (`/dev/videoN: <name>: K sizes up to
+WxH`; restart with `stop vendor.camera-pc; start vendor.camera-pc` to see the start lines,
+which come before logd). If no node offers YUYV/MJPEG, the provider reports no cameras and
+VTS has nothing to run against.
+
+```
+adb shell /data/local/tmp/VtsAidlHalCameraProvider_TargetTest \
+  --gtest_filter='*android.hardware.camera.provider.ICameraProvider/pc_0*'
+adb shell /data/local/tmp/android.hardware.camera.provider-service.pc_test
+```
+
+(push both from `out/target/product/pc_x86_64/testcases/<name>/x86_64/`; the VTS
+parameter names its instance `android_hardware_camera_provider_ICameraProvider_pc_0` or
+similar, list with `--gtest_list_tests`). Then `adb shell dumpsys media.camera` should list
+camera `100`, and the AOSP Camera app should take a photo. Expected caveats: tests needing
+FULL/LIMITED features, logical cameras, torch, HAL buffer management, offline sessions or
+10-bit output are skipped; vivid's frame rate and sizes are odd, so a test that needs a
+specific size may skip. On the real PC: `/dev/video0` (UVC webcam), photo and preview in
+the Camera app, hotplug by unplugging/replugging.
 
 ## Adding a HAL
 

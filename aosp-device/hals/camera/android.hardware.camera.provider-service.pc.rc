@@ -1,0 +1,6 @@
+# USB webcams (/dev/video*, system:camera 0660) as ICameraProvider/pc/0.
+service vendor.camera-pc /vendor/bin/hw/android.hardware.camera.provider-service.pc
+    class hal
+    user cameraserver
+    group camera system
+    task_profiles CameraServiceCapacity MaxPerformance

@@ -1,0 +1,89 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// JPEG through libjpeg's raw data interface; keeps libjpeg's longjmp out of Rust.
+cc_library_static {
+    name: "libpcjpeg",
+    host_supported: true,
+    vendor_available: true,
+    srcs: ["jpeg/pcjpeg.c"],
+    export_include_dirs: ["jpeg"],
+    shared_libs: ["libjpeg"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}
+
+// The hardware-independent half: V4L2, image conversion, JPEG, metadata, the camera
+// description. Builds for the host too, where its unit tests run.
+rust_defaults {
+    name: "libpccamera_defaults",
+    crate_name: "pccamera",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "liblibc",
+        "liblog_rust",
+        "libpchal",
+    ],
+    static_libs: ["libpcjpeg"],
+    shared_libs: ["libjpeg"],
+}
+
+rust_library {
+    name: "libpccamera",
+    defaults: ["libpccamera_defaults"],
+    host_supported: true,
+    vendor_available: true,
+}
+
+rust_test_host {
+    name: "libpccamera_test",
+    defaults: ["libpccamera_defaults"],
+    test_options: {
+        unit_test: true,
+    },
+}
+
+rust_defaults {
+    name: "android.hardware.camera.provider-service.pc_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: [
+        "android.hardware.camera.common-V1-rust",
+        "android.hardware.camera.device-V4-rust",
+        "android.hardware.camera.provider-V4-rust",
+        "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
+        "android.hardware.graphics.common-V7-rust",
+        "liblibc",
+        "libpccamera",
+    ],
+    shared_libs: ["libjpeg"],
+}
+
+rust_binary {
+    name: "android.hardware.camera.provider-service.pc",
+    defaults: ["android.hardware.camera.provider-service.pc_defaults"],
+    init_rc: ["android.hardware.camera.provider-service.pc.rc"],
+    vintf_fragment_modules: ["android.hardware.camera.provider-service.pc.xml"],
+    visibility: ["//visibility:public"],
+}
+
+vintf_fragment {
+    name: "android.hardware.camera.provider-service.pc.xml",
+    src: "android.hardware.camera.provider-service.pc.xml",
+    vendor: true,
+}
+
+// Whole HAL, on the device; checks the metadata with libcamera_metadata.
+rust_test {
+    name: "android.hardware.camera.provider-service.pc_test",
+    defaults: ["android.hardware.camera.provider-service.pc_defaults"],
+    shared_libs: ["libcamera_metadata"],
+    test_options: {
+        unit_test: true,
+    },
+}

@@ -1,0 +1,130 @@
+//! The metadata tags and enum values this HAL uses.
+//!
+//! Numbers and element types come from `system/media/camera/include/system/
+//! camera_metadata_tags.h` and `src/camera_metadata_tag_info.c` (AOSP 17); the device test
+//! checks them against `libcamera_metadata`.
+
+#![allow(missing_docs, reason = "generated: names are the C tags without their prefix")]
+
+use crate::metadata::{Rational, Tag};
+
+// Tags.
+
+pub const COLOR_CORRECTION_ABERRATION_MODE: Tag<u8> = Tag::new(0x0000_0003);
+pub const COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES: Tag<u8> = Tag::new(0x0000_0004);
+pub const CONTROL_AE_ANTIBANDING_MODE: Tag<u8> = Tag::new(0x0001_0000);
+pub const CONTROL_AE_EXPOSURE_COMPENSATION: Tag<i32> = Tag::new(0x0001_0001);
+pub const CONTROL_AE_LOCK: Tag<u8> = Tag::new(0x0001_0002);
+pub const CONTROL_AE_MODE: Tag<u8> = Tag::new(0x0001_0003);
+pub const CONTROL_AE_PRECAPTURE_TRIGGER: Tag<u8> = Tag::new(0x0001_0006);
+pub const CONTROL_AE_TARGET_FPS_RANGE: Tag<i32> = Tag::new(0x0001_0005);
+pub const CONTROL_AE_STATE: Tag<u8> = Tag::new(0x0001_001f);
+pub const CONTROL_AF_MODE: Tag<u8> = Tag::new(0x0001_0007);
+pub const CONTROL_AF_TRIGGER: Tag<u8> = Tag::new(0x0001_0009);
+pub const CONTROL_AF_STATE: Tag<u8> = Tag::new(0x0001_0020);
+pub const CONTROL_AWB_LOCK: Tag<u8> = Tag::new(0x0001_000a);
+pub const CONTROL_AWB_MODE: Tag<u8> = Tag::new(0x0001_000b);
+pub const CONTROL_AWB_STATE: Tag<u8> = Tag::new(0x0001_0022);
+pub const CONTROL_CAPTURE_INTENT: Tag<u8> = Tag::new(0x0001_000d);
+pub const CONTROL_EFFECT_MODE: Tag<u8> = Tag::new(0x0001_000e);
+pub const CONTROL_MODE: Tag<u8> = Tag::new(0x0001_000f);
+pub const CONTROL_SCENE_MODE: Tag<u8> = Tag::new(0x0001_0010);
+pub const CONTROL_VIDEO_STABILIZATION_MODE: Tag<u8> = Tag::new(0x0001_0011);
+pub const CONTROL_AE_AVAILABLE_ANTIBANDING_MODES: Tag<u8> = Tag::new(0x0001_0012);
+pub const CONTROL_AE_AVAILABLE_MODES: Tag<u8> = Tag::new(0x0001_0013);
+pub const CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES: Tag<i32> = Tag::new(0x0001_0014);
+pub const CONTROL_AE_COMPENSATION_RANGE: Tag<i32> = Tag::new(0x0001_0015);
+pub const CONTROL_AE_COMPENSATION_STEP: Tag<Rational> = Tag::new(0x0001_0016);
+pub const CONTROL_AE_LOCK_AVAILABLE: Tag<u8> = Tag::new(0x0001_0024);
+pub const CONTROL_AF_AVAILABLE_MODES: Tag<u8> = Tag::new(0x0001_0017);
+pub const CONTROL_AVAILABLE_EFFECTS: Tag<u8> = Tag::new(0x0001_0018);
+pub const CONTROL_AVAILABLE_MODES: Tag<u8> = Tag::new(0x0001_0026);
+pub const CONTROL_AVAILABLE_SCENE_MODES: Tag<u8> = Tag::new(0x0001_0019);
+pub const CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES: Tag<u8> = Tag::new(0x0001_001a);
+pub const CONTROL_AWB_AVAILABLE_MODES: Tag<u8> = Tag::new(0x0001_001b);
+pub const CONTROL_AWB_LOCK_AVAILABLE: Tag<u8> = Tag::new(0x0001_0025);
+pub const CONTROL_MAX_REGIONS: Tag<i32> = Tag::new(0x0001_001c);
+pub const EDGE_AVAILABLE_EDGE_MODES: Tag<u8> = Tag::new(0x0003_0002);
+pub const FLASH_MODE: Tag<u8> = Tag::new(0x0004_0002);
+pub const FLASH_STATE: Tag<u8> = Tag::new(0x0004_0005);
+pub const FLASH_INFO_AVAILABLE: Tag<u8> = Tag::new(0x0005_0000);
+pub const HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES: Tag<u8> = Tag::new(0x0006_0001);
+pub const INFO_SUPPORTED_HARDWARE_LEVEL: Tag<u8> = Tag::new(0x0015_0000);
+pub const JPEG_AVAILABLE_THUMBNAIL_SIZES: Tag<i32> = Tag::new(0x0007_0007);
+pub const JPEG_MAX_SIZE: Tag<i32> = Tag::new(0x0007_0008);
+pub const JPEG_ORIENTATION: Tag<i32> = Tag::new(0x0007_0003);
+pub const JPEG_QUALITY: Tag<u8> = Tag::new(0x0007_0004);
+pub const JPEG_THUMBNAIL_QUALITY: Tag<u8> = Tag::new(0x0007_0005);
+pub const JPEG_THUMBNAIL_SIZE: Tag<i32> = Tag::new(0x0007_0006);
+pub const LENS_FACING: Tag<u8> = Tag::new(0x0008_0005);
+pub const LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION: Tag<u8> = Tag::new(0x0009_0003);
+pub const LENS_INFO_FOCUS_DISTANCE_CALIBRATION: Tag<u8> = Tag::new(0x0009_0007);
+pub const LENS_OPTICAL_STABILIZATION_MODE: Tag<u8> = Tag::new(0x0008_0004);
+pub const NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES: Tag<u8> = Tag::new(0x000a_0002);
+pub const NOISE_REDUCTION_MODE: Tag<u8> = Tag::new(0x000a_0000);
+pub const REQUEST_AVAILABLE_CAPABILITIES: Tag<u8> = Tag::new(0x000c_000c);
+pub const REQUEST_AVAILABLE_CHARACTERISTICS_KEYS: Tag<i32> = Tag::new(0x000c_000f);
+pub const REQUEST_AVAILABLE_REQUEST_KEYS: Tag<i32> = Tag::new(0x000c_000d);
+pub const REQUEST_AVAILABLE_RESULT_KEYS: Tag<i32> = Tag::new(0x000c_000e);
+pub const REQUEST_AVAILABLE_SESSION_KEYS: Tag<i32> = Tag::new(0x000c_0010);
+pub const REQUEST_MAX_NUM_INPUT_STREAMS: Tag<i32> = Tag::new(0x000c_0008);
+pub const REQUEST_MAX_NUM_OUTPUT_STREAMS: Tag<i32> = Tag::new(0x000c_0006);
+pub const REQUEST_PARTIAL_RESULT_COUNT: Tag<i32> = Tag::new(0x000c_000b);
+pub const REQUEST_PIPELINE_DEPTH: Tag<u8> = Tag::new(0x000c_0009);
+pub const REQUEST_PIPELINE_MAX_DEPTH: Tag<u8> = Tag::new(0x000c_000a);
+pub const SCALER_AVAILABLE_MAX_DIGITAL_ZOOM: Tag<f32> = Tag::new(0x000d_0004);
+pub const SCALER_AVAILABLE_MIN_FRAME_DURATIONS: Tag<i64> = Tag::new(0x000d_000b);
+pub const SCALER_AVAILABLE_STALL_DURATIONS: Tag<i64> = Tag::new(0x000d_000c);
+pub const SCALER_AVAILABLE_STREAM_CONFIGURATIONS: Tag<i32> = Tag::new(0x000d_000a);
+pub const SCALER_CROPPING_TYPE: Tag<u8> = Tag::new(0x000d_000d);
+pub const SCALER_CROP_REGION: Tag<i32> = Tag::new(0x000d_0000);
+pub const SENSOR_AVAILABLE_TEST_PATTERN_MODES: Tag<i32> = Tag::new(0x000e_0019);
+pub const SENSOR_INFO_ACTIVE_ARRAY_SIZE: Tag<i32> = Tag::new(0x000f_0000);
+pub const SENSOR_INFO_MAX_FRAME_DURATION: Tag<i64> = Tag::new(0x000f_0004);
+pub const SENSOR_INFO_PIXEL_ARRAY_SIZE: Tag<i32> = Tag::new(0x000f_0006);
+pub const SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE: Tag<i32> = Tag::new(0x000f_000a);
+pub const SENSOR_INFO_TIMESTAMP_SOURCE: Tag<u8> = Tag::new(0x000f_0008);
+pub const SENSOR_ORIENTATION: Tag<i32> = Tag::new(0x000e_000e);
+pub const SENSOR_TEST_PATTERN_MODE: Tag<i32> = Tag::new(0x000e_0018);
+pub const SENSOR_TIMESTAMP: Tag<i64> = Tag::new(0x000e_0010);
+pub const SENSOR_READOUT_TIMESTAMP: Tag<u8> = Tag::new(0x000e_0022);
+pub const SHADING_AVAILABLE_MODES: Tag<u8> = Tag::new(0x0010_0002);
+pub const STATISTICS_FACE_DETECT_MODE: Tag<u8> = Tag::new(0x0011_0000);
+pub const STATISTICS_HOT_PIXEL_MAP_MODE: Tag<u8> = Tag::new(0x0011_0003);
+pub const STATISTICS_LENS_SHADING_MAP_MODE: Tag<u8> = Tag::new(0x0011_0010);
+pub const STATISTICS_SCENE_FLICKER: Tag<u8> = Tag::new(0x0011_000e);
+pub const STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES: Tag<u8> = Tag::new(0x0012_0000);
+pub const STATISTICS_INFO_AVAILABLE_HOT_PIXEL_MAP_MODES: Tag<u8> = Tag::new(0x0012_0006);
+pub const STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES: Tag<u8> = Tag::new(0x0012_0007);
+pub const STATISTICS_INFO_MAX_FACE_COUNT: Tag<i32> = Tag::new(0x0012_0002);
+pub const SYNC_MAX_LATENCY: Tag<i32> = Tag::new(0x0017_0001);
+
+// Enum values (the `camera_metadata_enum_android_*` constants).
+
+pub const CONTROL_AE_ANTIBANDING_MODE_AUTO: u8 = 3;
+pub const CONTROL_AE_MODE_ON: u8 = 1;
+pub const CONTROL_AF_MODE_AUTO: u8 = 1;
+pub const CONTROL_AF_TRIGGER_START: u8 = 1;
+pub const CONTROL_AF_TRIGGER_CANCEL: u8 = 2;
+pub const CONTROL_AF_STATE_FOCUSED_LOCKED: u8 = 4;
+pub const CONTROL_AE_STATE_CONVERGED: u8 = 2;
+pub const CONTROL_AWB_STATE_CONVERGED: u8 = 2;
+pub const CONTROL_CAPTURE_INTENT_PREVIEW: u8 = 1;
+pub const CONTROL_CAPTURE_INTENT_STILL_CAPTURE: u8 = 2;
+pub const CONTROL_CAPTURE_INTENT_VIDEO_RECORD: u8 = 3;
+pub const CONTROL_CAPTURE_INTENT_VIDEO_SNAPSHOT: u8 = 4;
+pub const CONTROL_MODE_AUTO: u8 = 1;
+pub const CONTROL_AWB_MODE_AUTO: u8 = 1;
+pub const INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL: u8 = 4;
+pub const LENS_FACING_EXTERNAL: u8 = 2;
+pub const REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE: u8 = 0;
+pub const SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT: u8 = 0;
+pub const SCALER_CROPPING_TYPE_CENTER_ONLY: u8 = 0;
+pub const SYNC_MAX_LATENCY_UNKNOWN: i32 = -1;
+pub const CONTROL_SCENE_MODE_DISABLED: u8 = 0;
+pub const SENSOR_INFO_TIMESTAMP_SOURCE_UNKNOWN: u8 = 0;
+pub const STATISTICS_SCENE_FLICKER_NONE: u8 = 0;
+pub const FLASH_STATE_UNAVAILABLE: u8 = 0;
+pub const CONTROL_AE_PRECAPTURE_TRIGGER_IDLE: u8 = 0;
+pub const CONTROL_AF_TRIGGER_IDLE: u8 = 0;
+pub const CONTROL_AF_STATE_INACTIVE: u8 = 0;

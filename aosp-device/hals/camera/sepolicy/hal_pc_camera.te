@@ -1,0 +1,9 @@
+# Camera HAL: android.hardware.camera.provider-service.pc
+pc_hal_service(hal_pc_camera, hal_camera)
+
+# hal_camera already opens /dev/video* (video_device) and lists /dev. Webcam hotplug
+# arrives as video4linux uevents.
+allow hal_pc_camera self:netlink_kobject_uevent_socket create_socket_perms_no_ioctl;
+
+# Buffers come from the graphics allocator; the mapper library (minigbm) maps them.
+hal_client_domain(hal_pc_camera, hal_graphics_allocator)

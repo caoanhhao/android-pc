@@ -117,6 +117,14 @@ be coded in parallel but must take turns building.
   test. See `docs/rust-hals.md`.
 - **F7. Camera HAL (Rust)** — AIDL camera provider over V4L2 UVC
   `/dev/video0` (E8), so the stock Camera app works.
+  *Code done 2026-11-12, Cuttlefish/VTS pending:* `hals/camera` serves
+  `ICameraProvider/pc/0` (provider V4): each V4L2 capture node with YUYV/MJPEG becomes an
+  `EXTERNAL` camera `100+N` with YUV and JPEG outputs, hotplug through uevents; metadata
+  codec, V4L2, image conversion and gralloc (`AIMapper`) in Rust, JPEG through a small C
+  layer over libjpeg. Builds with clippy/rustfmt clean, host tests 26/26. Cuttlefish's
+  emulated/C++ provider APEX stays as the fallback. Still to run: enforcing boot/denials,
+  `VtsAidlHalCameraProvider_TargetTest` (vivid on Cuttlefish), then a Camera app photo on the
+  real PC. See `docs/rust-hals.md`.
 - **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
   (E6), next to wpa_supplicant.
 
