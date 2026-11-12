@@ -7,3 +7,8 @@ allow hal_pc_camera self:netlink_kobject_uevent_socket create_socket_perms_no_io
 
 # Buffers come from the graphics allocator; the mapper library (minigbm) maps them.
 hal_client_domain(hal_pc_camera, hal_graphics_allocator)
+# minigbm opens the DRM render node (/dev/dri/renderD128) when it initialises.
+allow hal_pc_camera gpu_device:dir { open read search };
+allow hal_pc_camera gpu_device:chr_file { getattr ioctl map open read write };
+allow hal_pc_camera graphics_device:chr_file getattr;
+allow hal_pc_camera sysfs_gpu:file { getattr open read };

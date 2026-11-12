@@ -52,9 +52,11 @@ pub const PIXEL_FORMAT_IMPLEMENTATION_DEFINED: i32 = 0x22;
 /// `PixelFormat::YCBCR_420_888`.
 pub const PIXEL_FORMAT_YCBCR_420_888: i32 = 0x23;
 
-/// The formats advertised for every size.
+/// The formats advertised for every size. YUV comes first: clients (and VTS
+/// `getSessionCharacteristics`) take the first entry as a sample stream with
+/// `Dataspace::UNKNOWN`, which a BLOB stream would reject.
 const STREAM_FORMATS: [i32; 3] =
-    [PIXEL_FORMAT_BLOB, PIXEL_FORMAT_YCBCR_420_888, PIXEL_FORMAT_IMPLEMENTATION_DEFINED];
+    [PIXEL_FORMAT_YCBCR_420_888, PIXEL_FORMAT_IMPLEMENTATION_DEFINED, PIXEL_FORMAT_BLOB];
 
 /// A request template (`RequestTemplate`) this camera can fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -541,7 +543,7 @@ mod tests {
         let md = webcam().characteristics();
         let configs = md.get(SCALER_AVAILABLE_STREAM_CONFIGURATIONS).unwrap();
         assert_eq!(configs.len(), 3 * 3 * 4);
-        assert_eq!(&configs[..4], &[PIXEL_FORMAT_BLOB, 1920, 1080, 0]);
+        assert_eq!(&configs[..4], &[PIXEL_FORMAT_YCBCR_420_888, 1920, 1080, 0]);
         let keys = md.get(REQUEST_AVAILABLE_CHARACTERISTICS_KEYS).unwrap();
         assert_eq!(keys.len(), md.len());
         assert!(md.tags().all(|tag| keys.contains(&as_key(tag))));

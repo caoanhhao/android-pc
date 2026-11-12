@@ -117,17 +117,19 @@ be coded in parallel but must take turns building.
   test. See `docs/rust-hals.md`.
 - **F7. Camera HAL (Rust)** — AIDL camera provider over V4L2 UVC
   `/dev/video0` (E8), so the stock Camera app works.
-  *Code done 2026-11-12, Cuttlefish/VTS pending:* `hals/camera` serves
-  `ICameraProvider/pc/0` (provider V4): each V4L2 capture node with YUYV/MJPEG becomes an
-  `EXTERNAL` camera `100+N` with YUV and JPEG outputs, hotplug through uevents; metadata
-  codec, V4L2, image conversion and gralloc (`AIMapper`) in Rust, JPEG through a small C
-  layer over libjpeg. Builds with clippy/rustfmt clean, host tests 26/26. Cuttlefish's
-  emulated/C++ provider APEX stays as the fallback. Still to run: enforcing boot/denials,
-  `VtsAidlHalCameraProvider_TargetTest` (vivid on Cuttlefish), then a Camera app photo on the
-  real PC. See `docs/rust-hals.md`.
+  *Done on Cuttlefish 2026-11-12:* `hals/camera` serves `ICameraProvider/pc/0`
+  (provider V4): each V4L2 capture node with YUYV/MJPEG becomes an `EXTERNAL` camera `100+N`
+  with YUV and JPEG outputs, hotplug through uevents; metadata codec, V4L2, image conversion
+  and gralloc (`AIMapper`) in Rust, JPEG through a small C layer over libjpeg. Cuttlefish
+  enforcing (`vivid` webcam node): `VtsAidlHalCameraProvider_TargetTest` 45/45 after two
+  fixes (DRM render node access for the minigbm mapper; YUV before BLOB in the stream
+  configurations), no AVC denials, cameraserver lists the camera; device unit test 4/4,
+  host tests 26/26. Cuttlefish's emulated/C++ provider APEX stays as the fallback. The
+  Camera app photo on the real PC is part of the combined F4–F8 USB test. See
+  `docs/rust-hals.md`.
 - **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
   (E6), next to wpa_supplicant.
-  *Code done 2026-11-12, Cuttlefish/VTS pending:* `hals/wifi` serves `IWifi/default` (V4)
+  *Done on Cuttlefish 2026-11-12:* `hals/wifi` serves `IWifi/default` (V4)
   for the chip behind `wlan0` over nl80211: chip modes from the wiphy's interface
   combinations, AP interfaces created/deleted with `NL80211_CMD_NEW/DEL_INTERFACE`, MAC
   addresses and driver info through ioctls, country code, usable channels; the optional
@@ -135,11 +137,15 @@ be coded in parallel but must take turns building.
   `hals/wifi` (AOSP has no Rust backend for `android.hardware.wifi`). Builds with
   clippy/rustfmt clean, `check-vintf-all` passes, host tests 25/25 (one read-only against
   the PC's own AX211). Fallback: `PC_WIFI_HAL=legacy` installs Cuttlefish's Wi-Fi APEX
-  (AOSP's C++ HAL) instead. Still to run: enforcing boot/denials, the `VtsHalWifi*` tests,
-  a connection on Cuttlefish, then on the real PC. See `docs/rust-hals.md`.
+  (AOSP's C++ HAL) instead. Cuttlefish enforcing (hwsim): `VtsHalWifi*` (IWifi, chip,
+  STA, AP) 52 passed + 38 skipped, 0 failed, no AVC denials; Wi-Fi turns on, `wlan0` joins a
+  framework SoftAP on `wlan1` (WPA2, DHCP). The real-PC check (AX211) is part of the
+  combined F4–F8 USB test. See `docs/rust-hals.md`.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
-on the real PC).
+on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
+passes (results table in `docs/rust-hals.md`), no AVC denials, no fallback needed; next is
+the combined USB test on the real PC.
 
 ## Risks
 

@@ -431,15 +431,19 @@ RTX 4070 (card 1) and the webcam microphone (card 2) are not used.
 
 ## F7: Camera (`hals/camera`)
 
-Status (2026-11-12): code done, Cuttlefish/VTS pending. `android.hardware.camera.provider-service.pc`,
-`libpccamera` and both test modules build in `aosp_pc_x86_64` (clippy `-D warnings`,
-rustfmt with AOSP's config), `vendor.img`/`super.img` build with it, and the host tests
-(`libpccamera_test`, 26: metadata codec, image conversion/scaling, JPEG round trips, V4L2
-struct layouts and ioctl numbers, sensor/metadata logic) pass. Not yet run on a device: the
-service start, SELinux denials, `VtsAidlHalCameraProvider_TargetTest` and the device unit
-test (`android.hardware.camera.provider-service.pc_test`, which checks every metadata
-buffer with `libcamera_metadata`'s `validate_camera_metadata_structure`). Those are part of
-the combined Cuttlefish round, then the real-PC photo with the Camera app.
+Status (2026-11-12): done on Cuttlefish. With `vivid` loaded (a YUYV webcam node, picked
+up by hotplug as camera `101`), SELinux enforcing, no AVC denials:
+`VtsAidlHalCameraProvider_TargetTest --gtest_filter='*pc_0*'` 45/45 passed, cameraserver
+lists the camera (`dumpsys media.camera`), device unit test
+(`android.hardware.camera.provider-service.pc_test`, every metadata buffer checked with
+`libcamera_metadata`'s `validate_camera_metadata_structure`) 4/4, host tests
+(`libpccamera_test`: metadata codec, image conversion/scaling, JPEG round trips, V4L2
+struct layouts and ioctl numbers, sensor/metadata logic) 26/26. The first run found two
+bugs, both fixed: the domain could not open `/dev/dri/renderD128`, so minigbm's mapper
+failed to initialise and every `importBuffer` failed (`processCaptureRequestPreview`,
+`flushPreviewRequest`); and `BLOB` was the first entry of the stream configurations, which
+VTS `getSessionCharacteristics` takes as its sample stream with `Dataspace::UNKNOWN` (now
+YUV comes first). The real-PC photo with the Camera app is part of the combined USB test.
 
 ### What it serves
 
@@ -498,13 +502,18 @@ tests run as `libpccamera_test`.
 
 SELinux: `pc_hal_service(hal_pc_camera, hal_camera)` (the `hal_camera` attribute already
 grants `video_device`), a `netlink_kobject_uevent_socket` for hotplug, and
-`hal_client_domain(hal_pc_camera, hal_graphics_allocator)` for the buffers. Expect to add
-rules (for example GPU/dmabuf access of the mapper) from the first enforcing boot's denials.
+`hal_client_domain(hal_pc_camera, hal_graphics_allocator)` for the buffers, and the DRM
+render node (`gpu_device`, as Cuttlefish's `gpu_access` macro grants) because the minigbm
+mapper opens it when it initialises.
 
-### Testing (pending, combined Cuttlefish round)
+### Testing
 
 Cuttlefish's `vendor_dlkm` loads `vivid.ko` (with `v4l2-tpg.ko`) and `v4l2loopback.ko`, so
-the guest should have virtual capture nodes; check `ls -l /dev/video*` and
+the guest has `/dev/video0` (v4l2loopback, no formats until a producer writes, so the HAL
+skips it). `vivid` is not loaded by default: `insmod /vendor_dlkm/lib/modules/vivid.ko
+n_devs=1 node_types=0x1` adds a capture node whose input 0 is a webcam (YUYV, 9 sizes up
+to 3840x2160; do not pass `input_types`, which makes input 0 a TV input with no usable
+modes). Check `ls -l /dev/video*` and
 `logcat -s android.hardware.camera.provider-service.pc` (`/dev/videoN: <name>: K sizes up to
 WxH`; restart with `stop vendor.camera-pc; start vendor.camera-pc` to see the start lines,
 which come before logd). If no node offers YUYV/MJPEG, the provider reports no cameras and
@@ -527,11 +536,19 @@ the Camera app, hotplug by unplugging/replugging.
 
 ## F8: Wi-Fi (`hals/wifi`)
 
-Status (2026-11-12): code done; the HAL, its tests and `vendor.img` build, clippy and
+Status (2026-11-12): done on Cuttlefish (`--enable_wifi=true`, two hwsim radios), SELinux
+enforcing, no AVC denials: VTS `VtsHalWifiTargetTest` 3/3, `VtsHalWifiChipTargetTest` 36 +
+18 skipped, `VtsHalWifiStaIfaceTargetTest` 7 + 18 skipped, `VtsHalWifiApIfaceTargetTest` 6 +
+2 skipped, 0 failed; device unit test 25/25. Wi-Fi turns on (`wlan0 on phy1: combinations
+[{STA}≤1, {AP,P2P}≤1]`); a framework SoftAP (`cmd wifi start-softap`) comes up on `wlan1`
+and `wlan0` scans it, joins it with WPA2 and gets a DHCP lease. (Tethering then restarts
+the hotspot because the hotspot's own client became its upstream, which drops the link;
+that is framework behaviour, not the HAL.) The HAL, its tests and `vendor.img` build, clippy and
 rustfmt are clean, `check-vintf-all` passes. Host tests 25/25, one of them read-only
 against the build host's own AX211 (iwlwifi, the target PC): two combinations
 (`[{STA}, {P2P}]`, `[{STA}, {AP,P2P}]`), driver `iwlwifi`, firmware `89.b20dcd1f.0`, 62
-usable channels over 2.4/5/6 GHz. Cuttlefish/VTS pending (the combined F4–F8 test round).
+usable channels over 2.4/5/6 GHz. The real-PC check (AX211 connection, hotspot) is part of
+the combined USB test.
 
 `android.hardware.wifi-service.pc` serves `IWifi/default` (AIDL V4, the newest the 202604
 matrix accepts, 2-4) for the chip behind `wlan0`: Intel iwlmvm on the PC,
@@ -590,6 +607,33 @@ SELinux: domain `hal_pc_wifi` (`pc_hal_service(hal_pc_wifi, hal_wifi)`); the pla
 `hal_wifi` attribute already allows nl80211, `net_admin`, the three interface ioctls and
 the `wifi.*` properties, so the domain has no rules of its own. The `.rc` gives the HAL
 `CAP_NET_ADMIN` (user `wifi`).
+
+## Combined Cuttlefish test round (F4–F8, 2026-11-12)
+
+One boot of `aosp_pc_x86_64` on Cuttlefish (`aosp/cvd-launch.sh --enable_wifi=true
+--enable_host_bluetooth=true`), SELinux enforcing, then a second boot with the camera fixes.
+All HAL services run in their `hal_pc_*` domains; no AVC denial from any of them. The only
+denials in logcat came from elsewhere: `system_server` (InputReader) reading a sysfs
+`country` file and `init` in the pVM guest's console (`zram0`).
+
+| HAL | VTS (pass / skip / fail) | Device unit test | Functional check |
+|---|---|---|---|
+| health | `VtsHalHealthTargetTest` 25 / 0 / 0 | 8/8 | — |
+| thermal | `VtsHalThermalTargetTest` 9 / 2 / 0 | 6/6 | — |
+| power | `VtsHalPowerTargetTest` 10 / 13 / 0 | 8/8 | — |
+| Bluetooth | `VtsHalBluetoothTargetTest` 16 / 0 / 0 (H4 on `/dev/hvc5`) | 10/10 | stack ON on our HAL |
+| audio | `VtsHalAudioCoreTargetTest` (`IModule/default`, framework stopped) 148 / 73 / 0 | 29/29 | `snd-aloop`: `audio-check.sh play 3 440` arrives as 440 Hz on `hw:0,1`; `record` delivers frames |
+| camera | `VtsAidlHalCameraProvider_TargetTest` (`pc/0`) 45 / 0 / 0 after the fixes (first run 42 / 0 / 3) | 4/4 | `vivid` hotplug → camera `101` in `dumpsys media.camera` |
+| Wi-Fi | `VtsHalWifi{,Chip,StaIface,ApIface}TargetTest` 52 / 38 / 0 | 25/25 | Wi-Fi on, SoftAP on `wlan1`, `wlan0` WPA2 association + DHCP |
+
+Fallbacks kept: none needed. The switches stay: Cuttlefish's camera provider APEX still runs
+next to ours (`ICameraProvider/internal/0`), and `PC_WIFI_HAL=legacy` puts Cuttlefish's C++
+Wi-Fi HAL back.
+
+Notes: Cuttlefish's own Bluetooth HAL (`bt_hci`) is the one that runs at boot there; ours
+runs on Cuttlefish only when started by hand (`stop bt_hci; start
+vendor.bluetooth-pc-h4`). `stop` (framework) once made adbd unresponsive until the instance was
+restarted; set `vts.native_server.on 1` and run `stop` with a timeout.
 
 ## Adding a HAL
 
