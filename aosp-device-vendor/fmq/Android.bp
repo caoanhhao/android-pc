@@ -1,0 +1,21 @@
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64:__subpackages__"],
+}
+
+// AOSP's Rust FMQ wrapper (libfmq_rust) is only visible to //vendor, so the android-pc
+// HALs in device/android-pc reach it through this re-export, which lives in
+// vendor/android-pc (mirrored there from aosp-device-vendor/ by tools/aosp-device-link.sh).
+rust_library {
+    name: "libpcfmq",
+    crate_name: "pcfmq",
+    srcs: ["lib.rs"],
+    edition: "2021",
+    vendor: true,
+    rustlibs: ["libfmq_rust"],
+    // libfmq_rust links AOSP's C++ libfmq statically, which needs these.
+    shared_libs: [
+        "libbase",
+        "libcutils",
+        "libutils",
+    ],
+}

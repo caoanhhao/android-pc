@@ -2,7 +2,8 @@
 # Boot a tools/mkusb-aosp17.sh image in QEMU the way the real PC boots it: UEFI (OVMF),
 # the image as a USB mass-storage stick on an xHCI controller, a standard VGA (its GOP
 # framebuffer is what pcfb drives), USB keyboard and tablet, an e1000e NIC with DHCP
-# (user networking; adb on host port 5556 -> guest 5555).
+# (user networking; adb on host port 5556 -> guest 5555) and an Intel HD Audio controller
+# with a line-out/line-in codec (hda-duplex), like the PC's ALC897.
 #
 #   tools/run-qemu-aosp17-usb.sh [IMAGE]    default out/aosp17-usb.img
 #
@@ -14,6 +15,8 @@
 # a UNIX socket out/aosp17-usb-monitor.sock
 # (`echo "screendump out/s.ppm" | ncat -U out/aosp17-usb-monitor.sock`).
 # NO_WINDOW=1 runs without a window. MEM (MiB, default 6144), CPUS (default 4).
+# AUDIO picks QEMU's audio backend: pa (default; the host's PulseAudio/PipeWire), none, or
+# wav (playback recorded to out/aosp17-usb-audio.wav; no input, so capture fails).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 img=${1:-$ROOT/out/aosp17-usb.img}
@@ -26,6 +29,10 @@ done
 vars=$ROOT/out/aosp17-usb-ovmf-vars.fd
 cp "$OVMF_VARS" "$vars"
 display=(-display gtk); [[ -n ${NO_WINDOW:-} ]] && display=(-display none)
+case ${AUDIO:-pa} in
+    wav) audiodev=wav,id=snd0,path="$ROOT/out/aosp17-usb-audio.wav" ;;
+    *) audiodev=${AUDIO:-pa},id=snd0 ;;
+esac
 exec qemu-system-x86_64 \
     -machine q35,accel=kvm -cpu host -smp "${CPUS:-4}" -m "${MEM:-6144}" \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
@@ -35,6 +42,7 @@ exec qemu-system-x86_64 \
     -device usb-storage,bus=xhci.0,drive=stick,removable=on,bootindex=0 \
     -device usb-kbd,bus=xhci.0 -device usb-tablet,bus=xhci.0 \
     -netdev user,id=net0,hostfwd=tcp:127.0.0.1:5556-:5555 -device e1000e,netdev=net0 \
+    -audiodev "$audiodev" -device intel-hda -device hda-duplex,audiodev=snd0 \
     -vga std "${display[@]}" \
     -serial file:"$ROOT/out/aosp17-usb-serial.log" \
     -monitor unix:"$ROOT/out/aosp17-usb-monitor.sock",server,nowait

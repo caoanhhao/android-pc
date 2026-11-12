@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Audio policy configuration for the AIDL audio HAL of AOSP (com.android.hardware.audio)
+     on the android-pc product. The primary module is not listed: it is served by
+     android.hardware.audio.service.pc (IModule/default), which builds its ports from the
+     sound cards it finds. The framework reads every module's ports from the HAL; this file
+     only tells AOSP's HAL which of its own modules to create. Based on Cuttlefish's
+     device/google/cuttlefish/shared/config/audio/policy/audio_policy_configuration.xml. -->
+<audioPolicyConfiguration version="7.0" xmlns:xi="http://www.w3.org/2001/XInclude">
+    <globalConfiguration speaker_drc_enabled="false"/>
+
+    <modules>
+        <!-- Remote Submix Audio HAL -->
+        <xi:include href="r_submix_audio_policy_configuration.xml"/>
+
+        <!-- Bluetooth Audio HAL -->
+        <xi:include href="bluetooth_with_le_audio_policy_configuration_7_0.xml"/>
+    </modules>
+
+    <xi:include href="audio_policy_volumes.xml"/>
+    <xi:include href="default_volume_tables.xml"/>
+</audioPolicyConfiguration>

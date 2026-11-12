@@ -1,5 +1,6 @@
 #!/bin/bash
-# Mirror aosp-device/ into the AOSP tree as device/android-pc/pc_x86_64 (a real copy).
+# Mirror aosp-device/ into the AOSP tree as device/android-pc/pc_x86_64 and
+# aosp-device-vendor/ as vendor/android-pc (real copies).
 # Not a symlink: Soong's finder skips symlinked directories (following them needs
 # ALLOW_BP_UNDER_SYMLINKS, which also walks AOSP's own symlink loops), and a farm of
 # per-file symlinks is no better: Soong installs init_rc and other prebuilt files by
@@ -10,7 +11,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DST=$ROOT/aosp/device/android-pc/pc_x86_64
 mkdir -p "$DST"
-rsync -a --delete "$ROOT/aosp-device/" "$DST/"
-# Until F5 the C++ Bluetooth HAL was mirrored to vendor/android-pc; its module name now
-# belongs to the Rust HAL, so a stale copy would clash.
-rm -rf "$ROOT/aosp/vendor/android-pc"
+# EXCLUDE_HALS="wifi camera" leaves those hals/ directories out (another session's
+# work in progress must not break this build's Soong analysis).
+excludes=(); for hal in ${EXCLUDE_HALS:-}; do excludes+=(--exclude "/hals/$hal/"); done
+rsync -a --delete --delete-excluded "${excludes[@]}" "$ROOT/aosp-device/" "$DST/"
+# Modules that must sit under vendor/ because their dependencies are only visible there
+# (libpcfmq re-exports libfmq_rust for the audio HAL).
+mkdir -p "$ROOT/aosp/vendor/android-pc"
+rsync -a --delete "$ROOT/aosp-device-vendor/" "$ROOT/aosp/vendor/android-pc/"

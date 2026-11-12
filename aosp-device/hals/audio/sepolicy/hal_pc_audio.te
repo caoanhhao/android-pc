@@ -1,0 +1,7 @@
+# Audio HAL: android.hardware.audio.service.pc (IModule/default)
+# hal_audio_server already reads /proc/asound, opens the /dev/snd nodes (audio_device)
+# and may raise thread priorities (sys_nice).
+pc_hal_service(hal_pc_audio, hal_audio)
+
+# audioserver collects the HAL's dump through a pipe of its own.
+allow hal_pc_audio audioserver:fifo_file write;

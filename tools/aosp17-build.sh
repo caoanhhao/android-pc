@@ -22,7 +22,7 @@ for s in $STEPS; do
   case "$s" in system.img|system_ext.img|product.img|vendor.img|droid) J=3;; *) J=${J_DEFAULT:-8};; esac
   echo "=== STEP$t $(date) free=$(df -BG --output=avail / | tail -1)"
   # Match process names, not command lines: a shell whose command text mentions them must not block us.
-  while pgrep -x 'soong_ui|soong_build|siso|ninja|cargo|rustc' >/dev/null || pgrep -f GradleDaemon >/dev/null; do
+  while pgrep -x 'soong_ui|soong_build|siso|ninja|cargo|rustc' >/dev/null || pgrep -f "java .*GradleDaemon" >/dev/null; do
     echo "other build running, waiting"; sleep 60; done
   ok=; for try in 1 2 3 4 5; do NINJA_HIGHMEM_NUM_JOBS=1 NINJA_ARGS= $LB m -j$J $t && { ok=1; break; }; echo "RETRY $try$t"
     grep -q "FAILED: out/soong/build\." out/error.log 2>/dev/null && { echo "Soong analysis error, not retrying"; break; }; done

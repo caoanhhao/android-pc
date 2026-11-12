@@ -1,4 +1,4 @@
-# Rust vendor HALs (phases F2, F4, F5)
+# Rust vendor HALs (phases F2, F4, F5, F6)
 
 Status (2026-11-11): `aosp_pc_x86_64-cp2a-userdebug` builds and boots on Cuttlefish
 (`sys.boot_completed=1`). The Rust lights HAL runs as `u:r:hal_pc_light:s0`, is listed by
@@ -40,6 +40,11 @@ aosp-device/
 with `rsync -a --delete`. `tools/aosp17-build.sh` runs it before every build. The copy keeps
 mtimes, so ninja only rebuilds what changed. The mirror is generated: edit `aosp-device/`,
 never the copy.
+
+Modules whose dependencies are only visible to `//vendor` live in `aosp-device-vendor/`,
+mirrored the same way to `aosp/vendor/android-pc` (today only `fmq`, see F6).
+`EXCLUDE_HALS="wifi camera"` leaves those `hals/` directories out of the mirror, so a HAL
+another session is still writing does not break this build's Soong analysis.
 
 Links do not work:
 
@@ -300,6 +305,130 @@ service. No `ioctl`/`setopt` on the socket (the former is a platform neverallow)
 `/dev/rfkill` (unlabelled `device`; the user channel works with the radio as the kernel
 left it).
 
+## F6: Audio (`hals/audio`)
+
+Status (2026-11-12): `android.hardware.audio.service.pc` serves the primary module,
+`IModule/default` (`android.hardware.audio.core` V4, the version AOSP's HAL APEX declares;
+the 202604 matrix accepts 1-4). SELinux enforcing, domain `hal_pc_audio`, no AVC denials.
+`VtsHalAudioCoreTargetTest --gtest_filter='*IModule_default*'` (framework stopped, as the
+VTS template does): 148 passed, 73 skipped, 0 failed, both on Cuttlefish with an
+`snd-aloop` loopback card and on QEMU with `intel-hda` + `hda-duplex`. The C++ HAL's instances (IConfig,
+r_submix, bluetooth) still pass their part (161 tests). Playback and capture
+through AudioFlinger work on both (`tools/audio-check.sh`, below). Unit tests: host
+`*_cards_test` 5, `*_worker_test` 9; device `*-service.pc_test` 29 (with the mixer policy
+and port/patch logic). The real-PC check (ALC897) is part of the combined F4–F8 test.
+
+### What serves what
+
+| Instance | Served by |
+|---|---|
+| `IModule/default` (primary) | this HAL, service `vendor.audio-hal` |
+| `IConfig/default`, `IModule/r_submix`, `IModule/bluetooth`, `IFactory/default` (effects) | AOSP's default C++ HAL in the `com.android.hardware.audio` APEX (Cuttlefish's `LOCAL_AUDIO_PRODUCT_PACKAGE`), unchanged |
+
+The C++ HAL creates one module per `<module>` of `/vendor/etc/audio_policy_configuration.xml`;
+`hals/audio/audio_policy_configuration.xml` (installed through Cuttlefish's
+`LOCAL_AUDIO_PRODUCT_COPY_FILES` switch, set in `hal.mk`) lists only `r_submix` and
+`bluetooth`, so `IModule/default` is ours. The framework reads every module's ports from the
+HAL (`IConfig` + `IModule`), not from that file. There is no VINTF fragment: the APEX
+already declares `IModule/default` V4, and a second declaration would fail `checkvintf`.
+The effects configuration Cuttlefish installs together with its policy file
+(`audio_effects.mk`) is included by `hal.mk`. The init service is called `vendor.audio-hal`:
+`audioserver.rc` starts that name with audioserver and restarts it with the other audio
+HALs when `sys.audio.restart.hal` is set (audioserver does that after a HAL crash, VTS for
+`CanBeRestarted`); an own `on property:` trigger does not run, because audioserver.rc's
+action resets the property first.
+
+### Ports
+
+| Port | Kind | Backed by |
+|---|---|---|
+| `Speaker` (`OUT_SPEAKER`, default output) | attached device | first analog playback PCM |
+| `Built-In Mic` (`IN_MICROPHONE`, address `bottom`) | attached device | first analog capture PCM |
+| `primary output` (flag `PRIMARY`) → `Speaker` | mix port, 1 stream | |
+| `Built-In Mic` → `primary input` | mix port, 1 stream | |
+
+`src/cards.rs` reads `/proc/asound/cards` and `/proc/asound/pcm`: USB-Audio cards and
+HDMI/DisplayPort PCMs are skipped, the lowest analog card/device with playback (capture)
+backs the speaker (microphone). `pcm::probe` asks the device with `HW_REFINE` which formats,
+channel counts (1, 2) and rates (8–48 kHz; higher rates are left out, or the framework
+mixes at 192 kHz on an HDA codec) it accepts; the mix and device ports offer 16 bit PCM
+(the device's own format if it has no S16_LE). A path without hardware (no sound card, a
+codec without capture, Cuttlefish's AC97 that has no driver) gets a null device that keeps
+time and returns silence, so the framework always has a speaker and a microphone.
+
+Nominal latency (one client burst) is 40 ms, 85 ms on virtio-snd (as AOSP's Cuttlefish
+HAL); the minimum buffer follows the framework's rule (multiple of 16 frames, power of two
+above 512 frames), so 2048 frames at 48 kHz. The ALSA buffer holds two bursts in periods of
+half a burst (the nearest the hardware accepts otherwise), playback starts once a burst is
+queued, xruns are recovered by preparing the PCM again.
+
+At start, `src/ctl.rs` sets the mixer of the cards in use through the control ABI
+(`ELEM_LIST`/`ELEM_INFO`/`ELEM_WRITE`): HDA codecs come up muted with volumes at 0 and
+Android has no alsactl. Output switches on and output volumes to the maximum (0 dB on HDA;
+stream volumes are applied by the framework), `Capture Switch` on and `Capture Volume` at
+two thirds; loopback paths (`Mic Playback`, `Line Playback`, `Beep`, ...) are not touched.
+Master volume/mute and microphone mute are applied in software by the streams.
+
+### Streams over FMQ
+
+AOSP's `libfmq_rust` (crate `fmq`) creates the command, reply and data queues of a
+`StreamDescriptor`; the Rust AIDL backend generates `@FixedSize` `Command` (a union) and
+`Reply` with zerocopy layouts the C++ clients share. Two catches:
+
+- `libfmq_rust` is only visible to `//vendor`. `aosp-device-vendor/fmq` (mirrored to
+  `aosp/vendor/android-pc/fmq` by `tools/aosp-device-link.sh`) is a one-line re-export,
+  `libpcfmq`, visible to `device/android-pc`; it also adds the C++ `libfmq`'s shared
+  libraries (`libbase`, `libcutils`, `libutils`).
+- The wrapper has no `availableToRead`/`availableToWrite`. A `read_many(n)`/`write_many(n)`
+  transaction succeeds only if `n` elements fit and a failed one changes nothing, so the data
+  queue is drained/filled in halving steps (`DataFmq` in `src/stream.rs`). A completion
+  commits its whole transaction when dropped, whether read or not, so it can not be used to
+  probe.
+
+Each stream has a worker thread (nice -16) that blocks on the command queue
+(`read_blocking`, event flag) and runs the state machine of `src/worker.rs` (host-tested,
+no AIDL types): AOSP's `Stream.cpp` without async callbacks, MMap or offload (STANDBY, IDLE,
+ACTIVE, PAUSED, DRAINING, DRAIN_PAUSED, ERROR; bursts in STANDBY prime the output; DRAINING
+ends after `ModuleDebug.streamTransientStateDelayMs`). A stream not connected by a patch
+simulates its I/O (3 ms per burst, silence). `close()` (or dropping the last binder of a
+stream) writes `halReservedExit` with the stream's random cookie through a second handle on
+the command queue and joins the worker; the PCM is closed in standby.
+
+The generated parcelables derive only `Debug`, so ports, configs and patches are copied
+and compared through a parcel (`aidl::dup`, `aidl::same`).
+
+What it does not do (yet): HDMI/DisplayPort output and USB audio (no external device
+ports: the framework's `UsbAlsaManager` reports USB cards, which needs template ports and
+`connectExternalDevice`), MMap/AAudio exclusive mode, offload, telephony, sound dose, hardware
+volume/gain, effects on streams or devices (all reported as unsupported, which VTS accepts).
+
+### Testing
+
+- `snd-aloop.ko` is in Cuttlefish's vendor modules: `insmod /vendor/lib/modules/snd-aloop.ko`
+  then `setprop sys.audio.restart.hal 1` gives the HAL a real ALSA card. What the HAL plays
+  to `hw:0,0` can be recorded from `hw:0,1` with `tinycap -D 0 -d 1`, and `tinyplay -D 0 -d 1`
+  feeds the HAL's capture (snd-aloop needs the same channel count on both sides: mono for
+  `audio-check.sh record`).
+- `tools/run-qemu-aosp17-usb.sh` now adds `-device intel-hda -device hda-duplex` (QEMU's
+  generic codec, `snd_hda_codec_generic`). `AUDIO=wav` records the guest's playback to
+  `out/aosp17-usb-audio.wav` (its capture fails with EIO: the wav backend has no input),
+  `AUDIO=none` gives silent capture, `pa` (default) uses the host's sound server.
+- `tools/audio-check.sh play SECONDS HZ` / `record SECONDS` runs a small `AudioTrack` /
+  `AudioRecord` program (`tools/audio-check/AudioCheck.java`, built with AOSP's prebuilt JDK
+  and d8) on the device with `app_process`; `ADB` picks the device.
+- VTS for the core HAL expects the framework stopped (`stop`,
+  `setprop vts.native_server.on 1`): otherwise audioserver holds the only stream of each mix
+  port and its patches.
+
+### On the real PC (combined test)
+
+Card 0 (HDA Intel PCH, ALC897) backs both ports: line out / front headphones (the codec
+auto-mutes the line out when headphones are plugged) and the mic input the `Input Source`
+control selects. Check `logcat -s android.hardware.audio.service.pc` (`found card ...`,
+`Playback: ...`, mixer lines `card 0: Master Playback Switch = 1`), `tinymix -D 0`,
+`dumpsys media.audio_flinger`, and play/record with `tools/audio-check.sh`. HDMI on the
+RTX 4070 (card 1) and the webcam microphone (card 2) are not used.
+
 ## Adding a HAL
 
 1. Create `aosp-device/hals/<name>/` with:
@@ -389,3 +518,13 @@ re-registers the instance, and when it exits the name is gone until the service 
   hardware adds `genfscon` labels for its device paths in its `sepolicy/` directory.
 - Rust HALs link `libbinder_rs` (vendor variant), so lazy services and `check_service`
   work but the system-only `check_service_access` does not.
+- A HAL that needs a crate only `//vendor` may use puts a re-export in
+  `aosp-device-vendor/` (as `libpcfmq`); its own code stays in `hals/`.
+- After a compile error `tools/aosp17-build.sh` retries 5 times. For quick iterations, take
+  the failed `rustc`/`clippy-driver` command from `aosp/out/siso_failed_commands.sh`, re-run
+  `tools/aosp-device-link.sh` and that command alone.
+- A new `rust_test_host` module added to an existing directory once failed with "missing
+  and no known rule to make it" for its `.config` (incremental Soong analysis); unit tests
+  that the device `rust_test` already runs do not need a host twin.
+- `tools/aosp17-build.sh` waits for other builds; its Gradle check matches only a real
+  `java ... GradleDaemon` process, not shells whose command line mentions the name.

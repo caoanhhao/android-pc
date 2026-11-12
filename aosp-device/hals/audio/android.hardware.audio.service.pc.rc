@@ -1,0 +1,15 @@
+# Primary audio module (IModule/default) over the built-in codec's ALSA devices. AOSP's
+# default audio HAL (com.android.hardware.audio) keeps IConfig, r_submix, bluetooth and the
+# effects.
+# The name is the one audioserver.rc starts with audioserver and restarts (with the other
+# audio HALs) when sys.audio.restart.hal is set, as audioserver and VTS do.
+service vendor.audio-hal /vendor/bin/hw/android.hardware.audio.service.pc
+    class hal
+    user audioserver
+    group audio
+    capabilities BLOCK_SUSPEND SYS_NICE
+    # Binder RT priority inheritance for the stream workers.
+    rlimit rtprio 10 10
+    ioprio rt 4
+    task_profiles ProcessCapacityHigh HighPerformance
+    onrestart restart audioserver

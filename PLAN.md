@@ -106,6 +106,15 @@ be coded in parallel but must take turns building.
   `docs/rust-hals.md`.
 - **F6. Audio HAL (Rust)** — AIDL `android.hardware.audio.core` over the ALSA
   PCM/control ABI (E5, E8 microphone).
+  *Done on Cuttlefish/QEMU 2026-11-12:* `hals/audio` serves the primary module
+  (`IModule/default`, core V4) over the built-in codec's ALSA PCMs (FMQ streams through
+  `libfmq_rust`), unmutes the codec's mixer at start; AOSP's default HAL APEX keeps IConfig,
+  r_submix, bluetooth and the effects. SELinux enforcing, no AVC denials;
+  `VtsHalAudioCoreTargetTest` (`IModule/default`) 148 passed + 73 skipped, 0 failed on
+  Cuttlefish (`snd-aloop` card) and on QEMU (`intel-hda` + `hda-duplex`); playback and
+  capture through AudioFlinger checked with `tools/audio-check.sh`. HDMI and USB audio are
+  not routed yet. The real-PC check (ALC897 line out/mic) is part of the combined F4–F8 USB
+  test. See `docs/rust-hals.md`.
 - **F7. Camera HAL (Rust)** — AIDL camera provider over V4L2 UVC
   `/dev/video0` (E8), so the stock Camera app works.
 - **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
