@@ -1,0 +1,7 @@
+service vendor.wifi-pc /vendor/bin/hw/android.hardware.wifi-service.pc
+    interface aidl android.hardware.wifi.IWifi/default
+    class hal
+    # Creating and deleting interfaces, MAC addresses, link state, regulatory domain.
+    capabilities NET_ADMIN
+    user wifi
+    group wifi

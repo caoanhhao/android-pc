@@ -127,6 +127,16 @@ be coded in parallel but must take turns building.
   real PC. See `docs/rust-hals.md`.
 - **F8. Wi-Fi HAL (Rust)** — minimal `android.hardware.wifi` for nl80211
   (E6), next to wpa_supplicant.
+  *Code done 2026-11-12, Cuttlefish/VTS pending:* `hals/wifi` serves `IWifi/default` (V4)
+  for the chip behind `wlan0` over nl80211: chip modes from the wiphy's interface
+  combinations, AP interfaces created/deleted with `NL80211_CMD_NEW/DEL_INTERFACE`, MAC
+  addresses and driver info through ioctls, country code, usable channels; the optional
+  vendor features are `ERROR_NOT_SUPPORTED`. The AIDL Rust bindings are generated in
+  `hals/wifi` (AOSP has no Rust backend for `android.hardware.wifi`). Builds with
+  clippy/rustfmt clean, `check-vintf-all` passes, host tests 25/25 (one read-only against
+  the PC's own AX211). Fallback: `PC_WIFI_HAL=legacy` installs Cuttlefish's Wi-Fi APEX
+  (AOSP's C++ HAL) instead. Still to run: enforcing boot/denials, the `VtsHalWifi*` tests,
+  a connection on Cuttlefish, then on the real PC. See `docs/rust-hals.md`.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC).

@@ -1,0 +1,104 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// android.hardware.wifi has no Rust backend in AOSP (backend.rust.enabled: false), so
+// the frozen V4 API (with android.hardware.wifi.common V2, which it imports) is copied
+// to aidl/ and compiled here the way aidl_interface does it: aidl --lang=rust, then
+// aidl_rust_glue to nest the files into one crate. The crate has the official crate name
+// and module paths; only this HAL links it.
+genrule {
+    name: "android.hardware.wifi-V4-pc-rust-source",
+    tools: [
+        "aidl",
+        "aidl_rust_glue",
+    ],
+    srcs: [
+        "aidl/android/hardware/**/*.aidl",
+        "aidl/android/os/PersistableBundle.aidl",
+    ],
+    out: ["android_hardware_wifi_V4.rs"],
+    cmd: "R=$$(dirname $(location aidl/android/os/PersistableBundle.aidl))/../.. && " +
+        "FLAGS='--lang=rust --structured --stability vintf --min_sdk_version current' && " +
+        "$(location aidl) $$FLAGS --version 2 --hash 44fb0463d3472a4652918312515607dca49fce56 " +
+        "-I $$R -o $(genDir)/rs $$R/android/hardware/wifi/common/*.aidl && " +
+        "$(location aidl) $$FLAGS --version 4 --hash cb9a5f8ba0037616baace43c766f817812030791 " +
+        "-I $$R -o $(genDir)/rs $$R/android/hardware/wifi/*.aidl && " +
+        "$(location aidl_rust_glue) $(out) $(genDir)/rs $$(find $(genDir)/rs -name '*.rs' | sort)",
+}
+
+rust_library {
+    name: "android.hardware.wifi-V4-pc-rust",
+    crate_name: "android_hardware_wifi",
+    stem: "libandroid_hardware_wifi_V4",
+    srcs: [":android.hardware.wifi-V4-pc-rust-source"],
+    edition: "2021",
+    features: ["std"],
+    host_supported: true,
+    vendor_available: true,
+    rustlibs: [
+        "libbinder_rs",
+        "libstatic_assertions",
+        "libzerocopy",
+    ],
+    proc_macros: ["libasync_trait"],
+    // Generated code, as in aidl_interface's Rust libraries.
+    lints: "none",
+    clippy_lints: "none",
+}
+
+rust_defaults {
+    name: "android.hardware.wifi-service.pc_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: [
+        "android.hardware.wifi-V4-pc-rust",
+        "liblibc",
+        "librustutils",
+    ],
+}
+
+rust_binary {
+    name: "android.hardware.wifi-service.pc",
+    defaults: ["android.hardware.wifi-service.pc_defaults"],
+    init_rc: ["android.hardware.wifi-service.pc.rc"],
+    vintf_fragment_modules: ["android.hardware.wifi-service.pc.xml"],
+    // Cuttlefish's Wi-Fi APEX: AOSP's default HAL over the emulator legacy HAL. hal.mk
+    // installs it instead of this HAL with PC_WIFI_HAL=legacy.
+    overrides: ["com.android.hardware.wifi"],
+    visibility: ["//visibility:public"],
+}
+
+vintf_fragment {
+    name: "android.hardware.wifi-service.pc.xml",
+    src: "android.hardware.wifi-service.pc.xml",
+    vendor: true,
+}
+
+// Whole HAL, on the device.
+rust_test {
+    name: "android.hardware.wifi-service.pc_test",
+    defaults: ["android.hardware.wifi-service.pc_defaults"],
+    test_options: {
+        unit_test: true,
+    },
+}
+
+// The whole HAL on the host too: netlink encoding, wiphy parsing, interface
+// combinations, channel numbers (no Wi-Fi device or property service needed).
+rust_test_host {
+    name: "android.hardware.wifi-service.pc_host_test",
+    crate_name: "wifi_hal",
+    srcs: ["src/main.rs"],
+    edition: "2021",
+    rustlibs: [
+        "android.hardware.wifi-V4-pc-rust",
+        "libbinder_rs",
+        "liblibc",
+        "liblog_rust",
+        "libpchal",
+    ],
+    test_options: {
+        unit_test: true,
+    },
+}

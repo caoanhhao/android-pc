@@ -1,4 +1,4 @@
-# Rust vendor HALs (phases F2, F4, F5, F6, F7)
+# Rust vendor HALs (phases F2, F4–F8)
 
 Status (2026-11-11): `aosp_pc_x86_64-cp2a-userdebug` builds and boots on Cuttlefish
 (`sys.boot_completed=1`). The Rust lights HAL runs as `u:r:hal_pc_light:s0`, is listed by
@@ -524,6 +524,72 @@ FULL/LIMITED features, logical cameras, torch, HAL buffer management, offline se
 10-bit output are skipped; vivid's frame rate and sizes are odd, so a test that needs a
 specific size may skip. On the real PC: `/dev/video0` (UVC webcam), photo and preview in
 the Camera app, hotplug by unplugging/replugging.
+
+## F8: Wi-Fi (`hals/wifi`)
+
+Status (2026-11-12): code done; the HAL, its tests and `vendor.img` build, clippy and
+rustfmt are clean, `check-vintf-all` passes. Host tests 25/25, one of them read-only
+against the build host's own AX211 (iwlwifi, the target PC): two combinations
+(`[{STA}, {P2P}]`, `[{STA}, {AP,P2P}]`), driver `iwlwifi`, firmware `89.b20dcd1f.0`, 62
+usable channels over 2.4/5/6 GHz. Cuttlefish/VTS pending (the combined F4–F8 test round).
+
+`android.hardware.wifi-service.pc` serves `IWifi/default` (AIDL V4, the newest the 202604
+matrix accepts, 2-4) for the chip behind `wlan0`: Intel iwlmvm on the PC,
+mac80211_hwsim on Cuttlefish. It replaces Cuttlefish's Wi-Fi APEX
+(`com.android.hardware.wifi`: AOSP's default C++ HAL over the emulator legacy HAL) through
+`overrides` in `Android.bp`.
+
+**Fallback:** `PC_WIFI_HAL=legacy` (environment, or set in a product makefile before the
+HAL makefiles are read) leaves our HAL out of `PRODUCT_PACKAGES`, so the override does not
+apply and Cuttlefish's APEX is installed as before. The default is `rust`.
+
+### AIDL bindings
+
+`android.hardware.wifi` has no Rust backend in AOSP (`backend.rust.enabled: false`, as has
+`android.hardware.wifi.common`). `hals/wifi/aidl/` holds copies of the frozen V4 API, of
+`wifi.common` V2 (which V4 imports) and of the `PersistableBundle` declaration. A
+`genrule` runs `aidl --lang=rust` over them with the frozen version and hash (the
+`.hash` files of `aidl_api/`), then `aidl_rust_glue`, as `aidl_interface` does; the
+`rust_library` `android.hardware.wifi-V4-pc-rust` has the official crate name
+(`android_hardware_wifi`) and module paths. Clients see the same descriptors, version and
+hash as from AOSP's HAL. When AOSP freezes a V5, copy it and change the version and hash.
+
+### What it does
+
+| Area | Implementation |
+|---|---|
+| `IWifi.start` | finds `wlan0` (`wifi.interface`), its wiphy (`NL80211_CMD_GET_INTERFACE`) and what the wiphy supports (split `NL80211_CMD_GET_WIPHY` dump); fails with `ERROR_UNKNOWN` and `onFailure` if there is no Wi-Fi interface |
+| Chip modes | one mode (id 0) whose combinations come from the wiphy's nl80211 interface combinations: station → STA, AP → AP, P2P client/GO → P2P; at most one STA (no multi-STA), limits capped at 2. hwsim gives `[{STA}≤1, {AP,P2P}≤1]`, iwlmvm `[{STA}, {P2P}]` and `[{STA}, {AP,P2P}]`; a driver without combinations gives one interface of any supported type |
+| STA | `wlan0` (`wifi.interface`); the driver's interface is used as is |
+| AP | `ro.vendor.wifi.sap.interface`, else the first free `wlanN` after `wlan0` (`wlan1`); created with `NL80211_CMD_NEW_INTERFACE` (type AP) on the chip's wiphy if it does not exist (iwlmvm), used as is if it does (Cuttlefish's second hwsim radio); deleted on removal or `stop` only if the HAL created it |
+| P2P | the name in `wifi.direct.interface` (`p2p-dev-wlan0`); wpa_supplicant creates the P2P device interface |
+| MAC address | `SIOCSIFHWADDR` with the interface taken down and brought back up; factory MAC from `ETHTOOL_GPERMADDR` (current address if the driver has none) |
+| Country code | `NL80211_CMD_REQ_SET_REG` (chip and AP interface) |
+| Usable channels | the wiphy's enabled channels in the requested bands (DFS channels count as `BAND_5GHZ_DFS`), 20 MHz; SoftAP/P2P GO only where the device may initiate radiation (no `NO_IR`) |
+| Debug info | driver name + version and firmware version from `ETHTOOL_GDRVINFO` |
+| APF | reported as APFv4 with 4096 bytes; the program is only stored and read back (as the emulator HAL does), no driver on a PC runs it, so every packet still reaches the host. VTS requires APF from vendor API level U on non-PC devices |
+| `wifi.active.interface` | set to the first STA (else AP) interface, as AOSP's HAL does |
+
+Unsupported (`ERROR_NOT_SUPPORTED`, which VTS and the framework accept): link layer stats,
+background scans, RSSI monitoring, roaming control, ND offload, keep-alive packets, packet
+fates, debug ring buffers and dumps, TX power scenarios, latency/VoIP/MLO modes, coex, AFC,
+radio combinations, chip capabilities, TWT, cached scan data, RTT. NAN and bridged APs
+are `ERROR_NOT_AVAILABLE` (no combination offers them). Scanning and connecting never went
+through this HAL: wificond and wpa_supplicant talk nl80211 themselves.
+
+Interface objects (`IWifiStaIface`, ...) answer `ERROR_WIFI_IFACE_INVALID` after their
+interface is removed or the HAL stops; the chip answers `ERROR_WIFI_CHIP_INVALID` after
+`stop`.
+
+Source: `nl80211/` (netlink encoding, wiphy parsing, the generic netlink socket),
+`concurrency.rs` (combinations and the room check), `netdev.rs` (ioctls), `chip.rs`,
+`iface.rs`, `wifi.rs`. Tests: `android.hardware.wifi-service.pc_host_test` (the whole
+crate on the host) and `android.hardware.wifi-service.pc_test` (on the device).
+
+SELinux: domain `hal_pc_wifi` (`pc_hal_service(hal_pc_wifi, hal_wifi)`); the platform's
+`hal_wifi` attribute already allows nl80211, `net_admin`, the three interface ioctls and
+the `wifi.*` properties, so the domain has no rules of its own. The `.rc` gives the HAL
+`CAP_NET_ADMIN` (user `wifi`).
 
 ## Adding a HAL
 

@@ -1,0 +1,4 @@
+# Wi-Fi HAL: android.hardware.wifi-service.pc
+# hal_wifi already grants nl80211 (generic netlink), net_admin, the interface ioctls
+# (SIOCSIFFLAGS, SIOCSIFHWADDR, SIOCETHTOOL), sysfs reads and the wifi.* properties.
+pc_hal_service(hal_pc_wifi, hal_wifi)
