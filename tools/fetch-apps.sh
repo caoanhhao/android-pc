@@ -3,19 +3,27 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid]     default: both
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore]     default: all four
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
 #   Store); CHROMIUM_REV picks the revision (default: the one tested in F3a).
 # - F-Droid: https://f-droid.org/F-Droid.apk, checked against the signing certificate
 #   F-Droid publishes (SHA-256 43:23:8D:51:...:C9:CC:AB).
+# - microG GmsCore (as com.google.android.gms): the microG project's GitHub release
+#   MICROG_VER, checked against microG's signing certificate (SHA-256
+#   9B:D0:67:27:...:D1:41:65). Installed privileged and enabled (aosp-device/microg.mk).
+# - Google Play Store (Phonesky, com.android.vending), proprietary: taken from the official
+#   Android Emulator image "Google Play, x86_64, API 37" (SHA-1 pinned below) with its
+#   privileged-permission list; checked against Google's certificate. Personal use only,
+#   never redistributed (docs/arm-translation.md).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
 HOST=$ROOT/aosp/out/host/linux-x86/bin
 
-install_app() {   # install_app NAME APK SOURCE-DESCRIPTION
+
+install_app() {   # install_app NAME APK SOURCE-DESCRIPTION [EXTRA-BP-LINES]
     local dst=$APPS/$1
     rm -rf "$dst" && mkdir -p "$dst"
     cp "$2" "$dst/$1.apk"
@@ -26,7 +34,8 @@ android_app_import {
     apk: "$1.apk",
     // Signed by its publisher with APK signature v2+: install it unchanged.
     preprocessed: true,
-    product_specific: true,
+    product_specific: true,${4:+
+    $4}
     dex_preopt: {
         enabled: false,
     },
@@ -61,7 +70,82 @@ fdroid() {
     install_app F-Droid "$dl/F-Droid.apk" "F-Droid $ver (https://f-droid.org/F-Droid.apk, signature checked)"
 }
 
+microg() {
+    local ver=${MICROG_VER:-0.3.17.252432}
+    local url=https://github.com/microg/GmsCore/releases/download/v$ver
+    local dl=$ROOT/out/downloads/microg-$ver
+    local cert=9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165
+    local name pkg apk
+    mkdir -p "$dl"
+    rm -rf "$APPS/FakeStore"   # microG's Play Store stub, replaced by playstore below
+    for name in GmsCore:com.google.android.gms; do
+        pkg=${name#*:}; name=${name%%:*}
+        # The release names each APK <package>-<versionCode>.apk; skip the -hw (Huawei) ones.
+        apk=$(curl -sSfL "https://api.github.com/repos/microg/GmsCore/releases/tags/v$ver" |
+              grep -o "\"name\": *\"$pkg-[0-9]*\.apk\"" | cut -d'"' -f4)
+        [[ -n $apk ]] || { echo "fetch-apps.sh: no $pkg APK in microG v$ver" >&2; exit 1; }
+        [[ -f $dl/$apk ]] || curl -sSfL -o "$dl/$apk" "$url/$apk"
+        "$HOST/apksigner" verify --print-certs "$dl/$apk" 2>/dev/null | grep -q "SHA-256 digest: $cert" ||
+            { echo "fetch-apps.sh: $apk is not signed with microG's certificate" >&2; exit 1; }
+        install_app "$name" "$dl/$apk" "microG $ver $pkg ($url/$apk, signature checked)" \
+            "privileged: true,
+    skip_preprocessed_apk_checks: true,"   # compressed dex: rejected for priv-apps otherwise
+    done
+}
+
+playstore() {
+    local zip=google_apis_playstore-x86_64-37.0_r08.zip
+    local url=https://dl.google.com/android/repository/sys-img/google_apis_playstore/x86_64-37.0_r08.zip
+    local sha1=7ba53fe131fad2cfc3de2b88e32fde5c529fc9c7
+    local cert=f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83
+    local dl=$ROOT/out/downloads/emu-37 work start
+    mkdir -p "$dl"
+    if [[ ! -f $dl/$zip ]]; then
+        curl -sSf -o "$dl/$zip.part" "$url"
+        echo "$sha1  $dl/$zip.part" | sha1sum -c --quiet
+        mv "$dl/$zip.part" "$dl/$zip"
+    fi
+    # system.img is a GPT disk whose partition 2 is "super"; product is EROFS in there.
+    work=$(mktemp -d "$dl/playstore.XXXXXX")
+    unzip -q -d "$work" "$dl/$zip" x86_64/system.img
+    start=$(sfdisk -d "$work/x86_64/system.img" | sed -n 's/.*: start= *\([0-9]*\),.*/\1/p' | sed -n 2p)
+    dd if="$work/x86_64/system.img" of="$work/super.img" bs=512 skip="$start" status=none
+    rm "$work/x86_64/system.img"
+    lpunpack -p product "$work/super.img" "$work" >/dev/null
+    rm "$work/super.img"
+    "$HOST/fsck.erofs" --extract="$work/product" "$work/product.img" >/dev/null
+    "$HOST/apksigner" verify --print-certs "$work/product/priv-app/Phonesky/Phonesky.apk" 2>/dev/null |
+        grep -q "SHA-256 digest: $cert" ||
+        { rm -rf "$work"; echo "fetch-apps.sh: Phonesky.apk is not signed by Google" >&2; exit 1; }
+    local ver
+    ver=$("$HOST/aapt2" dump badging "$work/product/priv-app/Phonesky/Phonesky.apk" |
+          sed -n "s/.*versionName='\([^' ]*\).*/\1/p")
+    install_app Phonesky "$work/product/priv-app/Phonesky/Phonesky.apk" \
+        "Google Play Store $ver from the emulator image $zip (signature checked)" "privileged: true,"
+    # Its privileged permissions, as the emulator image grants them.
+    { echo '<?xml version="1.0" encoding="utf-8"?>'
+      echo "<!-- Generated by tools/fetch-apps.sh from $zip. -->"
+      echo '<permissions>'
+      sed -n '/<privapp-permissions package="com.android.vending">/,/<\/privapp-permissions>/p' \
+          "$work/product/etc/permissions/privapp-permissions-google-p.xml"
+      echo '</permissions>'
+    } > "$APPS/Phonesky/privapp-permissions-phonesky.xml"
+    grep -q 'permission name=' "$APPS/Phonesky/privapp-permissions-phonesky.xml" ||
+        { rm -rf "$work"; echo "fetch-apps.sh: no Phonesky permissions in $zip" >&2; exit 1; }
+    sed -i 's/^    privileged: true,$/&\n    required: ["privapp-permissions-phonesky.xml"],/' "$APPS/Phonesky/Android.bp"
+    cat >> "$APPS/Phonesky/Android.bp" <<'BP'
+
+prebuilt_etc {
+    name: "privapp-permissions-phonesky.xml",
+    src: "privapp-permissions-phonesky.xml",
+    sub_dir: "permissions",
+    product_specific: true,
+}
+BP
+    rm -rf "$work"
+}
+
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
-for app in "${@:-chromium fdroid}"; do
+for app in "${@:-chromium fdroid microg playstore}"; do
     for a in $app; do "$a"; done
 done

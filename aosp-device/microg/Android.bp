@@ -1,0 +1,14 @@
+// microG support files (aosp-device/microg.mk); the APKs themselves come from
+// tools/fetch-apps.sh microg.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+prebuilt_etc {
+    name: "privapp-permissions-microg.xml",
+    src: "privapp-permissions-microg.xml",
+    sub_dir: "permissions",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}

@@ -12,6 +12,18 @@ endif
 
 include device/google/cuttlefish/vsoc_x86_64_only/BoardConfig.mk
 
+# ndk_translation.mk installs the fetched libndk_translation ELF files with
+# PRODUCT_COPY_FILES (as the emulator's own ndk_translation makefile does).
+ifneq (,$(wildcard device/android-pc/ndk_translation/system/lib64/libndk_translation.so))
+BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
+# The Cuttlefish phone builds /system from the fixed Soong module aosp_shared_system_image,
+# which ignores device PRODUCT_COPY_FILES. Without it Soong generates the system image
+# from this product's own packages and copy files, as for most products. Set here because
+# the board config is read after the product makefiles, which reset it to aosp_cf.mk's
+# value; ndk_translation.mk clears PRODUCT_SOONG_DEFINED_SYSTEM_IMAGE (read-only here).
+USE_SOONG_DEFINED_SYSTEM_IMAGE :=
+endif
+
 # Shared policy (te_macros) first, then the real-PC boot support, then one sepolicy/
 # directory per HAL.
 BOARD_VENDOR_SEPOLICY_DIRS += \

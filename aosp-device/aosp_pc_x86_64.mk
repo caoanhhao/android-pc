@@ -12,6 +12,12 @@ $(call inherit-product, device/google/cuttlefish/vsoc_x86_64_only/phone/aosp_cf.
 # Booting on the real PC from a USB stick (phase F3a).
 include $(PC_DEVICE_DIR)/pc/pc.mk
 
+# ARM64 apps through the libndk_translation native bridge.
+include $(PC_DEVICE_DIR)/ndk_translation.mk
+
+# microG (Google Play services replacement) and Google Play Store, preinstalled and enabled.
+include $(PC_DEVICE_DIR)/microg.mk
+
 PRODUCT_NAME := aosp_pc_x86_64
 PRODUCT_DEVICE := pc_x86_64
 PRODUCT_BRAND := Android

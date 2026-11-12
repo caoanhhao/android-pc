@@ -1,0 +1,51 @@
+diff --git a/services/core/java/com/android/server/pm/ComputerEngine.java b/services/core/java/com/android/server/pm/ComputerEngine.java
+index 4ce3cabdd..2a4fd6a41 100644
+--- a/services/core/java/com/android/server/pm/ComputerEngine.java
++++ b/services/core/java/com/android/server/pm/ComputerEngine.java
+@@ -1545,6 +1545,7 @@ public class ComputerEngine implements Computer {
+                             developerVerificationStatusInternal.isAppMetadataVerified());
+                 }
+             }
++            spoofMicroGSignature(ps, p, flags, packageInfo);
+             return packageInfo;
+         } else if ((flags & (MATCH_UNINSTALLED_PACKAGES | MATCH_ARCHIVED_PACKAGES)) != 0
+                 && PackageUserStateUtils.isAvailable(state, flags)) {
+@@ -1585,6 +1586,38 @@ public class ComputerEngine implements Computer {
+         }
+     }
+ 
++    // Local (android-pc): restricted signature spoofing for microG. Only these packages, and
++    // only when preinstalled on a system partition, may report the Google signature carried
++    // in their "fake-signature" meta-data; an app installed later never can.
++    private static final Set<String> MICROG_PACKAGES = Set.of(
++            "com.google.android.gms", "com.google.android.gsf", "com.android.vending");
++
++    private static void spoofMicroGSignature(PackageStateInternal ps, AndroidPackage p,
++            long flags, PackageInfo packageInfo) {
++        if ((flags & (PackageManager.GET_SIGNATURES
++                | PackageManager.GET_SIGNING_CERTIFICATES)) == 0
++                || !ps.isSystem() || !MICROG_PACKAGES.contains(p.getPackageName())
++                || p.getMetaData() == null) {
++            return;
++        }
++        final String fake = p.getMetaData().getString("fake-signature");
++        if (fake == null || fake.isEmpty()) {
++            return;
++        }
++        try {
++            final Signature[] sigs = { new Signature(fake) };
++            if ((flags & PackageManager.GET_SIGNATURES) != 0) {
++                packageInfo.signatures = sigs;
++            }
++            if ((flags & PackageManager.GET_SIGNING_CERTIFICATES) != 0) {
++                packageInfo.signingInfo = new SigningInfo(new SigningDetails(sigs,
++                        SigningDetails.SignatureSchemeVersion.SIGNING_BLOCK_V3));
++            }
++        } catch (IllegalArgumentException | java.security.cert.CertificateException e) {
++            Slog.w(TAG, "Bad fake-signature in " + p.getPackageName(), e);
++        }
++    }
++
+     public final PackageInfo getPackageInfo(String packageName,
+             @PackageManager.PackageInfoFlagsBits long flags, int userId) {
+         return getPackageInfoInternal(packageName, PackageManager.VERSION_CODE_HIGHEST,
