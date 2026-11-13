@@ -181,6 +181,14 @@ be coded in parallel but must take turns building.
   `tools/mkusb-aosp17.sh` now sets the GOP mode to 2560x1080 by default (`--resolution
   auto` for the EDID mode). Checked on Cuttlefish at 2560x1080; the real PC is part of the
   next USB test. See `docs/desktop-mode.md`.
+  *USB image `out/aosp17-usb-f9d.img` (2026-11-13, 12.7 GiB, `tools/mkusb-aosp17.sh --menu`,
+  2560x1080):* holds F9b–F9f (main at 0cabdba). Checked in the image's super partition:
+  `sysconfig-phonesky.xml`/`sysconfig-microg.xml` on `/product`, the desktop-mode
+  `display_settings.xml`, freeform feature and framework RRO, the Wi-Fi SettingsProvider
+  overlay and the rebuilt Rust Wi-Fi HAL on `/vendor`, the `force_desktop_first` product
+  prop; Limine entries at 2560x1080. QEMU smoke boot (`tools/run-qemu-aosp17-usb.sh`):
+  boot completes, the display is freeform with rotation locked, `wifi_always_requested=1`,
+  the Play Store and microG are on the deviceidle allowlist. Next: the real-PC test.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
