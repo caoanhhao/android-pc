@@ -329,9 +329,80 @@ Chromium flags. No fallback kept: Cuttlefish's camera APEX is off on the PC, Wi-
 the Rust HAL. Details in `docs/usb-boot-aosp17.md` §7. ARM-only apps and Google services
 are a separate task (no ARM64 native bridge in the image).
 
+## Phase G — NVIDIA RTX 4070 driver stack
+
+Goal: drive the PC's **RTX 4070 (AD104, `10de:2786`, HDMI audio `10de:22bc`)** from
+Android instead of the UEFI GOP framebuffer (`pcfb`). That gives sound on the monitor
+(HDMI/DP audio needs the GPU driver to light the link; see F9h), native modes and
+refresh rates, more than one monitor, and in the end hardware GPU rendering instead of
+SwiftShader. Decided 2026-11-13.
+
+**Approach.** A GPU driver written from scratch is years of work, so the plan builds on
+the open stacks that already support Ada, adds what Android is missing, and keeps a
+Rust track:
+
+| Layer | Choice | Why |
+|---|---|---|
+| Kernel | **nouveau with GSP-RM** (in `gki/common`, AD102-AD107 supported), vendor module | Mature modesetting and HDMI audio on Ada; GSP does clocks and power |
+| Firmware | `nvidia/ad104/gsp/*-570.144` from linux-firmware into `/vendor/firmware` | Required by nouveau on Ada |
+| Vulkan | **Mesa NVK** (`aosp/external/mesa3d`, Mesa 26.1; its NAK shader compiler is Rust) | The only open Vulkan for Ada |
+| GLES | **ANGLE on Vulkan** (already in AOSP) | Android's own GLES-over-Vulkan path |
+| Buffers / composer | minigbm + drm_hwcomposer (both in `aosp/external`) | Standard for KMS GPUs on Android |
+| Rust track | **Nova** (`nova-core`, `drm/nova`, Rust, in the 6.18 tree) | NVIDIA's future open driver; experimental only |
+
+Rejected: NVIDIA's open-gpu-kernel-modules plus the proprietary userspace (glibc-only,
+no Android build); switching to the Intel iGPU (no GPU acceleration for games, needs
+the monitor moved).
+
+**Testing.** QEMU and Cuttlefish cannot pass the 4070 through (the host's desktop runs
+on it), so every G step ends on the **real PC**: the session builds, checks the image
+in QEMU that it still boots on `pcfb` (nouveau must stay harmless without NVIDIA
+hardware), then hands the user the `tools/update-usb-aosp17.sh` command (CLAUDE.md
+USB rule) and reads the results from the pclog partition afterwards. Each step keeps
+`pcfb` as the fallback: a boot property (`androidpc.gpu=pcfb|nouveau`, chosen from the
+Limine menu) picks the path, so a broken GPU step never leaves the stick unbootable.
+
+- **G1. nouveau + GSP on the GKI kernel (display and HDMI audio).** Enable
+  `DRM_NOUVEAU` (and whatever helpers the GKI image lacks: TTM, display helpers,
+  `drm_gpuvm`, `drm_exec`) as vendor modules in `tools/gki-build.sh`; ship the AD104
+  GSP firmware (decompressed); load nouveau only on the `nouveau` boot entry, with
+  `pcfb` not bound. pclog dumps `dmesg` (GSP boot), `/sys/class/drm/*/status`, EDID
+  and the HDA ELD. Done when: on the real PC nouveau boots GSP, the monitor shows
+  its connected mode in `modetest`, and the F9h Rust audio HAL plays a test tone
+  through the monitor.
+- **G2. Android display on KMS.** Composer = drm_hwcomposer on the nouveau card
+  (client composition still on SwiftShader), gralloc = minigbm with dumb buffers (or
+  its nouveau backend), native resolution and refresh rate, hotplug, a second
+  monitor. Rust audio HAL follows HDMI/DP hotplug. VTS composer and gralloc subsets.
+  Done when: the desktop runs on KMS at the monitor's native mode with sound, and
+  the `pcfb` entry still works.
+- **G3. NVK Vulkan on Android.** Build Mesa's NVK (and NAK) through Soong for
+  x86_64 Android, gralloc interop (`AHardwareBuffer`, dma-buf modifiers that NVK
+  and minigbm agree on), `vulkan.nouveau` as the system Vulkan HAL. Done when:
+  `vulkaninfo` shows the RTX 4070 and dEQP-VK smoke groups (api, memory, wsi.android)
+  pass on the real PC.
+- **G4. GLES through ANGLE, GPU composition.** ANGLE as the system GLES driver on
+  NVK, SurfaceFlinger and HWC client composition on the GPU, SwiftShader removed
+  from that boot entry. Done when: dEQP-GLES3 smoke groups pass, Chromium/WebView
+  and the games from F9 (Delta Force, Genshin's renderer) run GPU-accelerated, and
+  the frame rate beats the `pcfb` entry.
+- **G5. Power, thermal, stability.** GSP clocks under load, fan and temperature
+  from nouveau's hwmon into the F4 Rust thermal HAL, suspend/resume, a long
+  game-plus-video soak with no GPU faults in pclog. Done when: one hour of play
+  shows no hangs and sane temperatures; then `nouveau` becomes the default entry.
+- **G6. Nova (Rust) experiment.** Build `NOVA_CORE` and `DRM_NOVA` as modules on
+  a third boot entry, see how far they bring up the 4070 (GSP boot, VRAM), write
+  down what works next to nouveau, and keep our patches upstream-shaped. Never
+  the default until it can drive the display. Done when: a short report in
+  `docs/nvidia.md` with logs from the real PC.
+
+Order: G1 → G2 → G3 → G4 → G5, each in its own sub-session, one build at a time;
+G6 after G5. `docs/nvidia.md` is the running log for the whole phase.
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
 - The host CPU is flaky under build load (see `docs/aosp-build.md`, "Flaky host").
-- The RTX 4070 has no usable open driver, so display is the UEFI GOP framebuffer
-  (`pcfb`) with software rendering.
+- The RTX 4070 runs on the UEFI GOP framebuffer (`pcfb`) with software rendering
+  until Phase G lands. nouveau on Ada is young, and every G test needs the real PC
+  (no GPU passthrough on this host).
