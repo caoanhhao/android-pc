@@ -26,7 +26,7 @@ pub use android_media_audio_common_types::aidl::android::media::audio::common::{
     AudioChannelLayout::{self as channel_layout, AudioChannelLayout},
     AudioDevice::AudioDevice,
     AudioDeviceAddress::AudioDeviceAddress,
-    AudioDeviceDescription::AudioDeviceDescription,
+    AudioDeviceDescription::{self as device_description, AudioDeviceDescription},
     AudioDeviceType::AudioDeviceType,
     AudioFormatDescription::AudioFormatDescription,
     AudioFormatType::AudioFormatType,

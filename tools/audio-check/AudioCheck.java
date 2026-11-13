@@ -4,8 +4,12 @@
 //   play SECONDS HZ    plays a sine tone (media usage, 48 kHz stereo)
 //   record SECONDS     records from the default microphone (48 kHz mono) and prints the
 //                      peak and RMS levels
+//   hdmi 1|0           tells the audio service an HDMI sink was connected/disconnected, as
+//                      WiredAccessoryManager does for an HDMI jack (needs MODIFY_AUDIO_ROUTING:
+//                      run as shell or root)
 
 import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
@@ -19,12 +23,32 @@ public final class AudioCheck {
             play(Double.parseDouble(args[1]), Double.parseDouble(args[2]));
         } else if (args.length >= 2 && args[0].equals("record")) {
             record(Double.parseDouble(args[1]));
+        } else if (args.length >= 2 && args[0].equals("hdmi")) {
+            hdmi(Integer.parseInt(args[1]));
         } else {
-            System.err.println("usage: AudioCheck play SECONDS HZ | record SECONDS");
+            System.err.println("usage: AudioCheck play SECONDS HZ | record SECONDS | hdmi 1|0");
             System.exit(2);
         }
         // AudioSystem leaves a non-daemon looper thread behind.
         System.exit(0);
+    }
+
+    // IAudioService.setWiredDeviceConnectionState(AudioDeviceAttributes, int, String); the
+    // hidden types are reached by reflection, android.jar only has the public SDK.
+    private static void hdmi(int state) throws Exception {
+        Object binder = Class.forName("android.os.ServiceManager")
+                .getMethod("getService", String.class).invoke(null, "audio");
+        Object service = Class.forName("android.media.IAudioService$Stub")
+                .getMethod("asInterface", android.os.IBinder.class).invoke(null, binder);
+        Class<?> attributesClass = Class.forName("android.media.AudioDeviceAttributes");
+        int roleOutput = attributesClass.getField("ROLE_OUTPUT").getInt(null);
+        Object attributes = attributesClass.getConstructor(int.class, int.class, String.class)
+                .newInstance(roleOutput, AudioDeviceInfo.TYPE_HDMI, "");
+        service.getClass()
+                .getMethod("setWiredDeviceConnectionState", attributesClass, int.class,
+                        String.class)
+                .invoke(service, attributes, state, "com.android.shell");
+        System.out.println("HDMI " + (state != 0 ? "connected" : "disconnected"));
     }
 
     private static void play(double seconds, double hz) {
@@ -53,9 +77,12 @@ public final class AudioCheck {
             track.write(chunk, 0, 2 * n);
             done += n;
         }
+        AudioDeviceInfo routed = track.getRoutedDevice();
         track.stop();
         track.release();
-        System.out.println("played " + seconds + " s of " + hz + " Hz");
+        System.out.println("played " + seconds + " s of " + hz + " Hz"
+                + (routed == null ? "" : " to device type " + routed.getType()
+                        + " (" + routed.getProductName() + ")"));
     }
 
     private static void record(double seconds) {

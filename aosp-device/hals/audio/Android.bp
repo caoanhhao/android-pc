@@ -14,6 +14,7 @@ rust_defaults {
         "android.media.audio.common.types-V5-rust",
         "liblibc",
         "libpcfmq",
+        "librustutils",
     ],
 }
 

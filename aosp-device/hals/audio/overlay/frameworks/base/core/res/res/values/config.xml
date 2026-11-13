@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HDMI audio on aosp_pc_x86_64 (phase F9h, docs/rust-hals.md, F6 audio). -->
+<resources>
+    <!-- WiredAccessoryManager reads audio jacks from input switches: the HD Audio driver
+         reports each HDMI/DP pin with a monitor as SW_LINEOUT_INSERT + SW_VIDEOOUT_INSERT,
+         which connects DEVICE_OUT_HDMI; the PC has no extcon/switch jack devices. -->
+    <bool name="config_useDevInputEventForAudioJack">true</bool>
+</resources>

@@ -1,5 +1,7 @@
 //! ALSA mixer controls (`/dev/snd/controlC<card>`): the HAL turns the codec's outputs and
-//! capture path on at start.
+//! capture path on at start, and an HDMI card's `IEC958 Playback Switch`es (Linux desktops
+//! switch them on through alsactl or PulseAudio's HDMI path) when it plays to HDMI; it reads
+//! the HDMI/DP jack controls to find the PCM a monitor is on.
 //!
 //! HD Audio codecs come up muted with every volume at 0 (Linux desktops restore saved
 //! levels with alsactl; Android has nothing that does). [`unmute`] switches on the output
@@ -126,6 +128,7 @@ const fn ioc_rw(nr: u32, size: usize) -> u32 {
 
 const IOCTL_ELEM_LIST: u32 = ioc_rw(0x10, size_of::<ElemList>());
 const IOCTL_ELEM_INFO: u32 = ioc_rw(0x11, size_of::<ElemInfo>());
+const IOCTL_ELEM_READ: u32 = ioc_rw(0x12, size_of::<ElemValue>());
 const IOCTL_ELEM_WRITE: u32 = ioc_rw(0x13, size_of::<ElemValue>());
 
 const _: () = assert!(size_of::<ElemId>() == 64, "struct snd_ctl_elem_id");
@@ -228,6 +231,23 @@ impl Mixer {
         })
     }
 
+    /// The first value (channel) of `control`.
+    ///
+    /// # Errors
+    ///
+    /// The kernel rejects the read.
+    pub fn get(&self, control: &Control) -> io::Result<i64> {
+        let mut elem = ElemValue {
+            id: ElemId::numbered(control.numid),
+            indirect: 0,
+            integer: [0; 128],
+            reserved: [0; 128],
+        };
+        // SAFETY: `elem` is a `struct snd_ctl_elem_value`.
+        unsafe { self.ioctl(IOCTL_ELEM_READ, &mut elem) }?;
+        Ok(elem.integer[0])
+    }
+
     /// Sets every value (channel) of `control` to `value`.
     ///
     /// # Errors
@@ -264,6 +284,27 @@ pub fn unmute(card: u32) {
     }
 }
 
+/// The PCM devices of `card` whose `HDMI/DP,pcm=<N> Jack` is on: the codec has a monitor
+/// with a valid ELD on that PCM's pin. Errors are logged and mean no jack.
+pub fn hdmi_jacks(card: u32) -> Vec<u32> {
+    let result = Mixer::open(card).and_then(|mixer| {
+        let mut devices = Vec::new();
+        for control in mixer.controls()? {
+            let Some(device) = crate::cards::hdmi_jack_device(&control.name) else { continue };
+            let on = mixer.get(&control)? != 0;
+            info!("card {card}: {} = {}", control.name, if on { "on" } else { "off" });
+            if on {
+                devices.push(device);
+            }
+        }
+        Ok(devices)
+    });
+    result.unwrap_or_else(|err| {
+        warn!("card {card}: jacks: {err}");
+        Vec::new()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +317,7 @@ mod tests {
     fn ioctl_numbers_match_the_kernel() {
         assert_eq!(IOCTL_ELEM_LIST, 0xc050_5510);
         assert_eq!(IOCTL_ELEM_INFO, 0xc110_5511);
+        assert_eq!(IOCTL_ELEM_READ, 0xc4c8_5512);
         assert_eq!(IOCTL_ELEM_WRITE, 0xc4c8_5513);
     }
 

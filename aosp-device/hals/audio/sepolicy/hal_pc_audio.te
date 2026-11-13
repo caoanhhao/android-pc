@@ -5,3 +5,6 @@ pc_hal_service(hal_pc_audio, hal_audio)
 
 # audioserver collects the HAL's dump through a pipe of its own.
 allow hal_pc_audio audioserver:fifo_file write;
+
+# persist.vendor.audio.hdmi picks the HDMI PCM (or turns HDMI audio off).
+get_prop(hal_pc_audio, vendor_pc_audio_prop)

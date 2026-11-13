@@ -208,6 +208,22 @@ be coded in parallel but must take turns building.
   extracted, so `pc.mk` installs them beside the APK. Checked on Cuttlefish (enforcing):
   the bootstrap installs, `pkg install` fetches and runs x86_64 packages, no AVC denials.
   See `docs/usb-boot-aosp17.md` (Apps).
+  *F9h (2026-11-13, real-PC f9d logs): HDMI audio.* No sound from the monitor (RTX 4070
+  HDMI), onboard audio fine. The Rust audio HAL listed the HDMI PCMs but only exposed
+  `Speaker`, and nothing reported a monitor to the framework. Now the HAL has an external
+  `HDMI Out` port (connection `hdmi`, own `hdmi output` mix port) with
+  `connectExternalDevice`, and `config_useDevInputEventForAudioJack` makes
+  WiredAccessoryManager turn the HD Audio HDMI/DP jack switches into `DEVICE_OUT_HDMI`, so
+  media moves to the monitor while one with audio is connected. The HAL picks the PCM by
+  the jack kcontrols, logs the ELD state and switches the card's IEC958 outputs on;
+  `persist.vendor.audio.hdmi` (`off`, or a PCM) overrides it. Caveat: the NVIDIA codec only
+  attaches a PCM to a pin with a valid ELD, which the GPU driver writes; with the GOP
+  framebuffer and no NVIDIA/nouveau driver the jacks likely stay off, and then no PCM can
+  reach the monitor. pclog now records the ELD/jack state and beeps each HDMI PCM
+  (`hdmi-check.txt`) to settle that on the next real-PC boot. Checked on Cuttlefish
+  (`snd-aloop`, connection through the audio service): media moves to the HDMI port and
+  back, the tone arrives on the chosen PCM, VTS `IModule/default` 158 passed / 0 failed,
+  no AVC denials. See `docs/rust-hals.md` (F6, HDMI).
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

@@ -1,8 +1,9 @@
 //! Sound card discovery from `/proc/asound/cards` and `/proc/asound/pcm`.
 //!
 //! The primary module drives the built-in analog codec (HD Audio, AC'97, virtio-snd on
-//! Cuttlefish): its first playback and first capture PCM. HDMI/DisplayPort PCMs and USB
-//! audio cards are listed but not picked; the framework reports USB devices itself.
+//! Cuttlefish): its first playback and first capture PCM. An HDMI/DisplayPort PCM is picked
+//! when the framework connects an HDMI device ([`select_hdmi`]); USB audio cards are listed
+//! but not picked, the framework reports USB devices itself.
 //!
 //! No AIDL types here, so the parsing is unit tested on the host.
 
@@ -135,6 +136,92 @@ impl Primary {
     }
 }
 
+/// The PCM device an HD Audio HDMI/DP jack control reports on:
+/// `HDMI/DP,pcm=3 Jack` -> 3.
+pub fn hdmi_jack_device(control_name: &str) -> Option<u32> {
+    let (_, device) = control_name.strip_suffix(" Jack")?.rsplit_once(",pcm=")?;
+    device.parse().ok()
+}
+
+/// What `persist.vendor.audio.hdmi` asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdmiChoice {
+    /// Unset or `auto`: the PCM whose jack reports a monitor with audio.
+    Auto,
+    /// `off`: never play to HDMI; the framework's HDMI connection is refused, so audio
+    /// stays on the built-in codec.
+    Off,
+    /// `<device>` or `<card>,<device>`: this playback PCM (on the first card with HDMI
+    /// PCMs when no card is given).
+    Device { card: Option<u32>, device: u32 },
+}
+
+impl HdmiChoice {
+    /// Parses the property value; unknown values mean [`HdmiChoice::Auto`].
+    pub fn parse(value: Option<&str>) -> Self {
+        let value = value.unwrap_or("").trim();
+        if value.eq_ignore_ascii_case("off") {
+            return Self::Off;
+        }
+        let parsed = match value.split_once(',') {
+            Some((card, device)) => card
+                .trim()
+                .parse()
+                .ok()
+                .zip(device.trim().parse().ok())
+                .map(|(card, device)| Self::Device { card: Some(card), device }),
+            None => value.parse().ok().map(|device| Self::Device { card: None, device }),
+        };
+        parsed.unwrap_or(Self::Auto)
+    }
+}
+
+/// The PCM to play to when the framework connects an HDMI device. `connected` are the
+/// `(card, device)` pairs whose HDMI jack is on. With [`HdmiChoice::Auto`], the first
+/// connected HDMI PCM, or the first HDMI PCM if no jack is on (the jack needs a valid ELD,
+/// which some GPUs only provide with their own driver).
+pub fn select_hdmi(
+    pcms: &[PcmInfo],
+    connected: &[(u32, u32)],
+    choice: HdmiChoice,
+) -> Option<PcmInfo> {
+    let hdmi = || pcms.iter().filter(|p| p.kind == Kind::Hdmi && p.playback);
+    match choice {
+        HdmiChoice::Off => None,
+        HdmiChoice::Auto => hdmi()
+            .find(|p| connected.contains(&(p.card, p.device)))
+            .or_else(|| hdmi().next())
+            .cloned(),
+        HdmiChoice::Device { card, device } => {
+            let card = card.or_else(|| hdmi().next().map(|p| p.card))?;
+            pcms.iter().find(|p| p.card == card && p.device == device && p.playback).cloned()
+        }
+    }
+}
+
+/// Monitor state of one HDMI pin, from `/proc/asound/card<N>/eld#<codec>.<pin>`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Eld {
+    pub monitor_present: bool,
+    pub eld_valid: bool,
+    pub monitor_name: String,
+}
+
+pub fn parse_eld(text: &str) -> Eld {
+    let mut eld = Eld::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(char::is_whitespace) else { continue };
+        let value = value.trim();
+        match key {
+            "monitor_present" => eld.monitor_present = value == "1",
+            "eld_valid" => eld.eld_valid = value == "1",
+            "monitor_name" => eld.monitor_name = value.to_owned(),
+            _ => {}
+        }
+    }
+    eld
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +282,58 @@ mod tests {
         let cards = " 0 [NVidia         ]: HDA-Intel - HDA NVidia\n";
         let pcms = "00-03: HDMI 0 : HDMI 0 : playback 1\n";
         assert_eq!(Primary::select(&list(cards, pcms)), Primary::default());
+    }
+
+    #[test]
+    fn hdmi_jack_names() {
+        assert_eq!(hdmi_jack_device("HDMI/DP,pcm=3 Jack"), Some(3));
+        assert_eq!(hdmi_jack_device("HDMI/DP,pcm=10 Jack"), Some(10));
+        assert_eq!(hdmi_jack_device("Line Out Jack"), None);
+        assert_eq!(hdmi_jack_device("HDMI/DP,pcm=3"), None);
+    }
+
+    #[test]
+    fn hdmi_choice_values() {
+        assert_eq!(HdmiChoice::parse(None), HdmiChoice::Auto);
+        assert_eq!(HdmiChoice::parse(Some("auto")), HdmiChoice::Auto);
+        assert_eq!(HdmiChoice::parse(Some("OFF")), HdmiChoice::Off);
+        assert_eq!(HdmiChoice::parse(Some("7")), HdmiChoice::Device { card: None, device: 7 });
+        assert_eq!(HdmiChoice::parse(Some("1,8")), HdmiChoice::Device { card: Some(1), device: 8 });
+        assert_eq!(HdmiChoice::parse(Some("x,8")), HdmiChoice::Auto);
+    }
+
+    #[test]
+    fn selects_the_connected_hdmi_pcm() {
+        let pcms = list(PC_CARDS, PC_PCMS);
+        let device = |connected: &[(u32, u32)], choice| {
+            select_hdmi(&pcms, connected, choice).map(|p| (p.card, p.device))
+        };
+        assert_eq!(device(&[(1, 8)], HdmiChoice::Auto), Some((1, 8)));
+        // No jack on: the first HDMI PCM.
+        assert_eq!(device(&[], HdmiChoice::Auto), Some((1, 3)));
+        assert_eq!(device(&[(1, 8)], HdmiChoice::Off), None);
+        assert_eq!(device(&[(1, 8)], HdmiChoice::Device { card: None, device: 9 }), Some((1, 9)));
+        assert_eq!(
+            device(&[], HdmiChoice::Device { card: Some(0), device: 1 }),
+            Some((0, 1)),
+            "any playback PCM can be named"
+        );
+        assert_eq!(device(&[], HdmiChoice::Device { card: None, device: 4 }), None);
+        let analog_only = list(PC_CARDS, "00-00: ALC897 Analog : ALC897 Analog : playback 1\n");
+        assert_eq!(select_hdmi(&analog_only, &[], HdmiChoice::Auto), None);
+    }
+
+    #[test]
+    fn parses_eld() {
+        let eld = parse_eld(
+            "monitor_present\t\t1\neld_valid\t\t1\nmonitor_name\t\tLG ULTRAWIDE\n\
+             connection_type\t\tHDMI\n",
+        );
+        assert_eq!(
+            eld,
+            Eld { monitor_present: true, eld_valid: true, monitor_name: "LG ULTRAWIDE".into() }
+        );
+        assert_eq!(parse_eld("monitor_present\t\t0\neld_valid\t\t0\n"), Eld::default());
     }
 
     #[test]

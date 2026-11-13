@@ -46,6 +46,11 @@ dump() {
         echo "== dumpsys media.audio_flinger"; timeout 10 dumpsys media.audio_flinger 2>&1 | head -150
         echo "== asound"; cat /proc/asound/cards /proc/asound/pcm 2>&1; grep -H . /proc/asound/card*/pcm*/sub0/status 2>&1
         echo "== tinymix"; timeout 5 tinymix -D 0 2>&1 | head -80
+        echo "== hdmi eld"; grep -H -E 'monitor_present|eld_valid|monitor_name|connection_type' /proc/asound/card*/eld#* 2>&1
+        for c in /proc/asound/card[1-9]; do
+            echo "== tinymix ${c#/proc/asound/card}"; timeout 5 tinymix -D ${c#/proc/asound/card} 2>&1 | head -60
+        done
+        echo "== audio devices"; timeout 10 dumpsys audio 2>&1 | grep -iE 'hdmi|wired|connected' | head -30
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
@@ -74,6 +79,26 @@ if [ -f $mnt/audio-check.dex ]; then
         done
     ) &
 fi
+# HDMI check: a 3 s, 375 Hz beep on each HDMI PCM in turn (4 s apart), straight through
+# ALSA, so the log says which PCM (if any) the monitor plays.
+(
+    sleep 150
+    w=/data/local/tmp/beep.wav p=/data/local/tmp/beep-period.raw
+    : > $p
+    for i in $(seq 64); do printf '\000\020\000\020' >> $p; done
+    for i in $(seq 64); do printf '\000\360\000\360' >> $p; done
+    # RIFF header: 48 kHz, stereo, 16 bit, 576000 data bytes (3 s).
+    printf 'RIFF\044\312\010\000WAVEfmt \020\000\000\000\001\000\002\000' > $w
+    printf '\200\273\000\000\000\356\002\000\004\000\020\000data\000\312\010\000' >> $w
+    for i in $(seq 1125); do cat $p; done >> $w
+    grep HDMI /proc/asound/pcm | while IFS=- read -r card rest; do
+        dev=${rest%%:*}
+        echo "== $(cut -d' ' -f1 /proc/uptime) s: beep on card $((10#$card)) device $((10#$dev))"
+        timeout 10 tinyplay $w -D $((10#$card)) -d $((10#$dev)) 2>&1
+        echo "exit $?"
+        sleep 4
+    done >> $d/hdmi-check.txt 2>&1
+) &
 for t in 30 60 120 180 300 600 900 1200 1500 1800 2400 3000 3600; do
     sleep $((t - ${prev:-0}))
     prev=$t

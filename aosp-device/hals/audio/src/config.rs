@@ -6,16 +6,21 @@
 //! backed by an ALSA PCM of the built-in codec ([`cards::Primary`]); a path without
 //! hardware (no sound card, or a codec without capture) is backed by a null device that
 //! keeps time and plays silence, so the framework always has a speaker and a microphone.
+//!
+//! HDMI/DisplayPort audio is an external device: the `HDMI Out` template device port
+//! (connection `hdmi`, fed by the `hdmi output` mix port) is connected by the framework when
+//! a monitor with audio is plugged in (WiredAccessoryManager reads the HD Audio HDMI/DP
+//! jacks as input switches). [`Endpoint::connect_hdmi`] then picks the PCM.
 
 use log::{info, warn};
 
 use crate::aidl::{
-    channel_layout, device_ext, dup, pcm_format, AudioChannelLayout, AudioDevice,
-    AudioDeviceAddress, AudioDeviceDescription, AudioDeviceType, AudioIoFlags, AudioOutputFlags,
-    AudioPatch, AudioPort, AudioPortConfig, AudioPortDeviceExt, AudioPortExt, AudioPortMixExt,
-    AudioProfile, AudioRoute, Int, PcmType,
+    channel_layout, device_description, device_ext, dup, pcm_format, AudioChannelLayout,
+    AudioDevice, AudioDeviceAddress, AudioDeviceDescription, AudioDeviceType, AudioIoFlags,
+    AudioOutputFlags, AudioPatch, AudioPort, AudioPortConfig, AudioPortDeviceExt, AudioPortExt,
+    AudioPortMixExt, AudioProfile, AudioRoute, Int, PcmType,
 };
-use crate::cards::{self, PcmInfo};
+use crate::cards::{self, HdmiChoice, Kind, PcmInfo};
 use crate::ctl;
 use crate::pcm::{self, Capabilities, Direction, Format, PcmAddress};
 
@@ -24,6 +29,50 @@ const LATENCY_MS: i32 = 40;
 /// Virtual sound cards (virtio-snd on Cuttlefish) are fed by a host process with coarse
 /// timing; AOSP's Cuttlefish HAL uses this latency to pass CTS on them.
 const VIRTUAL_LATENCY_MS: i32 = 85;
+
+/// Rates of the HDMI path: CEA-861 basic audio (stereo LPCM at 32, 44.1 and 48 kHz), which
+/// every HDMI sink with audio takes.
+const HDMI_RATES: [u32; 3] = [32000, 44100, 48000];
+
+/// What the HDMI path offers: 16-bit stereo at [`HDMI_RATES`].
+pub fn hdmi_caps() -> Capabilities {
+    Capabilities { formats: vec![Format::S16Le], channels: vec![2], rates: HDMI_RATES.to_vec() }
+}
+
+/// The property that picks the HDMI PCM, or turns HDMI audio off ([`HdmiChoice`]).
+pub const HDMI_PROPERTY: &str = "persist.vendor.audio.hdmi";
+
+fn hdmi_choice() -> HdmiChoice {
+    #[cfg(target_os = "android")]
+    {
+        use rustutils::android::system_properties;
+        let value = system_properties::read(HDMI_PROPERTY).ok().flatten();
+        HdmiChoice::parse(value.as_deref())
+    }
+    #[cfg(not(target_os = "android"))]
+    HdmiChoice::Auto
+}
+
+/// Logs the monitor state of every HDMI pin of `card` (`/proc/asound/card<N>/eld#*`).
+fn log_eld(card: u32) {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/asound/card{card}")) else { return };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("eld#")))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let eld = cards::parse_eld(&std::fs::read_to_string(&path).unwrap_or_default());
+        info!(
+            "{}: monitor_present {} eld_valid {} {:?}",
+            path.display(),
+            eld.monitor_present,
+            eld.eld_valid,
+            eld.monitor_name
+        );
+    }
+}
 
 /// The hardware behind one direction of the module.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +134,76 @@ impl Endpoint {
         info!("{direction:?}: {} {:?}", endpoint.description, endpoint.caps);
         endpoint
     }
+
+    /// The HDMI path when no hardware is used (connections simulated by VTS).
+    pub fn hdmi_null() -> Self {
+        Self { caps: hdmi_caps(), ..Self::null(Direction::Playback) }
+    }
+
+    /// The HDMI PCM the framework's HDMI connection plays to: the one `persist.vendor.audio.hdmi`
+    /// names, else the one whose jack reports a monitor, else the first HDMI PCM. Switches the
+    /// card's IEC958 outputs on. `None`: no HDMI PCM, or HDMI audio is turned off.
+    pub fn connect_hdmi() -> Option<Self> {
+        let choice = hdmi_choice();
+        let pcms = cards::discover();
+        let mut hdmi_cards: Vec<u32> =
+            pcms.iter().filter(|p| p.kind == Kind::Hdmi).map(|p| p.card).collect();
+        hdmi_cards.dedup();
+        let mut connected = Vec::new();
+        for card in hdmi_cards {
+            log_eld(card);
+            connected.extend(ctl::hdmi_jacks(card).into_iter().map(|device| (card, device)));
+        }
+        let Some(info) = cards::select_hdmi(&pcms, &connected, choice) else {
+            warn!("HDMI: no PCM for {choice:?} ({} PCMs, jacks on: {connected:?})", pcms.len());
+            return None;
+        };
+        if !connected.contains(&(info.card, info.device)) {
+            warn!(
+                "HDMI: {info} has no monitor with a valid ELD; the codec only routes a PCM to a \
+                 monitor's pin when the GPU reports one"
+            );
+        }
+        ctl::unmute(info.card);
+        let address =
+            PcmAddress { card: info.card, device: info.device, direction: Direction::Playback };
+        let caps = match pcm::probe(&address) {
+            Ok(probed) => {
+                let wanted = hdmi_caps();
+                let keep = |have: &[u32], want: &[u32]| -> Vec<u32> {
+                    want.iter().copied().filter(|v| have.contains(v)).collect()
+                };
+                let caps = Capabilities {
+                    formats: wanted
+                        .formats
+                        .iter()
+                        .copied()
+                        .filter(|f| probed.formats.contains(f))
+                        .collect(),
+                    channels: keep(&probed.channels, &wanted.channels),
+                    rates: keep(&probed.rates, &wanted.rates),
+                };
+                if caps.formats.is_empty() || caps.channels.is_empty() || caps.rates.is_empty() {
+                    warn!("HDMI: {info} offers {probed:?}, trying {wanted:?}");
+                    wanted
+                } else {
+                    caps
+                }
+            }
+            Err(err) => {
+                warn!("HDMI: cannot probe {info}: {err}");
+                hdmi_caps()
+            }
+        };
+        let endpoint = Self {
+            pcm: Some(address),
+            caps,
+            nominal_latency_ms: LATENCY_MS,
+            description: info.to_string(),
+        };
+        info!("HDMI ({choice:?}): {} {:?}", endpoint.description, endpoint.caps);
+        Some(endpoint)
+    }
 }
 
 /// Both directions of the module.
@@ -142,7 +261,7 @@ pub fn alsa_format(pcm: PcmType) -> Option<Format> {
     Format::ALL.into_iter().find(|&f| pcm_type(f) == pcm)
 }
 
-fn profiles(caps: &Capabilities) -> Vec<AudioProfile> {
+pub fn profiles(caps: &Capabilities) -> Vec<AudioProfile> {
     // Stereo and 48 kHz first: the framework's default picks come from the front.
     let mut channels = caps.channels.clone();
     channels.sort_unstable_by(|a, b| b.cmp(a));
@@ -169,10 +288,12 @@ fn profiles(caps: &Capabilities) -> Vec<AudioProfile> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn device_port(
     id: i32,
     name: &str,
     kind: AudioDeviceType,
+    connection: &str,
     address: &str,
     flags: AudioIoFlags,
     profiles: Vec<AudioProfile>,
@@ -180,7 +301,7 @@ fn device_port(
 ) -> AudioPort {
     let ext = AudioPortDeviceExt {
         device: AudioDevice {
-            r#type: AudioDeviceDescription { r#type: kind, connection: String::new() },
+            r#type: AudioDeviceDescription { r#type: kind, connection: connection.to_owned() },
             address: AudioDeviceAddress::Id(address.to_owned()),
         },
         flags: if default { 1 << device_ext::FLAG_INDEX_DEFAULT_DEVICE } else { 0 },
@@ -228,6 +349,8 @@ pub const SPEAKER: &str = "Speaker";
 pub const MICROPHONE: &str = "Built-In Mic";
 pub const PRIMARY_OUTPUT: &str = "primary output";
 pub const PRIMARY_INPUT: &str = "primary input";
+pub const HDMI: &str = "HDMI Out";
+pub const HDMI_OUTPUT: &str = "hdmi output";
 
 /// The module's mutable configuration: what `getAudioPorts`, `getAudioRoutes`,
 /// `getAudioPortConfigs` and `getAudioPatches` return. Ports and port configs share one
@@ -254,6 +377,7 @@ impl Configuration {
             SPEAKER,
             AudioDeviceType::OUT_SPEAKER,
             "",
+            "",
             output,
             profiles(&hardware.output.caps),
             true,
@@ -262,6 +386,7 @@ impl Configuration {
             2,
             MICROPHONE,
             AudioDeviceType::IN_MICROPHONE,
+            "",
             "bottom",
             input,
             profiles(&hardware.input.caps),
@@ -270,6 +395,18 @@ impl Configuration {
         let mix_out = mix_port(3, PRIMARY_OUTPUT, primary, profiles(&hardware.output.caps));
         let mix_in =
             mix_port(4, PRIMARY_INPUT, AudioIoFlags::Input(0), profiles(&hardware.input.caps));
+        // Template: no profiles until a device is connected (Module::connectExternalDevice).
+        let hdmi = device_port(
+            5,
+            HDMI,
+            AudioDeviceType::OUT_DEVICE,
+            device_description::CONNECTION_HDMI,
+            "",
+            AudioIoFlags::Output(0),
+            Vec::new(),
+            false,
+        );
+        let mix_hdmi = mix_port(6, HDMI_OUTPUT, AudioIoFlags::Output(0), profiles(&hdmi_caps()));
         let routes = vec![
             AudioRoute {
                 sourcePortIds: vec![mix_out.id],
@@ -277,16 +414,21 @@ impl Configuration {
                 isExclusive: false,
             },
             AudioRoute { sourcePortIds: vec![mic.id], sinkPortId: mix_in.id, isExclusive: false },
+            AudioRoute {
+                sourcePortIds: vec![mix_hdmi.id],
+                sinkPortId: hdmi.id,
+                isExclusive: false,
+            },
         ];
-        let port_configs = vec![initial_config(5, &speaker), initial_config(6, &mic)];
+        let port_configs = vec![initial_config(7, &speaker), initial_config(8, &mic)];
         let initial_configs = port_configs.iter().map(dup).collect();
         Self {
-            ports: vec![speaker, mic, mix_out, mix_in],
+            ports: vec![speaker, mic, mix_out, mix_in, hdmi, mix_hdmi],
             routes,
             port_configs,
             initial_configs,
             patches: Vec::new(),
-            next_port_id: 7,
+            next_port_id: 9,
             next_patch_id: 1,
         }
     }
@@ -338,13 +480,27 @@ mod tests {
     #[test]
     fn null_hardware_still_has_both_paths() {
         let config = Configuration::new(&Hardware::null());
-        assert_eq!(config.ports.len(), 4);
+        assert_eq!(config.ports.len(), 6);
         assert_eq!(config.port_configs.len(), 2);
         let output =
             config.ports.iter().find(|p| p.name == PRIMARY_OUTPUT).expect("output mix port");
         assert_eq!(config.routes_for(output.id).count(), 1);
         let speaker = config.port(1).expect("speaker");
         assert!(matches!(&speaker.ext, AudioPortExt::Device(d) if d.flags == 1));
+    }
+
+    #[test]
+    fn hdmi_is_a_template_fed_by_its_own_mix_port() {
+        let config = Configuration::new(&Hardware::null());
+        let hdmi = config.ports.iter().find(|p| p.name == HDMI).expect("HDMI port");
+        assert!(hdmi.profiles.is_empty());
+        assert!(matches!(&hdmi.ext, AudioPortExt::Device(d)
+            if d.device.r#type.connection == device_description::CONNECTION_HDMI));
+        let mix = config.ports.iter().find(|p| p.name == HDMI_OUTPUT).expect("HDMI mix port");
+        let routes: Vec<_> = config.routes_for(hdmi.id).collect();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].sourcePortIds, vec![mix.id]);
+        assert_eq!(mix.profiles[0].sampleRates, vec![48000, 32000, 44100]);
     }
 
     #[test]

@@ -1,0 +1,2 @@
+# persist.vendor.audio.hdmi: the HDMI PCM the audio HAL plays to, or "off" (docs/rust-hals.md).
+vendor_public_prop(vendor_pc_audio_prop)

@@ -346,9 +346,11 @@ action resets the property first.
 | `Built-In Mic` (`IN_MICROPHONE`, address `bottom`) | attached device | first analog capture PCM |
 | `primary output` (flag `PRIMARY`) → `Speaker` | mix port, 1 stream | |
 | `Built-In Mic` → `primary input` | mix port, 1 stream | |
+| `HDMI Out` (`OUT_DEVICE`, connection `hdmi`) | external device template (F9h) | the HDMI/DP PCM picked at connection |
+| `hdmi output` → `HDMI Out` | mix port, 1 stream, 16 bit stereo 32/44.1/48 kHz | |
 
 `src/cards.rs` reads `/proc/asound/cards` and `/proc/asound/pcm`: USB-Audio cards and
-HDMI/DisplayPort PCMs are skipped, the lowest analog card/device with playback (capture)
+HDMI/DisplayPort PCMs are skipped for the attached ports, the lowest analog card/device with playback (capture)
 backs the speaker (microphone). `pcm::probe` asks the device with `HW_REFINE` which formats,
 channel counts (1, 2) and rates (8–48 kHz; higher rates are left out, or the framework
 mixes at 192 kHz on an HDA codec) it accepts; the mix and device ports offer 16 bit PCM
@@ -397,9 +399,8 @@ the command queue and joins the worker; the PCM is closed in standby.
 The generated parcelables derive only `Debug`, so ports, configs and patches are copied
 and compared through a parcel (`aidl::dup`, `aidl::same`).
 
-What it does not do (yet): HDMI/DisplayPort output and USB audio (no external device
-ports: the framework's `UsbAlsaManager` reports USB cards, which needs template ports and
-`connectExternalDevice`), MMap/AAudio exclusive mode, offload, telephony, sound dose, hardware
+What it does not do (yet): USB audio (the framework's `UsbAlsaManager` reports USB cards,
+which needs a USB template port next to the HDMI one), MMap/AAudio exclusive mode, offload, telephony, sound dose, hardware
 volume/gain, effects on streams or devices (all reported as unsupported, which VTS accepts).
 
 ### Testing
@@ -415,7 +416,10 @@ volume/gain, effects on streams or devices (all reported as unsupported, which V
   `AUDIO=none` gives silent capture, `pa` (default) uses the host's sound server.
 - `tools/audio-check.sh play SECONDS HZ` / `record SECONDS` runs a small `AudioTrack` /
   `AudioRecord` program (`tools/audio-check/AudioCheck.java`, built with AOSP's prebuilt JDK
-  and d8) on the device with `app_process`; `ADB` picks the device.
+  and d8) on the device with `app_process`; `ADB` picks the device. `hdmi 1` / `hdmi 0`
+  connects/disconnects an HDMI sink through the audio service, as `WiredAccessoryManager`
+  does for an HDMI jack, so the HDMI path can be tried without a monitor; `play` prints the
+  device type the track was routed to (2 speaker, 9 HDMI).
 - VTS for the core HAL expects the framework stopped (`stop`,
   `setprop vts.native_server.on 1`): otherwise audioserver holds the only stream of each mix
   port and its patches.
@@ -427,7 +431,80 @@ auto-mutes the line out when headphones are plugged) and the mic input the `Inpu
 control selects. Check `logcat -s android.hardware.audio.service.pc` (`found card ...`,
 `Playback: ...`, mixer lines `card 0: Master Playback Switch = 1`), `tinymix -D 0`,
 `dumpsys media.audio_flinger`, and play/record with `tools/audio-check.sh`. HDMI on the
-RTX 4070 (card 1) and the webcam microphone (card 2) are not used.
+RTX 4070 (card 1) is the external `HDMI Out` port (next section); the webcam microphone
+(card 2) is not used.
+
+### HDMI/DisplayPort output (F9h)
+
+The real-PC f9d test: sound from the onboard codec, none from the monitor. The HAL listed
+the RTX 4070's HDMI PCMs (card 1, devices 3, 7, 8, 9) but only ever exposed `Speaker`, and
+nothing told the framework a monitor was there, so no HDMI device existed for the audio
+policy to route to.
+
+How it works now:
+
+1. The HD Audio HDMI codec driver reports each pin as a jack: the kcontrol
+   `HDMI/DP,pcm=<N> Jack` and an input device `HDA NVidia HDMI/DP,pcm=<N>` that sends
+   `SW_LINEOUT_INSERT` + `SW_VIDEOOUT_INSERT` when a monitor with a valid ELD is on the pin
+   (`snd_jack_report(..., monitor_present && eld_valid ? SND_JACK_AVOUT : 0)`).
+2. `config_useDevInputEventForAudioJack` (framework overlay in `hals/audio/overlay`) makes
+   `WiredAccessoryManager` read audio jacks from input switches (the PC has no extcon or
+   `/sys/class/switch` jack): both switches on → `DEVICE_OUT_HDMI` connected. Line out and
+   headphone jacks of the analog codec become `DEVICE_OUT_LINE`/headphones, which no module
+   offers, so they are refused and the analog path keeps playing through `Speaker` (the
+   codec routes its one PCM to the plugged jack itself).
+3. The audio policy asks the HAL to connect its `HDMI Out` template
+   (`connectExternalDevice`). `Endpoint::connect_hdmi` (`src/config.rs`) picks the PCM:
+   `persist.vendor.audio.hdmi` if set, else the HDMI PCM whose jack kcontrol is on, else the
+   first HDMI PCM; it logs every `/proc/asound/card<N>/eld#*` (`monitor_present`,
+   `eld_valid`, monitor name), switches the card's `IEC958 Playback Switch`es on, and probes
+   the PCM (16 bit stereo at 32/44.1/48 kHz, CEA-861 basic audio). The connected port gets
+   those profiles and a copy of the template's route from `hdmi output`.
+4. The engine prefers HDMI over the speaker for media, so music, video and system sounds
+   that follow media go to the monitor while it is connected; unplugging it disconnects the
+   port (the HAL refuses while a port config of it is still set, as VTS requires) and audio
+   returns to the onboard codec.
+
+Checked on Cuttlefish (2026-11-13, enforcing, `snd-aloop` card 0, property `0,1` so the
+HDMI path has its own PCM): the audio policy lists `HDMI Out` as `AUDIO_DEVICE_OUT_HDMI`;
+`audio-check.sh hdmi 1` connects port 11, AudioFlinger opens a second output thread on
+`AUDIO_DEVICE_OUT_HDMI`, `play 3 440` reports device type 9 and the tone arrives as 440 Hz
+on the loopback of `hw:0,1`; `hdmi 0` disconnects the port and the next `play` goes to the
+speaker (type 2). No AVC denials. `VtsHalAudioCoreTargetTest --gtest_filter='*IModule_default*'`:
+158 passed, 127 skipped, 0 failed, with the external-device tests (connect/disconnect,
+routes, port configs, two devices) now running against the HDMI template; device unit tests
+35/35, host `*_cards_test` 9/9. After a connection the audio policy asks the module for the
+mix ports of two ids it does not have (`getAudioMixPort ... Failed`, the HAL logs `port 9 not
+found`); the output opens anyway. What Cuttlefish cannot show is the jack path (no HDMI
+codec), so `WiredAccessoryManager` turning a real HDMI jack into the connection is checked
+on the PC.
+
+Choosing the output by hand, as root (`adb root`; the property is `vendor_pc_audio_prop`,
+readable by the HAL only):
+
+| `persist.vendor.audio.hdmi` | Effect |
+|---|---|
+| unset or `auto` | the PCM whose jack reports a monitor, else the first HDMI PCM |
+| `off` | the HDMI connection is refused: audio stays on the onboard codec |
+| `<device>` / `<card>,<device>` | this playback PCM (any card; `<device>` alone means the first card with HDMI PCMs) |
+
+The property is read at each connection; after changing it, replug the monitor or restart
+the HAL (`setprop sys.audio.restart.hal 1`).
+
+**NVIDIA without a GPU driver.** The NVIDIA HDMI codec assigns its PCMs to pins dynamically
+(`snd_hda_codec_hdmi` with `dp_mst`): a PCM is attached to a pin only when that pin has a
+valid ELD, and a PCM without a pin opens fine but plays into nothing
+(`hdmi_pcm_open_no_pin`). The ELD and the presence bit of an NVIDIA codec are written by the
+GPU driver (nouveau or NVIDIA's) when it sets a mode; on this PC the display runs on the
+firmware's GOP framebuffer (`pcfb`) with no GPU driver, so the jacks most likely stay off and
+no HDMI PCM can reach the monitor, whatever the HAL does. The pclog service now records the
+evidence on the next real-PC boot: `state-*.txt` gets `== hdmi eld` (`monitor_present`/
+`eld_valid` per pin), `tinymix` of every card (jack and IEC958 controls) and the audio
+service's device list, and `hdmi-check.txt` logs a 3 s, 375 Hz beep played with `tinyplay`
+to each HDMI PCM in turn, 150 s after boot. If the monitor stays silent and `eld_valid` is 0,
+HDMI audio needs a GPU driver that programs the audio path (nouveau with GSP firmware on
+the RTX 4070), which is a display-stack change, not a HAL one. With a monitor on the
+onboard Intel graphics (i915) or an AMD card, the jacks work and the path above applies.
 
 ## F7: Camera (`hals/camera`)
 

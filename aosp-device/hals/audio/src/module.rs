@@ -1,6 +1,7 @@
 //! `IModule/default`: ports, port configurations, patches and streams of the primary
-//! module, following AOSP's default implementation (`Module.cpp`) for a module whose
-//! devices are all permanently attached.
+//! module, following AOSP's default implementation (`Module.cpp`): permanently attached
+//! devices plus the HDMI template device port, which the framework connects and
+//! disconnects.
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,6 +64,8 @@ struct State {
     patch_users: BTreeMap<i32, BTreeSet<i32>>,
     /// Streams by mix port config id.
     streams: BTreeMap<i32, OpenStream>,
+    /// Connected external device ports (HDMI) and the hardware behind them, by port id.
+    connected: BTreeMap<i32, Endpoint>,
     debug: ModuleDebug,
 }
 
@@ -157,6 +160,7 @@ impl Module {
                 config,
                 patch_users: BTreeMap::new(),
                 streams: BTreeMap::new(),
+                connected: BTreeMap::new(),
                 debug: ModuleDebug::default(),
             }),
             hardware,
@@ -238,6 +242,30 @@ impl Module {
         }
     }
 
+    /// The hardware a stream on `port` uses: the HDMI mix port plays to the last connected
+    /// HDMI device (a null device when none is connected).
+    fn stream_endpoint(&self, state: &State, port: &AudioPort, io: Io) -> Endpoint {
+        if port.name == config::HDMI_OUTPUT {
+            state.connected.values().next_back().cloned().unwrap_or_else(Endpoint::hdmi_null)
+        } else {
+            self.endpoint(io).clone()
+        }
+    }
+
+    /// Checks that `port_id` is a connected external device port.
+    fn connected_port(state: &State, port_id: i32) -> binder::Result<()> {
+        match state.config.port(port_id) {
+            None => Err(illegal_argument(&format!("port {port_id} not found"))),
+            Some(port) if !matches!(port.ext, AudioPortExt::Device(_)) => {
+                Err(illegal_argument(&format!("port {port_id} is not a device port")))
+            }
+            Some(_) if !state.connected.contains_key(&port_id) => Err(illegal_argument(&format!(
+                "port {port_id} is not a connected external device port"
+            ))),
+            Some(_) => Ok(()),
+        }
+    }
+
     /// Creates the stream on `port_config_id` and registers it.
     fn open_stream(
         &self,
@@ -247,7 +275,7 @@ impl Module {
     ) -> binder::Result<(Arc<StreamShared>, StreamDescriptor)> {
         let mut state = self.state();
         let (config, port) = Self::stream_port(&mut state, port_config_id, io)?;
-        let endpoint = self.endpoint(io);
+        let endpoint = self.stream_endpoint(&state, &port, io);
         if buffer_frames <= 0 {
             return Err(illegal_argument(&format!("non-positive buffer size {buffer_frames}")));
         }
@@ -311,6 +339,7 @@ impl Module {
         suggested: &mut AudioPortConfig,
     ) -> binder::Result<bool> {
         let mut state = self.state();
+        let connected: BTreeSet<i32> = state.connected.keys().copied().collect();
         let config = &mut state.config;
         let existing = if requested.id != 0 {
             Some(config.port_configs.iter().position(|c| c.id == requested.id).ok_or_else(
@@ -327,7 +356,7 @@ impl Module {
             .port(port_id)
             .ok_or_else(|| illegal_argument(&format!("port {port_id} not found")))?;
         if let AudioPortExt::Device(d) = &port.ext {
-            if !d.device.r#type.connection.is_empty() {
+            if !d.device.r#type.connection.is_empty() && !connected.contains(&port_id) {
                 return Err(illegal_argument(&format!("port {port_id} is a template device port")));
             }
         }
@@ -518,9 +547,16 @@ impl Interface for Module {
         _args: &[&std::ffi::CStr],
     ) -> Result<(), binder::StatusCode> {
         let state = self.state();
+        let connected = state
+            .connected
+            .iter()
+            .map(|(id, endpoint)| format!("port {id}: {}", endpoint.description))
+            .collect::<Vec<_>>()
+            .join(", ");
         let lines = [
             format!("output: {}", self.hardware.output.description),
             format!("input: {}", self.hardware.input.description),
+            format!("connected: {connected}"),
             format!("port configs: {}", state.config.port_configs.len()),
             format!("patches: {}", state.config.patches.len()),
             format!(
@@ -540,8 +576,13 @@ impl IModule for Module {
         if debug.streamTransientStateDelayMs < 0 {
             return Err(illegal_argument("negative streamTransientStateDelayMs"));
         }
-        // There are no external devices, so connection simulation changes nothing.
-        self.state().debug = dup(debug);
+        let mut state = self.state();
+        if !state.connected.is_empty()
+            && debug.simulateDeviceConnections != state.debug.simulateDeviceConnections
+        {
+            return Err(illegal_state("connection simulation changed with connected devices"));
+        }
+        state.debug = dup(debug);
         Ok(())
     }
 
@@ -562,24 +603,92 @@ impl IModule for Module {
     }
 
     fn connectExternalDevice(&self, template: &AudioPort) -> binder::Result<AudioPort> {
-        let state = self.state();
-        match state.config.port(template.id) {
-            None => Err(illegal_argument(&format!("port {} not found", template.id))),
-            Some(port) if !matches!(port.ext, AudioPortExt::Device(_)) => {
-                Err(illegal_argument(&format!("port {} is not a device port", template.id)))
-            }
-            Some(_) => {
-                Err(illegal_argument(&format!("port {} is permanently attached", template.id)))
+        let mut state = self.state();
+        let id = template.id;
+        let port = state
+            .config
+            .port(id)
+            .map(dup)
+            .ok_or_else(|| illegal_argument(&format!("port {id} not found")))?;
+        let AudioPortExt::Device(template_ext) = &port.ext else {
+            return Err(illegal_argument(&format!("port {id} is not a device port")));
+        };
+        if template_ext.device.r#type.connection.is_empty() {
+            return Err(illegal_argument(&format!("port {id} is permanently attached")));
+        }
+        if state.connected.contains_key(&id) {
+            return Err(illegal_argument(&format!("port {id} is a connected device port")));
+        }
+        let AudioPortExt::Device(requested) = &template.ext else {
+            return Err(illegal_argument(&format!("no device for template port {id}")));
+        };
+        let mut device = dup(&template_ext.device);
+        device.address = dup(&requested.device.address);
+        let already = state
+            .connected
+            .keys()
+            .filter_map(|&c| state.config.port(c))
+            .any(|p| matches!(&p.ext, AudioPortExt::Device(d) if same(&d.device, &device)));
+        if already {
+            return Err(illegal_state(&format!("device {device:?} is already connected")));
+        }
+        let endpoint = if state.debug.simulateDeviceConnections {
+            Endpoint::hdmi_null()
+        } else {
+            Endpoint::connect_hdmi().ok_or_else(|| {
+                illegal_state(&format!(
+                    "no HDMI audio to connect {device:?} to (or {} is off)",
+                    config::HDMI_PROPERTY
+                ))
+            })?
+        };
+        let mut connected = dup(&port);
+        connected.id = state.config.next_port_id;
+        state.config.next_port_id += 1;
+        connected.extraAudioDescriptors = template.extraAudioDescriptors.iter().map(dup).collect();
+        connected.profiles = config::profiles(&endpoint.caps);
+        if let AudioPortExt::Device(ext) = &mut connected.ext {
+            ext.device = device;
+        }
+        // Routes to the template get a copy to the connected port; routes from it (inputs)
+        // gain the connected port as a source.
+        let mut new_routes = Vec::new();
+        for route in &mut state.config.routes {
+            if route.sinkPortId == id {
+                new_routes.push(AudioRoute {
+                    sourcePortIds: route.sourcePortIds.clone(),
+                    sinkPortId: connected.id,
+                    isExclusive: route.isExclusive,
+                });
+            } else if route.sourcePortIds.contains(&id) {
+                route.sourcePortIds.push(connected.id);
             }
         }
+        state.config.routes.extend(new_routes);
+        state.config.ports.push(dup(&connected));
+        info!("connected {} as port {}: {}", port.name, connected.id, endpoint.description);
+        state.connected.insert(connected.id, endpoint);
+        Ok(connected)
     }
 
     fn disconnectExternalDevice(&self, port_id: i32) -> binder::Result<()> {
-        Err(illegal_argument(&format!("port {port_id} is not a connected external device port")))
+        let mut state = self.state();
+        Self::connected_port(&state, port_id)?;
+        if let Some(config) = state.config.port_configs.iter().find(|c| c.portId == port_id) {
+            return Err(illegal_state(&format!("port {port_id} has config {}", config.id)));
+        }
+        state.config.ports.retain(|p| p.id != port_id);
+        state.config.routes.retain(|r| r.sinkPortId != port_id);
+        for route in &mut state.config.routes {
+            route.sourcePortIds.retain(|&source| source != port_id);
+        }
+        state.connected.remove(&port_id);
+        info!("disconnected port {port_id}");
+        Ok(())
     }
 
     fn prepareToDisconnectExternalDevice(&self, port_id: i32) -> binder::Result<()> {
-        Err(illegal_argument(&format!("port {port_id} is not a connected external device port")))
+        Self::connected_port(&self.state(), port_id)
     }
 
     fn getAudioPatches(&self) -> binder::Result<Vec<AudioPatch>> {
@@ -810,7 +919,7 @@ impl IModule for Module {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aidl::{has_flag, AudioOutputFlags, AudioPortMixExt};
+    use crate::aidl::{has_flag, AudioDeviceAddress, AudioOutputFlags, AudioPortMixExt};
 
     /// Flags that would need offload info, an async callback or MMap support.
     const UNSUPPORTED_OUTPUT_FLAGS: [AudioOutputFlags; 3] = [
@@ -894,6 +1003,40 @@ mod tests {
             ..Default::default()
         };
         assert!(module.setAudioPatch(&patch).is_err());
+    }
+
+    #[test]
+    fn hdmi_connection_is_simulated() {
+        let module = module();
+        let hdmi = port_named(&module.state().config, config::HDMI);
+        let routes_before = module.getAudioRoutes().expect("routes").len();
+        let mut template = module.getAudioPort(hdmi).expect("template");
+        if let AudioPortExt::Device(d) = &mut template.ext {
+            d.device.address = AudioDeviceAddress::Id("monitor".into());
+        }
+        let simulate = ModuleDebug { simulateDeviceConnections: true, ..Default::default() };
+        module.setModuleDebug(&simulate).expect("simulate");
+        let connected = module.connectExternalDevice(&template).expect("connect");
+        assert_ne!(connected.id, hdmi);
+        assert!(!connected.profiles.is_empty());
+        assert!(module.connectExternalDevice(&template).is_err(), "connected twice");
+        assert!(module.connectExternalDevice(&connected).is_err(), "not a template");
+        assert_eq!(module.getAudioRoutesForAudioPort(connected.id).expect("routes").len(), 1);
+        assert!(module.setModuleDebug(&ModuleDebug::default()).is_err());
+
+        // A device port config blocks the disconnection.
+        let requested = AudioPortConfig { portId: connected.id, ..Default::default() };
+        let mut suggested = AudioPortConfig::default();
+        module.setAudioPortConfig(&requested, &mut suggested).expect("suggestion");
+        let mut applied = AudioPortConfig::default();
+        assert!(module.setAudioPortConfig(&suggested, &mut applied).expect("set"));
+        module.prepareToDisconnectExternalDevice(connected.id).expect("prepare");
+        assert!(module.disconnectExternalDevice(connected.id).is_err());
+        module.resetAudioPortConfig(applied.id).expect("reset");
+        module.disconnectExternalDevice(connected.id).expect("disconnect");
+        assert!(module.getAudioPort(connected.id).is_err());
+        assert_eq!(module.getAudioRoutes().expect("routes").len(), routes_before);
+        assert!(module.disconnectExternalDevice(connected.id).is_err());
     }
 
     #[test]
