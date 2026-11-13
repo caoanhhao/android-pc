@@ -98,7 +98,7 @@ be coded in parallel but must take turns building.
 - **F5. Bluetooth HAL (Rust)** — `android.hardware.bluetooth` H4 over
   `/dev/hvc5` (E7), replacing the C++ default HAL.
   *Done on Cuttlefish/QEMU 2026-11-11:* `hals/bluetooth` replaces the interim C++ HAL
-  (`aosp-device-vendor/`, removed): `IBluetoothHci/default` over an HCI user channel to the
+  (built from `aosp-device-vendor/`, now removed; that folder keeps only `fmq`): `IBluetoothHci/default` over an HCI user channel to the
   kernel's `hci0` on the PC, or H4 on a UART (`--h4 /dev/hvc5`, Cuttlefish's rootcanal) for
   VTS. Cuttlefish enforcing: `VtsHalBluetoothTargetTest` 16/16, the stack turns ON on it,
   no AVC denials; QEMU USB boot (no controller): the HAL reports `UNABLE_TO_OPEN_INTERFACE`
@@ -327,6 +327,26 @@ be coded in parallel but must take turns building.
   device-integrity check will most likely keep the game out. Details:
   `docs/arm-translation.md` (F9q).
 
+  **F9 status: frozen (2026-11-13).** The F9 release is `out/aosp17-usb-f9.img`
+  (`tools/mkusb-aosp17.sh --menu --userdata 64`, an update image for the flashed stick),
+  build `eng.caoanh.20261113.2228` (main at 8c8638e, security patch 2026-06-05, AVB test
+  key, rollback index 0). It holds F9a–F9q; the only change over the f9g stick is F9p
+  (Google WebView as the default provider) and F9q (pclog keeps Unreal logs). Checks:
+  `update-usb-aosp17.sh --dry-run` against the f9g stick image passes (layout, AVB key,
+  patch level, new build number); the real update on a sparse copy of that image reads
+  back OK and boots in QEMU with the new fingerprint, `com.google.android.webview`
+  145.0.7632.218 as the WebView provider, Play Store, microG, Termux and Chromium
+  installed, desktop-first on, 18 HAL processes up and 0 AVC denials (only the known
+  QEMU tombstones: `dlkm_loader` at the end of its list, Bluetooth without a controller).
+  The user installs it with `tools/update-usb-aosp17.sh` (docs/usb-boot-aosp17.md §10),
+  which keeps apps, accounts and data.
+
+  | | |
+  |---|---|
+  | Works on the real PC | Boot from USB at 2560x1080 in desktop mode (freeform windows, taskbar); keyboard and mouse, mouse clicks as touches for listed games (F9m); Ethernet, Wi-Fi next to Ethernet (F9e), Bluetooth, webcam, onboard audio; the nine Rust HALs (F4–F8); ARM64 apps through libndk_translation (VLC, Termux arm64 JNI, TikTok starts); microG with Google sign-in, Play Store downloads and installs (F9d), Play Integrity at most basic (F9n); Termux preinstalled (F9j); `userdata` filling the stick and extra SSDs as portable/adopted storage (F9i); ueventd recovery and capped pclog (F9l); OS updates that keep user data (F9o) |
+  | Not fixable in the ROM | Where Winds Meet: NetEase's `libunisec.so` hooks ART with arm64 code, which cannot run under translation (F9n). Genshin Impact: hidden by Google Play's device filtering for an uncertified x86_64 device; faking a certified device is out of scope (F9n). Device-integrity checks (Play Integrity `MEETS_DEVICE_INTEGRITY`) |
+  | Still open | Delta Force crashes 22 s in (zeroed stack frame in `libUE4.so`): Tencent ACE or a game bug, not the translator; the next PC run's `applogs/` should tell (F9q). TikTok's identity-check page stays white with either WebView provider (TikTok's own loader closes the streams, F9p); to be retried on the real PC with Google WebView. HDMI audio: no sound on the monitor, because the NVIDIA HDA codec gets no ELD without a GPU driver (F9h); it needs either the RTX 4070 driver stack (Phase G, G1) or the Intel iGPU through `i915` with the monitor on the board's port. The user has not chosen yet. Shader/`dex2oat` crashes seen only on bare metal (F9d) |
+
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
 passes (results table in `docs/rust-hals.md`), no AVC denials, no fallback needed.
@@ -363,8 +383,9 @@ Rust track:
 | Rust track | **Nova** (`nova-core`, `drm/nova`, Rust, in the 6.18 tree) | NVIDIA's future open driver; experimental only |
 
 Rejected: NVIDIA's open-gpu-kernel-modules plus the proprietary userspace (glibc-only,
-no Android build); switching to the Intel iGPU (no GPU acceleration for games, needs
-the monitor moved).
+no Android build). Still open as the alternative for HDMI audio only (the user has not
+chosen, 2026-11-13): the Intel iGPU through `i915` (no GPU acceleration for games, needs
+the monitor moved to the board's port).
 
 **Testing.** QEMU and Cuttlefish cannot pass the 4070 through (the host's desktop runs
 on it), so every G step ends on the **real PC**: the session builds, checks the image

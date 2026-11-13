@@ -72,7 +72,7 @@ trap 'rm -rf "$work"' EXIT
 "$host/unpack_bootimg" --boot_img "$product/init_boot.img" --out "$work/init_boot" >/dev/null
 "$host/unpack_bootimg" --boot_img "$product/vendor_boot.img" --out "$work/vendor_boot" >/dev/null
 # The board's command line (BOARD_KERNEL_CMDLINE) as stored in vendor_boot.
-board_cmdline=$("$host/unpack_bootimg" --boot_img "$product/vendor_boot.img" --format=mkbootimg 2>/dev/null |
+board_cmdline=$("$host/unpack_bootimg" --boot_img "$product/vendor_boot.img" --out "$work/vendor_boot" --format=mkbootimg 2>/dev/null |
     sed -n "s/.*--vendor_cmdline '\([^']*\)'.*/\1/p")
 board_cmdline=${board_cmdline/panic=-1/panic=10}   # reboot 10 s after a panic (efi-pstore keeps the log)
 board_cmdline=${board_cmdline/firmware_class.path=\/vendor\/etc\//firmware_class.path=/vendor/firmware}
@@ -274,6 +274,10 @@ echo "Image: $out ($((total / 1024)).$(( (total % 1024) * 10 / 1024 )) GiB, need
 echo "Kernel: $(strings "$work/boot/kernel" | grep -m1 -o '^6\.18\.[^ ]*')"
 echo "Command line: $pc_cmdline"
 echo
+echo "A stick that already runs Android: update it in place, keeping apps and data (no dd):"
+echo "  sudo tools/update-usb-aosp17.sh --dry-run $out /dev/sdX"
+echo "  sudo tools/update-usb-aosp17.sh $out /dev/sdX"
+echo "A new, empty stick only:"
 if [[ -n $disk ]]; then
     # Everything up to userdata plus its first 64 MiB (zeros: fs_mgr formats a wiped
     # userdata), then the backup GPT in the last MiB; the rest of the stick is userdata.

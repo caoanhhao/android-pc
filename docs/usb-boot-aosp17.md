@@ -329,8 +329,10 @@ Limine: one entry, "Android 17", no menu (`timeout: 0`). `--menu` gives a 5 s me
 **no pcfb** (to tell a display problem from the rest).
 
 A stick that already runs Android is updated with `tools/update-usb-aosp17.sh` instead,
-which keeps apps, accounts and data (§10). A full write is only for a new stick or a
-layout change.
+which keeps apps, accounts and data (§10). The `dd` commands below are only for a new,
+empty stick, or for a layout change the update script refuses; they wipe every app and
+account. Release images since F9 are update images (`--userdata 64`, not sized for a
+stick), which must not be written with `dd`.
 
 Writing it (erases the stick; the script prints the commands with the right numbers):
 everything up to the first 64 MiB of `userdata` (~9 GB, 3 min at 53 MB/s), then the
@@ -682,27 +684,34 @@ re-grants permissions and recompiles code; that first boot is slower.
 ### Commands
 
 Build, then make an image of the new build with the **same** `mkusb` options the stick
-was made with (the F9f stick: `--menu`), but without `--disk` and with a tiny `userdata`
-(the update never copies it):
+was made with (the user's stick, flashed from f9f: `--menu`), but without `--disk` and with
+a tiny `userdata` (the update never copies it). Name it after the release; the F9 release
+is `out/aosp17-usb-f9.img`:
 
 ```bash
 tools/aosp17-build.sh
 ```
 ```bash
-tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-update.img
+tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-f9.img
 ```
 
-Check what it would do (needs root to read the stick; writes nothing):
+Find the stick (a SanDisk of about 57 GB on `usb`; `/dev/sda` on the build host so far):
 
 ```bash
-sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-update.img /dev/sda
+lsblk -o NAME,SIZE,MODEL,TRAN
+```
+
+Check what the update would do (needs root to read the stick; writes nothing):
+
+```bash
+sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-f9.img /dev/sda
 ```
 
 Then update (asks for `yes` after showing the stick; ~9 GB written, then read back and
 compared):
 
 ```bash
-sudo tools/update-usb-aosp17.sh out/aosp17-usb-update.img /dev/sda
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-f9.img /dev/sda
 ```
 
 The script refuses a disk that is not on USB, has mounted partitions, is not an
@@ -742,3 +751,14 @@ On a sparse copy of `out/aosp17-usb-f9f.img` (`WRITABLE=1 tools/run-qemu-aosp17-
 Not covered: a Google account and Play Store apps (no network sign-in in QEMU; they live in
 the same `userdata` as the test app) and the real stick (same code path, block device
 instead of a file).
+
+### F9 release (2026-11-13)
+
+`out/aosp17-usb-f9.img` (`--menu --userdata 64`, build `eng.caoanh.20261113.2228`, main at
+8c8638e) is the frozen F9 build. `--dry-run` against the f9g stick image accepts it
+(same layout and AVB key, patch level 2026-06-05 on both sides, new build number). The
+real update on a sparse copy of that image wrote and compared all OS partitions, and the
+copy then booted in QEMU with the new fingerprint, Google's WebView as the provider and 0
+AVC denials. The older stick images (f9b–f9g, `aosp17-usb-update.img`) and the pclog dumps
+before `pclog-f9f` were deleted from `out/`; the logs quoted in the docs from those boots
+are no longer on disk.

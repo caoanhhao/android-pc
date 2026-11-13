@@ -5,7 +5,7 @@
 #   tools/update-usb-aosp17.sh [options] NEW.img TARGET
 #
 # NEW.img: an image made by tools/mkusb-aosp17.sh from the new build (any userdata size,
-#          e.g. `tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-update.img`).
+#          e.g. `tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-f9.img`).
 # TARGET:  the stick (/dev/sdX, whole disk; run with sudo) or a stick image file.
 #
 # Only the OS partitions are rewritten: esp (Limine, kernel, initrd), vbmeta*_a, boot_a,
