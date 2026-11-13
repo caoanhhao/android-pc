@@ -1,19 +1,55 @@
 #!/vendor/bin/sh
 # Boot log saver for the real PC (init.pc.rc): mounts the stick's FAT partition "pclog" and
-# writes boot-N/{dmesg,logcat}.txt plus state dumps, syncing every few seconds.
+# writes boot-N/{dmesg,logcat}.* plus state dumps, syncing every few seconds.
+#
+# Size limits (the 256 MiB partition must never fill up; docs/usb-boot-aosp17.md §5):
+# - dmesg and logcat are written in pieces (split): the first piece(s) are kept, then only the
+#   last few, so one boot takes at most about 40 MiB. Pieces dropped in between are listed
+#   in boot-N/pruned.txt. Read a log with `cat boot-N/logcat.*`.
+# - at most $keep boots stay; older ones, and more if the partition has less than $reserve_kb
+#   free, are deleted before this boot's directory is made.
 export PATH=/system/bin:/vendor/bin:$PATH   # logcat, dumpsys: system tools
 dev=/dev/block/by-name/pclog
 mnt=/mnt/vendor/pclog   # not under /mnt directly: vold unmounts those at start
+keep=5                  # boots kept, this one included
+reserve_kb=49152        # free space wanted for this boot before it starts
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -e $dev ] && break; sleep 1; done
 mkdir -p $mnt
 mount -t vfat -o rw,noatime,flush $dev $mnt || exit 1
-n=1
-while [ -e $mnt/boot-$n ]; do n=$((n + 1)); done
+
+free_kb() { set -- $(df -k $mnt | tail -n 1); echo ${4:-0}; }
+# Boot numbers on the partition, oldest first.
+boots() { ls -d $mnt/boot-* 2>/dev/null | sed 's/.*boot-//' | grep -E '^[0-9]+$' | sort -n; }
+oldest() { boots | head -n 1; }
+
+n=$(cat $mnt/last 2>/dev/null)
+case "$n" in ''|*[!0-9]*) n=$(boots | tail -n 1) ;; esac
+n=$((${n:-0} + 1))
+while [ $(boots | wc -l) -ge $keep ] || [ $(free_kb) -lt $reserve_kb ]; do
+    o=$(oldest)
+    [ -n "$o" ] || break
+    rm -rf $mnt/boot-$o
+done
 d=$mnt/boot-$n
-mkdir $d
+mkdir $d || { rm -rf $mnt/boot-*; mkdir $d; } || exit 1
 echo $n > $mnt/last
-dmesg -w > $d/dmesg.txt 2>&1 &
-(while true; do logcat -b all -v threadtime >> $d/logcat.txt 2>&1; sleep 2; done) &
+
+# log NAME PIECE-SIZE HEAD TAIL: stdin into NAME.aaa, NAME.aab, ... of PIECE-SIZE bytes; prune
+# keeps the first HEAD and the last TAIL pieces.
+log() { split -a 3 -b $2 - $d/$1.; }
+prune() {   # prune NAME HEAD TAIL
+    local pieces cnt i=0 p
+    pieces=$(ls $d/$1.??? 2>/dev/null)
+    cnt=$(echo "$pieces" | grep -c .)
+    for p in $pieces; do
+        i=$((i + 1))
+        [ $i -le $2 ] && continue
+        [ $i -gt $((cnt - $3)) ] && break
+        rm -f $p && echo "${p##*/}" >> $d/pruned.txt
+    done
+}
+dmesg -w 2>&1 | log dmesg 2m &
+(while true; do logcat -b all -v threadtime 2>&1; sleep 2; done) | log logcat 4m &
 dump() {
     {
         echo "== uptime"; cat /proc/uptime
@@ -55,7 +91,9 @@ dump() {
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
 }
-(while true; do sleep 3; sync; done) &
+# dmesg: first 2 MiB + last 8 MiB; logcat: first 8 MiB + last 16 MiB (the newest piece is
+# still being written, so it may be smaller). Plus state dumps: about 40 MiB a boot.
+(while true; do sleep 3; prune dmesg 1 4; prune logcat 2 4; sync; done) &
 # Audio check (tools/audio-check/AudioCheck.java, copied to the pclog partition as
 # audio-check.dex by tools/mkusb-aosp17.sh): a 440 Hz tone, then a mic recording.
 if [ -f $mnt/audio-check.dex ]; then

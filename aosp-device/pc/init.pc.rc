@@ -25,6 +25,18 @@ on post-fs-data && property:ro.boot.android_pc=1
     mkdir /data/vendor/wifi/hostapd 0770 wifi wifi
     mkdir /data/vendor/wifi/hostapd/sockets 0770 wifi wifi
 
+# ueventd watchdog: when init restarts a crashed ueventd, replays the uevents of the devices
+# added while it was down (a restarted ueventd skips coldboot). Started before coldboot ends so
+# it sees the first ueventd.
+on early-init && property:ro.boot.android_pc=1
+    start vendor.ueventd_watch
+
+service vendor.ueventd_watch /vendor/bin/ueventd-watch.sh
+    user root
+    group root
+    seclabel u:r:su:s0
+    disabled
+
 on init && property:ro.boot.android_pc.log=1
     start vendor.pclog
 

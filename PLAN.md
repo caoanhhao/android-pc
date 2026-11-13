@@ -235,6 +235,22 @@ be coded in parallel but must take turns building.
   packages are installed, vold logs `PC disk guard: ignoring sda (boot device)`, the audio
   HAL runs, no AVC denials. Write it with the two `dd` commands `mkusb` prints (sparse
   image). Next: the real-PC test (HDMI beep in `hdmi-check.txt`, adopting an SSD, Termux).
+  *F9l (2026-11-13, real-PC f9e boot 1): ueventd recovery and a pclog size cap.* ueventd
+  crashed right after coldboot (SIGSEGV in `libpcre2`, probably the PC's memory
+  corruption); the restarted ueventd skipped coldboot, so `pcfb`'s `/dev/dri`, the ALSA
+  PCMs and `/dev/video*` never appeared and the boot hung at the animation. That boot also
+  filled the 256 MiB `pclog` partition, so the next one logged nothing.
+  `aosp-device/pc/ueventd-watch.sh` (service `vendor.ueventd_watch`) watches ueventd. While
+  it is down the script makes missing `/dev/block` nodes and dm links itself, so
+  `mount_all` does not hang. Once ueventd is back it replays `add` for each device whose
+  node is missing and restarts the HALs that ran without them. `pclog.sh` now writes
+  dmesg/logcat in pieces and keeps the first and last ones (about 40 MiB a boot). It keeps
+  5 boots and frees at least 48 MiB before each boot. Tested in QEMU (early kill through
+  `androidboot.android_pc.test_ueventd_gap=1`, a kill after boot, a flooded and pre-filled
+  `pclog`); see `docs/usb-boot-aosp17.md` §4 and §7 (F9l).
+  *USB image `out/aosp17-usb-f9f.img` (2026-11-13, `--disk /dev/sda --menu`):* holds F9l
+  on top of f9e. Its super partition matches the build. The QEMU smoke boot completes with
+  no AVC denials. Writing it resets the `pclog` partition. Next: boot it on the PC.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

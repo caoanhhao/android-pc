@@ -21,6 +21,13 @@ sh_binary {
     visibility: ["//visibility:public"],
 }
 
+sh_binary {
+    name: "ueventd-watch.sh",
+    src: "ueventd-watch.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
 // Empty sensors multi-HAL config: init.pc.rc mounts it over /vendor/etc/sensors/hals.conf
 // on the PC, where Cuttlefish's sensors sub-HAL would wait forever for its host.
 prebuilt_etc {

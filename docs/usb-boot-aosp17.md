@@ -167,12 +167,58 @@ images still boot on Cuttlefish unchanged.
     its host and waits for the answer, so `SensorService` (and with it system_server)
     blocked until the watchdog fired. With no sub-HAL the multi-HAL reports no sensors.
   - starts `vendor.pclog` when `androidboot.android_pc.log=1`.
+  - starts `vendor.ueventd_watch` at `early-init` (below).
 - `pclog.sh` (debug aid; service domain `su`, so it only runs with SELinux permissive):
   mounts the stick's FAT partition `pclog` at `/mnt/vendor/pclog` (not directly under
-  `/mnt`: vold unmounts those at start and killed it), writes `boot-N/dmesg.txt`,
-  `logcat.txt`, `state-30/60/120/180/300/600.txt` (getprop, ps, lsmod, device nodes,
+  `/mnt`: vold unmounts those at start and killed it), writes `boot-N/dmesg.*`,
+  `logcat.*`, `state-30/60/120/180/300/600.txt` (getprop, ps, lsmod, device nodes,
   addresses, SurfaceFlinger/window/ethernet dumps, service list) and copies
   `/data/tombstones`, syncing every 3 s. `PATH` must include `/system/bin` (vendor `sh`).
+  Size limits (F9l; the f9e stick's first boot wrote 198 MB of logcat and 48 MB of dmesg,
+  filled the 256 MiB partition, and the next boot could not log at all):
+  - dmesg and logcat go through `split` into 2 MiB (`dmesg.aaa`, `dmesg.aab`, ...) and
+    4 MiB (`logcat.aaa`, ...) pieces. Every 3 s the script drops the pieces between the
+    first ones and the last four: dmesg keeps its first 2 MiB and last 8 MiB, logcat its
+    first 8 MiB and last 16 MiB, so the start of the boot and the most recent part both
+    survive. Dropped pieces are listed in `boot-N/pruned.txt`. With the state dumps a boot
+    takes about 40 MiB at most.
+  - Before making `boot-N` it deletes the oldest boots until at most 4 remain (5 with the
+    new one) and at least 48 MiB is free. Boot numbers keep counting up (from the `last`
+    file), so `boot-N` is never reused. If `mkdir` still fails, all old boots go.
+  - `tools/pclog-read.sh` joins the pieces into `boot-N/dmesg.txt` and `boot-N/logcat.txt`.
+- `ueventd-watch.sh` (service `vendor.ueventd_watch`, F9l; domain `su` like `pclog.sh`, so
+  it runs on the default permissive stick but not with the "SELinux enforcing" entry):
+  ueventd recovery. When ueventd dies, init restarts it, but the new ueventd skips coldboot
+  (`ro.cold_boot_done` is already set), so devices the kernel added while it was down never
+  get a `/dev` node. That happened on the PC (f9e, boot 1, `out/pclog-f9e/boot-1/`):
+  ueventd crashed at 9.07 s (SIGSEGV in `libpcre2` during a restorecon, probably the PC's
+  memory corruption), `dlkm_loader` loaded `pcfb` at 9.66 s, init restarted ueventd only at
+  13.8 s (it was blocked in Cuttlefish's `wait /dev/dri/card0`), and `/dev/dri`,
+  `/dev/video*` and the ALSA PCMs never appeared: SurfaceFlinger never started and
+  system_server restarted 38 times at the boot animation. The script waits for
+  `ro.cold_boot_done`, then watches ueventd's pid. When ueventd is replaced it writes `add`
+  to the `uevent` file of every device under `/sys/devices` whose `DEVNAME` has no node in
+  `/dev` (or `/dev/block`), so the new ueventd creates the nodes (with their permissions
+  and labels). It replays only those devices, not every `uevent` like a real coldboot:
+  vold, netd and the health HAL listen to the same events, and vold creates a second
+  `Disk` for a block device it already has. While ueventd is down the script also makes
+  missing `/dev/block` nodes itself (`mknod`, `restorecon`) plus the
+  `/dev/block/mapper/<name>` and `by-uuid` links of dm devices, and hands them back to
+  ueventd with an `add` once it returns: init does not restart (or even reap) ueventd while
+  it is blocked in a command, and in `mount_all --late` vold waits for the dm node of
+  userdata's default-key device. Without that a crash at that moment leaves `/data`
+  unmounted (seen in QEMU: vold `Failed to wait for default-key device userdata`, keystore2
+  panics, the device reboots). A dead ueventd stays a zombie until init reaps it, so the
+  script checks the process state, not just `/proc/PID`. A few devices are replayed every
+  time because ueventd puts their node elsewhere (`mapper/control` is
+  `/dev/device-mapper`, `hwrng` is `/dev/hw_random`) or makes none (`bsg/*`); those extra
+  `add`s are harmless. If a HAL was already running without its
+  nodes it is restarted with `ctl.restart`: allocator, composer and SurfaceFlinger for
+  `dri/*` (SurfaceFlinger's restart brings zygote down with it), the audio HALs and
+  audioserver for `snd/*`, the camera HAL and cameraserver for `video*`. Everything it
+  does goes to the kernel log as `pc-ueventd-watch: ...`. Test knob:
+  `androidboot.android_pc.test_ueventd_gap=1` (e.g. `mkusb-aosp17.sh --append`) makes it
+  kill ueventd once, right after coldboot, which reproduces the PC failure.
   - `on boot`: stops Cuttlefish's Bluetooth HAL `bt_hci` (H4 to a host over `/dev/hvc5`)
     and starts `vendor.bluetooth-pc` (below). A trigger on `init.svc.bt_hci` does not work
     from a vendor rc: vendor_init may not read `init.svc.*`.
@@ -445,6 +491,42 @@ Verified on Cuttlefish (same `vendor.img`), with a user-mode QEMU NIC renamed ba
   denials.
 
 To be checked on the PC: joining the home network with the cable plugged in.
+
+### F9l: ueventd recovery and the pclog size cap (2026-11-13)
+
+The f9e stick's first boot hung at the boot animation after a ueventd crash (§4,
+`ueventd-watch.sh`) and filled the `pclog` partition, so its second boot, which reached
+Android, left no logs. F9l adds `ueventd-watch.sh` and the `pclog.sh` size cap (§4).
+
+QEMU tests (`out/f9l-qemu-serial-1.log`, `out/f9l-qemu-serial-2.log`):
+- `androidboot.android_pc.test_ueventd_gap=1` (`mkusb-aosp17.sh --append`): the script
+  kills ueventd at 3.0 s, right after coldboot. The first version only replayed uevents
+  after the restart: init was then blocked for 25 s in `mount_all --late` (vold waiting for
+  `dm-17`), `/data` did not mount and the device rebooted in a loop. With the block bridge:
+  `made /dev/block/dm-17`, `linked /dev/block/mapper/userdata`, init restarts ueventd at
+  7.0 s, the script hands `dm-17` back and replays 13 devices (`snd/*`, `video0`, a USB bus,
+  `dma_heap/*`, ...), restarts the audio and camera HALs and their servers, and boot
+  completes; `/dev/snd`, `/dev/video0`, `/dev/dri` all present with ueventd's modes.
+- After boot: `kill -9` ueventd, delete `/dev/dri/card0` and `renderD128`, reload
+  `dummy_hcd`. ueventd is back 1.5 s later; the script replays `dri/card0`, `dri/renderD128`,
+  restarts the allocator, the composer and SurfaceFlinger; zygote restarts with it,
+  `sys.boot_completed=1` again and the lock screen is back on the screen dump.
+- pclog: the partition was pre-filled with `boot-1`..`boot-6` (`boot-2` holding 200 MB) and
+  `last=6`. The boot deleted `boot-1` and `boot-2` and wrote `boot-7`. Under a flood of
+  70000 kernel lines and 60000 1 KB logcat lines, `boot-7` stayed at 38 MB, with
+  `pruned.txt` listing the dropped pieces; `tools/pclog-read.sh` joined the rest into a
+  9 MB `dmesg.txt` and a 25 MB `logcat.txt`.
+- 0 AVC denials in all runs (permissive, the stick's default).
+
+Not covered: the "SELinux enforcing" entry (the script runs in `su`, like `pclog.sh`, and
+does not start there), devices other than block ones needed while ueventd is down (init
+waits for them with a timeout, as it did on the PC), and the real PC.
+
+USB image `out/aosp17-usb-f9f.img` (`tools/mkusb-aosp17.sh --disk /dev/sda --menu`, same
+layout as f9e): its super partition is identical to the build's `super.img` (sha1 of the
+unsparsed image). QEMU smoke boot: boot completes, `vendor.ueventd_watch` runs and logs
+nothing (no restart), `pclog` writes `boot-1/dmesg.aaa` and `logcat.aaa`, `/data` is 49 GB,
+no AVC denials. Writing the image resets the `pclog` partition (the old logs are gone).
 
 What to report after a boot: plug the stick back into the build host and run
 `tools/pclog-read.sh /dev/sdX` (or copy from the mounted `PCLOG` partition), plus photos of
