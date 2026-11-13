@@ -24,3 +24,14 @@ earlier Rust kernel lives on the `aosp-16` branch).
   `qemu-system`/`crosvm`/`run_cvd` process is left. A new launcher must source it too.
 - Stop your VM as soon as the test is done (`cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`,
   or quit QEMU), so the next session can go.
+
+## USB stick rule (keep the user's data)
+
+- The stick is updated **only** with `tools/update-usb-aosp17.sh NEW.img /dev/sdX`: it
+  rewrites the OS partitions (esp, vbmeta*, boot, init_boot, vendor_boot, super) and
+  leaves `userdata`, `metadata`, `misc`, `frp`, `pclog` and the partition table alone.
+- Never hand the user a whole-image `dd` (or anything that wipes `userdata`) for the
+  stick. If an update cannot be done in place (layout changed, AVB key changed, security
+  patch level would go back), stop and tell the user why before suggesting a full reflash.
+- Every new build must get a fresh build number and must not lower the security patch
+  level or the AVB rollback index, so the update script accepts it.
