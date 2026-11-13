@@ -3,7 +3,7 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux]   default: all five
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux] [webview]   default: all six
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
@@ -23,6 +23,10 @@
 #   Termux's APK keeps its JNI libraries compressed (extractNativeLibs="true"), and a
 #   /product app's libraries are not extracted at boot: the x86_64 ones are unpacked to
 #   apps/Termux/lib/x86_64/, which pc.mk installs beside the unchanged APK (F9j).
+# - Android System WebView (com.google.android.webview), proprietary: Google's standalone
+#   WebView from the same emulator image, checked against Google's WebView certificate.
+#   aosp-device/webview/webview.mk makes it the default WebView provider, with AOSP's
+#   com.android.webview kept as a choice in Developer options (F9p). Personal use only.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
@@ -99,27 +103,35 @@ microg() {
     done
 }
 
-playstore() {
-    local zip=google_apis_playstore-x86_64-37.0_r08.zip
+EMU_ZIP=google_apis_playstore-x86_64-37.0_r08.zip
+
+# emu_product WORKDIR: the emulator image's /product partition, extracted to WORKDIR/product.
+emu_product() {
     local url=https://dl.google.com/android/repository/sys-img/google_apis_playstore/x86_64-37.0_r08.zip
     local sha1=7ba53fe131fad2cfc3de2b88e32fde5c529fc9c7
-    local cert=f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83
-    local dl=$ROOT/out/downloads/emu-37 work start
-    mkdir -p "$dl"
-    if [[ ! -f $dl/$zip ]]; then
-        curl -sSf -o "$dl/$zip.part" "$url"
-        echo "$sha1  $dl/$zip.part" | sha1sum -c --quiet
-        mv "$dl/$zip.part" "$dl/$zip"
+    local dl=$ROOT/out/downloads/emu-37 work=$1 start
+    if [[ ! -f $dl/$EMU_ZIP ]]; then
+        curl -sSf -o "$dl/$EMU_ZIP.part" "$url"
+        echo "$sha1  $dl/$EMU_ZIP.part" | sha1sum -c --quiet
+        mv "$dl/$EMU_ZIP.part" "$dl/$EMU_ZIP"
     fi
     # system.img is a GPT disk whose partition 2 is "super"; product is EROFS in there.
-    work=$(mktemp -d "$dl/playstore.XXXXXX")
-    unzip -q -d "$work" "$dl/$zip" x86_64/system.img
+    unzip -q -d "$work" "$dl/$EMU_ZIP" x86_64/system.img
     start=$(sfdisk -d "$work/x86_64/system.img" | sed -n 's/.*: start= *\([0-9]*\),.*/\1/p' | sed -n 2p)
     dd if="$work/x86_64/system.img" of="$work/super.img" bs=512 skip="$start" status=none
     rm "$work/x86_64/system.img"
     lpunpack -p product "$work/super.img" "$work" >/dev/null
     rm "$work/super.img"
     "$HOST/fsck.erofs" --extract="$work/product" "$work/product.img" >/dev/null
+}
+
+playstore() {
+    local zip=$EMU_ZIP
+    local cert=f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83
+    local dl=$ROOT/out/downloads/emu-37 work
+    mkdir -p "$dl"
+    work=$(mktemp -d "$dl/playstore.XXXXXX")
+    emu_product "$work"
     "$HOST/apksigner" verify --print-certs "$work/product/priv-app/Phonesky/Phonesky.apk" 2>/dev/null |
         grep -q "SHA-256 digest: $cert" ||
         { rm -rf "$work"; echo "fetch-apps.sh: Phonesky.apk is not signed by Google" >&2; exit 1; }
@@ -173,6 +185,24 @@ BP
     rm -rf "$work"
 }
 
+webview() {
+    local cert=6faf3c4140407473400934d117815a21af1cfefc5c0bee61c858bc3d72ba6fe5
+    local dl=$ROOT/out/downloads/emu-37 work ver apk
+    mkdir -p "$dl"
+    work=$(mktemp -d "$dl/webview.XXXXXX")
+    emu_product "$work"
+    # The image ships it gzipped behind a stub (WebViewGoogle-Stub); PackageManager would
+    # unpack it to /data on first boot. Install the full APK in /product instead.
+    apk=$work/WebViewGoogle.apk
+    gzip -dc "$work/product/app/WebViewGoogle/WebViewGoogle.apk.gz" > "$apk"
+    "$HOST/apksigner" verify --print-certs "$apk" 2>/dev/null | grep -q "SHA-256 digest: $cert" ||
+        { rm -rf "$work"; echo "fetch-apps.sh: WebViewGoogle.apk is not signed by Google" >&2; exit 1; }
+    ver=$("$HOST/aapt2" dump badging "$apk" | sed -n "s/.*versionName='\([^' ]*\).*/\1/p")
+    install_app WebViewGoogle "$apk" \
+        "Android System WebView $ver from the emulator image $EMU_ZIP (signature checked)"
+    rm -rf "$work"
+}
+
 termux() {
     local dl=$ROOT/out/downloads/termux
     local cert=228fb2cfe90831c1499ec3ccaf61e96e8e1ce70766b9474672ce427334d41c42
@@ -204,6 +234,6 @@ termux() {
 }
 
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
-for app in "${@:-chromium fdroid microg playstore termux}"; do
+for app in "${@:-chromium fdroid microg playstore termux webview}"; do
     for a in $app; do "$a"; done
 done

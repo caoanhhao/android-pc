@@ -21,6 +21,9 @@ include $(PC_DEVICE_DIR)/microg.mk
 # Desktop mode: freeform windows and Launcher3's taskbar, landscape only (phase F9f).
 include $(PC_DEVICE_DIR)/desktop/desktop.mk
 
+# Google's WebView as the default WebView provider, AOSP's as the alternative (phase F9p).
+include $(PC_DEVICE_DIR)/webview/webview.mk
+
 PRODUCT_NAME := aosp_pc_x86_64
 PRODUCT_DEVICE := pc_x86_64
 PRODUCT_BRAND := Android

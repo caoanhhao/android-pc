@@ -299,6 +299,18 @@ be coded in parallel but must take turns building.
   49 GB, and there are no AVC denials. Write it with the two `dd` commands `mkusb` prints (this
   wipes Android data and `pclog`). Next: on the PC, rerun Delta Force, Where Winds Meet,
   the Genshin search and the TikTok login so `pclog` captures them.
+  *F9p (2026-11-13, real-PC f9g boot 2): TikTok white page after Google sign-in.* The
+  page is TikTok's identity check for a "suspicious" sign-in (`idv_inapp/verification`,
+  in every PC boot that logged a sign-in). Its CSS/JS come from TikTok's
+  `shouldInterceptRequest`, and each stream is already closed (`GZIPInputStream`, `Stream
+  closed`) when WebView first calls `available()`: TikTok's own loader closes it on the
+  `exist:false` Gecko path. WebView only reports it. Our WebView is the same Chromium
+  145.0.7632.218 as Google's, the translator libraries match the emulator's, and a test app
+  (`tools/webview-intercept-test/`) gives the same result on both providers. Still, Google's
+  Android System WebView (from the pinned emulator image, `fetch-apps.sh webview`, not
+  committed) is now the default provider with AOSP's as a choice in Developer options, to
+  match a Google device. Needs a new `product.img` and `vendor.img`. Details:
+  `docs/arm-translation.md` (F9p).
   *F9q (2026-11-13, real-PC f9g boot 2): Delta Force dies after 22 s.* The arm64 game
   thread returned to address 0 through a zeroed stack frame (`pc`, `lr` and `fp` all 0)
   in `libUE4.so` code, right after the Play asset-pack sync. libndk_translation then

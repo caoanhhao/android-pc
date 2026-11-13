@@ -510,6 +510,90 @@ These are the values Genshin's published requirements check:
   Internet (DNS fails), so a real verdict needs the PC with a signed-in account. The change
   reaches the PC with the next `product.img`.
 
+### F9p: TikTok white page after Google sign-in (WebView `Stream closed`)
+
+Real PC, logs in `out/pclog-f9g/boot-2` (also `out/pclog-f9/boot-2` and
+`out/pclog-f9b/boot-1`), 2026-11-13. After "Sign in with Google", TikTok opens
+`com.bytedance.hybrid.spark.page.SparkActivity` and the page stays white.
+
+**What the page is.** The Spark URL is
+`https://inapp.tiktokv.com/ucenter_web/idv_inapp/verification?...&enter_from=suspicious_login&page=suspicious_login`:
+TikTok's server flags the sign-in as suspicious and asks for an identity check. It does
+this in all three PC boots that logged a sign-in (f9, f9b, f9g) and for both TikTok
+packages (`com.zhiliaoapp.musically`, `com.ss.android.ugc.trill`).
+
+**Why it is white.** The page's CSS/JS (`verification.*.js`, `lib-tux`, `lib-stable`,
+`builder-runtime`, `convert-rem`, `hybrid-monitor-bootstrap`) come from TikTok's
+`shouldInterceptRequest` (its Forest resource loader, Gecko channel
+`tiktok_account_idv`). Each of them fails: WebView logs 16 `InputStreamUtil` errors per
+boot (8 resources, `available()` then `read()`), all `IOException: Stream closed` from
+`GZIPInputStream.ensureOpen`, under TikTok's own wrappers (`X.0Dal`/`X.1Hq3` in 47.x,
+`X.0Fup`/`X.1So0` in the f9 build). The resources that come from Gecko's offline
+package (`tiktok_webview_js_inject_manage`, `exist:true`) load fine; every
+`tiktok_account_idv` resource is `exist:false` and fails 30-50 ms later, on the same
+thread, before WebView has read a byte. No `Forest_TTNetDepender` line shows a network
+fetch for them.
+
+**Root cause: the stream is closed by TikTok before WebView gets it.** A `Stream closed`
+from `GZIPInputStream.ensureOpen` means `close()` was called on that `GZIPInputStream`.
+WebView calls `available()` first, on the thread that just ran `shouldInterceptRequest`,
+so the close happened inside TikTok's code. WebView only reports it. Checked:
+- Our WebView is not old or odd: `com.android.webview` 145.0.7632.218 (AOSP's prebuilt
+  from `external/chromium-webview`), the same Chromium release as Google's WebView in the
+  API 37 emulator image (`com.google.android.webview` 145.0.7632.218, code 763221809).
+- The translation layer matches Google's: the arm64 guest libraries
+  (`/system/lib64/arm64`, 56 files) and the `libproxy_arm64_to_x86_64_*` set are the same
+  as the emulator's. TikTok's Java code runs on ART, not translated.
+- `tools/webview-intercept-test/` serves a page whose scripts are `GZIPInputStream`s in
+  `FilterInputStream` wrappers, as TikTok does, plus one stream closed before it is
+  returned. On Cuttlefish (build `eng.caoanh.20261113.2206`) both providers give
+  `RESULT gz=ok big=ok closed=failed`: open streams of any size load, and only the
+  pre-closed one fails, with the same `available()` stack as TikTok's.
+
+So no WebView provider can load these resources: the bytes are gone before WebView
+reads. Why TikTok's `exist:false` path closes its stream could not be traced. That needs
+TikTok's code, and no TikTok APK was available here (no copy on this host; the Aurora
+anonymous download was not allowed in this session). The likely trigger is device
+state: the same flow is reached only because the sign-in is "suspicious" (uncertified,
+x86_64 device, microG), and TikTok picks the idv package path from server config.
+
+**What changed in the ROM.** Google's Android System WebView is now the default
+provider, as on a Google device, with AOSP's kept as a choice:
+- `tools/fetch-apps.sh webview` takes `WebViewGoogle.apk` (standalone, 192 MB, x86_64
+  only, no Trichrome library needed) from the same pinned emulator image as the Play
+  Store, checks Google's WebView certificate (SHA-256 `6faf3c41...3d72ba6fe5`) and sets
+  it up as a `/product` app. The emulator ships it gzipped behind a stub; here the full
+  APK is installed. Like Phonesky, it is never committed.
+- `aosp-device/webview/webview.mk` adds a `config_webview_packages` overlay only when
+  the APK was fetched: Google's WebView first, `com.android.webview` second.
+  WebViewUpdateService uses the first `availableByDefault` provider and does not fall
+  back, which is why the overlay depends on the fetch. Both are system apps, so no
+  `<signature>` is needed, and Play Store updates of `com.google.android.webview` keep
+  working.
+- To switch: Developer options > WebView implementation, or
+  `cmd webviewupdate set-webview-implementation com.android.webview`.
+
+Checked on Cuttlefish: `dumpsys webviewupdate` shows `com.google.android.webview` as
+current and both packages valid; the intercept test passes on both; Chromium and the
+WebView shell start (`cr_WVCFactoryProvider: version=145.0.7632.218 (763221809)`).
+`product.img` grows by 192 MB (the system group still has about 4 GB free).
+
+**Next on the PC.** After the update, sign in to TikTok again. If the page is still
+white, the WebView is ruled out for good: compare with "AOSP WebView" in Developer
+options, and look at what the idv page asks for in a browser
+(`https://inapp.tiktokv.com/ucenter_web/idv_inapp/verification` needs the
+`passport_ticket` from the log). Signing in by email or phone code instead of Google
+avoids the Spark page only if TikTok does not flag that sign-in too.
+
+**Build note.** The first build of this change failed in `system.img` with a path that
+does not exist, `stdarch-verify/mip\x04-msa.h` (the file is `mips-msa.h`). Soong had
+written the bad byte into `out/soong/build.aosp_pc_x86_64.7.ninja` and its incremental
+cache `out/soong/ninja.db`, another sign of the flaky host (`docs/aosp-build.md`).
+Deleting the ninja files is not enough: soong_ui then stops on the missing shards, and
+an incremental run regenerates nothing. What worked: move `out/soong/*.db` (all five
+incremental caches) away, change any `Android.bp`, and build again; that is one full
+analysis (about 21 GB peak), after which the caches are consistent again.
+
 ### F9q: Delta Force dies 22 s after launch (guest jump to address 0)
 
 Real PC, `out/aosp17-usb-f9g.img` installed with `update-usb-aosp17.sh` (user data kept),
