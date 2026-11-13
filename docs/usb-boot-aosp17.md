@@ -21,7 +21,7 @@ UVC webcam.
 | Vendor kernel package | `aosp-device/kernel/` | `BUILD.bazel` (`//android-pc`), `pc_x86_64.fragment`, `pcfb/`, `pchvc/` |
 | Product glue | `aosp-device/pc/`, `aosp-device/BoardConfig.mk` | `init.pc.rc`, `pclog.sh`, firmware, sepolicy |
 | Bluetooth HAL | `aosp-device/hals/bluetooth/` | our Rust HAL (F5) over an HCI user channel |
-| Apps | `tools/fetch-apps.sh` | Chromium and F-Droid as prebuilt `/product` apps |
+| Apps | `tools/fetch-apps.sh` | Chromium, F-Droid, microG, Play Store and Termux as prebuilt `/product` apps |
 | Stick image | `tools/mkusb-aosp17.sh` | GPT image file with Limine, kernel, initrd and the Android partitions |
 | QEMU test | `tools/run-qemu-aosp17-usb.sh` | boots the image as on the PC |
 | Logs | `tools/pclog-read.sh` | copies the boot logs from the stick's `pclog` partition |
@@ -195,6 +195,25 @@ images still boot on Cuttlefish unchanged.
   (2.0.2 from f-droid.org, signing certificate SHA-256 `43238d51…c9ccab` checked).
   Presigned APKs with targetSdk ≥ 30 must be `preprocessed: true`, or the build rejects
   them.
+- **Termux** (F9j): `fetch-apps.sh termux` takes F-Droid's builds of Termux 0.118.3
+  (`com.termux_1002.apk`), Termux:API 0.53.0 and Termux:Boot 0.8.1 from
+  `f-droid.org/repo`, pinned by SHA-256 and checked against the certificate F-Droid signs
+  all three with (SHA-256 `228fb2cf…d41c42`; the GitHub releases use a different key). The
+  APK is universal and its x86_64 bootstrap runs natively, without the ARM translator. All
+  three share the `com.termux` user ID and are plain, non-privileged `/product` apps, so
+  F-Droid can update them (the update goes to `/data`; "Uninstall updates" goes back to
+  the bundled version); they can be disabled but not uninstalled.
+  Termux keeps its JNI libraries compressed (`extractNativeLibs="true"`), and
+  PackageManager never extracts a `/product` app's libraries: it looks for them in
+  `/product/app/Termux/lib/x86_64/`. Soong's `android_app_import` cannot install them
+  there (and an `Android.mk` module is ignored by the Soong-generated product image), so
+  the script unpacks `lib/x86_64/*.so` into `apps/Termux/lib/x86_64/` and `pc.mk` installs
+  every `apps/<Name>/lib/x86_64/*.so` beside its APK with `PRODUCT_COPY_FILES`. The APK
+  itself is unchanged (`skip_preprocessed_apk_checks`, because its libraries are
+  compressed). Checked on Cuttlefish, enforcing: `primaryCpuAbi=x86_64`,
+  `libtermux-bootstrap.so` loads from `/product/app/Termux/lib/x86_64`, "Bootstrap packages
+  installed successfully", and `pkg install file tree htop` from the terminal downloads and
+  runs x86_64 binaries, with no AVC denials.
 - sepolicy (`pc/sepolicy`): `vendor_pc_prop` for the property above (it was in
   `vendor_default_prop`, which every app then failed to read), `init` may `mounton`
   `vendor_configs_file`, the Bluetooth HAL's file label and rules.

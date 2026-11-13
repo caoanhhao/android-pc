@@ -15,6 +15,12 @@ PC_FIRMWARE_DIR := device/android-pc/firmware
 PRODUCT_COPY_FILES += $(foreach f,$(shell cd $(PC_FIRMWARE_DIR) 2>/dev/null && find . -type f | sed 's|^\./||' | sort),\
     $(PC_FIRMWARE_DIR)/$(f):$(TARGET_COPY_OUT_VENDOR)/firmware/$(f))
 
-# Third-party apps (Chromium: AOSP ships only the WebView test shell as a browser; F-Droid),
+# Third-party apps (Chromium: AOSP ships only the WebView test shell as a browser; F-Droid;
+# microG; Play Store; Termux),
 # set up in device/android-pc/apps/<Name> by tools/fetch-apps.sh.
 PRODUCT_PACKAGES += $(notdir $(wildcard device/android-pc/apps/*))
+# JNI libraries an app's APK keeps compressed (Termux): a /product app's libraries are not
+# extracted at boot, so they go beside the APK as <app>/lib/x86_64/*.so (android_app_import
+# cannot install them).
+PRODUCT_COPY_FILES += $(foreach f,$(wildcard device/android-pc/apps/*/lib/x86_64/*.so),\
+    $(f):$(TARGET_COPY_OUT_PRODUCT)/app/$(word 4,$(subst /, ,$(f)))/lib/x86_64/$(notdir $(f)))

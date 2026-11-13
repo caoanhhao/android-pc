@@ -189,6 +189,15 @@ be coded in parallel but must take turns building.
   prop; Limine entries at 2560x1080. QEMU smoke boot (`tools/run-qemu-aosp17-usb.sh`):
   boot completes, the display is freeform with rotation locked, `wifi_always_requested=1`,
   the Play Store and microG are on the deviceidle allowlist. Next: the real-PC test.
+  *F9j (2026-11-13): Termux preinstalled.* `fetch-apps.sh termux` ships F-Droid's Termux
+  0.118.3 (x86_64 bootstrap, no translation; F9's arm64 test build failed its bootstrap under
+  translation) with Termux:API and Termux:Boot, pinned by SHA-256 and checked against the
+  certificate F-Droid signs Termux with, so F-Droid updates install over them. They are
+  plain (non-privileged) `/product` apps: updatable, can be disabled, not uninstalled.
+  Termux's JNI libraries are compressed in its APK and a `/product` app's are never
+  extracted, so `pc.mk` installs them beside the APK. Checked on Cuttlefish (enforcing):
+  the bootstrap installs, `pkg install` fetches and runs x86_64 packages, no AVC denials.
+  See `docs/usb-boot-aosp17.md` (Apps).
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

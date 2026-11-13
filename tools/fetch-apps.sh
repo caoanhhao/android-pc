@@ -3,7 +3,7 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore]     default: all four
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux]   default: all five
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
@@ -17,6 +17,12 @@
 #   Android Emulator image "Google Play, x86_64, API 37" (SHA-1 pinned below) with its
 #   privileged-permission list and sysconfig entries; checked against Google's certificate.
 #   Personal use only, never redistributed (docs/arm-translation.md).
+# - Termux (com.termux) with its Termux:API and Termux:Boot add-ons: F-Droid's builds,
+#   pinned by version code and SHA-256 and checked against the certificate F-Droid signs
+#   Termux with (SHA-256 228F:B2:CF:...:D4:1C:42), so F-Droid updates install over them.
+#   Termux's APK keeps its JNI libraries compressed (extractNativeLibs="true"), and a
+#   /product app's libraries are not extracted at boot: the x86_64 ones are unpacked to
+#   apps/Termux/lib/x86_64/, which pc.mk installs beside the unchanged APK (F9j).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
@@ -167,7 +173,37 @@ BP
     rm -rf "$work"
 }
 
+termux() {
+    local dl=$ROOT/out/downloads/termux
+    local cert=228fb2cfe90831c1499ec3ccaf61e96e8e1ce70766b9474672ce427334d41c42
+    local spec name apk sha ver
+    mkdir -p "$dl"
+    # NAME:APK:SHA-256, APK as f-droid.org/repo names it (<package>_<versionCode>.apk).
+    for spec in \
+        Termux:com.termux_1002.apk:e6265a57eb5ca363808488e3b01955958bed93bc0c8a0d281849b363b11027ec \
+        TermuxAPI:com.termux.api_1002.apk:4497dbbf81906df52e59ed387a5223d225aa0de3aca817cc557a621e4dadda44 \
+        TermuxBoot:com.termux.boot_1000.apk:6f7cf9b94f539d3efd4af3544ff819947b49395275d8cfa7e5f80de14f3d9cf8; do
+        IFS=: read -r name apk sha <<< "$spec"
+        if [[ ! -f $dl/$apk ]]; then
+            curl -sSfL -o "$dl/$apk.part" "https://f-droid.org/repo/$apk"
+            echo "$sha  $dl/$apk.part" | sha256sum -c --quiet
+            mv "$dl/$apk.part" "$dl/$apk"
+        fi
+        echo "$sha  $dl/$apk" | sha256sum -c --quiet
+        "$HOST/apksigner" verify --print-certs "$dl/$apk" 2>/dev/null | grep -q "SHA-256 digest: $cert" ||
+            { echo "fetch-apps.sh: $apk is not signed with F-Droid's Termux certificate" >&2; exit 1; }
+        ver=$("$HOST/aapt2" dump badging "$dl/$apk" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+        if [[ $name == Termux ]]; then
+            install_app "$name" "$dl/$apk" "$apk ($ver) from https://f-droid.org/repo, signature checked" \
+                "skip_preprocessed_apk_checks: true,"   # its JNI libraries are compressed
+            unzip -q -o -d "$APPS/$name" "$dl/$apk" 'lib/x86_64/*.so'   # pc.mk installs them
+        else
+            install_app "$name" "$dl/$apk" "$apk ($ver) from https://f-droid.org/repo, signature checked"
+        fi
+    done
+}
+
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
-for app in "${@:-chromium fdroid microg playstore}"; do
+for app in "${@:-chromium fdroid microg playstore termux}"; do
     for a in $app; do "$a"; done
 done
