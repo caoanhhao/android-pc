@@ -375,8 +375,10 @@ four `com.android.vending` entries listed above to `sysconfig-phonesky.xml`. `pr
 (EROFS, `dump.erofs --ls --path=/etc/sysconfig`) contains `sysconfig-phonesky.xml` and
 `sysconfig-microg.xml`.
 
-Not run yet: the Cuttlefish boot check, which is to confirm that
-`dumpsys deviceidle whitelist` lists `com.android.vending` and `com.google.android.gms`.
-On this host, `launch_cvd` failed in `extract-ikconfig`, because the user's `/tmp` quota
-was full ("Disk quota exceeded"). The real test is a Play Store download on the PC, which
-needs a signed-in account.
+Cuttlefish boot of the same images, 2026-11-13: `dumpsys deviceidle whitelist` shows
+`system-excidle,com.android.vending`, plus `system-excidle` and `system` for
+`com.google.android.gms`. There is no `Starting FGS with type systemExempted` error and no
+AVC denial for either app. If `launch_cvd` fails in `extract-ikconfig` ("Cannot find kernel
+config"), check that `/tmp` is not full: the script writes its temp files there.
+
+A Play Store download needs a signed-in account, so it is left for the real PC.
