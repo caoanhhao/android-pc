@@ -224,6 +224,17 @@ be coded in parallel but must take turns building.
   (`snd-aloop`, connection through the audio service): media moves to the HDMI port and
   back, the tone arrives on the chosen PCM, VTS `IModule/default` 158 passed / 0 failed,
   no AVC denials. See `docs/rust-hals.md` (F6, HDMI).
+  *USB image `out/aosp17-usb-f9e.img` (2026-11-13, `tools/mkusb-aosp17.sh --disk /dev/sda
+  --menu`, sized for the 57.3 GiB SanDisk stick, `userdata` 48.6 GiB):* holds F9h–F9j (main
+  at 4a92ef3). Checked in the image's super partition (identical to the build's images):
+  the HDMI audio HAL (`HDMI Out` port, `persist.vendor.audio.hdmi` in
+  `vendor_property_contexts`), the framework RRO with `config_useDevInputEventForAudioJack`,
+  `/odm/etc/fstab.cf.f2fs.hctr2` with the USB/SATA/NVMe `voldmanaged` entries, the patched
+  vold (PC disk guard), and Termux, Termux:API and Termux:Boot on `/product` with Termux's
+  x86_64 libraries. QEMU smoke boot: boot completes, `/data` is 49 GB, the three Termux
+  packages are installed, vold logs `PC disk guard: ignoring sda (boot device)`, the audio
+  HAL runs, no AVC denials. Write it with the two `dd` commands `mkusb` prints (sparse
+  image). Next: the real-PC test (HDMI beep in `hdmi-check.txt`, adopting an SSD, Termux).
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
