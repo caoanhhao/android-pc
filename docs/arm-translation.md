@@ -266,3 +266,117 @@ Signature spoofing, permissions and the GSF provider were not the problem.
 - **USB image.** `out/aosp17-usb-f9b.img` (built 2026-11-13 06:39 for F9b) already holds
   this `product.img`: its super partition contains the new `microg.xml`. It has both
   fixes.
+
+### F9d: Play Store downloads crash; TikTok stops after login
+
+Real PC, `out/aosp17-usb-f9b.img`, logs in `out/pclog-f9b/boot-1`, 2026-11-13. The user
+reported that the Play Store cannot download TikTok, and that TikTok does not open after
+login.
+
+**Play Store downloads.** Each download (TikTok: `com.ss.android.ugc.trill`, request 21,
+56 MB) crashes `com.android.vending:background` as soon as it starts. This happened 32
+times in this boot, plus 3 times in `com.android.vending` (`VpaService`) and 8 times in
+`:recovery_mode`:
+
+```
+Unable to start service com.google.android.finsky.downloadservice.DownloadService ...
+Caused by: java.lang.SecurityException: Starting FGS with type systemExempted
+  callerApp=...com.android.vending:background targetSDK=36 requires permissions: all of the
+  permissions [FOREGROUND_SERVICE_SYSTEM_EXEMPTED] and any of the permissions
+  [SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, android:activate_vpn] or System exempted
+```
+
+- `DownloadService` and `VpaService` are foreground services of type `systemExempted`.
+  Phonesky holds `FOREGROUND_SERVICE_SYSTEM_EXEMPTED`, but does not request
+  `SCHEDULE_EXACT_ALARM` or `USE_EXACT_ALARM`. So it depends on the "System exempted"
+  path, `ActiveServices.SystemExemptedFgsTypePermission`. That path accepts, among
+  others, `REASON_SYSTEM_ALLOW_LISTED`: the app is on the system device-idle allowlist
+  (`AppRestrictionController.isOnSystemDeviceIdleAllowlist`). This includes the
+  except-idle list.
+- The emulator image puts the Play Store on that list in
+  `/product/etc/sysconfig/google.xml`
+  (`<allow-in-power-save-except-idle package="com.android.vending"/>`). F9 took only the
+  APK and its privapp permissions, so the Play Store was not on the list.
+- **Fix.** `tools/fetch-apps.sh playstore` now also generates `sysconfig-phonesky.xml`.
+  It takes every `package="com.android.vending"` line of the image's `google.xml`:
+  - the power-save entry;
+  - `app-link`;
+  - `rollback-whitelisted-app`;
+  - `automatic-rollback-denylisted-app`.
+
+  The file goes to `/product/etc/sysconfig`. The script fails if the power-save entry is
+  missing. The `update-ownership` lines are not copied: they name `com.google.android.gms`
+  (microG here), and the Play Store must not become its update owner.
+- In the same spirit, `aosp-device/microg/sysconfig-microg.xml` puts microG on the power
+  save and data saver allowlists, as `google.xml` does for real GMS. This keeps GCM and
+  checkin working in Doze and Data Saver.
+- Run `tools/fetch-apps.sh playstore` again before the next build. `apps/Phonesky` is
+  regenerated, and the sysconfig file comes with it.
+
+**TikTok after login.** TikTok 47.7.3 here was installed with Aurora Store, because the
+Play Store could not download it. The login itself works:
+- `I18nSignUpActivity`;
+- `AuthorizeActivity`;
+- "Sign in with Google";
+- microG's `AuthSignInActivity` returns.
+
+Then TikTok opens `aabplugin...DFInstallBlankActivity` to load a dynamic feature module
+through Play Core's `SplitInstallService`. The Play Store answers with
+`PlayCoreAcquisitionActivity` ("Showing PlayCore acquisition dialog"), that is, "get this
+app from Google Play". The Play Store serves split modules only to apps it installed
+itself. After that, only TikTok's web view (`SparkActivity`) comes up, and the user
+closed the task 20 s later. TikTok itself did not crash (no FATAL, no tombstone, no ANR).
+
+- **Fix.** None is needed in TikTok or the translator. With the download fix, install
+  TikTok from the Play Store. If the Aurora copy is installed, uninstall it first, so that
+  `com.android.vending` becomes its installer of record.
+
+**Vulkan crashes (`vulkan.pastel.so`).** Tombstones 01 and 02 are the Play Store's
+`RenderThread`, two seconds apart, both while compiling a shader:
+- an aborted `std::bad_function_call` in SPIRV-Tools `SSARewriter`;
+- a `SEGV_ACCERR` in LLVM's `DominatorTree`, reading past the end of the thread's stack.
+
+F-Droid crashed in the same way (LLVM `SelectionDAG`, NULL+0x38). On this PC,
+`vulkan.pastel` (the SwiftShader-based CPU Vulkan from Cuttlefish's
+`com.google.cf.vulkan` APEX) is the only Vulkan and the only GLES:
+`egl=angle` runs ANGLE on top of it. The display is on the RTX 4070, which has no usable
+open driver. The iGPU is not driven (no i915, see `docs/usb-boot-aosp17.md`). Hiding
+the driver would leave HWUI with no GLES at all. Mesa is not an option without a GPU
+kernel driver. So nothing was changed here.
+
+The same boot also has other crashes:
+- Aurora Store: SIGSEGV in JIT code;
+- `dex2oat64` compiling TikTok: aborted with `Unexpected state_:-1287570968 for Class
+  loader classes`, a Mutex word overwritten with junk.
+
+Earlier PC boots have the same `dex2oat` abort on TikTok (f4f8-2, f4f8 boot-2, f9 boot-2),
+a Scudo `corrupted chunk header` in Aurora's `RenderThread`, and launcher3 `RenderThread`
+aborts. The Cuttlefish logs kept in `out/` (same host CPU, run as a VM) have none of
+these. This is memory corruption in compiler and renderer threads, seen only on bare
+metal. Two causes are possible:
+- the i7-13700K, which already shows random compiler segfaults and `Bad page state`
+  under build load on the host (`docs/aosp-build.md`, "Flaky host");
+- the PC-only kernel path (`pcfb` dumb buffers through minigbm).
+
+It is not a ramoops overlap: the stick has no ramoops region and uses `efi_pstore`. The
+cause is still open. A `dex2oat` abort only leaves TikTok on JIT, and a crashed Play
+Store renderer restarts. To tell the two causes apart on the PC, write 1 to
+`/sys/devices/system/cpu/intel_pstate/no_turbo` (as root) and see whether the crashes
+stop.
+
+**Other findings, not fixed here.**
+- `com.android.phone` is killed for a background ANR every 4 s (Cuttlefish telephony with
+  no modem on the PC).
+- Chromium's first-run sign-in throws `NullAccountManagerDelegate does not implement
+  createAddAccountIntent`.
+
+**Verification (F9d).** Build of 2026-11-13: `tools/fetch-apps.sh playstore` writes the
+four `com.android.vending` entries listed above to `sysconfig-phonesky.xml`. `product.img`
+(EROFS, `dump.erofs --ls --path=/etc/sysconfig`) contains `sysconfig-phonesky.xml` and
+`sysconfig-microg.xml`.
+
+Not run yet: the Cuttlefish boot check, which is to confirm that
+`dumpsys deviceidle whitelist` lists `com.android.vending` and `com.google.android.gms`.
+On this host, `launch_cvd` failed in `extract-ikconfig`, because the user's `/tmp` quota
+was full ("Disk quota exceeded"). The real test is a Play Store download on the PC, which
+needs a signed-in account.

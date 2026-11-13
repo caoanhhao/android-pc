@@ -4,5 +4,5 @@
 # microG's signature check needs tools/patches/aosp17-microg-signature-spoofing.patch in frameworks/base.
 
 ifneq (,$(wildcard device/android-pc/apps/GmsCore/GmsCore.apk))
-PRODUCT_PACKAGES += privapp-permissions-microg.xml microg.xml
+PRODUCT_PACKAGES += privapp-permissions-microg.xml sysconfig-microg.xml microg.xml
 endif

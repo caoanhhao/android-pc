@@ -13,6 +13,15 @@ prebuilt_etc {
     visibility: ["//visibility:public"],
 }
 
+// Power-save and data-saver allowlists (sysconfig) for microG.
+prebuilt_etc {
+    name: "sysconfig-microg.xml",
+    src: "sysconfig-microg.xml",
+    sub_dir: "sysconfig",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}
+
 // Default microG settings, read by GmsCore from /product/etc/microg.xml.
 prebuilt_etc {
     name: "microg.xml",

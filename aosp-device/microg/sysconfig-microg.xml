@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- System allowlists for microG GmsCore, the entries Google's own google.xml gives
+     com.google.android.gms: it keeps running and gets network access in Doze and Data
+     Saver (GCM push, checkin), and its systemExempted foreground services may start. -->
+<config>
+    <allow-in-power-save package="com.google.android.gms"/>
+    <allow-in-data-usage-save package="com.google.android.gms"/>
+</config>

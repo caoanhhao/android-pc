@@ -157,6 +157,14 @@ be coded in parallel but must take turns building.
   executables run; the Play Store opens. Enforcing, no new denials. 32-bit ARM is not
   possible (x86_64-only). TikTok on the real PC is still to be checked. See
   `docs/arm-translation.md`.
+  *F9d (2026-11-13, real-PC f9b logs):* Play Store downloads crashed: `DownloadService` is a
+  `systemExempted` foreground service, allowed only for apps on the system power-save
+  allowlist. `fetch-apps.sh playstore` now ships the Play Store's `google.xml` sysconfig
+  entries, and microG gets its own. TikTok "not opening after login" was the Play Store
+  refusing a dynamic feature module to an app Aurora installed. With working downloads,
+  install TikTok from the Play Store. Open: crashes in shader and `dex2oat` compiler
+  threads seen only on bare metal (SwiftShader `vulkan.pastel`, which is the only GLES/Vulkan
+  on this PC). The cause is the CPU or the `pcfb` path, not settled yet.
   *F9e (2026-11-13, real-PC f9b logs):* Wi-Fi did not connect while Ethernet was plugged
   in: ConnectivityService ranks Ethernet above Wi-Fi, so Wi-Fi got no network request and
   `ClientModeImpl` dropped every connection. A SettingsProvider overlay turns on
