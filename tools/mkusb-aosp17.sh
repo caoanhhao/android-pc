@@ -17,7 +17,8 @@
 # (androidboot.boot_part_uuid), whatever USB port or controller it is on.
 #
 # Options: --product DIR   images (default aosp/out/target/product/pc_x86_64)
-#          --disk DEV      size the image for this stick (lsblk size, no root needed):
+#          --disk DEV      size the image for this USB stick (lsblk size, no root needed;
+#                          refused for a non-USB disk or one with mounted partitions):
 #                          userdata takes all the space left and the backup GPT sits at the
 #                          stick's real end; the printed commands write only the used part
 #          --userdata SIZE userdata partition size, MiB (default 4096; ignored with --disk)
@@ -45,7 +46,7 @@ while [[ $# -gt 0 ]]; do
         --enforcing) enforcing=1 ;;
         --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -187,6 +188,12 @@ parts=(
 total=2   # MiB: 1 before the first partition, 1 for the backup GPT
 for p in "${parts[@]}"; do set -- $p; total=$((total + $2)); done
 if [[ -n $disk ]]; then
+    # Only a USB stick with nothing mounted: the printed dd commands erase it.
+    [[ -b $disk && $(lsblk -dno TYPE "$disk") == disk ]] || { echo "mkusb-aosp17.sh: $disk is not a whole disk" >&2; exit 1; }
+    [[ $(lsblk -dno TRAN "$disk") == usb ]] || { echo "mkusb-aosp17.sh: $disk is not a USB disk" >&2; exit 1; }
+    if lsblk -no MOUNTPOINTS "$disk" | grep -q .; then
+        echo "mkusb-aosp17.sh: $disk has mounted partitions" >&2; exit 1
+    fi
     disk_mib=$(( $(lsblk -bndo SIZE "$disk") / 1048576 ))
     userdata_mib=$(( disk_mib - total + userdata_mib ))
     (( userdata_mib >= 1024 )) || { echo "mkusb-aosp17.sh: $disk ($disk_mib MiB) is too small" >&2; exit 1; }

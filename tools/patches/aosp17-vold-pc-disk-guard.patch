@@ -1,0 +1,263 @@
+diff --git a/Utils.cpp b/Utils.cpp
+index a55a57e..f83654d 100644
+--- a/Utils.cpp
++++ b/Utils.cpp
+@@ -22,6 +22,7 @@
+ #include <android-base/chrono_utils.h>
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
++#include <android-base/parseint.h>
+ #include <android-base/properties.h>
+ #include <android-base/scopeguard.h>
+ #include <android-base/stringprintf.h>
+@@ -1291,6 +1292,27 @@ static unsigned int GetMajorBlockVirtioBlk() {
+     return 0;
+ }
+ 
++std::map<int, dev_t> GetPartitionDevices(const std::string& sysPath) {
++    std::map<int, dev_t> parts;
++    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir(sysPath.c_str()), closedir);
++    if (!dir) return parts;
++    while (dirent* ent = readdir(dir.get())) {
++        std::string num, devNum;
++        if (ent->d_name[0] == '.' ||
++            !ReadFileToString(sysPath + "/" + ent->d_name + "/partition", &num) ||
++            !ReadFileToString(sysPath + "/" + ent->d_name + "/dev", &devNum)) {
++            continue;
++        }
++        unsigned int maj, min;
++        int n;
++        if (android::base::ParseInt(android::base::Trim(num), &n) &&
++            sscanf(devNum.c_str(), "%u:%u", &maj, &min) == 2) {
++            parts[n] = makedev(maj, min);
++        }
++    }
++    return parts;
++}
++
+ bool IsVirtioBlkDevice(unsigned int major) {
+     // Most virtualized platforms expose block devices with the virtio-blk
+     // block device driver. Unfortunately, this driver does not use a fixed
+diff --git a/Utils.h b/Utils.h
+index 6d2a3ce..4ec862a 100644
+--- a/Utils.h
++++ b/Utils.h
+@@ -26,6 +26,7 @@
+ #include <utils/Errors.h>
+ 
+ #include <chrono>
++#include <map>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -173,6 +174,11 @@ bool Readlinkat(int dirfd, const std::string& path, std::string* result);
+ // Handles dynamic major assignment for virtio-block
+ bool IsVirtioBlkDevice(unsigned int major);
+ 
++// android-pc: the partitions of the disk at |sysPath| (/sys/...), by partition number, with
++// their device numbers as sysfs gives them. Disks on the extended block major (NVMe, and SCSI
++// partitions past 15) get minors in probe order, so a partition is not disk minor + number.
++std::map<int, dev_t> GetPartitionDevices(const std::string& sysPath);
++
+ status_t UnmountTree(const std::string& mountPoint);
+ 
+ bool IsDotOrDotDot(const struct dirent& ent);
+diff --git a/VolumeManager.cpp b/VolumeManager.cpp
+index 9846e12..868ecfc 100644
+--- a/VolumeManager.cpp
++++ b/VolumeManager.cpp
+@@ -31,7 +31,9 @@
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
++#include <algorithm>
+ #include <array>
++#include <map>
+ 
+ #include <linux/kdev_t.h>
+ 
+@@ -108,6 +110,147 @@ static const unsigned int kMajorBlockMmc = 179;
+ 
+ using ScanProcCallback = bool(*)(uid_t uid, pid_t pid, int nsFd, const char* name, void* params);
+ 
++// android-pc (F9i): the PC's fstab hands every USB, SATA and NVMe disk to vold, and on a PC
++// those include the boot stick and disks of other operating systems. Android must never
++// offer to format those, so a disk is only managed when it is blank or holds nothing but
++// partitions Android itself makes or mounts. Everything else is left alone, unread past
++// its partition table and first filesystem headers.
++static const char* kPcSkippedDisks[] = {"nvme0n1"};  // the PC's own system disk
++
++// Partition types Android creates (Disk::partitionPublic/Private/Mixed) or mounts.
++static const char* kPcGptAllowed[] = {
++        "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",  // basic data (FAT32/exFAT portable storage)
++        "19A710A2-B3CA-11E4-B026-10604B889DCF",  // android_meta (adopted disk)
++        "193D1EA4-B3CA-11E4-B075-10604B889DCF",  // android_expand (adopted disk)
++        "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",  // Microsoft reserved (empty; Windows data disks)
++};
++static const int kPcMbrAllowed[] = {0x06, 0x0b, 0x0c, 0x0e, 0x07};  // FAT, exFAT
++
++// Does the disk at sysfs path |sysPath| hold a partition of the boot device
++// (/dev/block/by-name/*)?
++static bool PcIsBootDisk(const std::string& sysPath) {
++    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir("/dev/block/by-name"), closedir);
++    if (!dir) return false;
++    while (dirent* ent = readdir(dir.get())) {
++        if (ent->d_name[0] == '.') continue;
++        struct stat st;
++        if (stat(StringPrintf("/dev/block/by-name/%s", ent->d_name).c_str(), &st) != 0 ||
++            !S_ISBLK(st.st_mode)) {
++            continue;
++        }
++        std::string part;
++        if (!android::base::Realpath(StringPrintf("/sys/dev/block/%u:%u", major(st.st_rdev),
++                                                  minor(st.st_rdev)),
++                                     &part)) {
++            continue;
++        }
++        if (android::base::Dirname(part) == sysPath) return true;
++    }
++    return false;
++}
++
++// Filesystem type on |dev| ("" when blkid finds none), through a temporary device node.
++static std::string PcFsType(dev_t dev) {
++    std::string node = StringPrintf("/dev/block/vold/pccheck:%u,%u", major(dev), minor(dev));
++    if (android::vold::CreateDeviceNode(node, dev) != OK) return "?";
++    std::string fsType, unused;
++    if (android::vold::ReadMetadataUntrusted(node, &fsType, &unused, &unused) != OK) {
++        fsType.clear();
++    }
++    android::vold::DestroyDeviceNode(node);
++    return fsType;
++}
++
++static bool PcIsPortableFs(const std::string& fsType) {
++    return fsType == "vfat" || fsType == "exfat";
++}
++
++// Whether vold may manage the disk at |eventPath| (DEVPATH), see above. Logs why not.
++static bool PcDiskAllowed(const std::string& eventPath, dev_t device) {
++    const std::string sysPath = "/sys" + eventPath;
++    const std::string name = android::base::Basename(eventPath);
++    for (const char* skipped : kPcSkippedDisks) {
++        if (name == skipped) {
++            LOG(WARNING) << "PC disk guard: ignoring " << name << " (the PC's system disk)";
++            return false;
++        }
++    }
++    if (PcIsBootDisk(sysPath)) {
++        LOG(WARNING) << "PC disk guard: ignoring " << name << " (boot device)";
++        return false;
++    }
++
++    std::map<int, dev_t> parts = android::vold::GetPartitionDevices(sysPath);
++
++    std::string node = StringPrintf("/dev/block/vold/pccheck:%u,%u", major(device), minor(device));
++    if (android::vold::CreateDeviceNode(node, device) != OK) return false;
++    std::vector<std::string> output;
++    android::status_t res = android::vold::ForkExecvp({"/system/bin/sgdisk", "--android-dump", node}, &output);
++    bool zeroHead = false;
++    if (unique_fd fd(open(node.c_str(), O_RDONLY | O_CLOEXEC)); fd.ok()) {
++        std::string head(1024 * 1024, '\0');
++        zeroHead = android::base::ReadFully(fd, head.data(), head.size()) &&
++                   head.find_first_not_of('\0') == std::string::npos;
++    }
++    android::vold::DestroyDeviceNode(node);
++
++    bool hasPartLines = std::any_of(output.begin(), output.end(),
++                                    [](const auto& l) { return StartsWith(l, "PART"); });
++    if (res != OK || parts.empty()) {
++        // No partitions: blank, i.e. zeros or an empty partition table (Android offers to
++        // format it), or one filesystem on the whole disk, which must be one Android mounts.
++        std::string fsType = PcFsType(device);
++        if ((zeroHead || (res == OK && !hasPartLines)) && fsType.empty()) return true;
++        if (PcIsPortableFs(fsType)) return true;
++        LOG(WARNING) << "PC disk guard: ignoring " << name << " (no Android partition table, "
++                  << (fsType.empty() ? "not blank" : fsType) << ")";
++        return false;
++    }
++
++    bool gpt = false;
++    for (const auto& line : output) {
++        auto split = android::base::Split(android::base::Trim(line), " ");
++        if (split.size() >= 2 && split[0] == "DISK") {
++            gpt = split[1] == "gpt";
++        } else if (split.size() >= 3 && split[0] == "PART") {
++            int n = 0;
++            android::base::ParseInt(split[1], &n);
++            bool known = false;
++            bool fsData = false;
++            if (gpt) {
++                for (const char* t : kPcGptAllowed) {
++                    if (android::base::EqualsIgnoreCase(split[2], t)) known = true;
++                }
++                fsData = android::base::EqualsIgnoreCase(split[2], kPcGptAllowed[0]);
++            } else {
++                int type = -1;
++                android::base::ParseInt("0x" + split[2], &type);
++                for (int t : kPcMbrAllowed) {
++                    if (type == t) known = true;
++                }
++                fsData = known;
++            }
++            if (!known) {
++                LOG(WARNING) << "PC disk guard: ignoring " << name << " (partition " << n
++                          << " has type " << split[2] << ")";
++                return false;
++            }
++            // A data partition must hold FAT/exFAT or nothing; NTFS, ext4, ... are not ours.
++            if (fsData) {
++                auto it = parts.find(n);
++                std::string fsType = it == parts.end() ? "?" : PcFsType(it->second);
++                if (!fsType.empty() && !PcIsPortableFs(fsType)) {
++                    LOG(WARNING) << "PC disk guard: ignoring " << name << " (partition " << n
++                              << " holds " << fsType << ")";
++                    return false;
++                }
++            }
++        }
++    }
++    LOG(WARNING) << "PC disk guard: managing " << name;
++    return true;
++}
++
+ VolumeManager* VolumeManager::sInstance = NULL;
+ 
+ VolumeManager* VolumeManager::Instance() {
+@@ -219,6 +362,7 @@ void VolumeManager::handleBlockEvent(NetlinkEvent* evt) {
+         case NetlinkEvent::Action::kAdd: {
+             for (const auto& source : mDiskSources) {
+                 if (source->matches(eventPath)) {
++                    if (!PcDiskAllowed(eventPath, device)) break;
+                     // For now, assume that MMC and virtio-blk (the latter is
+                     // specific to virtual platforms; see Utils.cpp for details)
+                     // devices are SD, and that everything else is USB
+diff --git a/model/Disk.cpp b/model/Disk.cpp
+index 2cc6c89..b6ce874 100644
+--- a/model/Disk.cpp
++++ b/model/Disk.cpp
+@@ -348,6 +348,10 @@ status_t Disk::readPartitions() {
+         return res;
+     }
+ 
++    // android-pc: partition device numbers from sysfs, not disk minor + number (wrong on the
++    // extended major: adopting a second NVMe disk formatted the first disk's partition).
++    std::map<int, dev_t> partDevices = GetPartitionDevices(mSysPath);
++
+     Table table = Table::kUnknown;
+     bool foundParts = false;
+     for (const auto& line : output) {
+@@ -373,7 +377,12 @@ status_t Disk::readPartitions() {
+                 LOG(WARNING) << "Invalid partition number " << *it;
+                 continue;
+             }
+-            dev_t partDevice = makedev(major(mDevice), minor(mDevice) + i);
++            auto partIt = partDevices.find(i);
++            if (partIt == partDevices.end()) {
++                LOG(WARNING) << mId << ": partition " << i << " is not in " << mSysPath;
++                continue;
++            }
++            dev_t partDevice = partIt->second;
+ 
+             if (table == Table::kMbr) {
+                 if (++it == split.end()) continue;

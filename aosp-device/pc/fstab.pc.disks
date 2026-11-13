@@ -1,0 +1,8 @@
+# android-pc (F9i): extra disks of a real PC, managed by vold as portable storage or, with
+# encryptable=userdata, adoptable ("use as internal storage"). vold's PC disk guard
+# (tools/patches/aosp17-vold-pc-disk-guard.patch) skips nvme0n1, the boot stick and any disk
+# that is not blank or holds partitions Android does not make; nothing is formatted unless
+# the user confirms it in Android's own dialog. Patterns are fnmatch'ed against DEVPATH.
+/devices/*/usb*/block/sd* auto auto defaults voldmanaged=usb:auto,encryptable=userdata
+/devices/*/ata*/block/sd* auto auto defaults voldmanaged=sata:auto,encryptable=userdata
+/devices/*/nvme*n* auto auto defaults voldmanaged=nvme:auto,encryptable=userdata

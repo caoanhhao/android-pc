@@ -17,6 +17,9 @@
 # NO_WINDOW=1 runs without a window. MEM (MiB, default 6144), CPUS (default 4).
 # AUDIO picks QEMU's audio backend: pa (default; the host's PulseAudio/PipeWire), none, or
 # wav (playback recorded to out/aosp17-usb-audio.wav; no input, so capture fails).
+# QEMU_EXTRA: more QEMU arguments (split on spaces), e.g. extra disks for the external-storage
+# test (docs/usb-boot-aosp17.md §9) or "-device vhost-vsock-pci,guest-cid=3" for
+# `adb connect vsock:3:5555` (Cuttlefish's adbd listens on vsock only).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 img=${1:-$ROOT/out/aosp17-usb.img}
@@ -46,4 +49,5 @@ exec qemu-system-x86_64 \
     -audiodev "$audiodev" -device intel-hda -device hda-duplex,audiodev=snd0 \
     -vga std "${display[@]}" \
     -serial file:"$ROOT/out/aosp17-usb-serial.log" \
-    -monitor unix:"$ROOT/out/aosp17-usb-monitor.sock",server,nowait
+    -monitor unix:"$ROOT/out/aosp17-usb-monitor.sock",server,nowait \
+    ${QEMU_EXTRA:-}

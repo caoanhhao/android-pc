@@ -39,3 +39,24 @@ prebuilt_etc {
     product_specific: true,
     visibility: ["//visibility:public"],
 }
+
+// Cuttlefish's fstab plus the PC's extra disks (fstab.pc.disks). fs_mgr reads
+// /odm/etc/fstab.<fstab_suffix> before /vendor/etc, so vold and mount_all take this one;
+// first-stage init keeps the vendor ramdisk copy, which is the same without these lines.
+genrule {
+    name: "gen_fstab_pc_f2fs_hctr2",
+    srcs: [
+        ":gen_fstab_cf_f2fs_hctr2",
+        "fstab.pc.disks",
+    ],
+    out: ["fstab.cf.f2fs.hctr2"],
+    cmd: "cat $(in) > $(out)",
+}
+
+prebuilt_etc {
+    name: "fstab.pc.f2fs.hctr2",
+    src: ":gen_fstab_pc_f2fs_hctr2",
+    filename: "fstab.cf.f2fs.hctr2",
+    device_specific: true,
+    visibility: ["//visibility:public"],
+}

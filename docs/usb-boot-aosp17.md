@@ -250,9 +250,12 @@ card 0, and the built-in `snd-usb-audio` otherwise numbered the webcam's microph
 tools/mkusb-aosp17.sh --disk /dev/sda      # → out/aosp17-usb.img
 ```
 
-Options: `--disk DEV` sizes the image for that stick (its size from `lsblk`, no root):
+Options: `--disk DEV` sizes the image for that stick (its size from `lsblk`, no root;
+refused for a disk that is not on USB or has mounted partitions, so never the PC's NVMe):
 `userdata` takes all the space left and the backup GPT sits at the stick's real end, so
-nothing of an older layout survives; without it `--userdata MiB` (default 4096) sets the
+nothing of an older layout survives. **Always build release images with `--disk`**: the
+F9d image was made without it and its 4 GiB `userdata` was too small for large games
+(Genshin Impact, Delta Force); see §9; without it `--userdata MiB` (default 4096) sets the
 size. `--resolution WxH` (default 2560x1080, the test monitor in landscape, since F9f;
 Limine uses another mode if the monitor lacks it; `auto` lets Limine pick the monitor's
 preferred mode from its EDID, which gave 1920x1080 on the first boot), `--density N`
@@ -311,6 +314,11 @@ tools/mkusb-aosp17.sh --append "console=ttyS0,115200" out/aosp17-usb-qemu.img
 WRITABLE=1 tools/run-qemu-aosp17-usb.sh out/aosp17-usb-qemu.img
 tools/pclog-read.sh out/aosp17-usb-qemu.img          # → out/pclog/boot-N/
 ```
+
+`QEMU_EXTRA` passes more QEMU arguments, e.g. the extra disks of §9 and
+`-device vhost-vsock-pci,guest-cid=3`, after which `adb connect vsock:3:5555` reaches
+Cuttlefish's adbd (it listens on vsock only; host vsock CID 3 must be free, so not while
+Cuttlefish runs, which the one-VM rule already ensures).
 
 QEMU q35 + OVMF, `qemu-xhci` + `usb-storage`, `-vga std` (its GOP is what pcfb drives),
 `usb-kbd` + `usb-tablet`, `e1000e`. Serial log in `out/aosp17-usb-serial.log`, monitor
@@ -453,3 +461,88 @@ the panic is in `/sys/fs/pstore` on the next Linux boot (efi-pstore).
 | F7 camera | `/dev/video0`–`video2` (`system:camera` 0660) from `uvcvideo` | `video_device` |
 | F8 Wi-Fi | `wlan0` from `iwlmvm` (nl80211, firmware API 89 + PNVM); `/dev/socket/wpa_wlan0` | works today with Cuttlefish's legacy Wi-Fi HAL (`vendor.wifi_hal_legacy`) + wpa_supplicant; no `regulatory.db` |
 | lights (F2) | `/sys/class/leds`, `/sys/class/backlight` (the desktop has none) | registered, 0 lights |
+
+## 9. Storage: `userdata` size and extra disks (F9i)
+
+### `userdata` fills the stick
+
+Games did not install ("not enough space") because the F9d image was made without
+`--disk`, so `userdata` was the 4 GiB default. `tools/mkusb-aosp17.sh --disk /dev/sda`
+makes `userdata` everything after `super` (48.6 GiB on the 57.3 GiB SanDisk). The image
+file is sparse (`truncate`, `dd conv=sparse`), and the two printed `dd` commands write
+only up to the first 64 MiB of `userdata` plus the backup GPT, so writing the stick takes
+the same ~3 minutes as before. Those 64 MiB of zeros wipe the old `userdata`, and fs_mgr
+formats it (f2fs, full partition size) on the first boot. Growing `userdata` at first
+boot was not chosen: it needs a step in first-stage init that rewrites the boot disk's GPT
+(and moves the backup GPT) before fs_mgr formats `userdata`, while `--disk` gives the same
+result with no code on the device. The cost is one image per stick size.
+
+### Extra disks as portable or internal storage
+
+An SSD or other disk on USB, SATA or NVMe shows up in Android as a "USB drive". Android's
+own wizard (notification → "Format" or "Format another way" → confirm the dialog that says
+all data will be erased) makes it portable storage (FAT/exFAT) or adopts it as internal
+storage (encrypted ext4, apps and media can move there). Nothing is formatted without
+that dialog.
+
+- **fstab.** `aosp-device/pc/fstab.pc.disks` adds three `voldmanaged=...:auto,encryptable=userdata`
+  entries (DEVPATH patterns `/devices/*/usb*/block/sd*`, `/devices/*/ata*/block/sd*`,
+  `/devices/*/nvme*n*`). A genrule appends them to Cuttlefish's `fstab.cf.f2fs.hctr2`
+  and installs the result as `/odm/etc/fstab.cf.f2fs.hctr2`. fs_mgr reads `/odm/etc` before
+  `/vendor/etc`, so vold and `mount_all` take it; first-stage init keeps the vendor ramdisk
+  copy. `encryptable=userdata` sets the disk's adoptable flag (`vold.has_adoptable=1`), so
+  no `persist.sys.adoptable` override is needed.
+- **vold patch** (`tools/patches/aosp17-vold-pc-disk-guard.patch`; apply with
+  `git -C aosp/system/vold apply ../../../tools/patches/aosp17-vold-pc-disk-guard.patch`).
+  A PC disk guard runs before vold creates a disk, so a disk it rejects never reaches the
+  framework, Settings, or a format dialog:
+  - `nvme0n1` is always ignored (the PC's Arch Linux disk; an extra NVMe SSD enumerates
+    as `nvme1n1`);
+  - the boot device (the disk holding `/dev/block/by-name/*`) is ignored;
+  - any other disk is managed only if it is blank (first MiB zero, or an empty partition
+    table, and no filesystem signature), holds FAT/exFAT on the whole disk, or has only
+    partitions Android makes or mounts: GPT basic data, `android_meta`, `android_expand`,
+    Microsoft reserved; MBR types 06/07/0b/0c/0e. A data partition must hold FAT, exFAT
+    or nothing: NTFS, ext4, btrfs, LUKS, swap... make vold ignore the whole disk.
+  - It logs `PC disk guard: ignoring <disk> (<reason>)` / `managing <disk>` (vold, warning
+    level). To use a disk that is ignored, empty it on another computer first (for example
+    delete all partitions), since Android will not.
+- **NVMe partition bug in AOSP vold (fixed by the same patch).** Stock vold takes a
+  partition's device number as disk minor + partition number. NVMe disks (and SCSI
+  partitions past 15) use the extended major 259 with minors in probe order, so with two
+  NVMe disks that is a partition of the *other* disk. In the QEMU test, adopting the blank
+  `nvme1n1` (259:0) formatted 259:2, the first partition of the Arch-like `nvme0n1`.
+  `Disk::readPartitions` now reads each partition's `dev` from sysfs
+  (`GetPartitionDevices` in `Utils.cpp`).
+- **Large games.** An adopted disk takes app installs that allow external storage;
+  Settings → Apps → *app* → Storage → Change moves one, `pm move-package PKG UUID` too,
+  and `pm install --install-location 2` puts new installs there. Apps that do not allow
+  external storage stay on `userdata`, which is why `userdata` must fill the stick anyway.
+
+### Test (QEMU, 2026-11-13)
+
+`tools/mk-test-disks.sh` makes four sparse test disks in `out/f9i-test/` and prints the
+`QEMU_EXTRA` line for them (plus vsock for adb):
+
+```bash
+eval "$(tools/mk-test-disks.sh | tail -1)"; export QEMU_EXTRA
+```
+```bash
+NO_WINDOW=1 tools/run-qemu-aosp17-usb.sh out/aosp17-usb-qemu.img
+```
+
+| Disk | Contents | Result |
+|---|---|---|
+| `sda` (boot stick, USB) | the image | ignored (boot device) |
+| `nvme0n1` (259:1) | GPT: ESP (FAT32) + Linux (ext4), like the PC's Arch disk | ignored (name); file unchanged (sha1) |
+| `nvme1n1` (259:0) | blank | "USB drive detected" notification → wizard → adopted: `private:259,5` (= `nvme1n1p2`, 7.6 GiB), primary storage moved, test APK installed under `/mnt/expand/<uuid>/app` |
+| `sdc` (SATA, AHCI) | GPT basic-data partition holding ext4 | ignored (`partition 1 holds ext4`); file unchanged |
+| `sdb` (USB) | MBR, FAT32 | mounted as portable storage `/storage/<uuid>` |
+
+Not covered: the adopted disk after a reboot (the QEMU stick runs in snapshot mode, so
+`/data` and the disk's key are gone on reboot; this path is stock AOSP), and real hardware.
+Real-PC check: plug a blank SSD (USB enclosure, SATA or a second M.2 slot), boot, set it up
+from the notification, and confirm in `logcat -s vold` that `nvme0n1` is ignored.
+Side note: `pm install` over adb waited forever for Play Protect (Finsky) verification in
+QEMU (no network); `settings put global verifier_verify_adb_installs 0` avoids it.
+

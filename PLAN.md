@@ -181,6 +181,16 @@ be coded in parallel but must take turns building.
   `tools/mkusb-aosp17.sh` now sets the GOP mode to 2560x1080 by default (`--resolution
   auto` for the EDID mode). Checked on Cuttlefish at 2560x1080; the real PC is part of the
   next USB test. See `docs/desktop-mode.md`.
+  *F9i (2026-11-13):* storage. Large games did not install because the F9d image had the
+  4 GiB default `userdata`; release images are built with `tools/mkusb-aosp17.sh --disk
+  /dev/sda`, which makes `userdata` fill the stick (48.6 GiB), and `--disk` now refuses a
+  non-USB or mounted disk. Extra SSDs on USB, SATA or NVMe can be set up as portable or
+  adopted ("internal") storage through Android's own wizard: `voldmanaged` entries in an
+  `/odm/etc` fstab, and a vold patch whose PC disk guard ignores `nvme0n1`, the boot stick
+  and any disk that is not blank or holds partitions Android does not make. The patch
+  also fixes an AOSP vold bug that took the wrong partition on NVMe (adopting a second NVMe
+  disk formatted the first disk's partition). Checked in QEMU with NVMe, SATA and USB test
+  disks; the real PC is part of the next USB test. See `docs/usb-boot-aosp17.md` §9.
   *USB image `out/aosp17-usb-f9d.img` (2026-11-13, 12.7 GiB, `tools/mkusb-aosp17.sh --menu`,
   2560x1080):* holds F9b–F9f (main at 0cabdba). Checked in the image's super partition:
   `sysconfig-phonesky.xml`/`sysconfig-microg.xml` on `/product`, the desktop-mode
