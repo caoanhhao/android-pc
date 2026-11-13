@@ -173,7 +173,7 @@ images still boot on Cuttlefish unchanged.
   `/mnt`: vold unmounts those at start and killed it), writes `boot-N/dmesg.*`,
   `logcat.*`, `state-30/60/120/180/300/600.txt` (getprop, ps, lsmod, device nodes,
   addresses, SurfaceFlinger/window/ethernet dumps, service list) and copies
-  `/data/tombstones`, syncing every 3 s. `PATH` must include `/system/bin` (vendor `sh`).
+  `/data/tombstones` and the end of Unreal games' own logs (`applogs/`, F9q), syncing every 3 s. `PATH` must include `/system/bin` (vendor `sh`).
   Size limits (F9l; the f9e stick's first boot wrote 198 MB of logcat and 48 MB of dmesg,
   filled the 256 MiB partition, and the next boot could not log at all):
   - dmesg and logcat go through `split` into 2 MiB (`dmesg.aaa`, `dmesg.aab`, ...) and

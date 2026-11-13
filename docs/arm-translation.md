@@ -509,3 +509,128 @@ These are the values Genshin's published requirements check:
   both show `1`, `droidguard_force_local_disabled=false`. The Cuttlefish VM has no
   Internet (DNS fails), so a real verdict needs the PC with a signed-in account. The change
   reaches the PC with the next `product.img`.
+
+### F9q: Delta Force dies 22 s after launch (guest jump to address 0)
+
+Real PC, `out/aosp17-usb-f9g.img` installed with `update-usb-aosp17.sh` (user data kept),
+logs in `out/pclog-f9g/boot-2` (joined logcat `out/pclog-f9g/b2-logcat.txt`), 2026-11-13.
+Delta Force (`com.garena.game.df`, version 1.203.37119, Unreal Engine 4, Garena/Tencent
+SDKs) started at 14:21:19 and died at 14:21:41.
+
+**The tombstone (`tombstone_04`).**
+- `signal 11 (SEGV_ACCERR), fault addr 0x0` in tid 4405 `GameThread`. The host stack is
+  only the translator: `libc syscall` ← `berberis_HandleNoExec` ← `ExecuteGuest` ←
+  `RunGuestThread`. libndk_translation found that the next guest PC is not executable
+  guest code and raised the SIGSEGV itself; `SEGV_ACCERR` is its choice, not a real
+  access fault.
+- The guest (arm64) state of that thread, which the tombstone prints under "Guest thread
+  information":
+  - `pc 0`, `lr 0`, `x29 (fp) 0`. A call through a null function pointer (`blr xN`)
+    would leave `lr` pointing back into the caller. Here the return address itself was 0:
+    the code ran `ret` after loading `x29`/`x30` from a frame record that held zeros. The
+    64 bytes around the guest `sp` (`0x735610af29c0`–`29ff`) are all zero.
+  - The caller frames above it are intact: `x20` points at a frame record
+    (`fp 0x735610af2c90`, `lr libUE4.so+0x10bc7e38`). `x0` and `x10` point at two
+    function entries in `libUE4.so` (`+0x11333b04`, `+0x11333b40`), `x16`/`x17` (the
+    linker's call scratch registers) into `libUE4.so` too. The thread was in the game's
+    own code.
+  - So one stack frame of `GameThread` was zeroed (or never set up) and the function
+    returned through it.
+- Other threads:
+  - three anti-cheat threads are alive and idle in raw-syscall stubs: tid 4030 (`lr` in
+    `libanogs.so`), 4013 and 4017 (`lr` in `libanort.so`); `pc` is in one-page anonymous
+    code pages (`x8` = 101 `nanosleep`, 72 `pselect6`). `libanogs.so`/`libanort.so` are
+    Tencent's ACE (the `TSS` GCloud plugin, loaded at 14:21:21);
+  - `RenderThread`, the UE4 task-graph workers and a `vulkan` thread are idle.
+  The anti-cheat runs under translation; its own code works.
+- `libUE4.so`'s text is still one mapping (`r--`, 0–0x1be57000): nothing split it, so
+  there is no sign that someone patched the engine's code at run time.
+- `14:21:41.372 linker: libcrashlytics-trampoline.so is for EM_AARCH64` comes 1 ms
+  *before* the fatal-signal line. It is a result, not the cause: Firebase Crashlytics'
+  native handler catches the SIGSEGV first and runs its arm64 helper through the x86_64
+  `linker64`, which cannot load it. Crashlytics crash reports from translated apps never
+  work; that is harmless.
+
+**What ran before (logcat, pid 3993).**
+- 14:21:19 start, 14:21:21 `SplashActivity`, ANGLE on SwiftShader Vulkan (renderer init
+  is fine), GCloud plugins (GPM, HTTPDNS, `TSS`, GCloud, TGPA), 14:21:25 INTL SDK init
+  (remote config, `getsid` → `ret = 6`, a report-session error the game ignores),
+  14:21:26 `GameActivity` drawn.
+- 14:21:39 GVoice plugin, 14:21:41.14 Play asset-pack sync (`AssetPackService
+  getSessionStates`, answered by the Play Store), 14:21:41.37 crash on `GameThread`.
+- No anti-cheat, emulator, root or integrity message in between. The game did not ask for
+  a Play Integrity token in this run. The INTL device info sent `"root_info":"test-keys"`
+  and the INTL config has `"emulator": 2`, as in earlier runs.
+- The previous run (f9f, `out/pclog-f9f/boot-1`, 12:35, same game build, same translator)
+  went through the same sequence. After the asset-pack sync, `GameThread` went on to
+  `GCloudDns init` (1 s later), GPM's VM checks (`/sys/bus/virtio exist`,
+  `/proc/kallsyms contains vm info goldfish/qemu/kvm`), the GCloud version check and a
+  resource download. It ran 6 minutes until the user closed it.
+  What differs in f9g:
+  - it was the second launch, with the half-finished download from the first one on disk;
+  - the clicks now reach the game as touches (F9m; 14:21:38.9 and 14:21:39.6 on
+    `GameActivity`, 1.8 s before the crash);
+  - DroidGuard is on (F9n), which does not touch the game process.
+
+**Cause: which of the suspects fits.**
+
+| Suspect | Verdict |
+|---|---|
+| Translator limitation (unsupported instruction, self-modifying code) | Unlikely. An unknown instruction gives SIGILL with the guest PC in the library, not a return to 0. `libUE4.so`'s text was never remapped. The same code path ran fine in the f9f run. |
+| Vulkan/GLES (renderer init on the software GPU) | No. ANGLE/SwiftShader came up at 14:21:21, `GameActivity` drew at 14:21:26, and the crash is on `GameThread`, not `RenderThread`/RHI. In f9f the same renderer ran for 6 minutes. |
+| Play Integrity | No. This run made no integrity request; Integrity is checked by the server at login, which the game never reached. |
+| Anti-cheat (ACE/TSS) kills the game on purpose | Possible, not proven. A return through a zeroed frame is a pattern anti-cheats use to crash without a usable backtrace, and ACE was loaded and running. Against it: the f9f run had the same root/emulator signs and was not killed; nothing logged a detection. |
+| Game bug on this path (second launch with partly downloaded data, or touch input during loading) | Possible, not proven. A buffer cleared with the wrong size gives the same picture. |
+
+The logs cannot tell the last two apart: the crashing function is in the stripped
+`libUE4.so` (the APK is not on the build host), and the game's own log is not in logcat.
+The pc-0 crash is not one of the "fixable in the ROM" cases:
+- **libndk_translation settings.** The binary reads `ro.berberis.flags` (e.g.
+  `accurate-sigsegv`) and a translation mode (`interpret-only`,
+  `lite-translate-or-interpret`). None of them changes what guest code returns to. An
+  interpreter-only run would make UE4 unusably slow. Nothing points at the translator, so
+  no setting was changed.
+- **Hiding userdebug/root signs.** The game reports `test-keys` and finds the VM (kallsyms
+  symbols, virtio) in both runs, and the f9f run was not killed for it. Changing
+  `ro.build.tags`/`ro.build.type` changes the build fingerprint. The Waydroid attempt on
+  2026-11-07 showed that this breaks Android's own integrity check, and Garena then still
+  said "avoid using emulators" at login. Not done.
+- **GLES/Vulkan exposure.** Not involved (see the table).
+
+**Fix made: `pclog` keeps the game's own log.**
+`pclog.sh` copies, at each state dump, the last 1 MiB of the newest six Unreal logs
+(`/data/data/*/files/UE4Game/*/*/Saved/Logs/*.log` and the same under
+`/data/media/0/Android/data`) to `boot-N/applogs/PACKAGE-FILE`. The next time Delta Force
+dies, its log should say what `GameThread` was doing (UE4 logs the loading steps, and a
+detected cheat is usually logged before the kill). This needs a new `vendor.img` (f9-usb4
+builds the next stick image).
+
+**What the user can try on the PC (no rebuild needed).**
+1. Launch Delta Force and do not click until the game's own UI is up. If it survives,
+   touches during loading are the trigger. Then turn the conversion off for the game only
+   over adb (`setprop persist.sys.pc.mouse_as_touch -com.garena.game.df`) and compare.
+2. If it still dies at the same point, clear the game's data (Settings → Apps → Delta
+   Force → Storage → Clear storage) so it runs the first-launch path that worked in f9f.
+3. If it gets past loading, the next stop is login. Garena's login refused emulators in
+   the 2026-11-07 Waydroid test, and the game asks for Play device integrity, which this
+   build cannot give (F9n). Expect Delta Force to stay unplayable on this PC even after
+   the crash is gone.
+
+**Untrusted-touch drops in this boot (950).** All 950 are `Dropping untrusted touch event
+due to /1000`, in bursts:
+
+| Time | Drops | What was on screen |
+|---|---|---|
+| 14:21:20–25 | 255 | Delta Force starting: a held-button drag while only its starting window and the `SplashActivity` were up |
+| 14:22:06, 14:22:47 | 4 | single clicks while the Play Store task was relaunching and a dim layer was fading out |
+| 14:23:13–19 | 429 | two Play Store `market://` links opening `ResolverActivity` (each click landed during the 0.4 s open animation) |
+| 14:24:03–14:25:07 | 262 | TikTok's activities switching (`NewUserJourneyActivity`, sign-in, `SparkActivity`) and desktop mode exiting at 14:24:49 |
+
+In each burst `input_interaction` names no app window, only `PointerEventDispatcher0`:
+the click fell on a window that was not taking input yet, as in F9m. There is no drop
+between 14:21:26 and 14:21:41, while `GameActivity` was up. `input_interaction` shows
+the clicks at 14:21:26.2, 14:21:38.9 and 14:21:39.6 going to
+`com.garena.game.df/com.epicgames.ue4.GameActivity`, which is on F9m's list, so they
+reached the game as one-finger touches. The drops are Android's tapjacking protection, and
+each is logged once per `ACTION_MOVE` of a held drag. That is noise and does not keep
+clicks from reaching the game. Nothing to fix.

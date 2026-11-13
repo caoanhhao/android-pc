@@ -299,6 +299,21 @@ be coded in parallel but must take turns building.
   49 GB, and there are no AVC denials. Write it with the two `dd` commands `mkusb` prints (this
   wipes Android data and `pclog`). Next: on the PC, rerun Delta Force, Where Winds Meet,
   the Genshin search and the TikTok login so `pclog` captures them.
+  *F9q (2026-11-13, real-PC f9g boot 2): Delta Force dies after 22 s.* The arm64 game
+  thread returned to address 0 through a zeroed stack frame (`pc`, `lr` and `fp` all 0)
+  in `libUE4.so` code, right after the Play asset-pack sync. libndk_translation then
+  raised SIGSEGV (`berberis_HandleNoExec`). Ruled out: a translator gap (no SIGILL, engine
+  code never remapped, the same path ran fine in f9f), the software GPU (renderer up,
+  crash not on the render thread), Play Integrity (not asked for in this run). Left open:
+  Tencent's ACE anti-cheat (`libanogs`/`libanort`, loaded and running) killing on purpose,
+  or a game bug on the second launch or on touch input during loading. The f9f run had the
+  same root/VM signs and ran 6 minutes. Nothing to change in the ROM for the crash itself.
+  `pclog.sh` now copies the end of Unreal games' own logs (`boot-N/applogs/`) so the next
+  crash shows what the game was doing. The 950 untrusted-touch drops are all clicks during
+  window transitions; there are none while the game was up, and its clicks reached
+  `GameActivity` as touches (F9m works). Even without the crash, Garena's login and the
+  device-integrity check will most likely keep the game out. Details:
+  `docs/arm-translation.md` (F9q).
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

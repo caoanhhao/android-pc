@@ -91,6 +91,14 @@ dump() {
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
+    # Unreal games write their own log (Saved/Logs, internal or external storage); logcat does
+    # not have it, and it is the only place that says what the game did before a crash. Keep
+    # the last 1 MiB of the newest few, as boot-N/applogs/PACKAGE-FILE.
+    for f in $(ls -t /data/data/*/files/UE4Game/*/*/Saved/Logs/*.log \
+            /data/media/0/Android/data/*/files/UE4Game/*/*/Saved/Logs/*.log 2>/dev/null | head -n 6); do
+        p=${f#/data/*/}; p=${p#0/Android/data/}
+        mkdir -p $d/applogs && tail -c 1048576 "$f" > "$d/applogs/${p%%/*}-${f##*/}"
+    done
 }
 # dmesg: first 2 MiB + last 8 MiB; logcat: first 8 MiB + last 16 MiB (the newest piece is
 # still being written, so it may be smaller). Plus state dumps: about 40 MiB a boot.
