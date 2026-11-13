@@ -114,7 +114,8 @@ it and runs on top of microG.
   is reported unchanged.
 - `aosp-device/microg/microg.xml` (installed as `/product/etc/microg.xml`) turns on
   microG's device registration (checkin) and cloud messaging by default. The Play Store
-  does not work without them (F9c below). GmsCore reads this file as the defaults for its
+  does not work without them (F9c below). It also turns on SafetyNet/DroidGuard, which
+  the Play Store's Play Integrity service needs (F9n below). GmsCore reads this file as the defaults for its
   settings; a value the user sets in microG Settings still wins.
 
 After first boot:
@@ -382,3 +383,129 @@ AVC denial for either app. If `launch_cvd` fails in `extract-ikconfig` ("Cannot 
 config"), check that `/tmp` is not full: the script writes its temp files there.
 
 A Play Store download needs a signed-in account, so it is left for the real PC.
+
+### F9n: Where Winds Meet, Genshin Impact, Play Integrity
+
+Real PC, `out/aosp17-usb-f9f.img`, logs in `out/pclog-f9f/boot-1`, 2026-11-13. The user
+reported three games:
+- Where Winds Meet (`com.netease.yyvn`) downloads from the Play Store but does not start;
+- Genshin Impact does not show up in the Play Store;
+- Delta Force (`com.garena.game.df`) fails Play Integrity (`requestIntegrityToken() failed`).
+
+**Where Winds Meet: the install is fine, NetEase's packer crashes under translation.**
+- The Play Store delivered every artifact of version 63832 (12:36–12:41): `base.apk`
+  (33.5 MB), `.dm`, `config.arm64_v8a`, `config.en`, `config.hdpi`, and the install-time
+  asset packs `yysls_it1` (2.59 GB) and `yysls_it2` (424 MB). The PackageInstaller session
+  committed at 12:41:51 (`installation completed for package:com.netease.yyvn`). Nothing
+  was truncated or missing.
+- At launch, `ClassNotFoundException: androidx.core.app.CoreComponentFactory` and the
+  five `Failed to find entry 'classes.dex'` lines are expected. The splits and asset packs
+  carry no dex. `base.apk` holds only the stub of NetEase's packer: `da1vikvn` /
+  `libunisec.so`, project `h72naxx2gb`. The real dex is encrypted in the asset
+  `_ntcfgss.dat`. The packer decrypts it to `app_ntp0/3.9_63832/.unzip/classes.dex` and
+  swaps the class loader later. The appComponentFactory error is only logged.
+- The process dies right after that. It ran three times (12:41:55, 12:41:58, 12:42:18),
+  and each time crashed with the same SIGSEGV:
+  ```
+  signal 11 (SEGV_ACCERR) Cause: trying to execute non-executable memory.
+  #00 pc 13147c  .../lib/arm64/libunisec.so (offset 0x62000)
+  #01 pc 0278e9  /apex/com.android.art/lib64/libartbase.so (art::ReadMagicAndReset+185)
+  #02 libdexfile.so DexFileLoader::InitAndReadMagic ... DexFile_openDexFileNative
+  #20 libndk_translation.so DoTrampoline_JNIEnv_CallStaticObjectMethodV
+  ```
+  `libunisec.so` ("initHookProcs start, running on art runtime") hooks ART by patching
+  the host `libartbase.so` with an address in its own arm64 code. The goal is to catch
+  `read()` when ART opens the decrypted dex. On an arm64 phone that works. Here,
+  `libartbase.so` is x86_64 code run by the host CPU. It jumps into arm64 guest code
+  that libndk_translation mapped non-executable, and the process faults at once.
+- This cannot be fixed in the ROM. No native bridge supports an arm64 library that
+  inline-hooks the host runtime, and libndk_translation is a proprietary binary. The
+  game ships only an arm64 build on Play. It is not memory corruption on the PC: the
+  crash is identical at the same PC (`0x13147c`) three times.
+- Other games protected by NetEase's packer (`libunisec.so` / NTP) will fail the same
+  way. So will other packers that hook `libart` from native code.
+
+**Genshin Impact: the device profile looks right, and the filtering is on Google's side.**
+On Cuttlefish with the same build (2026-11-13), `pm list features` and
+`dumpsys SurfaceFlinger` show what the Play Store's device configuration is built from.
+These are the values Genshin's published requirements check:
+
+| Check | This ROM | Genshin needs |
+|---|---|---|
+| ABI | `ro.product.cpu.abilist` = `x86_64,arm64-v8a` | `arm64-v8a` (64-bit only) |
+| OpenGL ES | `reqGlEsVersion=0x30001` (GLES 3.1, ANGLE on SwiftShader) | GLES 3.x |
+| Vulkan | `vulkan.level=1`, `vulkan.version=4206592` (1.3), `vulkan.compute` (from the `com.google.cf.vulkan` APEX) | optional |
+| Texture formats | `GL_KHR_texture_compression_astc_ldr`, ETC1/ETC2/EAC, S3TC/DXT, BPTC, RGTC | ASTC/ETC2 |
+| RAM | `android.hardware.ram.normal` (the PC has much more than 4 GB) | 4 GB or more |
+| Screen | large/xlarge layout, 240 dpi, landscape and portrait features | — |
+
+- No `uses-feature` that a phone game asks for is missing.
+- The extra Cuttlefish features (telephony, NFC, consumer IR) cannot hide an app; they
+  only make more apps visible.
+- The microG checkin (`GmsCheckinClient` request) sends the real build:
+  - fingerprint `Android/aosp_pc_x86_64/pc_x86_64:17/.../userdebug/test-keys`;
+  - device `pc_x86_64`, model `android-pc x86_64`;
+  - `glEsVersion=196609`.
+- What is left is Google Play's own device filtering:
+  - **Device catalog.** The device is unknown to Google (no Play-certified build
+    fingerprint, test-keys, `ro.product.cpu.abi=x86_64`). A developer can use the Play
+    Console device catalog to exclude devices that fail Play Integrity, or whose primary
+    ABI is x86.
+  - **Same result on other x86 devices.** Genymotion (also x86_64 with ARM translation)
+    reports the same thing: Genshin is "not compatible" from the Play Store and installs
+    only from an APK site.
+- The ROM cannot change this without posing as a certified device:
+  - a copied Pixel fingerprint;
+  - a microG device profile that claims another phone.
+
+  This is out of scope, so we leave it alone.
+
+  The user can try two things:
+  - install Genshin through Aurora Store or from an APK, with all of its splits;
+  - in microG Settings → Device registration, pick another device profile, at their own
+    risk.
+
+  Even when it installs, Genshin's anti-cheat may refuse translated or x86 devices. That
+  was not tested.
+- GLES stays at 3.1. Cuttlefish turns off ANGLE's `exposeES32ForTesting`
+  (`ro.boot.hardware.angle_feature_overrides_disabled`), because SwiftShader's ES 3.2 is
+  not conformant. Claiming 3.2 would let apps use features that then break.
+
+**Play Integrity under microG.**
+- The real Play Store serves the Integrity API (`ExpressIntegrityService`, and the
+  classic `requestIntegrityToken`). For each verdict it runs a DroidGuard VM through
+  `com.google.android.gms`, which is microG here.
+- microG 0.3.17 ships with SafetyNet and DroidGuard **off** (`droidguard_enabled`,
+  `safetynet_enabled` default `false`). In the f9f logs every DroidGuard handle failed:
+  - `java.lang.IllegalAccessException: DroidGuard should not be available locally`
+    (`NetworkHandleProxyFactory.createHandle`);
+  - then `DGFallback: kotlin.NotImplementedError` (12:32:22).
+
+  The Play Store then gave up:
+  - `ExpressIntegrityException: Last device integrity refresh attempt failed`;
+  - `StandardIntegrityException: -100`.
+
+  The same failure hit the account sign-in page's DroidGuard step (`minute_maid`).
+- **Fix.** `aosp-device/microg/microg.xml` now also sets `safetynet_enabled` and
+  `droidguard_enabled` to `true`, the same as turning on "Google SafetyNet" in microG
+  Settings. DroidGuard then runs Google's attestation VM locally in
+  `com.google.android.gms.unstable`.
+- microG keeps blocking hardware key attestation (`droidguard_block_hw_attestation=1`).
+  This is microG's default; we did not change it.
+- What to expect:
+  - Integrity requests should now return a verdict instead of error -100.
+  - The verdict will at best be `MEETS_BASIC_INTEGRITY`. `MEETS_DEVICE_INTEGRITY` and
+    `MEETS_STRONG_INTEGRITY` need a Google-certified build fingerprint and a hardware-backed
+    attestation key chained to Google's roots. This build has neither: test-keys, an
+    unlocked userdebug build, and a Cuttlefish software KeyMint.
+  - Delta Force and most online games that check integrity ask for device integrity, so
+    they will still refuse.
+  - Getting further would mean faking a certified device (fingerprint/keybox spoofing),
+    which breaks Google's terms. We do not do it.
+- Verification on Cuttlefish (2026-11-13; the file was pushed to `/product/etc` over
+  `adb remount`, so no image was rebuilt). Before the push,
+  `content query --uri content://com.google.android.gms.microg.settings/droidguard` showed
+  `droidguard_enabled=0`, and the `safety-net` URI showed `safetynet_enabled=0`. After it,
+  both show `1`, `droidguard_force_local_disabled=false`. The Cuttlefish VM has no
+  Internet (DNS fails), so a real verdict needs the PC with a signed-in account. The change
+  reaches the PC with the next `product.img`.

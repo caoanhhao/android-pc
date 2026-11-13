@@ -3,8 +3,13 @@
      /product reads /product/etc/microg.xml as the defaults for its settings; a value the user
      sets in microG Settings still wins. microG ships with device registration (checkin) and
      cloud messaging off, which leaves the Play Store with Android ID 0 ("Cannot sync with
-     0 Android ID") and blank pages, so both are on here (docs/arm-translation.md). -->
+     0 Android ID") and blank pages, so both are on here (docs/arm-translation.md).
+     microG also ships with SafetyNet / DroidGuard off. The real Play Store then fails every
+     Play Integrity request ("DroidGuard should not be available locally", F9n), so both are
+     on here too: DroidGuard runs Google's attestation VM locally, as on a Google device. -->
 <map>
     <boolean name="checkin_enable_service" value="true" />
     <boolean name="gcm_enable_mcs_service" value="true" />
+    <boolean name="safetynet_enabled" value="true" />
+    <boolean name="droidguard_enabled" value="true" />
 </map>

@@ -251,6 +251,20 @@ be coded in parallel but must take turns building.
   *USB image `out/aosp17-usb-f9f.img` (2026-11-13, `--disk /dev/sda --menu`):* holds F9l
   on top of f9e. Its super partition matches the build. The QEMU smoke boot completes with
   no AVC denials. Writing it resets the `pclog` partition. Next: boot it on the PC.
+  *F9n (2026-11-13, real-PC f9f logs): Where Winds Meet, Genshin, Play Integrity.*
+  Where Winds Meet installs completely: `base.apk`, the splits and the 3 GB of asset
+  packs. It dies at launch because NetEase's packer (`libunisec.so`) hooks the host
+  `libartbase.so` with arm64 code. Under libndk_translation that is a jump into
+  non-executable guest memory (SIGSEGV in `ReadMagicAndReset`). It cannot be fixed in the
+  ROM; the `CoreComponentFactory` ClassNotFound is only the packer stub.
+  Genshin is missing from the Play Store because of Google Play's own filtering. The
+  device side matches its needs: arm64-v8a in the abilist, GLES 3.1, Vulkan 1.3, ASTC/ETC2,
+  RAM. The device is uncertified/unknown with an x86_64 primary ABI, and Genymotion shows
+  the same result. Changing that would mean faking a certified device, which we do not do.
+  Play Integrity failed outright because microG ships DroidGuard/SafetyNet off. `microg.xml`
+  now turns both on (checked on Cuttlefish through the microG settings provider). Expect
+  at best `MEETS_BASIC_INTEGRITY`; Delta Force-style device-integrity checks will still
+  fail. Needs a new `product.img`. Details: `docs/arm-translation.md` (F9n).
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
