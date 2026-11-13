@@ -61,6 +61,7 @@ dump() {
         echo "== drm"; cat /sys/kernel/debug/dri/*/state 2>&1 | head -80
         echo "== dumpsys SurfaceFlinger"; timeout 10 dumpsys SurfaceFlinger 2>&1 | head -120
         echo "== dumpsys window"; timeout 10 dumpsys window displays 2>&1 | head -60
+        echo "== input windows"; timeout 10 dumpsys input 2>&1 | sed -n '/^Input Dispatcher State/,/^ *MonitoringChannels/p' | grep -E '^ *(FocusedApplications|FocusedWindows|TouchStatesByDisplay|Windows|[0-9]+: name=)' | cut -c1-400 | head -80
         echo "== dumpsys ethernet"; timeout 10 dumpsys ethernet 2>&1 | head -60
         echo "== services"; timeout 10 service list 2>&1
         echo "== dumpsys battery"; timeout 10 dumpsys battery 2>&1
@@ -136,6 +137,30 @@ fi
         echo "exit $?"
         sleep 4
     done >> $d/hdmi-check.txt 2>&1
+) &
+# Screenshot snapshots: when the user takes a screenshot (Print Screen, or power + volume
+# down), copy it to boot-N/snap-K/ with the window, input and activity state of that moment,
+# so a white screen or a dead click can be matched with what was on screen. At most 10.
+(
+    shots=/data/media/0/Pictures/Screenshots
+    k=0 seen=$(ls $shots 2>/dev/null | wc -l)
+    while [ $k -lt 10 ]; do
+        sleep 3
+        now=$(ls $shots 2>/dev/null | wc -l)
+        [ "$now" -gt "$seen" ] || { seen=$now; continue; }
+        seen=$now k=$((k + 1)) s=$d/snap-$k
+        mkdir -p $s
+        cp "$shots/$(ls -t $shots | head -n 1)" $s/ 2>/dev/null
+        {
+            echo "== uptime"; cat /proc/uptime
+            echo "== dumpsys window windows"; timeout 10 dumpsys window windows 2>&1 | grep -E 'Window #|mOwnerUid|mFrame=|isVisible|mHasSurface|mDrawState|Requested w=' | head -200
+            echo "== dumpsys window displays"; timeout 10 dumpsys window displays 2>&1 | grep -E 'mCurrentFocus|mFocusedApp|mInputMethodTarget|mObscuringWindow'
+            echo "== dumpsys input"; timeout 10 dumpsys input 2>&1 | sed -n '/^Input Dispatcher State/,/^ *MonitoringChannels/p' | cut -c1-500 | head -300
+            echo "== dumpsys activity top"; timeout 10 dumpsys activity top 2>&1 | head -600
+            echo "== dumpsys webviewupdate"; timeout 10 dumpsys webviewupdate 2>&1 | head -40
+            echo "== mouse_as_touch"; getprop persist.sys.pc.mouse_as_touch
+        } > $s/state.txt 2>&1
+    done
 ) &
 for t in 30 60 120 180 300 600 900 1200 1500 1800 2400 3000 3600; do
     sleep $((t - ${prev:-0}))

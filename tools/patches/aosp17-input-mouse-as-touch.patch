@@ -1,0 +1,166 @@
+diff --git a/services/inputflinger/dispatcher/InputDispatcher.cpp b/services/inputflinger/dispatcher/InputDispatcher.cpp
+index 0d27a09..971b6d0 100644
+--- a/services/inputflinger/dispatcher/InputDispatcher.cpp
++++ b/services/inputflinger/dispatcher/InputDispatcher.cpp
+@@ -22,6 +22,8 @@
+ 
+ #include <android-base/chrono_utils.h>
+ #include <android-base/logging.h>
++#include <android-base/properties.h>
++#include <android-base/strings.h>
+ #include <android-base/stringprintf.h>
+ #include <android/os/IInputConstants.h>
+ #include <binder/Binder.h>
+@@ -42,10 +44,12 @@
+ #include <utils/Trace.h>
+ 
+ #include <cerrno>
++#include <algorithm>
+ #include <cinttypes>
+ #include <climits>
+ #include <cstddef>
+ #include <ctime>
++#include <mutex>
+ #include <queue>
+ #include <sstream>
+ #include <variant>
+@@ -579,6 +583,67 @@ bool windowOccludesTouchAt(const WindowInfo& windowInfo, ui::LogicalDisplayId di
+     return p.x >= frame.left && p.x < frame.right && p.y >= frame.top && p.y < frame.bottom;
+ }
+ 
++// android-pc: mouse clicks as touches for apps that only handle touch (many games ignore
++// events whose source is SOURCE_MOUSE). The built-in list below plus the comma-separated
++// tokens of persist.sys.pc.mouse_as_touch: "pkg" or "prefix*" adds apps, "*" adds every app
++// but System UI and the launcher, "-pkg", "-prefix*" or "-*" removes them (removals win).
++constexpr const char* kMouseAsTouchProperty = "persist.sys.pc.mouse_as_touch";
++constexpr const char* kMouseAsTouchDefaults =
++        "com.garena.game.df,com.garena.game.kgvn,com.garena.game.codm,com.dts.freefireth,"
++        "com.dts.freefiremax,com.tencent.ig,com.vng.pubgmobile,com.netease.yyvn";
++
++bool matchesMouseAsTouchToken(const std::string& token, const std::string& packageName) {
++    if (token.ends_with('*')) {
++        return packageName.starts_with(std::string_view(token).substr(0, token.size() - 1));
++    }
++    return token == packageName;
++}
++
++bool isMouseAsTouchApp(const WindowInfo& info) {
++    static std::mutex lock;
++#if defined(__BIONIC__)
++    static android::base::CachedProperty property(kMouseAsTouchProperty);
++#endif
++    static std::vector<std::string> include;
++    static std::vector<std::string> exclude;
++    const std::string& name = info.packageName;
++    if (name.empty() || info.ownerUid.val() % AID_USER_OFFSET < AID_APP_START || name == "com.android.systemui" ||
++        name == "com.android.launcher3") {
++        return false;
++    }
++    std::scoped_lock _l(lock);
++    bool changed = false;
++#if defined(__BIONIC__)
++    const char* value = property.Get(&changed);
++#else
++    const char* value = nullptr; // host builds (tests) have no system properties
++#endif
++    if (changed || include.empty()) {
++        include.clear();
++        exclude.clear();
++        std::string tokens = std::string(kMouseAsTouchDefaults) + "," + (value ? value : "");
++        for (std::string token : android::base::Split(tokens, ",")) {
++            token = android::base::Trim(token);
++            if (token.empty()) continue;
++            if (token[0] == '-') {
++                exclude.push_back(token.substr(1));
++            } else {
++                include.push_back(token);
++            }
++        }
++    }
++    auto matches = [&](const std::string& token) { return matchesMouseAsTouchToken(token, name); };
++    return std::any_of(include.begin(), include.end(), matches) &&
++            std::none_of(exclude.begin(), exclude.end(), matches);
++}
++
++// A single-pointer mouse event that isMouseAsTouchApp() windows get as a touch.
++bool isConvertibleMouseEvent(const MotionEntry& entry) {
++    return isFromSource(entry.source, AINPUT_SOURCE_MOUSE) &&
++            entry.getPointerCount() == 1 &&
++            entry.pointerProperties[0].toolType == ToolType::MOUSE;
++}
++
+ bool isPointerFromStylus(const MotionEntry& entry, int32_t pointerIndex) {
+     return isFromSource(entry.source, AINPUT_SOURCE_STYLUS) &&
+             isStylusToolType(entry.pointerProperties[pointerIndex].toolType);
+@@ -3605,6 +3670,29 @@ void InputDispatcher::enqueueDispatchEntryLocked(const std::shared_ptr<Connectio
+                 dispatchEntry->resolvedMotionFlags = resolvedFlags;
+                 bool shouldCreateNewMotionEntry = resolvedAction != motionEntry.action;
+ 
++                // android-pc: the window gets mouse clicks as finger touches. Hover and button
++                // press/release events have no touch equivalent and are not sent; the scroll
++                // wheel stays a mouse event.
++                const bool mouseAsTouch = !connection->isFocusMonitor &&
++                        isConvertibleMouseEvent(motionEntry) &&
++                        isMouseAsTouchApp(*inputTarget.windowHandle->getInfo());
++                if (mouseAsTouch) {
++                    switch (resolvedAction) {
++                        case AMOTION_EVENT_ACTION_HOVER_ENTER:
++                        case AMOTION_EVENT_ACTION_HOVER_MOVE:
++                        case AMOTION_EVENT_ACTION_HOVER_EXIT:
++                        case AMOTION_EVENT_ACTION_BUTTON_PRESS:
++                        case AMOTION_EVENT_ACTION_BUTTON_RELEASE:
++                            return;
++                        case AMOTION_EVENT_ACTION_SCROLL:
++                            break;
++                        default:
++                            shouldCreateNewMotionEntry = true;
++                    }
++                }
++                const bool convertToTouch =
++                        mouseAsTouch && resolvedAction != AMOTION_EVENT_ACTION_SCROLL;
++
+                 ui::LogicalDisplayId resolvedDisplayId = motionEntry.displayId;
+                 if (!connection->isFocusMonitor) {
+                     const WindowInfo& windowInfo = *inputTarget.windowHandle->getInfo();
+@@ -3637,21 +3725,33 @@ void InputDispatcher::enqueueDispatchEntryLocked(const std::shared_ptr<Connectio
+                             usingCoords = pointerInfo->second;
+                         }
+                     }
++                    std::vector<PointerProperties> resolvedProperties =
++                            usingProperties.value_or(motionEntry.pointerProperties);
++                    if (convertToTouch) {
++                        for (PointerProperties& properties : resolvedProperties) {
++                            properties.toolType = ToolType::FINGER;
++                        }
++                    }
+                     {
+                         // Generate a new MotionEntry with a new eventId using the resolved action
+                         // and flags, and set it as the resolved entry.
+                         auto newEntry = std::make_shared<
+                                 MotionEntry>(mIdGenerator.nextId(), motionEntry.injectionState,
+                                              motionEntry.eventTime, motionEntry.deviceId,
+-                                             motionEntry.source, resolvedDisplayId,
+-                                             motionEntry.policyFlags, resolvedAction,
+-                                             motionEntry.actionButton, resolvedFlags,
+-                                             motionEntry.metaState, motionEntry.buttonState,
++                                             convertToTouch ? AINPUT_SOURCE_TOUCHSCREEN
++                                                            : motionEntry.source,
++                                             resolvedDisplayId, motionEntry.policyFlags,
++                                             resolvedAction,
++                                             convertToTouch ? 0 : motionEntry.actionButton,
++                                             resolvedFlags, motionEntry.metaState,
++                                             convertToTouch ? 0 : motionEntry.buttonState,
+                                              motionEntry.classification, motionEntry.xPrecision,
+-                                             motionEntry.yPrecision, motionEntry.xCursorPosition,
+-                                             motionEntry.yCursorPosition, motionEntry.downTime,
+-                                             usingProperties.value_or(
+-                                                     motionEntry.pointerProperties),
++                                             motionEntry.yPrecision,
++                                             convertToTouch ? AMOTION_EVENT_INVALID_CURSOR_POSITION
++                                                            : motionEntry.xCursorPosition,
++                                             convertToTouch ? AMOTION_EVENT_INVALID_CURSOR_POSITION
++                                                            : motionEntry.yCursorPosition,
++                                             motionEntry.downTime, resolvedProperties,
+                                              usingCoords.value_or(motionEntry.pointerCoords));
+                         if (mTracer) {
+                             ensureEventTraced(motionEntry);

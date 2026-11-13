@@ -251,6 +251,21 @@ be coded in parallel but must take turns building.
   *USB image `out/aosp17-usb-f9f.img` (2026-11-13, `--disk /dev/sda --menu`):* holds F9l
   on top of f9e. Its super partition matches the build. The QEMU smoke boot completes with
   no AVC denials. Writing it resets the `pclog` partition. Next: boot it on the PC.
+  *F9m (2026-11-13, real-PC f9f boot 1): mouse clicks in games.* Delta Force ignored
+  clicks; the log had 586 "Dropping untrusted touch event". Those were clicks during a
+  splash screen (starting windows are not touchable, so the click fell to the Play Store
+  under it; the splash is drawn by SystemUI's Shell, hence uid 10095) and on tasks that
+  were closing (desktop-mode task layers, uid 1000): tapjacking protection, no stray
+  overlay. After the game was drawn the clicks reached it as `SOURCE_MOUSE` and it did
+  nothing: Unreal/Unity games read only touchscreen input. Fix: InputDispatcher sends mouse
+  clicks to listed apps as one-finger touches (`tools/patches/aosp17-input-mouse-as-touch.patch`,
+  built-in list of touch-only games, `persist.sys.pc.mouse_as_touch` to add or remove apps,
+  `*` for all). Checked on Cuttlefish at 2560x1080 in desktop mode with VLC arm64
+  (fullscreen, freeform, maximized; captions and taskbar stay mouse). TikTok's white
+  screen after Google sign-in is not in the f9f log (TikTok was not started); the F9b case
+  points at the missing Play-served split module. `pclog.sh` now saves a `snap-K/` dump
+  (window/input/activity/WebView state + the screenshot) whenever the user takes a
+  screenshot (Print Screen). See `docs/mouse-input.md`.
   *F9n (2026-11-13, real-PC f9f logs): Where Winds Meet, Genshin, Play Integrity.*
   Where Winds Meet installs completely: `base.apk`, the splits and the 3 GB of asset
   packs. It dies at launch because NetEase's packer (`libunisec.so`) hooks the host
