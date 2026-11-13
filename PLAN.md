@@ -290,6 +290,15 @@ be coded in parallel but must take turns building.
   `android/build.txt` to the ESP. Tested in QEMU from f9f to a new build: the app, its
   CE data, PIN, files and settings survive. A/B OTA was rejected (needs `_b` partitions, a
   slot-aware bootloader and boot_control). Details: `docs/usb-boot-aosp17.md` §10.
+  *USB image `out/aosp17-usb-f9g.img` (2026-11-13, `--disk /dev/sda --menu`):* holds F9m
+  and F9n on top of f9f (build `eng.caoanh.20261113.2019`, already built after both commits,
+  so nothing was rebuilt), with F9o's `android/build.txt` on the ESP. Its super partition
+  matches the build. Checked in the build: `libinputflinger.so` has the mouse-as-touch code,
+  `microg.xml` turns DroidGuard/SafetyNet on, `pclog.sh` is the F9m one. The QEMU smoke
+  boot completes, and the same three are on the device. `pclog` writes `boot-1`, `/data` is
+  49 GB, and there are no AVC denials. Write it with the two `dd` commands `mkusb` prints (this
+  wipes Android data and `pclog`). Next: on the PC, rerun Delta Force, Where Winds Meet,
+  the Genshin search and the TikTok login so `pclog` captures them.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
