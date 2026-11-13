@@ -163,6 +163,16 @@ be coded in parallel but must take turns building.
   `wifi_always_requested` (a background Wi-Fi request), so Wi-Fi connects next to Ethernet.
   The Rust HAL's usable channels are now frequencies in MHz (the framework had found no band).
   Checked on Cuttlefish with Ethernet + hwsim. See `docs/usb-boot-aosp17.md` §7.
+  *F9f (2026-11-13):* desktop mode and a fixed 2560x1080 landscape display. AOSP 17's own
+  desktop windowing on the primary display (`aosp-device/desktop/`): freeform feature,
+  `config_isDesktopModeSupported`/`config_canInternalDisplayHostDesktops` overlay, a
+  `/vendor/etc/display_settings.xml` that starts the display freeform with rotation locked at
+  0, and `persist.wm.debug.force_desktop_first_on_default_display_for_testing`, because WM
+  Shell otherwise keeps a display without a touchpad touch-first (fullscreen). Apps open as
+  windows with caption bars over Launcher3 and its taskbar; no third-party launcher.
+  `tools/mkusb-aosp17.sh` now sets the GOP mode to 2560x1080 by default (`--resolution
+  auto` for the EDID mode). Checked on Cuttlefish at 2560x1080; the real PC is part of the
+  next USB test. See `docs/desktop-mode.md`.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

@@ -228,14 +228,16 @@ card 0, and the built-in `snd-usb-audio` otherwise numbered the webcam's microph
 ## 5. The stick image
 
 ```
-tools/mkusb-aosp17.sh --disk /dev/sda --resolution 2560x1080      # → out/aosp17-usb.img
+tools/mkusb-aosp17.sh --disk /dev/sda      # → out/aosp17-usb.img
 ```
 
 Options: `--disk DEV` sizes the image for that stick (its size from `lsblk`, no root):
 `userdata` takes all the space left and the backup GPT sits at the stick's real end, so
 nothing of an older layout survives; without it `--userdata MiB` (default 4096) sets the
-size. `--resolution WxH` (default: Limine picks the monitor's preferred mode from its
-EDID), `--density N` (default 240), `--append "WORDS"`, `--enforcing` (SELinux enforcing;
+size. `--resolution WxH` (default 2560x1080, the test monitor in landscape, since F9f;
+Limine uses another mode if the monitor lacks it; `auto` lets Limine pick the monitor's
+preferred mode from its EDID, which gave 1920x1080 on the first boot), `--density N`
+(default 240), `--append "WORDS"`, `--enforcing` (SELinux enforcing;
 default permissive so `pclog.sh` runs), `--menu`, `--product DIR`. The build's `super.img`
 is an Android sparse image (Cuttlefish unsparses it in place when it runs, so it may also
 be raw): the script handles both.

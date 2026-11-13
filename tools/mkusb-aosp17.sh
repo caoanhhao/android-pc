@@ -21,8 +21,9 @@
 #                          userdata takes all the space left and the backup GPT sits at the
 #                          stick's real end; the printed commands write only the used part
 #          --userdata SIZE userdata partition size, MiB (default 4096; ignored with --disk)
-#          --resolution WxH GOP mode for Android (default: Limine picks the monitor's
-#                          preferred mode from its EDID)
+#          --resolution WxH GOP mode for Android (default 2560x1080, the user's ultrawide
+#                          monitor, in landscape; Limine falls back to another mode if the
+#                          monitor lacks it); "auto": Limine picks the EDID preferred mode
 #          --density N     androidboot.lcd_density (default 240)
 #          --append "WORDS" extra kernel command line for every entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
@@ -33,7 +34,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
-userdata_mib=4096 resolution= density=240 extra="" enforcing=0 menu=0 disk="" out=""
+userdata_mib=4096 resolution=2560x1080 density=240 extra="" enforcing=0 menu=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --product) product="$2"; shift ;;
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
         --enforcing) enforcing=1 ;;
         --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -135,7 +136,7 @@ entry() {   # entry NAME EXTRA-CMDLINE
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
-$([[ -n $resolution ]] && echo "    resolution: ${resolution}x32")
+$([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
     cmdline: $pc_cmdline $2
 
 EOF

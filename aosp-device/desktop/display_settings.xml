@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!-- WindowManager base display settings (phase F9f, docs/desktop-mode.md).
+     identifier 1: displays are named by their physical port.
+     port:0 is the primary display (the PC's GOP framebuffer, Cuttlefish's display 0):
+       windowingMode 5          WINDOWING_MODE_FREEFORM, so the display is desktop-first
+                                (apps open in desktop windows, Launcher3 shows its taskbar);
+       userRotationMode 1       USER_ROTATION_LOCKED (no auto-rotation);
+       userRotation 0           the panel's own orientation, landscape on a PC monitor;
+       fixedToUserRotation 2    FIXED_TO_USER_ROTATION_ENABLED: portrait-only apps are
+                                letterboxed instead of turning the screen;
+       ignoreOrientationRequest apps cannot request a rotation. -->
+<display-settings>
+    <config identifier="1" />
+    <display name="port:0"
+        windowingMode="5"
+        userRotationMode="1"
+        userRotation="0"
+        fixedToUserRotation="2"
+        ignoreOrientationRequest="true" />
+</display-settings>
