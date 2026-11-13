@@ -9,6 +9,10 @@ PRODUCT=${PRODUCT:-aosp_pc_x86_64}
 cd "$ROOT/aosp" || exit 1
 export TARGET_KERNEL_USE=${TARGET_KERNEL_USE:-6.18}   # android17-6.18 GKI instead of the 6.12 default
 export SOONG_GOMEMLIMIT=${SOONG_GOMEMLIMIT:-18GiB}   # soong_build heap cap; analysis OOMs at 25 GB otherwise (local build/soong patch)
+# A build number per run (AOSP's default is the constant eng.<user>): Android rescans and upgrades
+# its system apps only when the build fingerprint changes, and tools/update-usb-aosp17.sh puts a
+# new build over a stick's old one with the user's data kept (docs/usb-boot-aosp17.md §10).
+export BUILD_NUMBER=${BUILD_NUMBER:-eng.${USER:0:6}.$(date +%Y%m%d.%H%M)}
 source build/envsetup.sh >/dev/null
 lunch $PRODUCT-${RELEASE:-cp2a}-userdebug >/dev/null || exit 1
 LB=$ROOT/tools/limited-build.sh

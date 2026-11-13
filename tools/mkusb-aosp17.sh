@@ -7,7 +7,8 @@
 #
 # The image is GPT:
 #   ESP (FAT32 "ANDROIDPC17": Limine as EFI/BOOT/BOOTX64.EFI, boot/limine/limine.conf,
-#        android/kernel, android/initrd.img = vendor ramdisk + generic ramdisk + bootconfig),
+#        android/kernel, android/initrd.img = vendor ramdisk + generic ramdisk + bootconfig,
+#        android/build.txt = the build's number and fingerprints),
 #   pclog (FAT32 "PCLOG": boot logs written by pclog.sh, readable on any PC),
 #   misc, frp, metadata (zeroed; fs_mgr formats metadata and userdata on first boot),
 #   boot_a, init_boot_a, vendor_boot_a, vbmeta*_a (the build's images: first-stage init
@@ -54,10 +55,10 @@ while [[ $# -gt 0 ]]; do
 done
 out=${out:-$ROOT/out/aosp17-usb.img}
 LIMINE_DIR="${LIMINE_DIR:-/usr/share/limine}"
-for f in "$LIMINE_DIR/BOOTX64.EFI" "$host/unpack_bootimg" "$host/mcopy" "$host/mmd"; do
+for f in "$LIMINE_DIR/BOOTX64.EFI" "$host/unpack_bootimg" "$host/mcopy" "$host/mmd" "$host/fsck.erofs"; do
     [[ -e $f ]] || { echo "mkusb-aosp17.sh: missing $f" >&2; exit 1; }
 done
-for f in boot init_boot vendor_boot vbmeta vbmeta_system vbmeta_vendor_dlkm vbmeta_system_dlkm super; do
+for f in boot init_boot vendor_boot vbmeta vbmeta_system vbmeta_vendor_dlkm vbmeta_system_dlkm super system vendor; do
     [[ -f $product/$f.img ]] || { echo "mkusb-aosp17.sh: no $product/$f.img (build AOSP first)" >&2; exit 1; }
 done
 command -v sfdisk >/dev/null && command -v mkfs.fat >/dev/null || { echo "mkusb-aosp17.sh: needs sfdisk and mkfs.fat" >&2; exit 1; }
@@ -125,6 +126,19 @@ data += b'\0' * (-len(data) % 4 or 4)
 with open(sys.argv[2], 'ab') as f:
     f.write(data + struct.pack('<II', len(data), sum(data) & 0xffffffff) + b'#BOOTCONFIG\n')
 EOF
+
+# Which build this is, for tools/update-usb-aosp17.sh (it compares the stick's with the new one's).
+# Read from the images themselves: $product/system/build.prop is a stale staging copy (Soong
+# builds the partition images from its own staging directories).
+for i in system vendor; do
+    "$host/fsck.erofs" --extract="$work/$i.fs" "$product/$i.img" >/dev/null 2>&1 ||
+        { echo "mkusb-aosp17.sh: cannot read $product/$i.img (fsck.erofs)" >&2; exit 1; }
+done
+{
+    grep -E '^ro\.(build\.(version\.(incremental|security_patch)|date)|system\.build\.fingerprint)=' "$work/system.fs/system/build.prop"
+    grep -E '^ro\.vendor\.build\.fingerprint=' "$work/vendor.fs/build.prop"
+} > "$work/build.txt"
+rm -rf "$work/system.fs" "$work/vendor.fs"
 
 # --- Limine ---------------------------------------------------------------------------
 # ALSA card 0 must be the HD Audio controller (Cuttlefish's audio HAL plays to card 0):
@@ -236,6 +250,7 @@ for p in "${parts[@]}"; do
                 "$host/mcopy" -i "$fat" "$work/boot/kernel" ::/android/kernel
                 "$host/mcopy" -i "$fat" "$work/initrd.img" ::/android/initrd.img
                 "$host/mcopy" -i "$fat" "$work/bootconfig.txt" ::/android/bootconfig.txt
+                "$host/mcopy" -i "$fat" "$work/build.txt" ::/android/build.txt
             elif [[ $1 == pclog && -f $ROOT/out/audio-check/classes.dex ]]; then
                 # pclog.sh runs it (tone + mic recording; tools/audio-check.sh builds it)
                 MTOOLS_SKIP_CHECK=1 "$host/mcopy" -i "$fat" "$ROOT/out/audio-check/classes.dex" ::/audio-check.dex

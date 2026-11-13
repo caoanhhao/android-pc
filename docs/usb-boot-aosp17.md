@@ -328,6 +328,10 @@ Limine: one entry, "Android 17", no menu (`timeout: 0`). `--menu` gives a 5 s me
 (`earlycon=efifb keep_bootcon`, slow, for boots that stop before Android draws) and
 **no pcfb** (to tell a display problem from the rest).
 
+A stick that already runs Android is updated with `tools/update-usb-aosp17.sh` instead,
+which keeps apps, accounts and data (§10). A full write is only for a new stick or a
+layout change.
+
 Writing it (erases the stick; the script prints the commands with the right numbers):
 everything up to the first 64 MiB of `userdata` (~9 GB, 3 min at 53 MB/s), then the
 backup GPT in the last MiB:
@@ -628,3 +632,113 @@ from the notification, and confirm in `logcat -s vold` that `nvme0n1` is ignored
 Side note: `pm install` over adb waited forever for Play Protect (Finsky) verification in
 QEMU (no network); `settings put global verifier_verify_adb_installs 0` avoids it.
 
+
+## 10. Updating the OS without losing data (`tools/update-usb-aosp17.sh`)
+
+Writing a whole new image with `dd` (§5) formats `userdata` and `metadata` on the next
+boot, so every installed app, game, Google account and file is lost. To change only
+Android, write only the OS partitions over the stick's old ones:
+
+| Partition | On an update |
+|---|---|
+| `esp` (Limine, kernel, initrd, `limine.conf`, `android/build.txt`) | rewritten |
+| `boot_a`, `init_boot_a`, `vendor_boot_a`, `vbmeta*_a` | rewritten |
+| `super` (system, vendor, product, ... with their dm-verity) | rewritten |
+| `userdata` (apps, app data, accounts, `/sdcard`) | kept |
+| `metadata` (the FBE metadata key, wrapped by KeyMint) | kept |
+| `misc`, `frp`, `pclog` (logs), the GPT | kept |
+
+This is what an OTA does on a phone: same partitions, new contents, `/data` untouched. On
+the first boot of the new build Android sees a new fingerprint, rescans the system apps,
+upgrades the ones whose APK changed (their data stays: same package, same signing key),
+re-grants permissions and recompiles code; that first boot is slower.
+
+### What has to stay the same
+
+- **The layout.** Same partition names, each OS partition at least as big as the new
+  build's. `super` is fixed at 8 GiB by the board config (`BOARD_SUPER_PARTITION_SIZE`)
+  and the boot images by their `BOARD_*IMAGE_PARTITION_SIZE`, so builds fit unless those
+  change; the script refuses otherwise (then one more full flash is needed).
+- **The AVB key and rollback index** (`vbmeta`). KeyMint binds its keys to the verified
+  boot key; the FBE keys of `userdata` and the `metadata` key are KeyMint keys. Our builds
+  use AOSP's test key and rollback index 0; the script compares them.
+- **No patch-level downgrade.** KeyMint refuses keys from a newer OS/security patch level,
+  so going back to an older `ro.build.version.security_patch` would lock the data. Checked.
+- **The signing keys of system apps** (platform/test keys from this tree, the prebuilt
+  microG, Play Store, F-Droid, Termux, Chromium APKs): an updated app with another
+  certificate would not install over its data. Unchanged as long as the same tree builds it.
+- **A new build fingerprint.** AOSP's default `BUILD_NUMBER` is the constant
+  `eng.<user>`, so two builds had the same fingerprint, and Android would neither rescan the
+  system apps nor drop its package cache. `tools/aosp17-build.sh` now sets
+  `BUILD_NUMBER=eng.<user>.<YYYYMMDD.HHMM>` for each run (override with `BUILD_NUMBER=...`);
+  the number lands in `system/build.prop` only when `system.img` is rebuilt, so an update
+  build needs the `system.img` step (the default `STEPS` have it). `mkusb-aosp17.sh` copies
+  the build number, patch level and fingerprints to `android/build.txt` on the ESP, read
+  from `system.img`/`vendor.img` themselves (`fsck.erofs --extract`): the product dir's
+  `system/build.prop` is a stale staging copy that Soong no longer updates, and the
+  `com.android.build.*` props in `vbmeta*.img` keep the old number until Kati reruns. The
+  update script refuses when the number did not change (`--force` overrides).
+
+### Commands
+
+Build, then make an image of the new build with the **same** `mkusb` options the stick
+was made with (the F9f stick: `--menu`), but without `--disk` and with a tiny `userdata`
+(the update never copies it):
+
+```bash
+tools/aosp17-build.sh
+```
+```bash
+tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-update.img
+```
+
+Check what it would do (needs root to read the stick; writes nothing):
+
+```bash
+sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-update.img /dev/sda
+```
+
+Then update (asks for `yes` after showing the stick; ~9 GB written, then read back and
+compared):
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-update.img /dev/sda
+```
+
+The script refuses a disk that is not on USB, has mounted partitions, is not an
+android-pc stick (ESP partition UUID `a17c0de0-…-e5`) or lacks `metadata`/`userdata`. It
+writes `super` first and the ESP last, so an interrupted run still boots the old kernel;
+running it again finishes the update. A target that is an image file works the same way
+(that is how it is tested).
+
+### Why not A/B OTA (`update_engine`)
+
+An in-Android update (OTA package, `update_engine`, write the inactive slot, switch) would
+not need the PC with the build tree, but it needs a second copy of every OS partition
+(`_b`, +8.3 GiB, so a full reflash now), a `boot_control` HAL and a bootloader that
+reads the slot and falls back (Limine boots one fixed kernel/initrd from the ESP; the
+kernel and initrd would have to come from the slot's boot images), plus signed OTA
+packages and an updater app. For one PC updated from the machine that builds it, rewriting
+the partitions from Linux gives the same result (data kept) with none of that.
+
+### Test (QEMU, 2026-11-13)
+
+On a sparse copy of `out/aosp17-usb-f9f.img` (`WRITABLE=1 tools/run-qemu-aosp17-usb.sh`):
+
+1. Booted the old build (`.../eng.caoanh:userdebug/test-keys`), installed a small
+   debuggable test APK over adb, wrote `files/marker.txt` into its credential-encrypted data
+   (`run-as`), a file in `/sdcard/Download`, a secure setting, and set a lock-screen PIN
+   (`locksettings set-pin`), so the CE keys are bound to a credential. Powered off.
+2. Built with the new `tools/aosp17-build.sh` (image steps up to `super.img`, BUILD_NUMBER
+   `eng.caoanh.20261113.2019`), made `out/aosp17-usb-update.img` with
+   `mkusb-aosp17.sh --menu --userdata 64`, ran `update-usb-aosp17.sh` on the copy (21 s,
+   read-back compare OK). A second run refuses: same build number.
+3. Booted: `ro.build.fingerprint` is the new one; `pm_critical_info: Upgrading from ...
+   eng.caoanh ... to ... eng.caoanh.20261113.2019`, "Build fingerprint changed; clearing code
+   caches". The user starts locked (`RUNNING_LOCKED`), the PIN unlocks it
+   (`RUNNING_UNLOCKED`), and the test app, its CE file, the `/sdcard` file and the setting
+   are all there. 0 AVC denials.
+
+Not covered: a Google account and Play Store apps (no network sign-in in QEMU; they live in
+the same `userdata` as the test app) and the real stick (same code path, block device
+instead of a file).

@@ -280,6 +280,16 @@ be coded in parallel but must take turns building.
   now turns both on (checked on Cuttlefish through the microG settings provider). Expect
   at best `MEETS_BASIC_INTEGRITY`; Delta Force-style device-integrity checks will still
   fail. Needs a new `product.img`. Details: `docs/arm-translation.md` (F9n).
+  *F9o (2026-11-13): OS updates without a reflash.* Every fix so far meant a new stick
+  image, and `dd` of a whole image wipes apps, games and accounts. `tools/update-usb-aosp17.sh
+  NEW.img /dev/sdX` (sudo) now rewrites only the OS partitions (esp, boot/init_boot/
+  vendor_boot, vbmeta*, super) and keeps userdata, metadata, misc, frp and pclog. It checks the
+  layout, the AVB key and rollback index, the patch level and that the build number changed.
+  `tools/aosp17-build.sh` sets a per-run BUILD_NUMBER (AOSP's default `eng.<user>` never
+  changed the fingerprint, so Android would not rescan system apps). `mkusb-aosp17.sh` writes
+  `android/build.txt` to the ESP. Tested in QEMU from f9f to a new build: the app, its
+  CE data, PIN, files and settings survive. A/B OTA was rejected (needs `_b` partitions, a
+  slot-aware bootloader and boot_control). Details: `docs/usb-boot-aosp17.md` §10.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS
