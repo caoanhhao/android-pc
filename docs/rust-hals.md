@@ -582,7 +582,7 @@ hash as from AOSP's HAL. When AOSP freezes a V5, copy it and change the version 
 | P2P | the name in `wifi.direct.interface` (`p2p-dev-wlan0`); wpa_supplicant creates the P2P device interface |
 | MAC address | `SIOCSIFHWADDR` with the interface taken down and brought back up; factory MAC from `ETHTOOL_GPERMADDR` (current address if the driver has none) |
 | Country code | `NL80211_CMD_REQ_SET_REG` (chip and AP interface) |
-| Usable channels | the wiphy's enabled channels in the requested bands (DFS channels count as `BAND_5GHZ_DFS`), 20 MHz; SoftAP/P2P GO only where the device may initiate radiation (no `NO_IR`) |
+| Usable channels | the wiphy's enabled channels in the requested bands (DFS channels count as `BAND_5GHZ_DFS`), 20 MHz; SoftAP/P2P GO only where the device may initiate radiation (no `NO_IR`). `WifiUsableChannel.channel` is the centre frequency in MHz, not the channel number (F9e: with channel numbers the framework found no band at all, `updateSupportedBandForStaInternal wlan0 : 0x0`) |
 | Debug info | driver name + version and firmware version from `ETHTOOL_GDRVINFO` |
 | APF | reported as APFv4 with 4096 bytes; the program is only stored and read back (as the emulator HAL does), no driver on a PC runs it, so every packet still reaches the host. VTS requires APF from vendor API level U on non-PC devices |
 | `wifi.active.interface` | set to the first STA (else AP) interface, as AOSP's HAL does |

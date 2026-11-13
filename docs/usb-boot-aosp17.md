@@ -373,6 +373,50 @@ and mic level (F6), power off/restart, suspend. ARM-only apps (e.g. TikTok:
 `libnxreword.so is for EM_AARCH64`) need an ARM64 native bridge, which the image does not
 have (`ro.dalvik.vm.native.bridge=0`); that and Google services are a separate task.
 
+### F9e: Wi-Fi does not connect while Ethernet is up (2026-11-13)
+
+On the `f9b` stick (`out/pclog-f9b/boot-1/`) the user picked a WPA2 network in Settings and
+nothing happened. Everything below the framework worked: `iwlwifi` loaded firmware 89,
+`wlan0` came up, the Rust HAL started (`wlan0 on phy0: combinations ...`),
+wpa_supplicant registered its AIDL service, and scans found the network (2412 MHz). Every
+attempt ended in `ClientModeImpl` with `CMD_START_CONNECT but no requests and not connected,
+bailing` (16 times), because the Ethernet cable was plugged in:
+
+- ConnectivityService sends a network request to a provider's offer only if the offer
+  could beat the network that satisfies it now (`NetworkRanker.mightBeat`). Its ranking
+  puts Ethernet above Wi-Fi (`PREFERRED_TRANSPORTS_ORDER`), so with a validated Ethernet
+  network the Wi-Fi factory has no request, and `ClientModeImpl` refuses to connect, even
+  to a network the user picked.
+- Fix: `Settings.Global.WIFI_ALWAYS_REQUESTED` (`wifi_always_requested`), which AOSP made
+  for this case: ConnectivityService then files a background request for an internet Wi-Fi
+  network. `aosp-device/hals/wifi/overlay` (`pc_overlay_settings_provider_wifi`, a static
+  RRO on `/vendor`, added by `hals/wifi/hal.mk` for both HALs) sets SettingsProvider's
+  `def_enable_wifi_always_requested` to `true`. The default is written when a new
+  `userdata` is set up; on a device that already ran, run
+  `adb shell settings put global wifi_always_requested 1`. Ethernet stays the default
+  network; Wi-Fi connects next to it, and saved networks auto-join.
+
+A second bug showed in the same log: `updateSupportedBandForStaInternal wlan0 : 0x0`. The
+Rust HAL's `getUsableChannels` returned channel numbers, but `WifiUsableChannel.channel` is
+a frequency in MHz, so the framework found no supported band. The HAL now returns MHz.
+
+Verified on Cuttlefish (same `vendor.img`), with a user-mode QEMU NIC renamed back to
+`eth0` (validated Ethernet default network, as on the PC) and two hwsim radios
+(`--enable_wifi=true`), SoftAP `pcap` on `wlan1`:
+
+- `wifi_always_requested` is `1` on a fresh `userdata`; the overlay is enabled.
+- With the setting at `0`, `cmd wifi connect-network pcap wpa2 ...` logs the same
+  `bailing` line as the PC.
+- Set back to `1` (no other change), `WifiNetworkFactory` has a request
+  (`mGenericConnectionReqCount 1`), and `wlan0` joins the saved network at once:
+  `CTRL-EVENT-CONNECTED`, DHCP `ACK`. Then Tethering restarted the SoftAP, because the
+  station had an address in the hotspot's own prefix (`restart tethering`). That only
+  happens when the device joins its own hotspot.
+- `updateSupportedBandForStaInternal wlan0 : 0x3` (2.4 + 5 GHz). Host tests 25/25. No AVC
+  denials.
+
+To be checked on the PC: joining the home network with the cable plugged in.
+
 What to report after a boot: plug the stick back into the build host and run
 `tools/pclog-read.sh /dev/sdX` (or copy from the mounted `PCLOG` partition), plus photos of
 the screen if Android did not draw. If the PC rebooted after a kernel panic (`panic=10`),

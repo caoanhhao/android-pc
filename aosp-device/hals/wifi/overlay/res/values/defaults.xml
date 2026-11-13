@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings.Global.WIFI_ALWAYS_REQUESTED: ConnectivityService keeps a background
+         request for an internet Wi-Fi network. Without it, while Ethernet is up and
+         validated, no request reaches Wi-Fi (NetworkRanker always ranks Ethernet above
+         Wi-Fi), and ClientModeImpl drops every connection, even one the user picks in
+         Settings: "CMD_START_CONNECT but no requests and not connected, bailing".
+         Ethernet stays the default network; Wi-Fi connects next to it. -->
+    <bool name="def_enable_wifi_always_requested">true</bool>
+</resources>

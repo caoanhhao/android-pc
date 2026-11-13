@@ -157,6 +157,12 @@ be coded in parallel but must take turns building.
   executables run; the Play Store opens. Enforcing, no new denials. 32-bit ARM is not
   possible (x86_64-only). TikTok on the real PC is still to be checked. See
   `docs/arm-translation.md`.
+  *F9e (2026-11-13, real-PC f9b logs):* Wi-Fi did not connect while Ethernet was plugged
+  in: ConnectivityService ranks Ethernet above Wi-Fi, so Wi-Fi got no network request and
+  `ClientModeImpl` dropped every connection. A SettingsProvider overlay turns on
+  `wifi_always_requested` (a background Wi-Fi request), so Wi-Fi connects next to Ethernet.
+  The Rust HAL's usable channels are now frequencies in MHz (the framework had found no band).
+  Checked on Cuttlefish with Ethernet + hwsim. See `docs/usb-boot-aosp17.md` §7.
 
 Order: F1 → F2 → F3a → F4–F8 (smoke-tested on Cuttlefish, then one combined USB test
 on the real PC). The combined Cuttlefish round for F4–F8 ran on 2026-11-12: every HAL's VTS

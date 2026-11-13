@@ -305,16 +305,7 @@ impl ChipState {
         Ok(wiphy
             .channels
             .iter()
-            .filter(|channel| band.0 & band_mask(channel) != 0)
-            .filter_map(|channel| {
-                let modes = mode_mask & usable_modes(channel);
-                let number = channel_number(channel.band, channel.mhz)?;
-                (modes != 0).then_some(WifiUsableChannel {
-                    channel: number,
-                    channelBandwidth: WifiChannelWidthInMhz::WIDTH_20,
-                    ifaceModeMask: modes,
-                })
-            })
+            .filter_map(|channel| usable_channel(channel, band, mode_mask))
             .collect())
     }
 }
@@ -342,18 +333,16 @@ fn usable_modes(channel: &Channel) -> i32 {
     }
 }
 
-/// The IEEE 802.11 channel number of `mhz` in `band`.
-fn channel_number(band: Band, mhz: u32) -> Option<i32> {
-    let number = match (band, mhz) {
-        (Band::Ghz2, 2484) => 14,
-        (Band::Ghz2, 2412..=2472) => (mhz - 2407) / 5,
-        (Band::Ghz5, 5000..=5925) => (mhz - 5000) / 5,
-        (Band::Ghz6, 5935) => 2,
-        (Band::Ghz6, 5955..=7115) => (mhz - 5950) / 5,
-        (Band::Ghz60, 58320..=70200) => (mhz - 56160) / 2160,
-        _ => return None,
-    };
-    i32::try_from(number).ok()
+/// `channel` as a `getUsableChannels` entry if it is in `band` and usable by one of the
+/// modes in `mode_mask`. The AIDL `channel` field is the centre frequency in MHz (the
+/// framework sorts the entries into bands by frequency), not the channel number.
+fn usable_channel(channel: &Channel, band: WifiBand, mode_mask: i32) -> Option<WifiUsableChannel> {
+    let modes = mode_mask & usable_modes(channel);
+    (band.0 & band_mask(channel) != 0 && modes != 0).then_some(WifiUsableChannel {
+        channel: i32::try_from(channel.mhz).ok()?,
+        channelBandwidth: WifiChannelWidthInMhz::WIDTH_20,
+        ifaceModeMask: modes,
+    })
 }
 
 fn to_aidl(combination: &Combination) -> ChipConcurrencyCombination {
@@ -765,17 +754,20 @@ mod tests {
     }
 
     #[test]
-    fn channel_numbers() {
-        assert_eq!(channel_number(Band::Ghz2, 2412), Some(1));
-        assert_eq!(channel_number(Band::Ghz2, 2472), Some(13));
-        assert_eq!(channel_number(Band::Ghz2, 2484), Some(14));
-        assert_eq!(channel_number(Band::Ghz5, 5180), Some(36));
-        assert_eq!(channel_number(Band::Ghz5, 5825), Some(165));
-        assert_eq!(channel_number(Band::Ghz6, 5935), Some(2));
-        assert_eq!(channel_number(Band::Ghz6, 5955), Some(1));
-        assert_eq!(channel_number(Band::Ghz6, 7115), Some(233));
-        assert_eq!(channel_number(Band::Ghz60, 58320), Some(1));
-        assert_eq!(channel_number(Band::Ghz2, 5180), None);
+    fn usable_channels_are_frequencies() {
+        let sta = WifiIfaceMode::IFACE_MODE_STA.0;
+        let ch1 = channel(Band::Ghz2, 2412, true, false);
+        let usable = usable_channel(&ch1, WifiBand::BAND_24GHZ_5GHZ, sta).expect("usable");
+        assert_eq!(usable.channel, 2412, "MHz, not channel number 1");
+        assert_eq!(usable.ifaceModeMask, sta);
+        let ch36 = channel(Band::Ghz5, 5180, false, false);
+        assert_eq!(
+            usable_channel(&ch36, WifiBand::BAND_24GHZ_5GHZ, sta).map(|c| c.channel),
+            Some(5180)
+        );
+        assert!(usable_channel(&ch36, WifiBand::BAND_24GHZ, sta).is_none(), "other band");
+        let ap = WifiIfaceMode::IFACE_MODE_SOFTAP.0;
+        assert!(usable_channel(&ch36, WifiBand::BAND_24GHZ_5GHZ, ap).is_none(), "no AP on NO_IR");
     }
 
     #[test]

@@ -1,0 +1,12 @@
+// SettingsProvider defaults for Wi-Fi on the PC (phase F9e, docs/usb-boot-aosp17.md §7).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "pc_overlay_settings_provider_wifi",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}
