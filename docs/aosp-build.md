@@ -140,7 +140,12 @@ The i7-13700K (Raptor Lake, known Vmin degradation) keeps failing under build lo
   in D state in `lock_mm_and_find_vma` (unkillable), and `pgrep -f`/`pgrep -a`/`ps` that
   read its cmdline hung too (load ~19 with no CPU use). Not a siso bug: check
   `journalctl -k | grep -E 'Oops|WARNING'` first; only a host reboot clears it. Watchdogs
-  should use `pgrep -x` or `/proc/*/stat`, never cmdline reads;
+  should use `pgrep -x` or `/proc/*/stat`, never cmdline reads. It came back 3 h after a
+  reboot (12:09): the same `rcu_sched_clock_irq` WARNING (tree_plugin.h:823) in
+  `soong_build`, then `rcu_exp_handler` and an expedited RCU stall on CPU 11, siso in D.
+  The same warning twice in the Go-based `soong_build` points at the host kernel
+  (7.2.15-arch1, PREEMPT full) as much as at the CPU; try the `linux-lts` kernel (with
+  `nvidia-open-lts`) and Intel Default Settings in the BIOS;
 - processes stuck in D state. On 2026-11-11 a `clang++` was stuck in `exit_mmap`,
   `blocked on an rw-semaphore, but the owner is not found`, and siso waited on it
   forever ("ninja may be stuck"). Kill the build and restart it; ninja/siso resume;
