@@ -547,6 +547,15 @@ one session each, one build at a time (H1 first).
   picked, and both the default and the nouveau entry reach `sys.boot_completed`. Details in
   `docs/rust-hals.md` ("NVIDIA without a GPU driver"). Making nouveau the default entry
   stays G5's decision (after the soak).
+- **H2 — TikTok's passkey button does nothing** (after Google sign-in, identity check
+  page). Status (2026-11-15): fix done, real-PC check pending. TikTok asks Credential
+  Manager for a passkey; microG's `RemoteService` answers with only a remote (hybrid)
+  entry, which the framework drops because no OEM hybrid service is configured, and then
+  `RequestSession.getProviderDataAndInitiateUi()` neither shows the selector nor answers
+  the client, so the request hangs. `tools/patches/aosp17-credman-empty-ui.patch`
+  (frameworks/base) answers `NoCredentialException` instead, as on a phone without a
+  passkey. Checked on Cuttlefish with `tools/credman-test/`. Image
+  `out/aosp17-usb-h2.img`. Details in `docs/arm-translation.md` ("H2").
 
 ## Risks
 

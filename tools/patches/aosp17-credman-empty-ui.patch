@@ -1,0 +1,18 @@
+diff --git a/services/credentials/java/com/android/server/credentials/RequestSession.java b/services/credentials/java/com/android/server/credentials/RequestSession.java
+index 0f4263fe0..d025bc782 100644
+--- a/services/credentials/java/com/android/server/credentials/RequestSession.java
++++ b/services/credentials/java/com/android/server/credentials/RequestSession.java
+@@ -335,6 +335,13 @@ abstract class RequestSession<T, U, V> implements CredentialManagerUi.Credential
+         ArrayList<ProviderData> providerDataList = getProviderDataForUi();
+         if (!providerDataList.isEmpty()) {
+             launchUiWithProviderData(providerDataList);
++        } else if (mRequestSessionStatus != RequestSessionStatus.COMPLETE
++                && !isSessionCancelled()) {
++            // Every entry was dropped while preparing the UI (e.g. a remote entry from a
++            // provider that is not the OEM hybrid service). Without this the client never
++            // gets a callback and its request hangs until it cancels.
++            Slog.w(TAG, "No provider data left for ui - responding with failure");
++            onUiSelectorInvocationFailure();
+         }
+     }
+ 

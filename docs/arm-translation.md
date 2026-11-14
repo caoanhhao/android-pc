@@ -718,3 +718,84 @@ the clicks at 14:21:26.2, 14:21:38.9 and 14:21:39.6 going to
 reached the game as one-finger touches. The drops are Android's tapjacking protection, and
 each is logged once per `ACTION_MOVE` of a held drag. That is noise and does not keep
 clicks from reaching the game. Nothing to fix.
+
+### H2: TikTok's passkey button does nothing after Google sign-in (Credential Manager hang)
+
+Real PC, build `eng.caoanh.20261114.2338`, logs in `out/pclog-g6/boot-4/logcat.txt`
+(2026-11-14 17:35 and 17:44). After "Sign in with Google", TikTok opens the same identity
+check page as in F9p (`inapp.tiktokv.com/ucenter_web/idv_inapp/verification`, Spark
+channel `tiktok_account_idv`). With Google's WebView (F9p) the page now loads, offers a
+passkey, and its button does nothing when clicked with the mouse.
+
+**What the passkey UI is.** Not a WebView prompt and not Google Play services' own UI:
+when the page loads, TikTok calls Credential Manager (`executeGetCredential` with
+`callingPackage: com.ss.android.ugc.trill`) for an `androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL`.
+The button waits for that request. The system selector
+(`com.android.credentialmanager`) is never started, and no activity of it appears in the log.
+
+**Why nothing happens.** The providers are microG's:
+- `RemoteService` (a system provider, there from boot) answers with only a *remote entry*,
+  the "passkey from another device" (hybrid/QR) entry. `ProviderSession` keeps a remote
+  entry only from the service named in `config_defaultCredentialManagerHybridService`,
+  which is empty in AOSP, so it logs `Remote entry being dropped as it is not from the
+  service configured by the OEM` and drops it. (`Could not parse hybrid service while
+  filtering options` is the same empty setting seen earlier, in option filtering; it is a
+  warning only.)
+- `PasswordAndPasskeyService` (after the user turned it on in Settings at 17:43) has no
+  passkey for `tiktok.com` and returns `EMPTY_RESPONSE`.
+
+`GetRequestSession` then sees a provider in `CREDENTIALS_RECEIVED` and decides that the
+UI is needed (`Provider status changed - ui invocation is needed`). But
+`RequestSession.getProviderDataAndInitiateUi()` gets an empty list, since the only entry
+was dropped, and in that case it does nothing: no UI, no error to the client. The
+request stays open until TikTok cancels it (`Cancellation invoked from the client` when
+the user leaves the page, `Client binder died` when TikTok is killed). The click goes to
+TikTok's window (`input_interaction ... SparkActivity`), so input is fine; the page is
+just waiting for an answer that never comes.
+
+This is an AOSP bug that a Google device does not hit, because there Google Play
+services is both the provider and the configured hybrid service, so its remote entry is
+kept and the selector opens.
+
+**Fix.** `tools/patches/aosp17-credman-empty-ui.patch` (apply in `aosp/frameworks/base`):
+when every entry is dropped while the UI data is prepared, the session answers through
+`onUiSelectorInvocationFailure()`, as the UI does when it cannot start. A get request
+ends with `GetCredentialException.TYPE_NO_CREDENTIAL` ("No credentials available."), a
+create request with `TYPE_NO_CREATE_OPTIONS`. TikTok then gets
+`NoCredentialException`, as on a phone with no passkey, and the page can offer its
+other verification methods.
+
+Not done, on purpose: setting `config_defaultCredentialManagerHybridService` to
+microG's `RemoteService`. That would keep the remote entry and open the selector with
+"Use a passkey from another device", a QR code plus Bluetooth (caBLE) flow with a phone.
+Whether microG's `RemoteService` can complete that flow was not checked, and a selector
+whose only entry fails would be no better than the error. It can be tried later with a
+one-line overlay if a passkey from a phone is wanted.
+
+**Check without the PC.** `tools/credman-test/` is a small app built with the AOSP host
+tools (`tools/credman-test/build.sh OUT.apk`). It has a provider that, like microG's
+`RemoteService`, answers every get request with only a remote entry, and an activity
+that asks for a passkey and logs how the request ends (`RESULT error=...`,
+`RESULT response`, or `RESULT hang` after 15 s):
+
+```
+adb install credman-test.apk
+adb shell settings put secure credential_service pc.test.credman/pc.test.credman.RemoteOnlyProvider
+adb shell am start -n pc.test.credman/.MainActivity
+adb logcat -s CredManTest CredentialManager
+```
+
+Result on Cuttlefish (`aosp_pc_x86_64`, build `eng.caoanh.20261115.0135`, which has the
+patch), 2026-11-15. With only microG's providers, as on the PC, the log is the PC's
+sequence up to `For ui, provider data size: 1`, then the patch's
+`No provider data left for ui - responding with failure`, and the app logs
+`RESULT error=android.credentials.GetCredentialException.TYPE_NO_CREDENTIAL` 1.2 s after
+the request. With the test provider turned on, both remote entries are dropped and the
+answer is the same. Without the patch the PC log stops at `For ui, provider data size`
+and the request is answered only when the client cancels it.
+
+**Next on the PC.** Sign in to TikTok with Google again. The passkey step should now
+fail at once instead of waiting, and the page should offer another way to verify (code
+by email or SMS). If it still shows only a passkey, the page itself does not handle
+`NotAllowedError`/`NoCredentialException`; then the way out is a passkey provider with a
+real passkey, or signing in by email or phone instead of Google.
