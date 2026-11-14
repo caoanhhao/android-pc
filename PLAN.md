@@ -502,6 +502,28 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   down what works next to nouveau, and keep our patches upstream-shaped. Never
   the default until it can drive the display. Done when: a short report in
   `docs/nvidia.md` with logs from the real PC.
+  **Status (2026-11-14): code done, real-PC test pending.** `nova_core.ko` and `nova.ko`
+  are vendor modules. Nova 6.18 does not start GSP-RM on Ada. It gets as far as:
+  - the chipset;
+  - parsing the VBIOS and loading the GSP firmware;
+  - the VRAM layout;
+  - running FWSEC-FRTS, which creates WPR2;
+  - preparing booter.
+
+  The DRM side has no display, so the new last Limine entry, **"Android 17, NVIDIA Nova
+  (Rust driver experiment)"** (`androidboot.android_pc.gpu=nova`), keeps Android on pcfb.
+  It never loads nouveau. `pcnova.sh` loads Nova 30 s after boot and writes a report to
+  pclog. Getting there took two GKI-side changes, both needed only because of the Android
+  kernel's Rust setup:
+  - `CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y` in the GKI image (`gki_rust_defconfig`);
+  - an upstream-style export of `vrealloc_node_align_noprof`
+    (`tools/patches/gki-vrealloc-export.patch`), since inline Rust helpers call it from
+    modules.
+
+  A third patch prints nova-core's boot progress at info level. QEMU (no NVIDIA GPU): the
+  Nova entry boots, both modules load and stay idle, and the default entry is unchanged.
+  Image `out/aosp17-usb-g6.img`. The checklist and the comparison with nouveau are in
+  `docs/nvidia.md`.
 
 Order: G1 → G2 → G3 → G4 → G5, each in its own sub-session, one build at a time;
 G6 after G5. `docs/nvidia.md` is the running log for the whole phase.

@@ -1,5 +1,5 @@
 # Real-PC boot support (phase F3a): init script, boot log saver and device firmware.
-PRODUCT_PACKAGES += init.pc.rc init.pc.chromium.rc pclog.sh pcgpu.sh pcwake.sh ueventd-watch.sh hals.pc.conf android.hardware.bluetooth-service.pc fstab.pc.f2fs.hctr2
+PRODUCT_PACKAGES += init.pc.rc init.pc.chromium.rc pclog.sh pcgpu.sh pcwake.sh pcnova.sh ueventd-watch.sh hals.pc.conf android.hardware.bluetooth-service.pc fstab.pc.f2fs.hctr2
 
 # AX211 firmware from AOSP's external/linux-firmware: Wi-Fi (iwlmvm API 89 + PNVM) and
 # Bluetooth.

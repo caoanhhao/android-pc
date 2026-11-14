@@ -1,0 +1,5 @@
+# Applied to the GKI image (//common:kernel_x86_64) by tools/gki-build.sh through
+# --defconfig_fragment (Phase G6, docs/nvidia.md). kernel::firmware, the Rust firmware loader
+# abstractions, is part of the Rust kernel crate, which is linked into vmlinux; nova-core uses
+# it. Adds code only (Firmware::request, Drop), nothing existing changes.
+CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y

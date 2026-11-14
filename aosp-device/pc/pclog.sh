@@ -113,6 +113,11 @@ dump() {
         timeout 10 dumpsys android.hardware.graphics.composer3.IComposer/default 2>&1 | head -150
         echo "== displays"; timeout 10 dumpsys display 2>&1 | grep -E 'DisplayDeviceInfo|mBaseDisplayInfo|mActiveSfDisplayMode|supportedModes' | cut -c1-600 | head -20
         echo "== pcgpu"; tail -n 40 /data/vendor/pcgpu/modetest-*.txt 2>&1 | head -120
+        # Phase G6: NVIDIA's Rust drivers Nova on the nova entry (pcnova.sh's report, fresh dmesg).
+        if [ "$(getprop ro.boot.android_pc.gpu)" = nova ]; then
+            echo "== nova"; cat /data/vendor/pcgpu/nova.txt 2>&1
+            echo "== nova dmesg"; dmesg | grep -iE 'nova|pcnova' | head -n 150
+        fi
         # Phase G4: who renders GLES (ANGLE's renderer string names the Vulkan driver), whether
         # any process still maps SwiftShader (pastel), and per-layer frame rates (timestats is
         # switched on at boot below, so a game's FPS is here on every entry).

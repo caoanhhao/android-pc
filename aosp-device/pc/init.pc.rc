@@ -80,6 +80,21 @@ service vendor.pcgpu /vendor/bin/pcgpu.sh
     seclabel u:r:su:s0
     disabled
 
+# NVIDIA's Rust drivers Nova (Phase G6, docs/nvidia.md), only on the Limine entry with
+# androidboot.android_pc.gpu=nova; nouveau is never loaded there. Nova has no display support
+# yet, so Android keeps pcfb (Nova maps only BAR0 and leaves the GOP framebuffer alone), and
+# pcnova.sh loads nova_core.ko and nova.ko once the system has booted, so that pclog is already
+# saving dmesg if the GPU hangs. Both are in modules.blocklist for every other entry.
+on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nova
+    start vendor.pcnova
+
+service vendor.pcnova /vendor/bin/pcnova.sh
+    user root
+    group root graphics
+    seclabel u:r:su:s0
+    oneshot
+    disabled
+
 # Suspend on the nouveau entries (Phase G5, docs/nvidia.md). Cuttlefish's suspend_blocker
 # holds a wakelock forever; without it Android suspends the PC when the screen is off.
 # nouveau saves VRAM and restarts GSP-RM across a suspend; pcfb cannot (the firmware does not

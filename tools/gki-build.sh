@@ -17,13 +17,21 @@ DEST=$ROOT/aosp/device/android-pc/kernel/6.18
 STEPS=${STEPS:-"gki virt pc install firmware"}
 # --notrim: export every symbol the GKI image has (vendor modules use more than the KMI
 # symbol lists); --lto=none: much faster and lighter than the release LTO build.
-FLAGS=(--notrim --lto=none ${BAZEL_FLAGS:-})
+# --defconfig_fragment (Phase G6, docs/nvidia.md): CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y in the
+# GKI image itself. It is a bool that adds kernel::firmware to the Rust kernel crate, which
+# lives in vmlinux; nova-core (a vendor module) calls it. Every step must pass the same flag,
+# or the vendor builds would rebuild their base kernel without it.
+FLAGS=(--notrim --lto=none --defconfig_fragment=//android-pc:gki_rust_defconfig ${BAZEL_FLAGS:-})
 [ -d "$GKI/common" ] || { echo "gki-build: no kernel checkout in $GKI (see docs/usb-boot-aosp17.md)"; exit 1; }
 
 # Patches to the kernel tree itself (nouveau is an in-tree module), applied once:
 # - gki-nouveau-gsp-thermal.patch (Phase G5, docs/nvidia.md): GPU temperature as hwmon
 #   temp1_input and a debugfs "perf" entry (GSP-RM's P-state) for GPUs booted with GSP-RM.
-for p in gki-nouveau-gsp-thermal.patch; do
+# - gki-nova-boot-log.patch (Phase G6): nova-core reports VRAM, WPR2 and how far its GSP
+#   boot got at info level (dev_dbg! is compiled out of release kernels).
+# - gki-vrealloc-export.patch (Phase G6): exports vrealloc_node_align_noprof, which Rust modules
+#   using VVec/KVVec call directly because RUST_INLINE_HELPERS inlines the Rust helpers.
+for p in gki-nouveau-gsp-thermal.patch gki-nova-boot-log.patch gki-vrealloc-export.patch; do
   git -C "$GKI/common" apply --reverse --check "$ROOT/tools/patches/$p" 2>/dev/null && continue
   git -C "$GKI/common" apply "$ROOT/tools/patches/$p" || { echo "gki-build: $p does not apply"; exit 1; }
 done

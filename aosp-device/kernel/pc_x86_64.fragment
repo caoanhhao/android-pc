@@ -2,7 +2,7 @@
 # Applied on top of the GKI gki_defconfig plus the virtual-device fragments (copied next to
 # this file by tools/gki-build.sh), so the modules both builds share get the same config.
 # Only tristate options set to =m and driver-local bools: nothing here may change vmlinux,
-# which comes unmodified from //common:kernel_x86_64.
+# which comes from //common:kernel_x86_64 (plus gki_rust_defconfig, see there).
 #
 # Already built into the GKI image: NVMe, xHCI, usb-storage + UAS, USB HID + hid-generic,
 # evdev, uvcvideo, snd-usb-audio, ACPI button, RTC CMOS, intel_pstate, intel_idle, VFAT.
@@ -54,3 +54,10 @@ CONFIG_DRM_NOUVEAU=m
 # CONFIG_DRM_NOUVEAU_CH7006 is not set
 # CONFIG_DRM_NOUVEAU_SIL164 is not set
 # CONFIG_WMI_BMOF is not set
+
+# NVIDIA's Rust driver Nova (Phase G6, docs/nvidia.md): nova-core (GSP boot) and the nova DRM
+# driver, loaded only on the Limine entry with androidboot.android_pc.gpu=nova. NOVA_CORE
+# selects RUST_FW_LOADER_ABSTRACTIONS, a vmlinux bool: gki_rust_defconfig sets it in the GKI
+# image too, so both configs agree.
+CONFIG_NOVA_CORE=m
+CONFIG_DRM_NOVA=m

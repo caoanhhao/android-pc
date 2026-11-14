@@ -631,3 +631,136 @@ Fallbacks:
   pclog: the cycle's kernel log is in `dmesg.txt` up to the hang. `suspend-test.done` keeps
   the self-test from running again on that build. To keep suspend off on the nouveau entry
   until a fix, `adb shell start suspend_blocker` after each boot.
+
+## G6. Nova (Rust) experiment
+
+NVIDIA's Rust driver Nova is two modules in the 6.18 tree: `nova-core`
+(`drivers/gpu/nova-core`, binds the GPU's PCI function, talks to the falcons and boots
+GSP-RM) and `nova` (`drivers/gpu/drm/nova`, the DRM driver, which binds to an auxiliary
+device that nova-core creates). Both are marked "work in progress and may not be
+functional". G6 builds them for the GKI kernel, loads them on a boot entry of their own and
+records how far they get on the RTX 4070, next to nouveau.
+
+### What Nova 6.18 does on Ada
+
+Read from the source (`nova-core/gpu.rs` `Gpu::new`, `gsp/boot.rs` `Gsp::boot`), in order:
+
+1. Map BAR0 (16 MiB of registers only: no BAR1/BAR2, so it never touches the VRAM aperture
+   the UEFI GOP framebuffer lives in), read `NV_PMC_BOOT_0`, print the chipset
+   (`NVIDIA (Chipset: AD104, Architecture: Ada, Revision: ...)`).
+2. Wait for the GPU's own firmware boot (GFW_BOOT) to finish.
+3. Register the sysmem flush page, set up the GSP and SEC2 falcons.
+4. Parse the VBIOS (from the PROM through BAR0), load the GSP-RM 570.144 firmware
+   (`gsp`, `bootloader`; the same files as nouveau, already in `/vendor/firmware`) and build
+   its radix page tables in DMA memory.
+5. Compute the framebuffer layout: VRAM size (`vidmem_size`), VGA workspace, the FRTS
+   region at the top of VRAM.
+6. Run FWSEC-FRTS (the FWSEC ucode from the VBIOS, on the GSP falcon), which creates the
+   WPR2 write-protected region; check that WPR2 is where it was asked to be.
+7. Load and patch the `booter_load` firmware for SEC2.
+8. Stop. The 6.18 tree does not run booter, so GSP-RM is never started: no RPC, no
+   memory manager, no channels, no display. Then nova-core registers the `nova-drm`
+   auxiliary device and `nova` binds to it: a DRM device with only GEM objects and a
+   `GETPARAM` ioctl (`NOVA_GETPARAM_VRAM_BAR_SIZE`). It has no KMS, no render node use for
+   Mesa, and no command submission.
+
+So the most Nova can show on this kernel is steps 1-7: the chipset, a VBIOS that parses,
+the VRAM size, and FWSEC-FRTS creating WPR2. "GSP boot" in the sense nouveau means
+(GSP-RM running and answering RPCs) is not in this version.
+
+### What changed
+
+| Piece | Where | What |
+|---|---|---|
+| GKI image config | `aosp-device/kernel/gki_rust_defconfig`, `tools/gki-build.sh` (`--defconfig_fragment=//android-pc:gki_rust_defconfig` on every Bazel step) | `CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y`. `NOVA_CORE` selects it, and it is a bool that adds `kernel::firmware` to the Rust `kernel` crate, which is linked into vmlinux. With it only in the vendor config, modpost reports `kernel::firmware::Firmware::request` and its `Drop` as undefined. It is the first change to vmlinux itself; it only adds code. All three Bazel steps must pass the same flag, otherwise the vendor builds would rebuild their base kernel without it |
+| Export | `tools/patches/gki-vrealloc-export.patch` (`mm/vmalloc.c`) | `EXPORT_SYMBOL(vrealloc_node_align_noprof)`. The Android kernel builds Rust with `RUST_INLINE_HELPERS`, so `rust_helper_vrealloc_node_align` is inlined into the module and nova-core (which uses `KVVec`/`VVec`) calls the unexported function directly. Upstream builds without inline helpers call the exported helper instead, so this is only needed here. The patch matches the existing `kvrealloc`/`krealloc` exports and has an upstream-style header |
+| Boot log | `tools/patches/gki-nova-boot-log.patch` (`nova-core/gsp/boot.rs`) | `dev_dbg!` is compiled out of the kernel crate unless `RUST_DEBUG_ASSERTIONS` is set (`Device::pr_dbg` checks `cfg!(debug_assertions)`), and GKI does not set it. So on GKI a working nova-core prints nothing after the chipset line. The patch adds three `dev_info!` lines: `VRAM: N MiB, FRTS: a-b`, `WPR2: a-b`, and `Booter loader firmware ready; GSP-RM boot not implemented yet`. It has an upstream-style header |
+| Vendor modules | `aosp-device/kernel/pc_x86_64.fragment` (`CONFIG_NOVA_CORE=m`, `CONFIG_DRM_NOVA=m`), `BUILD.bazel` (`_PC_MODULES`) | `nova_core.ko` (246 KiB) and `nova.ko` (32 KiB) in `vendor_dlkm` |
+| Blocklist | `aosp-device/pc/modules.blocklist` | `nova.ko`, `nova_core.ko`: the boot-time load skips them on every entry. nova-core's PCI aliases (`10de`, display classes 0300/0302) match the same GPU as nouveau |
+| Boot entry | `tools/mkusb-aosp17.sh --menu`, the last entry | **"Android 17, NVIDIA Nova (Rust driver experiment)"**: `androidboot.selinux=permissive androidboot.android_pc.gpu=nova`. pcfb stays on (Nova has no display and does not take the GOP framebuffer), Android runs as on the default entry, nouveau is never loaded (`init.pc.rc` loads it only for `gpu=nouveau`). The default entry stays pcfb |
+| Loader | `aosp-device/pc/init.pc.rc`, `pcnova.sh` (service `vendor.pcnova`) | At `sys.boot_completed` on `gpu=nova`, waits 30 s, then `modprobe nova_core.ko` and `modprobe nova.ko`. Both are needed: the two modules meet on the auxiliary bus, so `modules.dep` has no link between them. Loading late means pclog is already streaming dmesg to its partition if FWSEC or the GPU hangs the machine. It writes `/data/vendor/pcgpu/nova.txt`: modprobe output, `lsmod`, the NVIDIA PCI functions with their driver, auxiliary devices, DRM nodes and drivers, Nova's dmesg lines, `/proc/iomem` framebuffer ranges. It logs `pcnova:` lines to the kernel log |
+| pclog | `aosp-device/pc/pclog.sh` | On the nova entry, state dumps get `== nova` (pcnova's report) and `== nova dmesg` |
+
+### Building it
+
+`tools/gki-build.sh` (all steps; the GKI image is rebuilt because of the defconfig fragment,
+about 13 minutes on the E-cores), then the usual image steps. The AOSP analysis hit the
+20 GB cap (`soong_build` OOM-killed at 20 GB RSS) with the default settings, so the build
+ran with `SOONG_INCREMENTAL_ANALYSIS=false SOONG_GOMEMLIMIT=14GiB`, as G3 did. Build
+`eng.caoanh.20261114.2338`.
+
+### QEMU check (2026-11-14)
+
+QEMU has no NVIDIA GPU, so the check is that Nova loads, stays idle, and harms nothing.
+Image `out/aosp17-usb-g6-qemu.img` (`--menu --append console=ttyS0,115200`, `default_entry`
+set in the copy's `limine.conf`), `WRITABLE=1 NO_WINDOW=1 AUDIO=none
+tools/run-qemu-aosp17-usb.sh` (E-cores 12-15, 4 vCPUs, 4 GiB), adb over vsock:
+
+- Nova entry (`default_entry: 9`): boot-time load logs `dlkm_loader: module nova is
+  blocklisted` and the same for `nova_core` (blocklist works). `sys.boot_completed` at 33 s,
+  `vendor.pcnova` started, at 63 s `pcnova: modprobe exited (0 0)`; `lsmod` shows `nova` and
+  `nova_core` with refcount 0 (no NVIDIA PCI function to bind, no auxiliary device), nouveau
+  not loaded, Android on pcfb (`card0`/`renderD128` = `efi-framebuffer`, i.e. pcfb's device)
+  as on the default entry.
+- Default entry (`default_entry: 1`): `sys.boot_completed=1`, `ro.boot.android_pc.gpu`
+  empty, neither Nova module loaded (both reported blocklisted by `dlkm_loader`), pcfb
+  drives the display as before.
+
+### Status
+
+**Code done, real-PC test pending.** Release image `out/aosp17-usb-g6.img` (build
+`eng.caoanh.20261114.2338`), which also carries G1-G5. The Nova entry is never the
+default; it stays an experiment until Nova can drive a display.
+
+### Real-PC test
+
+```bash
+sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-g6.img /dev/sdX
+```
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-g6.img /dev/sdX
+```
+
+(`/dev/sdX` is the stick: `lsblk -o NAME,SIZE,MODEL,TRAN`, the ~57 GB SanDisk on `usb`.)
+
+On the PC:
+
+1. Power the PC off fully, then boot **"Android 17, NVIDIA Nova (Rust driver
+   experiment)"** (the last entry). A cold boot matters: if an earlier boot left the WPR2
+   region set (a warm reboot from the nouveau entries may not reset the GPU), nova-core stops
+   with `WPR2 region already exists - GPU needs to be reset`.
+2. Android comes up on pcfb as on the default entry. About 30 s after the lock screen,
+   pcnova loads Nova. The screen may flicker or stay as it is; note anything odd (black
+   screen, freeze, fans). Leave it running about 5 minutes (the 300 s pclog dump).
+3. Reboot into the default entry, plug the stick into the build host, then
+   `tools/pclog-read.sh /dev/sdX` and look at the Nova boot's directory:
+   - `dmesg.txt`: `pcnova:` lines and `nova_core <GPU PCI address>:` lines;
+   - `state-300.txt`: `== nova` (`nova_core` bound to the `10de:2786` function, a
+     `nova_core.nova-drm.0` auxiliary device, a DRM node driven by `nova`) and
+     `== nova dmesg`.
+
+What each result means:
+
+| dmesg | Meaning |
+|---|---|
+| `NVIDIA (Chipset: AD104, Architecture: Ada, Revision: ...)` only, then a probe error | BAR0 works; the error line says which step failed (GFW boot, VBIOS, firmware) |
+| `VRAM: N MiB, FRTS: ...` | VBIOS parsed, GSP firmware loaded, layout known (the 4070 has 12 GiB, so N is about 12288) |
+| `WPR2: ...` | FWSEC-FRTS ran on the GSP falcon and created WPR2: the deepest step Nova 6.18 has |
+| `Booter loader firmware ready; GSP-RM boot not implemented yet` | everything Nova 6.18 can do on Ada worked; `nova` then binds and `/dev/dri/card1` (driver `nova`) appears |
+| `WPR2 region already exists` | not a cold boot; power off and retry |
+| `FWSEC-FRTS returned with error code ...` | FWSEC failed; the code is what to report upstream |
+
+### Nova compared with nouveau
+
+| | nouveau (G1-G5) | Nova (6.18) |
+|---|---|---|
+| Language, size | C, 6.8 MiB `nouveau.ko` (stripped) plus 9 helper modules | Rust, 246 KiB `nova_core.ko` plus 32 KiB `nova.ko` |
+| GSP-RM | boots it (570.144), RPC, power and clocks through it | firmware loaded and FWSEC-FRTS run, GSP-RM not started |
+| VRAM | memory manager, TTM, VM_BIND for NVK | size read and printed only |
+| Display | KMS: modes, hotplug, HDMI audio ELD, drm_hwcomposer | none (no KMS objects); Android stays on pcfb |
+| Rendering | NVK Vulkan, ANGLE GLES | none (no channels, no command submission) |
+| GKI changes | modules only, plus the G5 hwmon/perf patch | one vmlinux bool (`RUST_FW_LOADER_ABSTRACTIONS`) and one export (`vrealloc_node_align_noprof`), both from the Android kernel's Rust setup |
+| Use on this PC | the GPU stack for G2-G5 | an experiment to follow upstream: worth retrying when the GKI branch moves to a release where nova-core runs booter and starts GSP-RM (the work continues upstream after 6.18) |
+
+The Real-PC results go here once the stick has been booted on the Nova entry.

@@ -85,3 +85,12 @@ sh_binary {
     vendor: true,
     visibility: ["//visibility:public"],
 }
+
+// Phase G6: loads NVIDIA's Rust drivers Nova on the nova entry (init.pc.rc) and records how
+// far they get.
+sh_binary {
+    name: "pcnova.sh",
+    src: "pcnova.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}

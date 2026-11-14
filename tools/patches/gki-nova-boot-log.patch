@@ -1,0 +1,50 @@
+From: caoanhhao <dev@skyperry.com>
+Subject: [PATCH] gpu: nova-core: gsp: report boot progress at info level
+
+The Rust print macros only emit dev_dbg!() when the kernel crate is built
+with debug assertions, which release kernels (GKI included) never are. So
+on such a kernel a successful probe of nova-core is silent past the chipset
+line, and there is no way to tell how far the GSP boot sequence got.
+
+Print the VRAM size and the FRTS region once the framebuffer layout is
+known, the WPR2 region FWSEC-FRTS created, and a final line once the booter
+loader firmware is ready, which is where the boot sequence currently ends.
+
+Signed-off-by: caoanhhao <dev@skyperry.com>
+---
+diff --git a/drivers/gpu/nova-core/gsp/boot.rs b/drivers/gpu/nova-core/gsp/boot.rs
+index 2800f3aee..554178418 100644
+--- a/drivers/gpu/nova-core/gsp/boot.rs
++++ b/drivers/gpu/nova-core/gsp/boot.rs
+@@ -86,7 +86,7 @@ fn run_fwsec_frts(
+                 Err(EIO)
+             }
+             (wpr2_lo, wpr2_hi) => {
+-                dev_dbg!(dev, "WPR2: {:#x}-{:#x}\n", wpr2_lo, wpr2_hi);
++                dev_info!(dev, "WPR2: {:#x}-{:#x}\n", wpr2_lo, wpr2_hi);
+                 dev_dbg!(dev, "GPU instance built\n");
+ 
+                 Ok(())
+@@ -120,6 +120,13 @@ pub(crate) fn boot(
+ 
+         let fb_layout = FbLayout::new(chipset, bar)?;
+         dev_dbg!(dev, "{:#x?}\n", fb_layout);
++        dev_info!(
++            dev,
++            "VRAM: {} MiB, FRTS: {:#x}-{:#x}\n",
++            fb_layout.fb.end >> 20,
++            fb_layout.frts.start,
++            fb_layout.frts.end
++        );
+ 
+         Self::run_fwsec_frts(dev, gsp_falcon, bar, &bios, &fb_layout)?;
+ 
+@@ -132,6 +139,8 @@ pub(crate) fn boot(
+             bar,
+         )?;
+ 
++        dev_info!(dev, "Booter loader firmware ready; GSP-RM boot not implemented yet\n");
++
+         Ok(())
+     }
+ }

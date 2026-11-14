@@ -58,10 +58,15 @@ _VIRT_MODULES = [
     "vkms.ko",
 ]
 
+# Applied to every kernel_build of tools/gki-build.sh, the GKI image included (Phase G6):
+# nova-core needs the Rust firmware loader abstractions in vmlinux's kernel crate.
+exports_files(["gki_rust_defconfig"])
+
 # Modules for the PC hardware (pc_x86_64.fragment). The HD Audio codec menus enable every
 # codec of their family; all are installed (only the ones a codec matches bind). nouveau and
 # the DRM helpers it selects are for the RTX 4070 (Phase G1); modules.blocklist keeps nouveau
-# out of the boot-time load, init.pc.rc loads it on the nouveau entry only.
+# out of the boot-time load, init.pc.rc loads it on the nouveau entry only. nova-core and
+# nova (Rust, Phase G6) are the same kind of experiment on the nova entry.
 _PC_MODULES = [
     "drivers/acpi/ac.ko",
     "drivers/acpi/battery.ko",
@@ -76,7 +81,9 @@ _PC_MODULES = [
     "drivers/gpu/drm/drm_gpuvm.ko",
     "drivers/gpu/drm/drm_ttm_helper.ko",
     "drivers/gpu/drm/nouveau/nouveau.ko",
+    "drivers/gpu/drm/nova/nova.ko",
     "drivers/gpu/drm/scheduler/gpu-sched.ko",
+    "drivers/gpu/nova-core/nova_core.ko",
     "drivers/hwmon/coretemp.ko",
     "drivers/hwmon/hwmon.ko",
     "drivers/i2c/algos/i2c-algo-bit.ko",
