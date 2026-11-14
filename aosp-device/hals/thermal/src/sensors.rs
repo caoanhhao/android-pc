@@ -4,7 +4,7 @@
 //! - `/sys/class/thermal/thermal_zone*`: `x86_pkg_temp` (CPU package), ACPI zones
 //!   (`acpitz`), `iwlwifi_*` (Wi-Fi), with their trip points;
 //! - `/sys/class/hwmon/hwmon*` drivers listed in [`hwmon_kind`]: `coretemp`/`k10temp` (CPU
-//!   packages, with TjMax), GPU drivers, NVMe;
+//!   packages, with TjMax), GPU drivers, NVMe, and their fans (`fanN_input`, in RPM);
 //! - `/sys/class/thermal/cooling_device*`: fans, ACPI processor throttling, powerclamp.
 //!
 //! A PC has no skin sensor, so a virtual `SKIN` sensor reports the hottest CPU package:
@@ -75,6 +75,13 @@ const DEFAULT_TJMAX: f32 = 100.0;
 /// ACPI trip points below this (°C) are firmware placeholders: the Z790 board's
 /// `acpitz` reports a 20.8 °C critical trip while reading a fixed 16.8 °C.
 const MIN_PLAUSIBLE_TRIP: f32 = 40.0;
+
+/// GPU thresholds (°C) for a GPU sensor whose driver reports none: nouveau on GSP-RM gives
+/// only `temp1_input`, since GSP-RM runs the fans and thermal slowdown itself. NVIDIA rates
+/// desktop Ada GPUs (RTX 4070) for 90 °C, where they slow down on their own: that is SEVERE.
+/// SHUTDOWN is left to the GPU's own thermal shutdown, as for CPUs.
+const GPU_DEFAULT_THRESHOLDS: Thresholds =
+    [None, Some(80.0), Some(85.0), Some(90.0), Some(95.0), Some(100.0), None];
 
 /// CPU thresholds relative to TjMax. A CPU at TjMax is already throttling itself, which
 /// Android calls SEVERE. Readings never exceed TjMax (the sensor counts down to it), so
@@ -173,6 +180,9 @@ impl Sensors {
         for (name, sensor_kind, path, tjmax) in hwmon_sensors(hwmon_dir) {
             let thresholds = match (sensor_kind, tjmax) {
                 (SensorKind::Cpu, tjmax) => cpu_thresholds(tjmax.unwrap_or(DEFAULT_TJMAX)),
+                (SensorKind::Gpu, _) => Some(hwmon_thresholds(&path))
+                    .filter(|thresholds| thresholds.iter().any(Option::is_some))
+                    .unwrap_or(GPU_DEFAULT_THRESHOLDS),
                 _ => hwmon_thresholds(&path),
             };
             sensors.push(Sensor {
@@ -209,7 +219,8 @@ impl Sensors {
             });
         }
 
-        let cooling = cooling_devices(thermal_dir);
+        let mut cooling = cooling_devices(thermal_dir);
+        cooling.extend(hwmon_fans(hwmon_dir));
         for sensor in &sensors {
             debug!("sensor {} ({:?}) {:?}", sensor.name, sensor.kind, sensor.source);
         }
@@ -408,6 +419,42 @@ fn trip_thresholds(zone: &Path) -> Thresholds {
     thresholds
 }
 
+/// The fans of the hwmon devices this HAL reports (`fanN_input`, RPM), as cooling devices
+/// named after their kind: `gpu-fan0`, `cpu-fan0`. Their state is the speed in RPM.
+fn hwmon_fans(hwmon_dir: &Path) -> Vec<CoolingDevice> {
+    let mut fans = Vec::new();
+    let mut counts: HashMap<SensorKind, usize> = HashMap::new();
+    for dir in pchal::sysfs::entries(hwmon_dir).unwrap_or_default() {
+        let Some(driver) = read_attr::<String>(&dir.join("name")) else { continue };
+        let Some(kind) = hwmon_kind(&driver) else { continue };
+        let mut inputs: Vec<(u32, PathBuf)> = pchal::sysfs::entries(&dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|path| {
+                let file = path.file_name()?.to_str()?;
+                let index: u32 = file.strip_prefix("fan")?.strip_suffix("_input")?.parse().ok()?;
+                Some((index, path))
+            })
+            .collect();
+        inputs.sort_by_key(|(index, _)| *index);
+        for (_, state) in inputs {
+            let count = counts.entry(kind).or_default();
+            let prefix = match kind {
+                SensorKind::Cpu => "cpu".to_owned(),
+                SensorKind::Gpu => "gpu".to_owned(),
+                _ => driver.clone(),
+            };
+            fans.push(CoolingDevice {
+                name: format!("{prefix}-fan{count}"),
+                kind: CoolingKind::Fan,
+                state,
+            });
+            *count += 1;
+        }
+    }
+    fans
+}
+
 fn cooling_devices(thermal_dir: &Path) -> Vec<CoolingDevice> {
     let mut devices: Vec<(u32, CoolingDevice)> = pchal::sysfs::entries(thermal_dir)
         .unwrap_or_default()
@@ -542,6 +589,50 @@ mod tests {
                 ("fan-0", CoolingKind::Fan, Some(0)),
                 ("intel_powerclamp-2", CoolingKind::Cpu, Some(0)),
                 ("processor-10", CoolingKind::Cpu, Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn nouveau_on_gsp_gets_default_gpu_thresholds_and_fans() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let (thermal, hwmon) = z790(root.path());
+        // nouveau on GSP-RM: temp1_input only.
+        let gpu = hwmon.join("hwmon8");
+        write(&gpu.join("name"), "nouveau");
+        write(&gpu.join("temp1_input"), "41000");
+        // A GPU driver with fans and its own limits (amdgpu-style).
+        let amd = hwmon.join("hwmon9");
+        write(&amd.join("name"), "amdgpu");
+        write(&amd.join("temp1_input"), "50000");
+        write(&amd.join("temp1_crit"), "100000");
+        write(&amd.join("fan1_input"), "1200");
+        write(&amd.join("fan2_input"), "1300");
+        let sensors = Sensors::discover(&thermal, &hwmon);
+
+        let gpus: Vec<&Sensor> =
+            sensors.sensors().iter().filter(|s| s.kind == SensorKind::Gpu).collect();
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].name, "GPU0");
+        assert_eq!(gpus[0].thresholds, GPU_DEFAULT_THRESHOLDS);
+        assert_eq!(gpus[0].severity(70.0), Severity::None);
+        assert_eq!(gpus[0].severity(91.0), Severity::Severe);
+        assert_eq!(gpus[1].thresholds[Severity::Critical as usize], Some(100.0));
+        assert_eq!(gpus[1].thresholds[Severity::Light as usize], None, "driver limits win");
+        let index = sensors.sensors().iter().position(|s| s.name == "GPU0").expect("GPU0");
+        assert_eq!(sensors.read()[index], Some(41.0));
+
+        let fans: Vec<(&str, CoolingKind, Option<i64>)> = sensors
+            .cooling_devices()
+            .iter()
+            .filter(|c| c.name.contains("-fan"))
+            .map(|c| (c.name.as_str(), c.kind, c.state()))
+            .collect();
+        assert_eq!(
+            fans,
+            [
+                ("gpu-fan0", CoolingKind::Fan, Some(1200)),
+                ("gpu-fan1", CoolingKind::Fan, Some(1300)),
             ]
         );
     }

@@ -1,0 +1,173 @@
+diff --git a/drivers/gpu/drm/nouveau/nouveau_hwmon.c b/drivers/gpu/drm/nouveau/nouveau_hwmon.c
+index 5c07a9ee8..0c2158844 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_hwmon.c
++++ b/drivers/gpu/drm/nouveau/nouveau_hwmon.c
+@@ -34,6 +34,7 @@
+ 
+ #include <nvkm/subdev/iccsense.h>
+ #include <nvkm/subdev/volt.h>
++#include <nvkm/subdev/gsp.h>
+ 
+ #if defined(CONFIG_HWMON) || (defined(MODULE) && defined(CONFIG_HWMON_MODULE))
+ 
+@@ -657,6 +658,64 @@ static const struct hwmon_chip_info nouveau_chip_info = {
+ 	.ops = &nouveau_hwmon_ops,
+ 	.info = nouveau_info,
+ };
++
++/*
++ * GPUs booted with GSP-RM have no therm subdev: GSP-RM runs the fans and thermal
++ * slowdown itself. Its core sensor is still readable at the register gp100_temp_get()
++ * uses, so report that as temp1_input (read only, no thresholds, no fan).
++ */
++static int
++nouveau_gsp_temp_get(struct nvkm_device *device)
++{
++	u32 tsensor = nvkm_rd32(device, 0x020460);
++	int temp = (tsensor & 0x0001fff8) >> 8;
++
++	/* 0xbadXXXXX: a PRI error, which has the "valid" bit set as well. */
++	if ((tsensor & 0xfff00000) == 0xbad00000 || !(tsensor & 0x20000000) || temp > 150)
++		return -ENODEV;
++	return temp;
++}
++
++static umode_t
++nouveau_gsp_is_visible(const void *data, enum hwmon_sensor_types type, u32 attr,
++		       int channel)
++{
++	return type == hwmon_temp && attr == hwmon_temp_input ? 0444 : 0;
++}
++
++static int
++nouveau_gsp_read(struct device *dev, enum hwmon_sensor_types type, u32 attr,
++		 int channel, long *val)
++{
++	struct nouveau_drm *drm = nouveau_drm(dev_get_drvdata(dev));
++	int ret;
++
++	if (type != hwmon_temp || attr != hwmon_temp_input)
++		return -EOPNOTSUPP;
++	if (drm->dev->switch_power_state != DRM_SWITCH_POWER_ON)
++		return -EINVAL;
++
++	ret = nouveau_gsp_temp_get(nvxx_device(drm));
++	if (ret < 0)
++		return ret;
++	*val = ret * 1000;
++	return 0;
++}
++
++static const struct hwmon_channel_info * const nouveau_gsp_info[] = {
++	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
++	NULL
++};
++
++static const struct hwmon_ops nouveau_gsp_hwmon_ops = {
++	.is_visible = nouveau_gsp_is_visible,
++	.read = nouveau_gsp_read,
++};
++
++static const struct hwmon_chip_info nouveau_gsp_chip_info = {
++	.ops = &nouveau_gsp_hwmon_ops,
++	.info = nouveau_gsp_info,
++};
+ #endif
+ 
+ int
+@@ -673,6 +732,27 @@ nouveau_hwmon_init(struct drm_device *dev)
+ 	int ret = 0;
+ 	int i = 0;
+ 
++	if (!iccsense && !therm && !volt && nvkm_gsp_rm(nvxx_device(drm)->gsp)) {
++		NV_INFO(drm, "GSP-RM thermal sensor: 0x%08x\n",
++			nvkm_rd32(nvxx_device(drm), 0x020460));
++		if (nouveau_gsp_temp_get(nvxx_device(drm)) < 0)
++			return 0;
++
++		hwmon = drm->hwmon = kzalloc(sizeof(*hwmon), GFP_KERNEL);
++		if (!hwmon)
++			return -ENOMEM;
++		hwmon->dev = dev;
++		hwmon_dev = hwmon_device_register_with_info(dev->dev, "nouveau", dev,
++							    &nouveau_gsp_chip_info, NULL);
++		if (IS_ERR(hwmon_dev)) {
++			ret = PTR_ERR(hwmon_dev);
++			NV_ERROR(drm, "Unable to register hwmon device: %d\n", ret);
++			return ret;
++		}
++		hwmon->hwmon = hwmon_dev;
++		return 0;
++	}
++
+ 	if (!iccsense && !therm && !volt) {
+ 		NV_DEBUG(drm, "Skipping hwmon registration\n");
+ 		return 0;
+diff --git a/drivers/gpu/drm/nouveau/nvkm/subdev/gsp/rm/r535/gsp.c b/drivers/gpu/drm/nouveau/nvkm/subdev/gsp/rm/r535/gsp.c
+index a575a8dbf..a287061c1 100644
+--- a/drivers/gpu/drm/nouveau/nvkm/subdev/gsp/rm/r535/gsp.c
++++ b/drivers/gpu/drm/nouveau/nvkm/subdev/gsp/rm/r535/gsp.c
+@@ -1336,6 +1336,43 @@ static struct dentry *create_debugfs(struct nvkm_gsp *gsp, const char *name,
+ 	return dent;
+ }
+ 
++/* NV2080_CTRL_CMD_PERF_GET_CURRENT_PSTATE (ctrl2080perf.h): one NvU32, the P-state bit. */
++#define R535_GSP_CTRL_PERF_GET_CURRENT_PSTATE 0x20802068
++
++/*
++ * The "perf" debugfs entry: the P-state GSP-RM has picked (it raises the clocks under load
++ * by itself, there is no clock control in nouveau on GSP) and the raw thermal sensor
++ * register that nouveau_hwmon reads for temp1_input.
++ */
++static int
++r535_gsp_perf_show(struct seq_file *m, void *unused)
++{
++	struct nvkm_gsp *gsp = m->private;
++	u32 *ctrl, tsensor;
++
++	if (!gsp->running) {
++		seq_puts(m, "gsp not running\n");
++		return 0;
++	}
++
++	ctrl = nvkm_gsp_rm_ctrl_rd(&gsp->internal.device.subdevice,
++				   R535_GSP_CTRL_PERF_GET_CURRENT_PSTATE, sizeof(*ctrl));
++	if (IS_ERR(ctrl)) {
++		seq_printf(m, "pstate error %ld\n", PTR_ERR(ctrl));
++	} else {
++		if (*ctrl)
++			seq_printf(m, "pstate P%lu (0x%x)\n", __ffs(*ctrl), *ctrl);
++		else
++			seq_puts(m, "pstate none (0x0)\n");
++		nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
++	}
++
++	tsensor = nvkm_rd32(gsp->subdev.device, 0x020460);
++	seq_printf(m, "tsensor 0x%08x temp %u\n", tsensor, (tsensor & 0x0001fff8) >> 8);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(r535_gsp_perf);
++
+ /**
+  * r535_gsp_libos_debugfs_init - create logging debugfs entries
+  * @gsp: gsp pointer
+@@ -1416,6 +1453,8 @@ r535_gsp_libos_debugfs_init(struct nvkm_gsp *gsp)
+ 	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_UCODE_LIBOS_PRINT,
+ 			      r535_gsp_msg_libos_print, gsp);
+ 
++	debugfs_create_file("perf", 0444, gsp->debugfs.parent, gsp, &r535_gsp_perf_fops);
++
+ 	nvkm_debug(&gsp->subdev, "created debugfs GSP-RM logging entries\n");
+ 
+ 	if (keep_gsp_logging) {
+@@ -1991,6 +2030,10 @@ static void r535_gsp_retain_logging(struct nvkm_gsp *gsp)
+ 	struct r535_gsp_log *log = NULL;
+ 	int ret;
+ 
++	/* "perf" talks to this GSP; it must not outlive it in a retained directory. */
++	if (!IS_ERR_OR_NULL(gsp->debugfs.parent))
++		debugfs_lookup_and_remove("perf", gsp->debugfs.parent);
++
+ 	if (!keep_gsp_logging || !gsp->debugfs.parent) {
+ 		/* Nothing to do */
+ 		goto exit;

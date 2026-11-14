@@ -122,6 +122,20 @@ dump() {
             while read -r m; do p=${m%/maps}; echo "${p#/proc/} $(cat $p/comm)"; done
         echo "== timestats"; timeout 10 dumpsys SurfaceFlinger --timestats -dump -maxlayers 8 2>&1 |
             grep -E 'layerName|packageName|totalFrames|averageFPS|displayRefreshRate|displayOnTime|missedFrames|clientCompositionFrames|refreshRateSwitches' | head -80
+        # Phase G5: GPU temperature (nouveau's hwmon on GSP-RM), GSP-RM's P-state, faults
+        # and hangs over the whole boot, suspend/resume.
+        echo "== gpu thermal"; for h in /sys/class/hwmon/hwmon*; do
+            [ "$(cat $h/name 2>/dev/null)" = nouveau ] && grep -H . $h/temp*_input $h/fan*_input $h/pwm* 2>&1
+        done
+        cat /sys/kernel/debug/nouveau/*/perf 2>&1
+        timeout 10 dumpsys thermalservice 2>&1 | grep -iE 'GPU|fan' | head -20
+        echo "== gpu faults"; dmesg | grep -ciE 'nouveau.*(fault|timeout|error|hang|killed|fail)|gsp.*(error|fail|timeout)|Xid'
+        dmesg | grep -iE 'nouveau.*(fault|timeout|error|hang|killed|fail)|gsp.*(error|fail|timeout)|Xid' | tail -n 60
+        echo "== suspend"; echo "mem_sleep: $(cat /sys/power/mem_sleep)"
+        grep -H . /sys/power/suspend_stats/* 2>&1 | grep -vE 'last_failed_(dev|errno|step)$'
+        echo "last_resume_reason: $(cat /sys/kernel/wakeup_reasons/last_resume_reason 2>&1)"
+        echo "suspend_blocker: $(getprop init.svc.suspend_blocker) pcwake: $(getprop init.svc.vendor.pcwake)"
+        dmesg | grep -E 'PM: suspend (entry|exit)|ACPI: PM: (Preparing|Waking)|pcwake:' | tail -n 30
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
@@ -188,6 +202,66 @@ fi
         sleep 4
     done >> $d/hdmi-check.txt 2>&1
 ) &
+# Phase G5 (docs/nvidia.md), nouveau entries only:
+# - every 5 s for an hour, GSP-RM's P-state (P0 under load, P8 idle: GSP-RM raises the clocks
+#   itself) and the GPU temperature, into boot-N/gpu-perf.txt;
+# - once per build, a suspend/resume cycle with an RTC wake 20 s later, when the G3/G4
+#   tests are not running, into boot-N/suspend-test.txt: nouveau saves VRAM, stops GSP-RM,
+#   then boots it again and restores the display; the desktop must come back by itself.
+if [ "$(getprop ro.boot.android_pc.gpu)" = nouveau ]; then
+    [ -d /sys/kernel/debug/nouveau ] || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+    (
+        for i in $(seq 720); do
+            t=$(cut -d' ' -f1 /proc/uptime)
+            p=$(grep -h pstate /sys/kernel/debug/nouveau/*/perf 2>/dev/null)
+            c=
+            for h in /sys/class/hwmon/hwmon*; do
+                [ "$(cat $h/name 2>/dev/null)" = nouveau ] && c=$(cat $h/temp1_input 2>/dev/null)
+            done
+            echo "$t s: ${p:-no perf} temp ${c:-?} load $(cut -d' ' -f1 /proc/loadavg)"
+            sleep 5
+        done > $d/gpu-perf.txt 2>&1
+    ) &
+    (
+        build="$(getprop ro.vendor.build.fingerprint)"
+        [ "$(cat $mnt/suspend-test.done 2>/dev/null)" = "$build" ] && exit
+        for i in $(seq 360); do
+            [ "$(getprop sys.boot_completed)" = 1 ] && [ $(cut -d. -f1 /proc/uptime) -ge 420 ] &&
+                ! pgrep -f 'pcvktest.sh|pcgfxbench.sh' > /dev/null && break
+            sleep 10
+        done
+        echo "$build" > $mnt/suspend-test.done   # first, so a hang is not repeated next boot
+        sync
+        f=$d/suspend-test.txt
+        conn() { for c in /sys/class/drm/card*-*; do echo "${c##*/}: $(cat $c/status) $(cat $c/enabled)"; done; }
+        {
+            echo "== $(cut -d' ' -f1 /proc/uptime) s: suspend test, mem_sleep $(cat /sys/power/mem_sleep)"
+            conn; cat /sys/kernel/debug/nouveau/*/perf 2>&1
+            grep -H . /sys/power/suspend_stats/success /sys/power/suspend_stats/fail
+        } > $f 2>&1
+        sync
+        if [ -w /sys/class/rtc/rtc0/wakealarm ]; then
+            echo 0 > /sys/class/rtc/rtc0/wakealarm
+            echo +20 > /sys/class/rtc/rtc0/wakealarm
+            t0=$(date +%s)
+            echo mem > /sys/power/state
+            rc=$?
+            echo "== state write exit $rc, back after $(($(date +%s) - t0)) s of wall time" >> $f
+        else
+            echo "== no RTC wake alarm, skipped" >> $f
+        fi
+        sleep 15
+        {
+            echo "== $(cut -d' ' -f1 /proc/uptime) s: after resume"
+            conn; cat /sys/kernel/debug/nouveau/*/perf 2>&1
+            grep -H . /sys/power/suspend_stats/* 2>&1
+            echo "last_resume_reason: $(cat /sys/kernel/wakeup_reasons/last_resume_reason 2>&1)"
+            echo "== displays"; timeout 10 dumpsys display 2>&1 | grep -E 'mActiveSfDisplayMode|mGlobalDisplayState' | head
+            echo "== kernel log of the cycle"
+            dmesg | sed -n '/PM: suspend entry/,$p' | grep -iE 'PM:|ACPI|nouveau|gsp|drm|usb .*reset|error|fail|fault|timeout' | tail -n 150
+        } >> $f 2>&1
+    ) &
+fi
 # Graphics VTS (Phase G2), on the "VTS run" boot entry only: the binaries tools/mkusb-aosp17.sh
 # put in the ESP's android/vts, each into boot-N/vts-NAME.txt. Allocator and mapper run beside
 # the desktop; the composer test needs the composer to itself, so SurfaceFlinger is stopped

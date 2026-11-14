@@ -20,6 +20,14 @@ STEPS=${STEPS:-"gki virt pc install firmware"}
 FLAGS=(--notrim --lto=none ${BAZEL_FLAGS:-})
 [ -d "$GKI/common" ] || { echo "gki-build: no kernel checkout in $GKI (see docs/usb-boot-aosp17.md)"; exit 1; }
 
+# Patches to the kernel tree itself (nouveau is an in-tree module), applied once:
+# - gki-nouveau-gsp-thermal.patch (Phase G5, docs/nvidia.md): GPU temperature as hwmon
+#   temp1_input and a debugfs "perf" entry (GSP-RM's P-state) for GPUs booted with GSP-RM.
+for p in gki-nouveau-gsp-thermal.patch; do
+  git -C "$GKI/common" apply --reverse --check "$ROOT/tools/patches/$p" 2>/dev/null && continue
+  git -C "$GKI/common" apply "$ROOT/tools/patches/$p" || { echo "gki-build: $p does not apply"; exit 1; }
+done
+
 # Our Kleaf package: this repo's aosp-device/kernel plus generated files.
 rsync -a --delete --exclude pcfb/gen "$ROOT/aosp-device/kernel/" "$PKG/"
 cp "$GKI"/common-modules/virtual-device/virtual_device{,_core}.fragment "$PKG/"

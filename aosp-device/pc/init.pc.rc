@@ -79,3 +79,18 @@ service vendor.pcgpu /vendor/bin/pcgpu.sh
     group root graphics
     seclabel u:r:su:s0
     disabled
+
+# Suspend on the nouveau entries (Phase G5, docs/nvidia.md). Cuttlefish's suspend_blocker
+# holds a wakelock forever; without it Android suspends the PC when the screen is off.
+# nouveau saves VRAM and restarts GSP-RM across a suspend; pcfb cannot (the firmware does not
+# set the GOP framebuffer up again on resume), so pcfb entries keep the blocker. pcwake.sh
+# lets keyboards wake the PC and turns the screen on after such a wake.
+on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nouveau
+    stop suspend_blocker
+    start vendor.pcwake
+
+service vendor.pcwake /vendor/bin/pcwake.sh
+    user root
+    group root input
+    seclabel u:r:su:s0
+    disabled

@@ -76,3 +76,12 @@ sh_binary {
     vendor: true,
     visibility: ["//visibility:public"],
 }
+
+// Phase G5: suspend on the nouveau entries (init.pc.rc): keyboard wakeup, screen on after a
+// user wake, a wakelock while the G3/G4 tests run.
+sh_binary {
+    name: "pcwake.sh",
+    src: "pcwake.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}

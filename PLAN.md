@@ -476,6 +476,27 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   from nouveau's hwmon into the F4 Rust thermal HAL, suspend/resume, a long
   game-plus-video soak with no GPU faults in pclog. Done when: one hour of play
   shows no hangs and sane temperatures; then `nouveau` becomes the default entry.
+  **Status (2026-11-14): code done, real-PC soak pending.** On GSP-RM, nouveau has no
+  therm/clk subdev, so it showed no hwmon at all. A kernel patch
+  (`tools/patches/gki-nouveau-gsp-thermal.patch`) adds two things:
+  - the GPU temperature as `temp1_input`, read from the GSP-shared sensor register;
+  - a debugfs `perf` file with GSP-RM's current P-state, read through RM control
+    `PERF_GET_CURRENT_PSTATE`.
+
+  The open headers do not have NVIDIA's clock-domain and fan RM controls, so the clocks
+  are checked as P0 under load against P8 idle. The fan speed has no source. The Rust
+  thermal HAL now does two things:
+  - it gives GPU sensors that have no limits default thresholds: SEVERE at 90 °C;
+  - it reports any hwmon `fanN_input` as a fan cooling device.
+
+  Suspend: the nouveau entries stop Cuttlefish's `suspend_blocker`, so Android suspends
+  (S3) when the screen is off. `pcwake.sh` lets keyboards wake the PC and turns the
+  screen on after a wake that did not come from an alarm. pclog on the nouveau entries
+  adds `gpu-perf.txt` (P-state and temperature every 5 s), a suspend self-test with an RTC
+  wake (`suspend-test.txt`, once per build), and `== gpu faults` / `== suspend` sections.
+  QEMU: S3 self-test, autosuspend and a keyboard-style wake all work on the nouveau entry
+  (vkms). Image `out/aosp17-usb-g5.img`; soak checklist in `docs/nvidia.md`. The default
+  Limine entry stays pcfb until the soak passes.
 - **G6. Nova (Rust) experiment.** Build `NOVA_CORE` and `DRM_NOVA` as modules on
   a third boot entry, see how far they bring up the 4070 (GSP boot, VRAM), write
   down what works next to nouveau, and keep our patches upstream-shaped. Never

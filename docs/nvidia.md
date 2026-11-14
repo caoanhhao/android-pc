@@ -508,3 +508,126 @@ Fallbacks:
   to try Graphite on Dawn.
 - If a game picks GLES 3.2 features, raise `ro.opengles.version` per entry once
   dEQP-GLES31 passes.
+
+## G5. Power, thermal, stability
+
+### What nouveau gives on GSP-RM
+
+On Ada, nouveau boots GSP-RM and creates no `therm`, `clk`, `volt` or `iccsense` subdev
+(`nv194_chipset` in `nvkm/engine/device/base.c`; `gp100_therm_new` returns `-ENODEV` when
+GSP-RM runs). GSP-RM runs the fans, clocks and thermal slowdown by itself, and
+`nouveau_hwmon_init` registers no hwmon device. So "nouveau's hwmon" had nothing to feed
+into the thermal HAL, and nothing in nouveau shows the clocks.
+
+The RM control interface has calls for temperatures, fans and clocks. But NVIDIA's open
+headers (`open-gpu-kernel-modules` 570.144, `ctrl2080thermal.h`, `ctrl2080fan.h`,
+`ctrl2080clk.h`) are stubs: the structures and command numbers were removed. Guessing
+layouts against the GSP firmware is not safe. What is public:
+- `NV2080_CTRL_CMD_PERF_GET_CURRENT_PSTATE` (`0x20802068`, one `NvU32` P-state bit) in
+  `ctrl2080perf.h`;
+- the core sensor register `0x020460` that nouveau's own `gp100_temp_get()` reads (bit 29
+  valid, bits 3-16 the temperature in 1/256 °C).
+
+### What changed
+
+| Piece | Where | What |
+|---|---|---|
+| nouveau hwmon on GSP-RM | `tools/patches/gki-nouveau-gsp-thermal.patch` (`nouveau_hwmon.c`; `tools/gki-build.sh` applies it to `gki/common`) | With no therm subdev and GSP-RM running, registers hwmon `nouveau` with only `temp1_input`, read from `0x020460`. Reads that are not valid return `-ENODEV`: the valid bit is clear, the value is a PRI error (`0xbadXXXXX`, which has the valid bit set), or it is above 150 °C. If the first read at probe is not valid, there is no hwmon device. dmesg always logs `nouveau ...: drm: GSP-RM thermal sensor: 0x........` with the raw value |
+| GSP-RM P-state | same patch (`nvkm/subdev/gsp/rm/r535/gsp.c`) | debugfs `/sys/kernel/debug/nouveau/<pci>/perf`, next to GSP-RM's `logrm`/`loginit`: `pstate P0 (0x1)` (from `PERF_GET_CURRENT_PSTATE` on the internal subdevice) and `tsensor 0x... temp N`. It is removed with the GSP, also when `keep_gsp_logging` keeps the directory |
+| Thermal HAL | `aosp-device/hals/thermal/src/sensors.rs` | A GPU sensor whose driver reports no `max`/`crit`/`emergency` gets default thresholds: LIGHT 80, MODERATE 85, SEVERE 90 (NVIDIA's rating for desktop Ada), CRITICAL 95, EMERGENCY 100 °C, and no SHUTDOWN (the GPU's own thermal shutdown handles that). Driver limits win when present. Every `fanN_input` of a reported hwmon driver (CPU, GPU) becomes a `FAN` cooling device (`gpu-fan0`, ...), whose value is its RPM. Host test `android.hardware.thermal-service.pc_sensors_test`: 6/6 pass, with a new nouveau-on-GSP plus amdgpu-with-fans case |
+| Suspend | `aosp-device/pc/init.pc.rc` | On `ro.boot.android_pc.gpu=nouveau`, at `sys.boot_completed`: `stop suspend_blocker` (Cuttlefish holds a wakelock forever with it), `start vendor.pcwake`. Android then suspends when the screen is off and nothing holds a wakelock. pcfb entries keep the blocker: the firmware does not set the GOP framebuffer up again after a resume |
+| `pcwake.sh` | `aosp-device/pc/pcwake.sh` | Enables `power/wakeup` on USB keyboards (HID boot protocol 1), their hubs and the xHCI controller; mice stay off, so a bump on the desk does not wake the PC. After each resume that no alarm caused (the RTC's or alarmtimer's wakeup sources did not count up), it sends `KEYCODE_WAKEUP`. Without it the screen stays off, because the ACPI button driver swallows the press that woke the PC, and Android suspends again. While `pcvktest.sh` or `pcgfxbench.sh` run it holds the wakelock `pcwake`, so a screen timeout does not cut the unattended G3/G4 tests short. Logs (`pcwake:`) go to the kernel log |
+| pclog | `aosp-device/pc/pclog.sh`, nouveau entries | `gpu-perf.txt`: uptime, P-state, temperature and load every 5 s for an hour. `suspend-test.txt`: once per build (marker `suspend-test.done` on the pclog partition, written first so a hang is not repeated), at ≥ 420 s with the G3/G4 tests idle: an `echo mem > /sys/power/state` with an RTC wake 20 s later, with the connectors, `perf`, `suspend_stats`, the display mode and the kernel log of the cycle. State dumps: `== gpu thermal` (hwmon, `perf`, thermalservice GPU lines), `== gpu faults` (count and last 60 lines of nouveau/GSP fault, timeout, error, hang, killed-channel lines), `== suspend` (`mem_sleep`, `suspend_stats`, last resume reason, blocker/pcwake state, PM lines) |
+
+### QEMU check (2026-11-14)
+
+Build `eng.caoanh.20261114.2128`, image `--menu --append console=ttyS0,115200` with
+`default_entry: 5` ("Android 17, NVIDIA nouveau", drm_hwcomposer on vkms in QEMU), run with
+`WRITABLE=1 NO_WINDOW=1 AUDIO=none
+QEMU_EXTRA="-global ICH9-LPC.disable_s3=0 -device vhost-vsock-pci,guest-cid=3"` (S3 on, adb
+over vsock). QEMU has no NVIDIA GPU, so the hwmon and `perf` additions are not exercised.
+That needs the real PC. Everything around suspend is exercised:
+
+- Boot: `sys.boot_completed` at 140 s, `suspend_blocker` stopped, `vendor.pcwake` running,
+  `mem_sleep` `s2idle [deep]`. pcwake enabled wakeup for the USB keyboard (`1-2:1.0`), held
+  its wakelock while `pcgfxbench.sh` ran, and released it afterwards.
+- Self-test at 420 s: `PM: suspend entry (deep)`, `ACPI: PM: Preparing to enter system
+  sleep state S3`, RTC wake 20 s later, `Waking up from system sleep state S3`. xHCI
+  reinitialised and the USB stick (root file systems and pclog) reset and carried on. Then
+  `PM: suspend exit`, the connector still `connected enabled`, the display mode unchanged
+  (1024x768 at 60 Hz), and `suspend_stats` showed success 1, all fail counters 0.
+- Autosuspend: `input keyevent KEYCODE_SLEEP` turned the screen off, and QEMU went to
+  `paused (suspended)` by itself. A wake from the QEMU monitor (`system_wakeup`, like a
+  key press) resumed it, pcwake logged `not an alarm, turning the screen on`, and
+  PowerManager woke (`WAKE_REASON_WAKE_KEY`, `mWakefulness=Awake`).
+- That run showed that the RTC's wakeup source is named after its PNP device (`00:04`), not
+  `rtc`, so pcwake also treated the RTC wake of the self-test as a user wake. pcwake now
+  counts every wakeup source whose device has an `rtc/` child as an alarm. That fix and
+  quieter pclog lines without hwmon are in the release build below.
+- Rerun on the release build `eng.caoanh.20261114.2154`. The nouveau entry logged
+  `alarm wakeup sources: 00:04 alarmtimer.0.auto rtc-test.1 rtc-test.2`, and the
+  self-test's RTC wake no longer turned the screen on. On the default pcfb entry:
+  `sys.boot_completed=1`, `suspend_blocker` running, no pcwake, nouveau not loaded, GLES
+  on SwiftShader as before.
+
+### Status
+
+**Code done, real-PC soak pending.** Release image `out/aosp17-usb-g5.img` (build
+`eng.caoanh.20261114.2154`), which also carries G1-G4. The default Limine entry stays pcfb
+until the soak below passes. Then `tools/mkusb-aosp17.sh --menu` gets the nouveau entry as
+`default_entry`, with pcfb kept as an entry.
+
+### Real-PC soak
+
+```bash
+sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-g5.img /dev/sdX
+```
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-g5.img /dev/sdX
+```
+
+(`/dev/sdX` is the stick: `lsblk -o NAME,SIZE,MODEL,TRAN`, the ~57 GB SanDisk on `usb`.)
+
+On the PC, after the G4 checklist (or instead of it):
+
+1. Boot **"Android 17, NVIDIA GPU (NVK + ANGLE)"**. On the first boot of this build, leave
+   it alone until the dEQP and benchmark runs are over (`pcvktest:` / `pcgfxbench:` in
+   dmesg, about 45 minutes). At about 7 minutes after they finish, the screen goes black
+   for about 20 s (the suspend self-test) and the desktop must come back by itself.
+2. **Soak, one hour**: a game (Delta Force or Genshin Impact) with a YouTube video in
+   Chromium on the side or between rounds, without rebooting. Note the start time and
+   anything odd (freezes, black screens, artefacts, the fans getting loud), and take a
+   screenshot of it (Print Screen).
+3. **Suspend by hand**: press the PC's power button briefly (the screen goes off and Android
+   suspends: fans stop, the power LED blinks or dims). Wait 30 s, then press a key on the
+   keyboard. The desktop must come back with sound on the monitor. Do it once more with the
+   power button to wake.
+4. Reboot into the default entry and plug the stick into the build host.
+5. On the build host: `tools/pclog-read.sh /dev/sdX`, then in the GPU boot's directory:
+   - `gpu-perf.txt`: P8 (or P5) at the desktop, **P0** during the game and the dEQP and
+     benchmark runs. The temperature stays below about 85 °C under load and drops back
+     when idle;
+   - `dmesg.txt`: the `GSP-RM thermal sensor: 0x...` line (bit 29 set = sensor valid);
+   - the latest `state-*.txt`: `== gpu faults` count 0 (or only lines from boot), and the
+     `== gpu thermal` hwmon value plus `GPU0` in thermalservice with its thresholds;
+   - `suspend-test.txt`: `state write exit 0`, connectors `connected enabled` after resume,
+     `suspend_stats` success ≥ 1 and fail 0;
+   - `== suspend` in a dump taken after step 3: success ≥ 3, and `pcwake: ... turning the
+     screen on` lines;
+   - `logcat.txt`: no `nouveau`/`nvk`/`MESA` channel errors, and no SurfaceFlinger
+     restarts (`tombstones/` empty of SurfaceFlinger or composer crashes).
+
+Done when the hour shows no GPU faults or hangs, the temperatures stay sane, and suspend
+comes back. Then the nouveau entry becomes the default.
+
+Fallbacks:
+- No `nouveau` hwmon and the dmesg value without bit 29: the register is not the Ada sensor.
+  The thermal HAL then just has no GPU sensor (no harm), and the next try is RM's thermal
+  call with a layout taken from a running proprietary driver.
+- `perf` says `pstate error`: GSP-RM refused the control from nouveau's internal client.
+  Then `gpu-perf.txt` has temperatures only.
+- Resume fails (black screen, PC on): hold the power button, boot the pcfb entry and read
+  pclog: the cycle's kernel log is in `dmesg.txt` up to the hang. `suspend-test.done` keeps
+  the self-test from running again on that build. To keep suspend off on the nouveau entry
+  until a fix, `adb shell start suspend_blocker` after each boot.
