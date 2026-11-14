@@ -56,18 +56,22 @@ service vendor.pclog /vendor/bin/pclog.sh
 on early-init && property:ro.boot.android_pc.gpu=nouveau
     exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nouveau.ko
 
-# Until G2 brings a composer for KMS, the nouveau entry runs Android on the ranchu composer's
-# no-op display (androidboot.hardware.hwcomposer.mode=noop) and minigbm allocates dumb
-# buffers on nouveau's card node: its render node refuses dumb buffers, so it is closed to
-# minigbm (user system), which then falls back to the card nodes. After coldboot, which
-# would reset the mode.
-on init && property:ro.boot.android_pc.gpu=nouveau
-    wait /dev/dri/renderD128 10
-    chmod 0000 /dev/dri/renderD128
+# Android on KMS (Phase G2): drm_hwcomposer (picked by the entry's vendor APEX choice) drives
+# nouveau's card, at each monitor's preferred mode, with hotplug and a second monitor as an
+# external display; client composition stays on SwiftShader. minigbm allocates dumb buffers
+# through its "nouveau" backend on nouveau's render node (DRM_IOCTL_MODE_CREATE_DUMB is
+# DRM_RENDER_ALLOW in 6.18). Overlay planes are off: every layer goes through client
+# composition onto the primary plane, the one plane path known to work on every KMS driver.
+# Cuttlefish's vendor.hwc.drm.device=/dev/dri/card0 is nouveau's card here: pcfb is off and
+# vkms is blocklisted.
+on early-init && property:ro.boot.android_pc.gpu=nouveau
+    setprop ro.vendor.hwc.use_overlay_planes 0
 
-# Lights the monitor: the preferred mode on every connected connector (a modetest pattern),
-# so the GPU drives the HDMI/DP link and the HD Audio codec gets the monitor's ELD.
-on post-fs-data && property:ro.boot.android_pc.gpu=nouveau
+# G1's test (the entry with androidboot.android_pc.kms=modetest, on the composer's no-op
+# display): lights the monitor with a modetest pattern, the preferred mode on every connected
+# connector, so the GPU drives the HDMI/DP link and the HD Audio codec gets the monitor's ELD.
+# modetest holds DRM master, so never together with drm_hwcomposer.
+on post-fs-data && property:ro.boot.android_pc.kms=modetest
     start vendor.pcgpu
 
 service vendor.pcgpu /vendor/bin/pcgpu.sh

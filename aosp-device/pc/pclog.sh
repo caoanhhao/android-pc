@@ -107,6 +107,11 @@ dump() {
             echo "== eld ${c##*/} (10de:22bc)"
             for e in /proc/asound/${c##*/}/eld#*; do echo "-- $e"; cat $e; done
         done
+        # Phase G2: which composer runs, and drm_hwcomposer's own view (displays, modes, planes).
+        echo "== composer"; getprop ro.boot.vendor.apex.com.android.hardware.graphics.composer
+        ps -A -o PID,USER,NAME | grep -i composer
+        timeout 10 dumpsys android.hardware.graphics.composer3.IComposer/default 2>&1 | head -150
+        echo "== displays"; timeout 10 dumpsys display 2>&1 | grep -E 'DisplayDeviceInfo|mBaseDisplayInfo|mActiveSfDisplayMode|supportedModes' | cut -c1-600 | head -20
         echo "== pcgpu"; tail -n 40 /data/vendor/pcgpu/modetest-*.txt 2>&1 | head -120
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
@@ -170,6 +175,31 @@ fi
         sleep 4
     done >> $d/hdmi-check.txt 2>&1
 ) &
+# Graphics VTS (Phase G2), on the "VTS run" boot entry only: the binaries tools/mkusb-aosp17.sh
+# put in the ESP's android/vts, each into boot-N/vts-NAME.txt. Allocator and mapper run beside
+# the desktop; the composer test needs the composer to itself, so SurfaceFlinger is stopped
+# for it and started again afterwards (the framework restarts with it).
+if [ "$(getprop ro.boot.android_pc.vts)" = 1 ]; then
+    (
+        sleep 200
+        esp=/mnt/vendor/esp v=/data/local/tmp/vts
+        mkdir -p $esp $v
+        mount -t vfat -o ro /dev/block/by-name/esp $esp || { echo "no ESP" > $d/vts.txt; exit; }
+        cp $esp/android/vts/* $v/ 2>/dev/null
+        umount $esp
+        chmod 755 $v/*
+        echo "$(cut -d' ' -f1 /proc/uptime) s: $(ls $v)" > $d/vts.txt
+        for t in VtsHalGraphicsAllocatorAidl_TargetTest VtsHalGraphicsMapperStableC_TargetTest \
+                VtsHalGraphicsComposer3_TargetTest; do
+            [ -x $v/$t ] || { echo "$t: not on the ESP" >> $d/vts.txt; continue; }
+            case $t in *Composer3*) stop surfaceflinger; sleep 3 ;; esac
+            timeout 1500 $v/$t > $d/vts-$t.txt 2>&1
+            rc=$?
+            case $t in *Composer3*) start surfaceflinger ;; esac
+            echo "$(cut -d' ' -f1 /proc/uptime) s: $t exit $rc: $(grep -E '^\[  (PASSED|FAILED)  \]' $d/vts-$t.txt | tr '\n' ' ')" >> $d/vts.txt
+        done
+    ) &
+fi
 # Screenshot snapshots: when the user takes a screenshot (Print Screen, or power + volume
 # down), copy it to boot-N/snap-K/ with the window, input and activity state of that moment,
 # so a white screen or a dead click can be matched with what was on screen. At most 10.

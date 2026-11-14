@@ -416,6 +416,14 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   monitor. Rust audio HAL follows HDMI/DP hotplug. VTS composer and gralloc subsets.
   Done when: the desktop runs on KMS at the monitor's native mode with sound, and
   the `pcfb` entry still works.
+  **Status (2026-11-14): code done, real-PC test pending.** The composer is a per-entry
+  vendor APEX choice on the command line. "NVIDIA nouveau" runs drm_hwcomposer (overlay
+  planes off, SwiftShader client composition) with minigbm dumb buffers on nouveau's
+  render node. minigbm drops DRM master (new patch). There are "VTS run" and
+  "modetest only" (G1) entries, and pclog runs the VTS from the ESP. QEMU (vkms stands in
+  for nouveau): pcfb unchanged; drm_hwcomposer drives the connector at its preferred mode;
+  VTS allocator 11/11, mapper 63/63, composer 163/163 pass (skips aside). Image
+  `out/aosp17-usb-g2.img`; checklist in `docs/nvidia.md`.
 - **G3. NVK Vulkan on Android.** Build Mesa's NVK (and NAK) through Soong for
   x86_64 Android, gralloc interop (`AHardwareBuffer`, dma-buf modifiers that NVK
   and minigbm agree on), `vulkan.nouveau` as the system Vulkan HAL. Done when:

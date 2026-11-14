@@ -31,12 +31,14 @@
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
 #                          permissive, enforcing, kernel log on screen, no pcfb, NVIDIA
-#                          nouveau (Phase G)
+#                          nouveau (Phase G: KMS desktop, VTS run, modetest only)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
+# Graphics VTS (Phase G2), copied to the ESP when built (m -j12 $vts_tests).
+vts_tests="VtsHalGraphicsComposer3_TargetTest VtsHalGraphicsAllocatorAidl_TargetTest VtsHalGraphicsMapperStableC_TargetTest"
 userdata_mib=4096 resolution=2560x1080 density=240 extra="" enforcing=0 menu=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -109,7 +111,6 @@ androidboot.opengles.version=196609
 androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough
 androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting
 androidboot.vendor.apex.com.android.hardware.gatekeeper=com.android.hardware.gatekeeper.nonsecure
-androidboot.vendor.apex.com.android.hardware.graphics.composer=com.android.hardware.graphics.composer.ranchu
 androidboot.vendor.apex.com.android.hardware.keymint=com.android.hardware.keymint.rust_nonsecure
 androidboot.vendor.apex.com.android.hardware.secure_element=com.android.hardware.secure_element
 androidboot.vendor.apex.com.android.hardware.strongbox=none
@@ -145,18 +146,22 @@ rm -rf "$work/system.fs" "$work/vendor.fs"
 # snd-usb-audio is built in and would otherwise number a USB microphone (the webcam) first.
 pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 snd_hda_intel.index=0,1 snd_usb_audio.index=2,3,4,5 $extra"
 pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
-# The composer's display finder is per entry (on the command line, not in the shared
-# bootconfig, which would win): "drm" (pcfb) unless the entry sets its own.
+# The composer (its vendor APEX) and the ranchu composer's display finder are per entry (on
+# the command line, not in the shared bootconfig, which would win): ranchu with finder "drm"
+# (pcfb) unless the entry sets its own.
+composer_apex=androidboot.vendor.apex.com.android.hardware.graphics.composer
 entry() {   # entry NAME EXTRA-CMDLINE
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
+    local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
     [[ $2 == *display_finder_mode=* ]] && finder=
+    [[ $2 == *$composer_apex=* ]] && composer=
     cat <<EOF
 /$1
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
 $([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
-    cmdline: $(echo $pc_cmdline $finder $2)
+    cmdline: $(echo $pc_cmdline $finder $composer $2)
 
 EOF
 }
@@ -170,9 +175,15 @@ if [[ $menu == 1 ]]; then
         entry "Android 17 (SELinux enforcing)" ""
         entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
         entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
-        # Phase G1 (docs/nvidia.md): the RTX 4070 through nouveau + GSP; pcfb stays off, init.pc.rc
-        # loads nouveau and lights the monitor, Android runs on the composer's no-op display.
-        entry "Android 17, NVIDIA nouveau (test, no Android picture)" "androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau androidboot.hardware.hwcomposer.mode=noop androidboot.hardware.hwcomposer.display_finder_mode=noop"
+        # Phase G (docs/nvidia.md): the RTX 4070 through nouveau + GSP; pcfb stays off and
+        # init.pc.rc loads nouveau. G2: Android on drm_hwcomposer (KMS, native mode, hotplug).
+        nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
+        drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
+        entry "Android 17, NVIDIA nouveau" "$nv $drm"
+        # G2 checks: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
+        # restarts during the composer test), and G1's modetest pattern without Android's picture.
+        entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"
+        entry "Android 17, NVIDIA nouveau, modetest only (no Android picture)" "$nv androidboot.android_pc.kms=modetest androidboot.hardware.hwcomposer.mode=noop androidboot.hardware.hwcomposer.display_finder_mode=noop"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"
@@ -258,6 +269,13 @@ for p in "${parts[@]}"; do
                 "$host/mcopy" -i "$fat" "$work/initrd.img" ::/android/initrd.img
                 "$host/mcopy" -i "$fat" "$work/bootconfig.txt" ::/android/bootconfig.txt
                 "$host/mcopy" -i "$fat" "$work/build.txt" ::/android/build.txt
+                # Phase G2: the graphics VTS binaries, run by pclog.sh on the "VTS run" entry
+                # (the ESP is rewritten by every update, unlike pclog).
+                vts=$(for t in $vts_tests; do ls "$product"/data/nativetest64/$t/$t 2>/dev/null; done)
+                if [[ -n $vts ]]; then
+                    "$host/mmd" -i "$fat" ::/android/vts
+                    for t in $vts; do "$host/mcopy" -i "$fat" "$t" ::/android/vts/; done
+                fi
             elif [[ $1 == pclog && -f $ROOT/out/audio-check/classes.dex ]]; then
                 # pclog.sh runs it (tone + mic recording; tools/audio-check.sh builds it)
                 MTOOLS_SKIP_CHECK=1 "$host/mcopy" -i "$fat" "$ROOT/out/audio-check/classes.dex" ::/audio-check.dex

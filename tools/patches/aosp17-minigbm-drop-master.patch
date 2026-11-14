@@ -1,0 +1,18 @@
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 706dee9..037ac5c 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -109,6 +109,13 @@ static struct driver *init_try_node(int idx, char const *str)
+ 	if (fd < 0)
+ 		return NULL;
+ 
++	/*
++	 * android-pc: never keep DRM master. The first opener of a card node becomes master,
++	 * and on a card without a render node (vkms) this allocator would then lock the KMS
++	 * composer (drm_hwcomposer) out of modesetting. Fails harmlessly when not master.
++	 */
++	drmDropMaster(fd);
++
+ 	drv = drv_create(fd, NULL);
+ 	if (!drv)
+ 		close(fd);
