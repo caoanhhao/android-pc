@@ -1,0 +1,16 @@
+// Phase H3 (docs/arm-translation.md, "H3"): the native bridge ART loads
+// (ro.dalvik.vm.native.bridge). It forwards everything to Google's libndk_translation and
+// adds a SIGSEGV handler for arm64 code that PLT-hooks host (x86_64) libraries.
+cc_library_shared {
+    name: "libpc_native_bridge",
+    srcs: ["pc_native_bridge.cpp"],
+    compile_multilib: "64",
+    shared_libs: [
+        "libdl",
+        "liblog",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}

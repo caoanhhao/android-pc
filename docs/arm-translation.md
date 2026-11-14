@@ -419,7 +419,9 @@ reported three games:
   `libartbase.so` is x86_64 code run by the host CPU. It jumps into arm64 guest code
   that libndk_translation mapped non-executable, and the process faults at once.
 - This cannot be fixed in the ROM. No native bridge supports an arm64 library that
-  inline-hooks the host runtime, and libndk_translation is a proprietary binary. The
+  inline-hooks the host runtime, and libndk_translation is a proprietary binary.
+  (H3 revised this: the hook is a GOT/PLT hook, not an inline patch, and
+  `libpc_native_bridge` now carries both crossings; see "H3" below.) The
   game ships only an arm64 build on Play. It is not memory corruption on the PC: the
   crash is identical at the same PC (`0x13147c`) three times.
 - Other games protected by NetEase's packer (`libunisec.so` / NTP) will fail the same
@@ -804,3 +806,106 @@ fail at once instead of waiting, and the page should offer another way to verify
 by email or SMS). If it still shows only a passkey, the page itself does not handle
 `NotAllowedError`/`NoCredentialException`; then the way out is a passkey provider with a
 real passkey, or signing in by email or phone instead of Google.
+
+### H3: Where Winds Meet — arm64 code that PLT-hooks host libraries
+
+Real PC, G6 stick (`eng.caoanh.20261114.2338`), logs in `out/pclog-g6/boot-4`, 2026-11-14.
+Where Winds Meet (`com.netease.yyvn`) still crashed at start, 8 times, always the same way
+as in F9n: `SIGSEGV (SEGV_ACCERR)`, "trying to execute non-executable memory",
+`#00 pc 0x13147c libunisec.so`, `#01 art::ReadMagicAndReset+185` in the x86_64
+`libartbase.so`. F9n concluded that this could not be fixed in the ROM. H3 looked closer
+and found that it can.
+
+**What libunisec.so does.**
+- `libartbase.so`'s text is still one `r-x` mapping in the tombstone, so it was not patched
+  in place. `ReadMagicAndReset+0xb5` is `callq read@plt`, and the faulting registers are
+  `rdi = 0x62` (fd), `rsi` = a stack buffer, `rdx = 4`: ART was reading a dex file's magic.
+  The PLT jumps through the `R_X86_64_JUMP_SLOT` of `read` (`.got.plt`, offset `0x5dd40`).
+  libunisec found `libartbase.so` in `/proc/self/maps` (the translator shows host libraries
+  there too), walked its dynamic section and wrote the address of its own arm64 function
+  into that slot: a classic PLT/GOT hook (xhook/bhook style). Its purpose is to see the
+  decrypted dex that the packer hands to ART.
+- The bytes at the fault address, disassembled as arm64, are the hook itself:
+  `read_hook(fd, buf, count)` saves its arguments, loads a function pointer from its own
+  data (`libunisec.so+0x5e7cc8`) and calls it with the same arguments (`blr x8`). That
+  pointer is the old slot value, the host libc `read`.
+- So two calls cross between the host (x86_64) and the guest (arm64) without going through
+  the bridge:
+  1. host → guest: x86_64 code calls the arm64 hook. Guest code is mapped non-executable
+     for the host CPU, so it faults at once (the crash we see);
+  2. guest → host: the hook calls the host `read`. libndk_translation finds no guest code
+     there and raises SIGSEGV (`berberis_HandleNoExec`); this would have been the next
+     crash.
+
+**Fix: `libpc_native_bridge.so` (`aosp-device/nbshim/`).**
+libndk_translation stays untouched (it is a proprietary binary), but it exports the
+berberis functions its own proxy libraries use. ART now loads a small native bridge of
+ours (`ro.dalvik.vm.native.bridge=libpc_native_bridge.so`) that copies libndk_translation's
+`NativeBridgeItf` (version 8), forwards every callback to it and adds a SIGSEGV handler
+through `getSignalHandler`. ART installs that handler as a sigchain special handler, so it
+runs after ART's own fault handler and before any app or guest handler.
+- host → guest: the fault address equals `rip` and `GuestMapShadow::IsExecutable` says
+  it is guest code. The handler asks `WrapGuestFunctionImpl` (with `RunGuestCall`) for a
+  host-callable wrapper of that guest address, the same kind of wrapper the bridge builds
+  for JNI functions, and resumes at the wrapper. The `call` already pushed its return
+  address, so the wrapper runs as if it had been called directly. Wrappers are cached by
+  the translator; the hook stays in the GOT (rewriting it could trip the packer's own
+  checks), so each hooked call costs one handled SIGSEGV (a few microseconds).
+- guest → host: the fault address is not `rip`, is not guest code and is the exact start of
+  an exported host function (`dladdr`, `dli_saddr ==` address). The handler drops the
+  translator's "no exec" cache entry for that address (`InvalidateGuestRange`) and
+  registers a guest-callable trampoline there (`MakeTrampolineCallable`, as the bridge does
+  for host `JNIEnv` functions). The translator then retries the jump and calls the host
+  function. Each host function is wrapped once; a second fault at the same address is
+  passed on (so a real bug still crashes instead of looping).
+- Both directions use one generic signature: 8 integer and 8 floating-point arguments
+  (x0–x7/d0–d7 ↔ rdi…r9 + stack/xmm0–7), integer result. That covers the libc-style
+  functions such hooks wrap (`read`, `open`, `mmap`, `fstat`, …). Not carried over:
+  floating-point results, structs passed or returned by value, more than 8 integer
+  arguments, function-pointer arguments (they are not wrapped), and `errno` (a host call
+  sets the host `errno`, which the guest does not see).
+- `persist.sys.pc.nb_hooks=0` (over adb, then restart the app) turns the handler off; the
+  bridge then behaves exactly as libndk_translation alone. `PC_NATIVE_BRIDGE=off` at build
+  time still switches the whole bridge off.
+- The handler logs the first 64 crossings per process under the tag `pc_native_bridge`.
+
+**Test: `tools/guest-hook-test/`.** The game's APK is not on the build host and the real PC
+has no adb, so the test app reproduces the hook: an arm64-only, libc-free JNI library
+finds `libartbase.so` in `/proc/self/maps`, swaps the `read` JUMP_SLOT for its own arm64
+function, which counts the call and calls the saved host `read`. The activity then opens
+a `DexClassLoader` on its own APK, which goes through `ReadMagicAndReset` like the game's
+packer does. `build.sh` builds it with the AOSP host tools.
+
+**Results (build `eng.caoanh.20261115.0441`, 2026-11-15).**
+- Cuttlefish, `persist.sys.pc.nb_hooks=0` (handler off): the test app crashes exactly like
+  the game, `SIGSEGV (SEGV_ACCERR)`, "trying to execute non-executable memory",
+  `#00 libguesthook.so`, `#01 art::ReadMagicAndReset+185` in `libartbase.so`.
+- Cuttlefish, default (handler on): `PASS`, two `read` calls of the dex load go through the
+  arm64 hook. `pc_native_bridge` logs one host → guest wrapper for the hook and one
+  guest → host trampoline for libc `read`; the second call reuses both.
+- VLC (arm64-only, `org.videolan.vlc` 13070206) starts to its onboarding screen with
+  `libvlc.so` loaded through `libpc_native_bridge.so` + `libndk_translation.so`; no crash.
+- The release image `out/aosp17-usb-h3.img` (H1+H2+H3; same AVB key, rollback index and
+  security patch level as H2's) boots in QEMU (`tools/run-qemu-aosp17-usb.sh`, a copy made
+  with the default userdata size: a 64 MiB userdata is too small for a first boot and
+  system_server loops on SettingsProvider) to `sys.boot_completed` in 40 s, and the test
+  app prints `PASS` there too.
+- Build notes: `libnativebridge-headers` is visible to `//art` only and Soong forbids
+  `include_dirs` into `art/`, so `pc_native_bridge.cpp` spells out the
+  `NativeBridgeCallbacks` table itself. libndk_translation's table is 168 bytes, one entry
+  longer than AOSP 17's header (20 function pointers); the shim copies all of it and
+  checks `version == 8` before using it.
+
+**What is still open.**
+- The fix makes the crash path work; it does not prove the game runs to its menu. Next
+  stops on the real PC are the packer's further checks (it may refuse an emulator), the
+  game's Play Integrity request (F9n: no device integrity on this build) and rendering.
+- Delta Force (`com.garena.game.df`) in the same boot is not this bug and the handler
+  leaves it alone. All three of its tombstones come from `berberis_HandleNoExec` on a
+  guest thread, with the guest jumping to guest memory that is not executable, never to a
+  host function: `tombstone_04` to address 0 (as in F9q), `tombstone_08` to an anonymous
+  `rw-` page (`+0x40`), `tombstone_12` into `libanogs.so` (Tencent ACE anti-cheat) at
+  `+0x470434`, which the translator's executable map no longer lists as code. In `_08` and
+  `_12` the signal is `SI_TKILL`: the game's own SIGSEGV handler (ACE) caught the first
+  fault and raised it again. That points at the anti-cheat (code it generates or
+  re-protects at run time) and stays open as in F9q.

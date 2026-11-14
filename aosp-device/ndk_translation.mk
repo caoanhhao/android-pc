@@ -24,15 +24,18 @@ PRODUCT_PACKAGES += \
     berberis_arm_or_arm64.rc \
     berberis_cpuinfo_arm64 \
     ld.config.arm64.txt \
-    libberberis_exec_region
+    libberberis_exec_region \
+    libpc_native_bridge
 
 # Overrides ro.dalvik.vm.native.bridge?=0 from build/make/target/product/runtime_libart.mk.
 # ro.dalvik.vm.isa.arm64 also triggers the binfmt_misc registration in
 # berberis_arm_or_arm64.rc, so arm64 executables run too (ro.enable.native.bridge.exec).
 # PC_NATIVE_BRIDGE=off keeps every file but leaves the bridge switched off (fallback/debug).
+# ART loads libpc_native_bridge (nbshim/), which forwards to libndk_translation and adds the
+# H3 handler for arm64 code that PLT-hooks host libraries (docs/arm-translation.md, "H3").
 ifneq ($(PC_NATIVE_BRIDGE),off)
 PRODUCT_SYSTEM_PROPERTIES += \
-    ro.dalvik.vm.native.bridge=libndk_translation.so \
+    ro.dalvik.vm.native.bridge=libpc_native_bridge.so \
     ro.dalvik.vm.isa.arm64=x86_64 \
     ro.enable.native.bridge.exec=1
 endif
@@ -49,6 +52,7 @@ PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST += \
     system/etc/init/berberis_arm_or_arm64.rc \
     system/etc/ld.config.arm64.txt \
     system/lib64/libberberis_exec_region.so \
+    system/lib64/libpc_native_bridge.so \
     system/lib64/libblasV8.so
 
 # Cuttlefish's fixed Soong system image ignores device packages and PRODUCT_COPY_FILES on

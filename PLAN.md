@@ -558,6 +558,17 @@ one session each, one build at a time (H1 first).
   `out/aosp17-usb-h2.img` (build `eng.caoanh.20261115.0346`, from main with H1, H2 and H4);
   in QEMU it reaches `sys.boot_completed` and the test's passkey request ends with
   `TYPE_NO_CREDENTIAL` in 50 ms. Details in `docs/arm-translation.md` ("H2").
+- **H3 — Where Winds Meet crashes at start** (`com.netease.yyvn`, arm64 through
+  libndk_translation). Status (2026-11-15): fix done, real-PC check pending. NetEase's
+  packer `libunisec.so` PLT-hooks the host `libartbase.so` (its arm64 hook in the GOT slot
+  of `read`), and the hook calls the saved host `read`: x86_64 code jumps into arm64 code
+  and back, which the bridge never sees. ART now loads `libpc_native_bridge.so`
+  (`aosp-device/nbshim/`), which forwards to libndk_translation and adds a SIGSEGV handler
+  that turns both crossings into translator wrappers/trampolines (exported berberis
+  functions). Checked on Cuttlefish with `tools/guest-hook-test/` (crash reproduced with
+  the handler off, `PASS` with it on; VLC still runs). Image `out/aosp17-usb-h3.img`
+  (build `eng.caoanh.20261115.0441`, H1+H2+H3+H4); in QEMU it reaches
+  `sys.boot_completed` and the test app passes. Details in `docs/arm-translation.md` ("H3").
 - **H4 — Smart Dock as the default launcher** (user request, 2026-11-15). Status
   (2026-11-15): done on Cuttlefish, real-PC check pending. Smart Dock (F-Droid build 1.15.0,
   `tools/fetch-apps.sh smartdock`) is a /product app; `aosp-device/desktop/smartdock-setup.sh`
