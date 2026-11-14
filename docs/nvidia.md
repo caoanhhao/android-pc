@@ -367,3 +367,144 @@ Known risks:
 - `nil.h` is hand-written. Its layout is checked at build time, but enum values are not.
   The enum values were copied from the Rust order.
 - NVK reads dumb buffers in VRAM through BAR1, which can be slow (see G2).
+
+## G4. GLES through ANGLE, GPU composition
+
+### What changed
+
+On Cuttlefish's graphics setup, Android's GLES is already ANGLE
+(`androidboot.hardware.egl=angle`, shared bootconfig) and ANGLE runs on the system Vulkan
+driver. So moving the Vulkan driver of an entry from SwiftShader (`pastel`) to NVK moves
+everything that draws on that entry to the GPU:
+- SurfaceFlinger's RenderEngine (Skia Ganesh on GL: the client composition that
+  drm_hwcomposer gets, since overlay planes are off);
+- HWUI in every app;
+- Chromium/WebView's GPU process;
+- the games.
+
+G4 turns G3's test entry into the GPU entry, checks GLES on it, and measures it against
+pcfb.
+
+| Piece | Where | What |
+|---|---|---|
+| Boot entry | `tools/mkusb-aosp17.sh --menu` | G3's "NVIDIA nouveau, NVK Vulkan (test)" is now **"Android 17, NVIDIA GPU (NVK + ANGLE)"**: nouveau, drm_hwcomposer, `androidboot.hardware.vulkan=nouveau`. libvulkan loads only `vulkan.<ro.hardware.vulkan>` from the APEX, so SwiftShader is never loaded there. "Android 17, NVIDIA nouveau" keeps SwiftShader on KMS as the fallback; pcfb stays the default entry |
+| dEQP-GLES3 | `aosp-device/vktest/pcvktest.sh` | after G3's dEQP-VK groups, the same once-per-build run does the GLES 3.0 smoke groups through `DeqpInstrumentation`, in a window with CTS's config (`rgba8888d24s8ms0`, window surface): `info`, `functional.prerequisite`, `functional.implementation_limits`, `functional.color_clear`, `functional.depth_stencil_clear`, `functional.buffer.write`, `functional.texture.format`, `functional.fbo.completeness`, `functional.draw.draw_arrays`, `functional.shaders.linkage`. Results go to pclog `boot-N/gles/` (`summary.txt`, `failures-*.txt`, `deqp-*.qpa`), plus `gles/egl.txt` (SurfaceFlinger's `GLES:` line, the ANGLE renderer string naming the Vulkan device) |
+| Frame-rate benchmark | `aosp-device/vktest/pcgfxbench.sh`, `init.pcvktest.rc` | runs on **every** entry, 90 s after `sys.boot_completed` (on the GPU entry after pcvktest.sh), once per build, Vulkan driver and GPU entry. Runs the San Angeles demo (`angeles`, GLES 1 on screen, fps), then `hwuimacro` scenes `shadowgrid2 rectgrid listview recents savelayer2 backdropblur`, 200 frames each, off screen (throughput) and on screen (through SurfaceFlinger and the composer, vsync-bound). Writes `boot-N/bench/summary.txt` (the entry, the display mode, one fps line per result) and the raw files. Takes about 4 minutes on SwiftShader and draws test scenes over the desktop |
+| Benchmark binaries | `aosp-device/vktest/Android.bp` | `angeles` and `hwuimacro` are native tests, which tradefed installs into `/data`. A stick update never writes userdata, so they ship as plain files in `/system_ext/etc/pcvktest/` (`prebuilt_etc` from the test modules), and the script copies them to `/data/local/tmp/pcbench` and makes them executable. `hwuimacro` writes no CSV, only JSON or a table: the script uses JSON |
+| Game frame rates | `aosp-device/pc/pclog.sh` | SurfaceFlinger's timestats are switched on at every boot. Each state dump has `== timestats` (frames, missed frames, client-composition frames, and per-layer `averageFPS`). So a game played on both entries can be compared without a separate tool |
+| Who renders | `pclog.sh` | `== gles`: the EGL/Vulkan/GLES-version properties and SurfaceFlinger's `GLES:` and RenderEngine lines. `== swiftshader users`: every process that maps a SwiftShader or `vulkan.pastel` library. It is empty on the GPU entry, and that is how "SwiftShader removed" is checked |
+| Chromium/WebView | `aosp-device/pc/init.pc.chromium.rc` | on the GPU entry Chromium gets the same `chrome-command-line` as on pcfb (no Skia Graphite, no VulkanFromANGLE), so its GPU process uses Ganesh on the system EGL: ANGLE on NVK. Dawn/Graphite on NVK is untried, and the flags keep the one route known to work. The file lives in `/data` and is shared by all entries, so each entry writes its own |
+
+Not changed, on purpose:
+- **`ro.opengles.version` stays 3.1 (196609).** It is in the shared bootconfig, and ANGLE's
+  `exposeES32ForTesting` stays off. Claiming 3.2 before dEQP-GLES31/32 runs on NVK could
+  make apps ask for contexts that ANGLE cannot create. Raise it per entry after the real-PC
+  results.
+- **The RenderEngine backend.** SurfaceFlinger picks Skia Ganesh on GL, which here is ANGLE
+  on NVK. `pclog`'s `== gles` shows the choice. SkiaVk directly on NVK is a later
+  experiment.
+- **Overlay planes stay off** (`ro.vendor.hwc.use_overlay_planes=0`, G2). Every layer is
+  composed by SurfaceFlinger on the GPU into one buffer for the primary plane.
+
+### QEMU check (2026-11-14)
+
+Build `eng.caoanh.20261114.2006`, image `--menu --append console=ttyS0,115200`, each entry
+booted with `WRITABLE=1 NO_WINDOW=1 AUDIO=none tools/run-qemu-aosp17-usb.sh` (E-cores 12-15,
+4 vCPUs, 4 GiB). Each run used `default_entry` set in the test image's `limine.conf`. QEMU
+has no NVIDIA GPU, so this checks the plumbing and the SwiftShader baseline, not NVK.
+
+- **Default entry (pcfb)**: `sys.boot_completed=1`. `pcgfxbench.sh` ran at 115 s and finished
+  in 145 s:
+
+  | | pcfb (1280x800) | NVIDIA nouveau entry on vkms (1024x768) |
+  |---|---|---|
+  | angeles | 26.3 fps | 26.3 fps |
+  | hwui off screen shadowgrid2 / rectgrid / listview / recents / backdropblur | 67.8 / 309.7 / 449.2 / 113.5 / 47.3 | 81.1 / 202.2 / 335.6 / 86.0 / 47.8 |
+  | hwui on screen, same scenes | 56.7 / 59.9 / 59.9 / 59.8 / 39.7 | 46.3 / 59.7 / 59.8 / 54.6 / 34.3 |
+
+  `savelayer2` off screen reports about 58 000 fps on both: the scene draws almost
+  nothing off screen, so ignore it.
+  - `== gles`: `GLES: ... ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 16.0.0)))`.
+  - `== swiftshader users`: SurfaceFlinger, system_server, SystemUI, the launcher and the
+    other apps, as expected on pcfb.
+  - `== timestats`: per-layer FPS (e.g. the benchmark's layer at 26.5 fps during angeles).
+  - The first build wrote CSV, which `hwuimacro` does not support ("Unknown format 'csv'").
+    It was switched to JSON, and this table is from the rebuild.
+- **"NVIDIA nouveau"** (drm_hwcomposer on vkms, SwiftShader): boots, and the benchmark runs
+  under its own marker (`bench.pastel-nouveau`). Results are in the table above.
+- **"NVIDIA GPU (NVK + ANGLE)"**: `ro.hardware.vulkan=nouveau`. Without an NVIDIA device,
+  ANGLE finds no Vulkan GPU and SurfaceFlinger restarts in a loop, as in G3's QEMU run.
+  Android never reaches `sys.boot_completed`, so neither dEQP nor the benchmark runs. On the
+  PC this entry needs the 4070.
+
+### Status
+
+**Code done, real-PC test pending.** Release image `out/aosp17-usb-g4.img` (build
+`eng.caoanh.20261114.2006`), which also carries G1-G3.
+
+### Real-PC test
+
+```bash
+sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-g4.img /dev/sdX
+```
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-g4.img /dev/sdX
+```
+
+(`/dev/sdX` is the stick: `lsblk -o NAME,SIZE,MODEL,TRAN`, the ~57 GB SanDisk on `usb`.)
+
+The same steps also cover G3's checklist: the GPU entry runs the dEQP-VK groups before the
+GLES ones.
+
+1. **Default entry (pcfb)**. Let it sit at the desktop for about 6 minutes. At about
+   1.5 minutes, test scenes appear over the desktop for about 4 minutes (the pcfb baseline
+   of `pcgfxbench.sh`). Then play the same thing you will play on the GPU entry for a few
+   minutes, for example Delta Force or Genshin Impact up to the first scene, and a YouTube
+   video in Chromium.
+2. **"Android 17, NVIDIA GPU (NVK + ANGLE)"**. The boot animation and the desktop at the
+   monitor's native mode. Then leave it alone for about 45 minutes:
+   - `pcvktest.sh` installs dEQP and runs the VK groups, then the GLES3 groups, each opening
+     a test window;
+   - then `pcgfxbench.sh` draws its scenes (the NVK numbers).
+
+   `dmesg` (`pcvktest:` and `pcgfxbench:` lines) shows progress. If the desktop never comes
+   up, wait 10 minutes (vkjson is written first), reboot, and use "NVIDIA nouveau" instead.
+3. On the GPU entry, play the same games and video as in step 1:
+   - Chromium/WebView: a page with video and WebGL (e.g. a YouTube video, then
+     `chrome://gpu` and take a screenshot). It should show hardware acceleration on
+     "ANGLE (... NVK ...)".
+   - Delta Force, then Genshin Impact.
+
+   Take a screenshot (Print Screen) of anything odd. Use it for 10-15 minutes, then reboot.
+4. Optional: **"Android 17, NVIDIA nouveau"** once, for SwiftShader on KMS (third benchmark
+   set).
+5. On the build host: `tools/pclog-read.sh /dev/sdX`, then:
+   - **dEQP-GLES3**: GPU boot `gles/summary.txt` (no `fail` in any group),
+     `gles/failures-*.txt`, `gles/egl.txt` (the `GLES:` line must name ANGLE on Vulkan with
+     the NVIDIA/NVK device, not SwiftShader);
+   - **dEQP-VK** (G3): `vk/vkjson.json`, `vk/summary.txt`;
+   - **frame rate**: `bench/summary.txt` of the pcfb boot against the GPU boot (the
+     on-screen hwui numbers should reach the refresh rate where pcfb does not, and the
+     off-screen and angeles numbers should be far higher). Also check `== timestats` in
+     each boot's latest `state-*.txt` for the games' layers (`averageFPS`, `missedFrames`);
+   - **SwiftShader gone**: `== swiftshader users` empty, `== gles` with
+     `ro.hardware.vulkan=nouveau`;
+   - **games**: `applogs/` (Unreal logs), `tombstones/`, and `logcat.txt` for `vulkan`,
+     `ANGLE`, `nvk`, `MESA` errors;
+   - **GPU faults**: `dmesg.txt` for `nouveau ... fault`, `gsp`, channel errors.
+
+Done when:
+- the dEQP-GLES3 smoke groups have no failures;
+- Chromium/WebView and the F9 games run on the GPU (not in `== swiftshader users`, with the
+  ANGLE/NVK renderer);
+- the GPU boot's frame rates beat the pcfb boot's.
+
+Fallbacks:
+- If the GPU entry's desktop does not come up, the logcat of that boot (ANGLE/EGL errors in
+  SurfaceFlinger) says whether ANGLE rejected NVK. Try `debug.angle.*` feature overrides
+  next.
+- If Chromium misbehaves on NVK, remove `/data/local/tmp/chrome-command-line` on that entry
+  to try Graphite on Dawn.
+- If a game picks GLES 3.2 features, raise `ro.opengles.version` per entry once
+  dEQP-GLES31 passes.

@@ -1,12 +1,26 @@
-# Phase G3 (docs/nvidia.md): Vulkan checks on the RTX 4070, on the NVK boot entry only
-# (androidboot.hardware.vulkan=nouveau).
-# pcvktest.sh writes `cmd gpu vkjson` and the dEQP-VK smoke results into pclog (boot-N/vk/).
+# Phase G3/G4 (docs/nvidia.md): Vulkan and GLES checks on the RTX 4070, on the NVK boot entry
+# only (androidboot.hardware.vulkan=nouveau).
+# pcvktest.sh writes `cmd gpu vkjson`, the dEQP-VK and dEQP-GLES3 smoke results into pclog
+# (boot-N/vk/, boot-N/gles/).
 # Started as soon as gpuservice runs (vkjson), not at boot_completed: on this entry ANGLE and
 # so SurfaceFlinger run on NVK too, and Android may never finish booting if NVK fails.
 on property:init.svc.gpu=running && property:ro.boot.hardware.vulkan=nouveau
     start vendor.pcvktest
 
 service vendor.pcvktest /vendor/bin/pcvktest.sh
+    user root
+    group root graphics sdcard_rw media_rw
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+
+# G4: frame-rate benchmark on every entry (pcfb's SwiftShader is the baseline for NVK), once
+# per build, Vulkan driver and GPU entry, 90 s after boot so the desktop has settled
+# (boot-N/bench/).
+on property:sys.boot_completed=1
+    start vendor.pcgfxbench
+
+service vendor.pcgfxbench /vendor/bin/pcgfxbench.sh
     user root
     group root graphics sdcard_rw media_rw
     seclabel u:r:su:s0

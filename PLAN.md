@@ -454,6 +454,24 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   from that boot entry. Done when: dEQP-GLES3 smoke groups pass, Chromium/WebView
   and the games from F9 (Delta Force, Genshin's renderer) run GPU-accelerated, and
   the frame rate beats the `pcfb` entry.
+  **Status (2026-11-14): code done, real-PC test pending.** Android's GLES is already
+  ANGLE on the system Vulkan driver. So G3's NVK entry, renamed **"Android 17, NVIDIA GPU
+  (NVK + ANGLE)"**, runs everything on the GPU:
+  - SurfaceFlinger's client composition for drm_hwcomposer;
+  - HWUI, Chromium/WebView (Ganesh on ANGLE) and the games.
+
+  libvulkan loads only `vulkan.nouveau` there, so SwiftShader is never loaded; pclog's
+  `== swiftshader users` checks this. G4 adds:
+  - `pcvktest.sh` runs the dEQP-GLES3 smoke groups after the VK ones (pclog `gles/`).
+  - A new `pcgfxbench.sh` runs the same benchmark on every entry, so pcfb is the
+    baseline:
+    - the San Angeles demo;
+    - hwuimacro scenes, off screen and on screen (pclog `bench/`).
+  - SurfaceFlinger timestats are on at every boot, for the games' FPS.
+
+  QEMU: the benchmark runs on pcfb and on the SwiftShader nouveau entry. The GPU entry
+  needs the 4070 (no device in QEMU). Image `out/aosp17-usb-g4.img`; checklist in
+  `docs/nvidia.md`.
 - **G5. Power, thermal, stability.** GSP clocks under load, fan and temperature
   from nouveau's hwmon into the F4 Rust thermal HAL, suspend/resume, a long
   game-plus-video soak with no GPU faults in pclog. Done when: one hour of play

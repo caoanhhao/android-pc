@@ -181,11 +181,14 @@ if [[ $menu == 1 ]]; then
         nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
         entry "Android 17, NVIDIA nouveau" "$nv $drm"
-        # G3: Vulkan on the GPU through NVK (vulkan.nouveau in the com.google.cf.vulkan APEX).
-        # ANGLE, Android's GLES, follows the Vulkan driver, so this entry also composes on
-        # NVK (G4's subject); the entry above keeps SwiftShader. pcvktest.sh runs vkjson and
-        # the dEQP-VK smoke groups here, once per build (pclog boot-N/vk/).
-        entry "Android 17, NVIDIA nouveau, NVK Vulkan (test)" "$nv $drm androidboot.hardware.vulkan=nouveau"
+        # G3/G4: the whole graphics stack on the GPU. Vulkan is NVK (vulkan.nouveau in the
+        # com.google.cf.vulkan APEX) and GLES is ANGLE (androidboot.hardware.egl=angle) on it, so
+        # SurfaceFlinger's client composition for drm_hwcomposer, HWUI, Chromium and games all
+        # draw on the RTX 4070; SwiftShader (pastel) is not loaded on this entry. The entry
+        # above keeps SwiftShader on KMS as the fallback. pcvktest.sh runs vkjson and the
+        # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/);
+        # pcgfxbench.sh measures frame rates on every entry (boot-N/bench/).
+        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.hardware.vulkan=nouveau"
         # G2 checks: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
         # restarts during the composer test), and G1's modetest pattern without Android's picture.
         entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"

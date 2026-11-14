@@ -113,6 +113,15 @@ dump() {
         timeout 10 dumpsys android.hardware.graphics.composer3.IComposer/default 2>&1 | head -150
         echo "== displays"; timeout 10 dumpsys display 2>&1 | grep -E 'DisplayDeviceInfo|mBaseDisplayInfo|mActiveSfDisplayMode|supportedModes' | cut -c1-600 | head -20
         echo "== pcgpu"; tail -n 40 /data/vendor/pcgpu/modetest-*.txt 2>&1 | head -120
+        # Phase G4: who renders GLES (ANGLE's renderer string names the Vulkan driver), whether
+        # any process still maps SwiftShader (pastel), and per-layer frame rates (timestats is
+        # switched on at boot below, so a game's FPS is here on every entry).
+        echo "== gles"; getprop | grep -E 'hardware\.(egl|vulkan)\]|opengles'
+        timeout 10 dumpsys SurfaceFlinger 2>&1 | grep -iE 'GLES:|RenderEngine|EGL (vendor|version)' | head -10
+        echo "== swiftshader users"; grep -lE 'swiftshader|vulkan\.pastel' /proc/[0-9]*/maps 2>/dev/null |
+            while read -r m; do p=${m%/maps}; echo "${p#/proc/} $(cat $p/comm)"; done
+        echo "== timestats"; timeout 10 dumpsys SurfaceFlinger --timestats -dump -maxlayers 8 2>&1 |
+            grep -E 'layerName|packageName|totalFrames|averageFPS|displayRefreshRate|displayOnTime|missedFrames|clientCompositionFrames|refreshRateSwitches' | head -80
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
@@ -132,6 +141,10 @@ dump() {
 # dmesg: first 2 MiB + last 8 MiB; logcat: first 8 MiB + last 16 MiB (the newest piece is
 # still being written, so it may be smaller). Plus state dumps: about 40 MiB a boot.
 (while true; do sleep 3; prune dmesg 1 4; prune logcat 2 4; sync; done) &
+# Phase G4: SurfaceFlinger's frame statistics for the `== timestats` section, on every entry,
+# so a game's frame rate on NVK can be set against the same game on pcfb.
+(for i in $(seq 60); do [ "$(getprop init.svc.surfaceflinger)" = running ] && break; sleep 2; done
+ sleep 20; dumpsys SurfaceFlinger --timestats -enable > /dev/null 2>&1) &
 # Audio check (tools/audio-check/AudioCheck.java, copied to the pclog partition as
 # audio-check.dex by tools/mkusb-aosp17.sh): a 440 Hz tone, then a mic recording.
 if [ -f $mnt/audio-check.dex ]; then
