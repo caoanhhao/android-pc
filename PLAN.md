@@ -555,7 +555,9 @@ one session each, one build at a time (H1 first).
   the client, so the request hangs. `tools/patches/aosp17-credman-empty-ui.patch`
   (frameworks/base) answers `NoCredentialException` instead, as on a phone without a
   passkey. Checked on Cuttlefish with `tools/credman-test/`. Image
-  `out/aosp17-usb-h2.img`. Details in `docs/arm-translation.md` ("H2").
+  `out/aosp17-usb-h2.img` (build `eng.caoanh.20261115.0346`, from main with H1, H2 and H4);
+  in QEMU it reaches `sys.boot_completed` and the test's passkey request ends with
+  `TYPE_NO_CREDENTIAL` in 50 ms. Details in `docs/arm-translation.md` ("H2").
 - **H4 — Smart Dock as the default launcher** (user request, 2026-11-15). Status
   (2026-11-15): done on Cuttlefish, real-PC check pending. Smart Dock (F-Droid build 1.15.0,
   `tools/fetch-apps.sh smartdock`) is a /product app; `aosp-device/desktop/smartdock-setup.sh`

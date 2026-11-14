@@ -794,6 +794,11 @@ the request. With the test provider turned on, both remote entries are dropped a
 answer is the same. Without the patch the PC log stops at `For ui, provider data size`
 and the request is answered only when the client cancels it.
 
+Release image `out/aosp17-usb-h2.img`, build `eng.caoanh.20261115.0346` (main with H1, H2
+and H4): in QEMU it boots to `sys.boot_completed` and the same test, with microG's providers
+only, ends with `TYPE_NO_CREDENTIAL` 50 ms after the request. Update the stick in place with
+`sudo tools/update-usb-aosp17.sh out/aosp17-usb-h2.img /dev/sdX`.
+
 **Next on the PC.** Sign in to TikTok with Google again. The passkey step should now
 fail at once instead of waiting, and the page should offer another way to verify (code
 by email or SMS). If it still shows only a passkey, the page itself does not handle
