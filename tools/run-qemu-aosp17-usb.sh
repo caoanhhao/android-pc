@@ -14,7 +14,9 @@
 # `tools/mkusb-aosp17.sh --append`) goes to out/aosp17-usb-serial.log, the QEMU monitor to
 # a UNIX socket out/aosp17-usb-monitor.sock
 # (`echo "screendump out/s.ppm" | ncat -U out/aosp17-usb-monitor.sock`).
-# NO_WINDOW=1 runs without a window. MEM (MiB, default 6144), CPUS (default 4).
+# NO_WINDOW=1 runs without a window. MEM (MiB, default 4096), CPUS (default 4).
+# The VM runs pinned to the E-cores VM_CPUS (default 12-15) with a memory cap and nice 5:
+# a VM on the host's P-cores froze it (docs/aosp-build.md, "Flaky host").
 # AUDIO picks QEMU's audio backend: pa (default; the host's PulseAudio/PipeWire), none, or
 # wav (playback recorded to out/aosp17-usb-audio.wav; no input, so capture fails).
 # QEMU_EXTRA: more QEMU arguments (split on spaces), e.g. extra disks for the external-storage
@@ -37,8 +39,9 @@ case ${AUDIO:-pa} in
     wav) audiodev=wav,id=snd0,path="$ROOT/out/aosp17-usb-audio.wav" ;;
     *) audiodev=${AUDIO:-pa},id=snd0 ;;
 esac
-exec qemu-system-x86_64 \
-    -machine q35,accel=kvm -cpu host -smp "${CPUS:-4}" -m "${MEM:-6144}" \
+exec systemd-run --user --scope --quiet --nice=5 -p MemoryMax=$(( ${MEM:-4096} + 2048 ))M \
+    taskset -c "${VM_CPUS:-12-15}" qemu-system-x86_64 \
+    -machine q35,accel=kvm -cpu host -smp "${CPUS:-4}" -m "${MEM:-4096}" \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$vars" \
     -device qemu-xhci,id=xhci \

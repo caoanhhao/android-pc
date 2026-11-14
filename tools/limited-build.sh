@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # Run a build command under the project's resource limits:
-#   12 CPU cores (CPUs 0-11: 8 P-cores + 4 E-cores, hyperthreading off), 25 GB RAM, abort if free space on / drops below 10 GB.
+#   the 8 E-cores (CPUs 8-15, 4.2 GHz), 20 GB RAM, nice 10, low I/O weight; abort if free
+#   space on / drops below 10 GB.
+# The host's i7-13700K (hyperthreading off: CPUs 0-7 are P-cores up to 5.3-5.4 GHz,
+# 8-15 E-cores) has Raptor Lake Vmin degradation: builds on the P-cores froze the host or
+# oopsed its kernel (docs/aosp-build.md, "Flaky host"). The E-cores run at lower voltage.
+# The user manager has no cpuset controller, so systemd's AllowedCPUs is silently ignored;
+# taskset sets the affinity, which every child inherits.
+# BUILD_CPUS / BUILD_MEM override the defaults (e.g. BUILD_CPUS=4-15 for a faster run).
 # Usage: tools/limited-build.sh <command> [args...]
-# Example: tools/limited-build.sh m -j12 systemimage
+# Example: tools/limited-build.sh m -j8 systemimage
 set -euo pipefail
 
-CORES=${BUILD_CORES:-12}
-MEM=${BUILD_MEM:-25G}
+CPUS=${BUILD_CPUS:-8-15}
+CORES=0; IFS=, read -ra _r <<<"$CPUS"
+for r in "${_r[@]}"; do if [[ $r == *-* ]]; then CORES=$(( CORES + ${r#*-} - ${r%-*} + 1 )); else CORES=$(( CORES + 1 )); fi; done
+MEM=${BUILD_MEM:-20G}
 DISK_FLOOR_GB=${BUILD_DISK_FLOOR_GB:-10}
 
 free_gb() { df -BG --output=avail / | tail -1 | tr -dc '0-9'; }
@@ -21,11 +30,12 @@ export NINJA_ARGS="${NINJA_ARGS--j${CORES}}"   # set NINJA_ARGS= (empty) for sis
 export CARGO_BUILD_JOBS="${CORES}"
 export MAKEFLAGS="-j${CORES}"
 
-systemd-run --user --scope --quiet --unit="$unit" \
-    -p AllowedCPUs="0-$((CORES - 1))" \
+systemd-run --user --scope --quiet --unit="$unit" --nice=10 \
+    -p AllowedCPUs="$CPUS" \
     -p CPUQuota="$((CORES * 100))%" \
-    -p MemoryMax="$MEM" -p MemorySwapMax=4G \
-    "$@" <&0 &   # keep stdin (bash gives background jobs /dev/null)
+    -p MemoryHigh="$MEM" -p MemoryMax="$MEM" -p MemorySwapMax=4G \
+    -p IOWeight=20 \
+    taskset -c "$CPUS" "$@" <&0 &   # keep stdin (bash gives background jobs /dev/null)
 pid=$!
 
 # Disk guard: stop the whole scope if free space falls under the floor.
