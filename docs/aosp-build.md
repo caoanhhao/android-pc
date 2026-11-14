@@ -134,6 +134,13 @@ The i7-13700K (Raptor Lake, known Vmin degradation) keeps failing under build lo
 
 - unclean reboots (2026-11-08 ×3, 2026-11-10 ×1, the journal just stops);
 - `BUG: Bad page state`;
+- kernel oops under siso/soong: 2026-11-14 01:09, `general protection fault, kernel NULL
+  pointer dereference` in `nd_jump_root` (Comm: soong_build) right after an RCU warning in
+  `rcu_sched_clock_irq` (soong_ui), both on CPU#4. After it every new `soong_build` hung
+  in D state in `lock_mm_and_find_vma` (unkillable), and `pgrep -f`/`pgrep -a`/`ps` that
+  read its cmdline hung too (load ~19 with no CPU use). Not a siso bug: check
+  `journalctl -k | grep -E 'Oops|WARNING'` first; only a host reboot clears it. Watchdogs
+  should use `pgrep -x` or `/proc/*/stat`, never cmdline reads;
 - processes stuck in D state. On 2026-11-11 a `clang++` was stuck in `exit_mmap`,
   `blocked on an rw-semaphore, but the owner is not found`, and siso waited on it
   forever ("ninja may be stuck"). Kill the build and restart it; ninja/siso resume;
