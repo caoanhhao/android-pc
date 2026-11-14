@@ -305,7 +305,8 @@ F9d image was made without it and its 4 GiB `userdata` was too small for large g
 size. `--resolution WxH` (default 2560x1080, the test monitor in landscape, since F9f;
 Limine uses another mode if the monitor lacks it; `auto` lets Limine pick the monitor's
 preferred mode from its EDID, which gave 1920x1080 on the first boot), `--density N`
-(default 240), `--append "WORDS"`, `--enforcing` (SELinux enforcing;
+(default 160 since H4, 240 before; see `docs/desktop-mode.md`), `--append "WORDS"`,
+`--enforcing` (SELinux enforcing;
 default permissive so `pclog.sh` runs), `--menu`, `--product DIR`. The build's `super.img`
 is an Android sparse image (Cuttlefish unsparses it in place when it runs, so it may also
 be raw): the script handles both.

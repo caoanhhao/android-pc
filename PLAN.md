@@ -568,6 +568,8 @@ one session each, one build at a time (H1 first).
   Checked on Cuttlefish at 2560x1080, enforcing, fresh userdata and a reboot: the dock
   comes up on both boots, apps open as freeform windows, no crash, no denials. Details in
   `docs/desktop-mode.md`.
+  UI density is now 160 dpi by default (`mkusb-aosp17.sh --density`, was 240): 1 dp = 1 px,
+  a desktop-sized UI for mouse and keyboard instead of touch.
 
 ## Risks
 

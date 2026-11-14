@@ -86,6 +86,11 @@ default launcher on 2026-11-15.
   with `mControllers == null` ("Quickstep keeps stopping", twice on the first boot).
   [tools/patches/aosp17-launcher3-taskbar-npe.patch](../tools/patches/aosp17-launcher3-taskbar-npe.patch)
   (`git apply` in `aosp/packages/apps/Launcher3`) returns early there.
+- **Settings hides the dock.** Settings (and other sensitive screens such as permission
+  dialogs) sets `HIDE_NON_SYSTEM_OVERLAY_WINDOWS`, so while one of its windows is visible
+  every app overlay, the dock included, is hidden and Launcher3's taskbar shows instead.
+  The dock comes back when that window closes. This is Android's overlay protection, not
+  a bug to fix.
 - **Going back to Launcher3:** Settings → Apps → Default apps → Home app. Removing the
   marker (`adb root; adb shell rm /data/misc/smartdock-setup.done`) runs the setup again
   on the next boot.
@@ -105,9 +110,13 @@ default launcher on 2026-11-15.
   screen) and `ignoreOrientationRequest="true"`. The overlay also sets
   `config_supportAutoRotation=false` (no accelerometer on a PC; Cuttlefish's virtual one is
   ignored).
-- **Density** stays at 240 (`androidboot.lcd_density`, `--density N`): 1707x720 dp,
-  `sw720dp`, a large-screen layout. A lower value (e.g. 160) gives more room to windows
-  at the cost of smaller text.
+- **Density** is 160 since H4 (`androidboot.lcd_density` in the stick's bootconfig,
+  `tools/mkusb-aosp17.sh --density N`): 1 dp = 1 px, so the 2560x1080 screen is
+  2560x1080 dp (`sw1080dp`), about the size of Windows' 100 % scale. The user asked for a
+  smaller, desktop-sized UI for mouse and keyboard rather than touch. Before, 240 gave
+  1707x720 dp (`sw720dp`), a touch-tablet size. `--density 240` (or `adb shell wm density
+  240` at run time) brings the larger UI back. Checked on Cuttlefish with `dpi=160`:
+  Settings, Chromium, Smart Dock's dock and start menu lay out normally.
 
 ## Testing on Cuttlefish
 
@@ -120,7 +129,7 @@ denials. Before the property was added the same build came up with a fullscreen 
 and fullscreen apps.
 
 ```
-aosp/cvd-launch.sh --display0=width=2560,height=1080,dpi=240
+aosp/cvd-launch.sh --display0=width=2560,height=1080,dpi=160
 adb shell dumpsys window displays | grep -E 'mRotation|mWindowingMode|cur='
 adb shell dumpsys activity containers | grep -m5 'mode='
 ```

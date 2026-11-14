@@ -26,7 +26,8 @@
 #          --resolution WxH GOP mode for Android (default 2560x1080, the user's ultrawide
 #                          monitor, in landscape; Limine falls back to another mode if the
 #                          monitor lacks it); "auto": Limine picks the EDID preferred mode
-#          --density N     androidboot.lcd_density (default 240)
+#          --density N     androidboot.lcd_density (default 160: 1 dp = 1 px, a desktop-sized
+#                          UI for mouse and keyboard; 240 is the earlier, touch-sized one)
 #          --append "WORDS" extra kernel command line for every entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
@@ -39,7 +40,7 @@ product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
 # Graphics VTS (Phase G2), copied to the ESP when built (m -j12 $vts_tests).
 vts_tests="VtsHalGraphicsComposer3_TargetTest VtsHalGraphicsAllocatorAidl_TargetTest VtsHalGraphicsMapperStableC_TargetTest"
-userdata_mib=4096 resolution=2560x1080 density=240 extra="" enforcing=0 menu=0 disk="" out=""
+userdata_mib=4096 resolution=2560x1080 density=160 extra="" enforcing=0 menu=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --product) product="$2"; shift ;;
@@ -50,7 +51,7 @@ while [[ $# -gt 0 ]]; do
         --enforcing) enforcing=1 ;;
         --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac

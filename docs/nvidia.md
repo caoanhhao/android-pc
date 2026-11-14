@@ -165,7 +165,7 @@ How the pieces meet the G2 goals:
 
 - **Native mode and refresh rate**: drm_hwcomposer offers every connector mode and marks
   the EDID preferred one; SurfaceFlinger starts on it. The density stays at
-  `androidboot.lcd_density` (240).
+  `androidboot.lcd_density` (160 since H4, 240 before).
 - **Hotplug, second monitor**: drm_hwcomposer listens for DRM uevents and reports
   connectors coming and going; the first connected connector is the internal display, a
   second one an external display (desktop mode extends onto it).
