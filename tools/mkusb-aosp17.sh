@@ -30,7 +30,8 @@
 #          --append "WORDS" extra kernel command line for every entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
-#                          permissive, enforcing, kernel log on screen, no pcfb
+#                          permissive, enforcing, kernel log on screen, no pcfb, NVIDIA
+#                          nouveau (Phase G)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
         --enforcing) enforcing=1 ;;
         --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -100,7 +101,6 @@ androidboot.hypervisor.vm.supported=0
 androidboot.hypervisor.protected_vm.supported=0
 androidboot.hardware.gralloc=minigbm
 androidboot.hardware.hwcomposer=ranchu
-androidboot.hardware.hwcomposer.display_finder_mode=drm
 androidboot.hardware.hwcomposer.display_framebuffer_format=rgba
 androidboot.hardware.egl=angle
 androidboot.hardware.vulkan=pastel
@@ -145,14 +145,18 @@ rm -rf "$work/system.fs" "$work/vendor.fs"
 # snd-usb-audio is built in and would otherwise number a USB microphone (the webcam) first.
 pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 snd_hda_intel.index=0,1 snd_usb_audio.index=2,3,4,5 $extra"
 pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
+# The composer's display finder is per entry (on the command line, not in the shared
+# bootconfig, which would win): "drm" (pcfb) unless the entry sets its own.
 entry() {   # entry NAME EXTRA-CMDLINE
+    local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
+    [[ $2 == *display_finder_mode=* ]] && finder=
     cat <<EOF
 /$1
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
 $([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
-    cmdline: $pc_cmdline $2
+    cmdline: $(echo $pc_cmdline $finder $2)
 
 EOF
 }
@@ -166,6 +170,9 @@ if [[ $menu == 1 ]]; then
         entry "Android 17 (SELinux enforcing)" ""
         entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
         entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
+        # Phase G1 (docs/nvidia.md): the RTX 4070 through nouveau + GSP; pcfb stays off, init.pc.rc
+        # loads nouveau and lights the monitor, Android runs on the composer's no-op display.
+        entry "Android 17, NVIDIA nouveau (test, no Android picture)" "androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau androidboot.hardware.hwcomposer.mode=noop androidboot.hardware.hwcomposer.display_finder_mode=noop"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

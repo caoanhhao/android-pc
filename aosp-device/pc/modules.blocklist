@@ -1,0 +1,9 @@
+# Cuttlefish's list (device/google/cuttlefish/shared/modules.blocklist): BoardConfig.mk replaces
+# it with this file.
+blocklist ptp_kvm.ko
+blocklist vkms.ko
+blocklist snd-aloop.ko
+blocklist vivid.ko
+
+# Phase G1: nouveau loads only on the nouveau boot entry (init.pc.rc), never at boot-time load.
+blocklist nouveau.ko

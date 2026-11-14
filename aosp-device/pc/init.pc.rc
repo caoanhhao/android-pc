@@ -48,3 +48,30 @@ service vendor.pclog /vendor/bin/pclog.sh
     seclabel u:r:su:s0
     disabled
     oneshot
+
+# NVIDIA RTX 4070 through nouveau (Phase G1, docs/nvidia.md), only on the Limine entry with
+# androidboot.android_pc.gpu=nouveau (pcfb.enable=0 there, so nothing touches the GOP
+# framebuffer nouveau takes over). nouveau.ko is in modules.blocklist, so the boot-time
+# module load skips it on every other entry; modprobe named explicitly ignores the list.
+on early-init && property:ro.boot.android_pc.gpu=nouveau
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nouveau.ko
+
+# Until G2 brings a composer for KMS, the nouveau entry runs Android on the ranchu composer's
+# no-op display (androidboot.hardware.hwcomposer.mode=noop) and minigbm allocates dumb
+# buffers on nouveau's card node: its render node refuses dumb buffers, so it is closed to
+# minigbm (user system), which then falls back to the card nodes. After coldboot, which
+# would reset the mode.
+on init && property:ro.boot.android_pc.gpu=nouveau
+    wait /dev/dri/renderD128 10
+    chmod 0000 /dev/dri/renderD128
+
+# Lights the monitor: the preferred mode on every connected connector (a modetest pattern),
+# so the GPU drives the HDMI/DP link and the HD Audio codec gets the monitor's ELD.
+on post-fs-data && property:ro.boot.android_pc.gpu=nouveau
+    start vendor.pcgpu
+
+service vendor.pcgpu /vendor/bin/pcgpu.sh
+    user root
+    group root graphics
+    seclabel u:r:su:s0
+    disabled

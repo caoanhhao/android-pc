@@ -403,6 +403,13 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   and the HDA ELD. Done when: on the real PC nouveau boots GSP, the monitor shows
   its connected mode in `modetest`, and the F9h Rust audio HAL plays a test tone
   through the monitor.
+  **Status (2026-11-14): code done, real-PC test pending.** nouveau + 9 helper modules
+  build against the unchanged GKI image, GSP-RM 570.144 ships in
+  `/vendor/firmware/nvidia/ad104/gsp`, the Limine menu has an "NVIDIA nouveau" entry
+  (`androidboot.android_pc.gpu=nouveau`, `pcfb.enable=0`, ranchu composer in no-op
+  mode, `modetest -r` keeps the monitor lit), pclog dumps nouveau/GSP dmesg, connectors,
+  EDID and the 10de:22bc ELD. QEMU: both entries boot, nouveau stays idle without NVIDIA
+  hardware. Image `out/aosp17-usb-g1.img`; checklist and commands in `docs/nvidia.md`.
 - **G2. Android display on KMS.** Composer = drm_hwcomposer on the nouveau card
   (client composition still on SwiftShader), gralloc = minigbm with dumb buffers (or
   its nouveau backend), native resolution and refresh rate, hotplug, a second

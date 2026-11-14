@@ -59,22 +59,34 @@ _VIRT_MODULES = [
 ]
 
 # Modules for the PC hardware (pc_x86_64.fragment). The HD Audio codec menus enable every
-# codec of their family; all are installed (only the ones a codec matches bind).
+# codec of their family; all are installed (only the ones a codec matches bind). nouveau and
+# the DRM helpers it selects are for the RTX 4070 (Phase G1); modules.blocklist keeps nouveau
+# out of the boot-time load, init.pc.rc loads it on the nouveau entry only.
 _PC_MODULES = [
     "drivers/acpi/ac.ko",
     "drivers/acpi/battery.ko",
     "drivers/acpi/fan.ko",
     "drivers/acpi/thermal.ko",
+    "drivers/acpi/video.ko",
     "drivers/ata/ahci.ko",
     "drivers/ata/libahci.ko",
     "drivers/ata/libata.ko",
+    "drivers/gpu/drm/display/drm_display_helper.ko",
+    "drivers/gpu/drm/drm_exec.ko",
+    "drivers/gpu/drm/drm_gpuvm.ko",
+    "drivers/gpu/drm/drm_ttm_helper.ko",
+    "drivers/gpu/drm/nouveau/nouveau.ko",
+    "drivers/gpu/drm/scheduler/gpu-sched.ko",
     "drivers/hwmon/coretemp.ko",
     "drivers/hwmon/hwmon.ko",
+    "drivers/i2c/algos/i2c-algo-bit.ko",
     "drivers/net/ethernet/intel/e1000e/e1000e.ko",
     "drivers/net/ethernet/realtek/r8169.ko",
     "drivers/net/phy/realtek/realtek.ko",
     "drivers/net/wireless/intel/iwlwifi/iwlwifi.ko",
     "drivers/net/wireless/intel/iwlwifi/mvm/iwlmvm.ko",
+    "drivers/platform/x86/mxm-wmi.ko",
+    "drivers/platform/x86/wmi.ko",
     "drivers/thermal/intel/x86_pkg_temp_thermal.ko",
     "sound/core/snd-ctl-led.ko",
     "sound/hda/codecs/hdmi/snd-hda-codec-atihdmi.ko",

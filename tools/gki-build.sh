@@ -97,6 +97,13 @@ for s in $STEPS; do case $s in
       rel=${f#$FW/}
       zstd -q -d -f "$f" -o "$FWD/${rel%.zst}" || exit 1
     done
+    # RTX 4070 (AD104) for nouveau (Phase G1): the GSP-RM 570.144 set nouveau asks for
+    # (nvkm/subdev/gsp/ad102.c). ad104 is a symlink to ad102 in linux-firmware, and gsp-*.bin
+    # a symlink to ga102's; zstd follows both, so real files land under nvidia/ad104/gsp.
+    mkdir -p "$FWD/nvidia/ad104/gsp" || exit 1
+    for n in booter_load booter_unload bootloader gsp; do
+      zstd -q -d -f "$FW/nvidia/ad104/gsp/$n-570.144.bin.zst" -o "$FWD/nvidia/ad104/gsp/$n-570.144.bin" || exit 1
+    done
     echo "firmware: $(find "$FWD" -type f | wc -l) files, $(du -sh "$FWD" | cut -f1)" ;;
   *) echo "gki-build: unknown step $s"; exit 2 ;;
 esac; done

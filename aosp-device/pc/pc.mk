@@ -1,5 +1,5 @@
 # Real-PC boot support (phase F3a): init script, boot log saver and device firmware.
-PRODUCT_PACKAGES += init.pc.rc init.pc.chromium.rc pclog.sh ueventd-watch.sh hals.pc.conf android.hardware.bluetooth-service.pc fstab.pc.f2fs.hctr2
+PRODUCT_PACKAGES += init.pc.rc init.pc.chromium.rc pclog.sh pcgpu.sh ueventd-watch.sh hals.pc.conf android.hardware.bluetooth-service.pc fstab.pc.f2fs.hctr2
 
 # AX211 firmware from AOSP's external/linux-firmware: Wi-Fi (iwlmvm API 89 + PNVM) and
 # Bluetooth.
@@ -24,3 +24,9 @@ PRODUCT_PACKAGES += $(notdir $(wildcard device/android-pc/apps/*))
 # cannot install them).
 PRODUCT_COPY_FILES += $(foreach f,$(wildcard device/android-pc/apps/*/lib/x86_64/*.so),\
     $(f):$(TARGET_COPY_OUT_PRODUCT)/app/$(word 4,$(subst /, ,$(f)))/lib/x86_64/$(notdir $(f)))
+
+# libdrm's modetest for pcgpu.sh and pclog.sh (Phase G1). The generated vendor partition
+# takes a PRODUCT_PACKAGES name in all its variants, so the system one goes in and must be
+# allowed past generic_system.mk's artifact path requirement.
+PRODUCT_PACKAGES += modetest
+PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST += system/bin/modetest

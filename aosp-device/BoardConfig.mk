@@ -12,6 +12,10 @@ endif
 
 include device/google/cuttlefish/vsoc_x86_64_only/BoardConfig.mk
 
+# Cuttlefish's module blocklist plus nouveau, which init.pc.rc loads only on the nouveau
+# boot entry (Phase G1).
+BOARD_VENDOR_KERNEL_MODULES_BLOCKLIST_FILE := device/android-pc/pc_x86_64/pc/modules.blocklist
+
 # ndk_translation.mk installs the fetched libndk_translation ELF files with
 # PRODUCT_COPY_FILES (as the emulator's own ndk_translation makefile does).
 ifneq (,$(wildcard device/android-pc/ndk_translation/system/lib64/libndk_translation.so))

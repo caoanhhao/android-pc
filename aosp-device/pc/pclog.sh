@@ -88,9 +88,33 @@ dump() {
             echo "== tinymix ${c#/proc/asound/card}"; timeout 5 tinymix -D ${c#/proc/asound/card} 2>&1 | head -60
         done
         echo "== audio devices"; timeout 10 dumpsys audio 2>&1 | grep -iE 'hdmi|wired|connected' | head -30
+        # Phase G1 (docs/nvidia.md): nouveau, GSP, KMS connectors and the NVIDIA HDMI codec.
+        echo "== gpu boot entry"; getprop ro.boot.android_pc.gpu
+        echo "== pci display"; for p in /sys/bus/pci/devices/*; do
+            case $(cat $p/class) in 0x03*|0x0403*)
+                echo "${p##*/} $(cat $p/vendor):$(cat $p/device) class $(cat $p/class) driver $(basename "$(readlink $p/driver)") power $(cat $p/power/runtime_status 2>/dev/null)" ;;
+            esac
+        done
+        echo "== nouveau dmesg"; dmesg | grep -iE 'nouveau|gsp|pcgpu|drm' | head -150
+        echo "== drm connectors"; for c in /sys/class/drm/card*-*; do
+            echo "${c##*/}: status $(cat $c/status) enabled $(cat $c/enabled) dpms $(cat $c/dpms) edid $(wc -c < $c/edid) bytes"
+            head -n 5 $c/modes | sed 's/^/    mode /'
+        done
+        echo "== modetest -c"; timeout 10 modetest -M nouveau -c 2>&1 | head -150
+        echo "== debugfs nouveau"; ls -R /sys/kernel/debug/nouveau 2>&1 | head -30
+        for c in /sys/class/sound/card*; do
+            [ "$(cat $c/device/vendor 2>/dev/null):$(cat $c/device/device 2>/dev/null)" = 0x10de:0x22bc ] || continue
+            echo "== eld ${c##*/} (10de:22bc)"
+            for e in /proc/asound/${c##*/}/eld#*; do echo "-- $e"; cat $e; done
+        done
+        echo "== pcgpu"; tail -n 40 /data/vendor/pcgpu/modetest-*.txt 2>&1 | head -120
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
     mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
+    # Raw EDID of each DRM connector that has one (decode on the host: edid-decode FILE).
+    for c in /sys/class/drm/card*-*; do
+        [ -s $c/edid ] && cp $c/edid $d/edid-${c##*/}.bin
+    done
     # Unreal games write their own log (Saved/Logs, internal or external storage); logcat does
     # not have it, and it is the only place that says what the game did before a crash. Keep
     # the last 1 MiB of the newest few, as boot-N/applogs/PACKAGE-FILE.

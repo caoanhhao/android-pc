@@ -44,3 +44,13 @@ CONFIG_ACPI_FAN=m
 # AC adapter and batteries (laptops; power_supply class for the health HAL)
 CONFIG_ACPI_AC=m
 CONFIG_ACPI_BATTERY=m
+
+# NVIDIA RTX 4070 (AD104) through nouveau with GSP-RM (Phase G1, docs/nvidia.md). Loaded only
+# on the Limine entry with androidboot.android_pc.gpu=nouveau (init.pc.rc); the GKI image
+# already has DRM, KMS helpers and TTM built in. Selected as modules: drm_display_helper,
+# drm_exec, drm_gpuvm, drm_ttm_helper, gpu-sched, i2c-algo-bit, ACPI video, WMI, MXM-WMI.
+# FW_CACHE (selected too) only touches vmlinux code and so stays off in the real kernel.
+CONFIG_DRM_NOUVEAU=m
+# CONFIG_DRM_NOUVEAU_CH7006 is not set
+# CONFIG_DRM_NOUVEAU_SIL164 is not set
+# CONFIG_WMI_BMOF is not set

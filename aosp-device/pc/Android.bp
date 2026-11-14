@@ -67,3 +67,12 @@ prebuilt_etc {
     device_specific: true,
     visibility: ["//visibility:public"],
 }
+
+// Phase G1: keeps a mode on the nouveau card's connectors (init.pc.rc, nouveau entry only).
+// It runs libdrm's modetest, which pc.mk installs to /system/bin (see there).
+sh_binary {
+    name: "pcgpu.sh",
+    src: "pcgpu.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
