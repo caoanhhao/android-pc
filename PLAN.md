@@ -542,8 +542,11 @@ one session each, one build at a time (H1 first).
   (F9h) already follows the jack on the nouveau entries. The Limine menu now says so on
   each entry (`comment:`) and remembers the last entry (`remember_last_entry: yes`), so
   picking "Android 17, NVIDIA nouveau" once keeps the monitor's sound on every later boot.
-  Image `out/aosp17-usb-h1.img`. Details in `docs/rust-hals.md` ("NVIDIA without a GPU
-  driver"). Making nouveau the default entry stays G5's decision (after the soak).
+  Image `out/aosp17-usb-h1.img` (build `eng.caoanh.20261115.0135`); in QEMU the menu
+  shows the comments, Limine boots the nouveau entry again after a reset once it was
+  picked, and both the default and the nouveau entry reach `sys.boot_completed`. Details in
+  `docs/rust-hals.md` ("NVIDIA without a GPU driver"). Making nouveau the default entry
+  stays G5's decision (after the soak).
 
 ## Risks
 

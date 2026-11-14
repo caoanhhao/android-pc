@@ -54,6 +54,13 @@ see below). It stops retrying on a Soong analysis error, which is deterministic.
 tools/aosp17-build.sh                         # all steps
 STEPS="system.img vendor.img" tools/aosp17-build.sh
 ```
+
+Sessions share one checkout, so another session's uncommitted `aosp-device/` work can break
+Soong analysis or end up in a release image. `AOSP_DEVICE_SRC=DIR` makes
+`tools/aosp-device-link.sh` mirror `DIR/aosp-device` and `DIR/aosp-device-vendor` instead:
+for a release, copy both directories (`cp -a`, keeps mtimes), and in the copy put back
+`HEAD`'s version of every modified file and delete every untracked one (as H1 did; a
+`git archive` export would give unchanged files old mtimes and hide changed ones from ninja).
 `PRODUCT` selects the lunch product: `aosp_pc_x86_64` (default since F2, our device tree,
 see [rust-hals.md](rust-hals.md)) or `aosp_cf_x86_64_only_phone` (stock).
 Default steps: `system.img system_ext.img product.img vendor.img odm.img`,

@@ -536,6 +536,15 @@ What to check on the real PC (nouveau entry, monitor on the RTX 4070): `state-*.
 `tinymix 1` shows that PCM's jack `On`, `== audio devices` lists HDMI connected, the beep in
 `hdmi-check.txt` is heard on that PCM, and `audio-check.txt` reports device type 9.
 
+QEMU check of the menu (image `out/aosp17-usb-h1-qemu.img`, build
+`eng.caoanh.20261115.0135`, `tools/run-qemu-aosp17-usb.sh`): Limine 12.9.6 shows the pcfb
+comment under the default entry and the "sound plays on the monitor" comment once
+"Android 17, NVIDIA nouveau" is selected; after booting that entry and a `system_reset`
+the menu comes back with it highlighted and counts down to it (OVMF keeps the variable
+until QEMU exits; the launcher starts every run with fresh variables). The default entry
+and the nouveau entry both reached `sys.boot_completed=1` (nouveau loaded, no NVIDIA GPU
+to bind). QEMU has no NVIDIA HDMI codec, so the sound itself is for the real PC.
+
 ## F7: Camera (`hals/camera`)
 
 Status (2026-11-12): done on Cuttlefish. With `vivid` loaded (a YUYV webcam node, picked
