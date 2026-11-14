@@ -528,6 +528,23 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
 Order: G1 → G2 → G3 → G4 → G5, each in its own sub-session, one build at a time;
 G6 after G5. `docs/nvidia.md` is the running log for the whole phase.
 
+## Phase H — real-PC fixes
+
+Bugs the user found on the real PC with build `eng.caoanh.20261114.2338` (the G6 stick),
+one session each, one build at a time (H1 first).
+
+- **H1 — no sound from the monitor** (RTX 4070 HDMI/DP). Status (2026-11-15): menu fix
+  done, real-PC check pending. The pclog of the default (pcfb) entry shows every
+  `card1/eld#*` at `monitor_present 0`, `eld_valid 0` and silent beeps on all four HDMI
+  PCMs: the NVIDIA codec sends audio only once the GPU driver enables it on the output
+  with the mode (nouveau through GSP-RM, `r535_sor_hdmi_audio`/`r535_sor_dp_audio`), which
+  the UEFI framebuffer never does. No HAL change can fix that on pcfb; the Rust audio HAL
+  (F9h) already follows the jack on the nouveau entries. The Limine menu now says so on
+  each entry (`comment:`) and remembers the last entry (`remember_last_entry: yes`), so
+  picking "Android 17, NVIDIA nouveau" once keeps the monitor's sound on every later boot.
+  Image `out/aosp17-usb-h1.img`. Details in `docs/rust-hals.md` ("NVIDIA without a GPU
+  driver"). Making nouveau the default entry stays G5's decision (after the soak).
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).

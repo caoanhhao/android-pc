@@ -506,6 +506,36 @@ HDMI audio needs a GPU driver that programs the audio path (nouveau with GSP fir
 the RTX 4070), which is a display-stack change, not a HAL one. With a monitor on the
 onboard Intel graphics (i915) or an AMD card, the jacks work and the path above applies.
 
+**Real-PC result (H1, 2026-11-15).** The stick's default entry (pcfb, build
+`eng.caoanh.20261114.2338`, pclog `boot-4`) confirmed it: card 1 "HDA NVidia" (`01:00.1`)
+has its four HDMI PCMs (3, 7, 8, 9), every `/proc/asound/card1/eld#*` reads
+`monitor_present 0`, `eld_valid 0`, all `HDMI/DP,pcm=N Jack` controls are off, the beeps in
+`hdmi-check.txt` "play" (`tinyplay` exits 0) but nothing comes out, and the audio check
+plays to the speaker device (type 2, the ALC897) because no HDMI device was ever connected.
+That is the hardware, not the HAL: the NVIDIA HD Audio function only carries sound once the
+GPU driver turns audio on for the output it drives. In nouveau on GSP-RM firmware that is
+`r535_sor_hda_eld` (the ELD and presence bit, which also reach `snd-hda-codec-nvhdmi` through
+the DRM audio component) and `r535_sor_hdmi_audio` / `r535_sor_dp_audio` (audio packets on
+the link), all run from nouveau's modeset. The UEFI GOP framebuffer that pcfb uses sets a
+mode without audio, and no driver runs on the GPU there, so on pcfb the monitor's speakers
+cannot be reached; forcing the HAL onto an HDMI PCM would only play into a PCM with no pin.
+
+So monitor sound needs a nouveau entry ("Android 17, NVIDIA nouveau" or "Android 17,
+NVIDIA GPU (NVK + ANGLE)"), where drm_hwcomposer's modeset gives the codec its ELD and the
+chain above (jack → `WiredAccessoryManager` → `HDMI Out` → `Endpoint::connect_hdmi`) runs.
+The Limine menu (`tools/mkusb-aosp17.sh --menu`) now says this under each entry
+(`comment:`, shown at the bottom of the menu for the selected entry) and remembers the last
+booted entry (`remember_last_entry: yes`, an EFI variable), so picking a nouveau entry once
+keeps it, and its sound, for later boots; until an entry has been picked, the default is
+still the pcfb entry. On the nouveau entries the sound follows the screen: when Android
+turns the screen off, drm_hwcomposer disables the CRTC, nouveau turns the output's audio
+off, the jack goes off, and media moves to the onboard codec until the screen is back.
+
+What to check on the real PC (nouveau entry, monitor on the RTX 4070): `state-*.txt`
+`== hdmi eld` shows `monitor_present 1`, `eld_valid 1` on one pin with the monitor's name,
+`tinymix 1` shows that PCM's jack `On`, `== audio devices` lists HDMI connected, the beep in
+`hdmi-check.txt` is heard on that PCM, and `audio-check.txt` reports device type 9.
+
 ## F7: Camera (`hals/camera`)
 
 Status (2026-11-12): done on Cuttlefish. With `vivid` loaded (a YUYV webcam node, picked

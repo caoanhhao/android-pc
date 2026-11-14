@@ -149,7 +149,7 @@ pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
 # are per entry (on the command line, not in the shared bootconfig, which would win): ranchu
 # with finder "drm" (pcfb) and SwiftShader's Vulkan ("pastel") unless the entry sets its own.
 composer_apex=androidboot.vendor.apex.com.android.hardware.graphics.composer
-entry() {   # entry NAME EXTRA-CMDLINE
+entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
     local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
     local vulkan=androidboot.hardware.vulkan=pastel
@@ -158,6 +158,7 @@ entry() {   # entry NAME EXTRA-CMDLINE
     [[ $2 == *androidboot.hardware.vulkan=* ]] && vulkan=
     cat <<EOF
 /$1
+$([[ -n $3 ]] && echo "    comment: $3")
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
@@ -171,16 +172,24 @@ if [[ $menu == 1 ]]; then
     {
         echo "timeout: 5"
         echo "default_entry: $(( enforcing + 1 ))"
+        # H1: the entry picked last boots again (an EFI variable; default_entry until then),
+        # so a user who wants the monitor's speakers picks a nouveau entry once.
+        echo "remember_last_entry: yes"
         echo
-        entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive"
-        entry "Android 17 (SELinux enforcing)" ""
+        # The RTX 4070 sends audio over HDMI/DP only when its driver (nouveau, through
+        # GSP-RM) enables it with the mode; on pcfb (the GOP framebuffer) the codec never
+        # sees the monitor (docs/rust-hals.md, "NVIDIA without a GPU driver").
+        nosound="Display on the UEFI framebuffer: no sound from a monitor on the NVIDIA card (pick an NVIDIA nouveau entry for that)"
+        sound="NVIDIA driver: sound plays on the monitor (HDMI/DP) when one is connected"
+        entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive" "$nosound"
+        entry "Android 17 (SELinux enforcing)" "" "$nosound"
         entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
         entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
         # Phase G (docs/nvidia.md): the RTX 4070 through nouveau + GSP; pcfb stays off and
         # init.pc.rc loads nouveau. G2: Android on drm_hwcomposer (KMS, native mode, hotplug).
         nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
-        entry "Android 17, NVIDIA nouveau" "$nv $drm"
+        entry "Android 17, NVIDIA nouveau" "$nv $drm" "$sound"
         # G3/G4: the whole graphics stack on the GPU. Vulkan is NVK (vulkan.nouveau in the
         # com.google.cf.vulkan APEX) and GLES is ANGLE (androidboot.hardware.egl=angle) on it, so
         # SurfaceFlinger's client composition for drm_hwcomposer, HWUI, Chromium and games all
@@ -188,7 +197,7 @@ if [[ $menu == 1 ]]; then
         # above keeps SwiftShader on KMS as the fallback. pcvktest.sh runs vkjson and the
         # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/);
         # pcgfxbench.sh measures frame rates on every entry (boot-N/bench/).
-        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.hardware.vulkan=nouveau"
+        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.hardware.vulkan=nouveau" "$sound"
         # G2 checks: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
         # restarts during the composer test), and G1's modetest pattern without Android's picture.
         entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"
