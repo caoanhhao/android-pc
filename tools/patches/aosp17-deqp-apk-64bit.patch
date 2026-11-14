@@ -1,0 +1,14 @@
+diff --git a/Android.bp b/Android.bp
+index 1ed2542..a167809 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -233,7 +233,8 @@ android_test {
+ 
+     jni_libs: ["libdeqp"],
+ 
+-    compile_multilib: "both",
++    // android-pc: 64-bit only (the APK ships in the image for the G3 on-device run).
++    compile_multilib: "first",
+ 
+     // We could go down all the way to API-13 for 32bit. 22 is required for 64bit ARM.
+     sdk_version: "test_current",

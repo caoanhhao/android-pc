@@ -1,0 +1,18 @@
+diff --git a/guest/hals/vulkan/Android.bp b/guest/hals/vulkan/Android.bp
+index 43f359e..3831e06 100644
+--- a/guest/hals/vulkan/Android.bp
++++ b/guest/hals/vulkan/Android.bp
+@@ -57,6 +57,13 @@ apex {
+     native_shared_libs: [
+         "vulkan.ranchu",
+     ],
++    // android-pc Phase G3: NVK for the RTX 4070 on the nouveau boot entry
++    // (ro.hardware.vulkan=nouveau).  NAK is Rust and 64-bit only.
++    multilib: {
++        lib64: {
++            native_shared_libs: ["vulkan.nouveau"],
++        },
++    },
+     prebuilts: [
+         "android.hardware.vulkan.compute-0.prebuilt.xml",
+         "android.hardware.vulkan.level-1.prebuilt.xml",

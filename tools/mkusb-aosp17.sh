@@ -105,7 +105,6 @@ androidboot.hardware.gralloc=minigbm
 androidboot.hardware.hwcomposer=ranchu
 androidboot.hardware.hwcomposer.display_framebuffer_format=rgba
 androidboot.hardware.egl=angle
-androidboot.hardware.vulkan=pastel
 androidboot.cpuvulkan.version=4202496
 androidboot.opengles.version=196609
 androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough
@@ -146,22 +145,24 @@ rm -rf "$work/system.fs" "$work/vendor.fs"
 # snd-usb-audio is built in and would otherwise number a USB microphone (the webcam) first.
 pc_cmdline="$board_cmdline pcfb.enable=1 pchvc.enable=1 snd_hda_intel.index=0,1 snd_usb_audio.index=2,3,4,5 $extra"
 pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
-# The composer (its vendor APEX) and the ranchu composer's display finder are per entry (on
-# the command line, not in the shared bootconfig, which would win): ranchu with finder "drm"
-# (pcfb) unless the entry sets its own.
+# The composer (its vendor APEX), the ranchu composer's display finder and the Vulkan driver
+# are per entry (on the command line, not in the shared bootconfig, which would win): ranchu
+# with finder "drm" (pcfb) and SwiftShader's Vulkan ("pastel") unless the entry sets its own.
 composer_apex=androidboot.vendor.apex.com.android.hardware.graphics.composer
 entry() {   # entry NAME EXTRA-CMDLINE
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
     local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
+    local vulkan=androidboot.hardware.vulkan=pastel
     [[ $2 == *display_finder_mode=* ]] && finder=
     [[ $2 == *$composer_apex=* ]] && composer=
+    [[ $2 == *androidboot.hardware.vulkan=* ]] && vulkan=
     cat <<EOF
 /$1
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
 $([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
-    cmdline: $(echo $pc_cmdline $finder $composer $2)
+    cmdline: $(echo $pc_cmdline $finder $composer $vulkan $2)
 
 EOF
 }
@@ -180,6 +181,11 @@ if [[ $menu == 1 ]]; then
         nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
         entry "Android 17, NVIDIA nouveau" "$nv $drm"
+        # G3: Vulkan on the GPU through NVK (vulkan.nouveau in the com.google.cf.vulkan APEX).
+        # ANGLE, Android's GLES, follows the Vulkan driver, so this entry also composes on
+        # NVK (G4's subject); the entry above keeps SwiftShader. pcvktest.sh runs vkjson and
+        # the dEQP-VK smoke groups here, once per build (pclog boot-N/vk/).
+        entry "Android 17, NVIDIA nouveau, NVK Vulkan (test)" "$nv $drm androidboot.hardware.vulkan=nouveau"
         # G2 checks: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
         # restarts during the composer test), and G1's modetest pattern without Android's picture.
         entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"

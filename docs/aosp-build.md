@@ -77,6 +77,10 @@ then `droid`.
   forwards `SOONG_GOMEMLIMIT` as `GOMEMLIMIT`, and the build script sets `18GiB`.
   With the cap, analysis takes about 4 minutes. Re-apply the patch after a `repo sync`
   that resets `build/soong` (`git -C aosp/build/soong apply ../../tools/patches/...`).
+  Since the 20 GB cap (commit 5114656) and G3's Mesa NVK modules, analysis still went
+  past the cap (soong_build at 20 GB of anonymous memory with `GOMEMLIMIT=14GiB`) while
+  incremental analysis was on. `SOONG_INCREMENTAL_ANALYSIS=false` with
+  `SOONG_GOMEMLIMIT=14GiB` fits (docs/nvidia.md, G3).
 - **Parallelism is limited by RAM, not CPU.** Siso alone holds about 10 GB RSS and
   each R8/D8 job needs 4–5 GB. At `-j3` the scope peaked at 22.5 of 25 GB with 4 GB
   of swap in use. So the Java-heavy steps (system, system_ext, product, vendor,

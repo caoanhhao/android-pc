@@ -24,6 +24,9 @@ include $(PC_DEVICE_DIR)/desktop/desktop.mk
 # Google's WebView as the default WebView provider, AOSP's as the alternative (phase F9p).
 include $(PC_DEVICE_DIR)/webview/webview.mk
 
+# Vulkan checks on the NVIDIA nouveau entry: vkjson + dEQP-VK into pclog (phase G3).
+include $(PC_DEVICE_DIR)/vktest/vktest.mk
+
 PRODUCT_NAME := aosp_pc_x86_64
 PRODUCT_DEVICE := pc_x86_64
 PRODUCT_BRAND := Android

@@ -429,6 +429,26 @@ Limine menu) picks the path, so a broken GPU step never leaves the stick unboota
   and minigbm agree on), `vulkan.nouveau` as the system Vulkan HAL. Done when:
   `vulkaninfo` shows the RTX 4070 and dEQP-VK smoke groups (api, memory, wsi.android)
   pass on the real PC.
+  **Status (2026-11-14): code done, real-PC test pending.** NVK, NAK (Rust) and NIL
+  build through hand-written Soong files, since the meson2hermetic config has no nouveau:
+  - Patches: `aosp17-mesa-nvk.patch`, `aosp17-cf-vulkan-nouveau.patch` and
+    `aosp17-deqp-apk-64bit.patch`.
+  - `nil.h` is hand-written (no cbindgen), with layout asserts on both the C and Rust
+    sides.
+  - NVK's CL kernels are built with the host clang's SPIR-V backend
+    (`tools/mesa-nvkcl-spv.sh`).
+  - A new u_gralloc backend reads minigbm handles, so both sides agree on
+    `DRM_FORMAT_MOD_LINEAR`.
+  - NVK gains `VK_ANDROID_external_memory_android_hardware_buffer` and a tiled shadow
+    for linear swapchain images.
+  - `vulkan.nouveau` ships in the `com.google.cf.vulkan` APEX.
+  - `androidboot.hardware.vulkan` is now set per entry. A new entry, "NVIDIA nouveau, NVK
+    Vulkan (test)", runs ANGLE and SurfaceFlinger on NVK too; "NVIDIA nouveau" keeps
+    SwiftShader.
+  - `pcvktest.sh` writes `cmd gpu vkjson` and the dEQP-VK smoke results to pclog.
+
+  QEMU (no NVIDIA GPU): the driver loads and finds no device. pcfb and G2's nouveau entry
+  still boot. Image `out/aosp17-usb-g3.img`; checklist in `docs/nvidia.md`.
 - **G4. GLES through ANGLE, GPU composition.** ANGLE as the system GLES driver on
   NVK, SurfaceFlinger and HWC client composition on the GPU, SwiftShader removed
   from that boot entry. Done when: dEQP-GLES3 smoke groups pass, Chromium/WebView
