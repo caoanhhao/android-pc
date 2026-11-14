@@ -1,9 +1,10 @@
-# Desktop mode and the 2560x1080 landscape display (F9f)
+# Desktop mode and the 2560x1080 landscape display (F9f, H4)
 
 The PC is driven with a mouse and keyboard on a 2560x1080 ultrawide monitor, so
 `aosp_pc_x86_64` boots into AOSP 17's own desktop windowing on its primary display,
-locked to landscape. No third-party launcher is added: AOSP's Launcher3 (Quickstep) is the
-desktop's home screen and taskbar, and the window manager draws the window captions.
+locked to landscape. The window manager draws the window captions. The default launcher is
+Smart Dock (H4, below); AOSP's Launcher3 (Quickstep) stays installed as the recents
+provider and as a second launcher.
 
 Everything is in `aosp-device/desktop/` (included by `aosp_pc_x86_64.mk`), and the boot
 resolution is a `tools/mkusb-aosp17.sh` default.
@@ -38,10 +39,56 @@ activity containers` shows the tasks as `mode=freeform`.
 
 Why not `android.hardware.type.pc`: on a "pc" device WindowManager forces freeform too,
 but the feature also changes how the Play Store filters apps and how some apps behave,
-which would undo F9's Play Store work. Why not a third-party launcher (e.g. Taskbar from
-F-Droid): AOSP's own desktop mode already gives windows, captions and a taskbar, and a
-second home app makes Android ask for the default launcher. Taskbar can still be
-installed from F-Droid by hand.
+which would undo F9's Play Store work.
+
+## Smart Dock, the default launcher (H4)
+
+[Smart Dock](https://github.com/axel358/smartdock) (`cu.axel.smartdock`, GPL-3.0) is a
+desktop launcher: a dock with a start menu, pinned and running apps, a notification panel
+and a system tray, and apps opened in freeform windows. The user asked for it as the
+default launcher on 2026-11-15.
+
+- **APK.** `tools/fetch-apps.sh smartdock` downloads F-Droid's build (1.15.0, version code
+  1150), pinned by SHA-256 and checked against the certificate F-Droid signs it with, into
+  `aosp/device/android-pc/apps/SmartDock/`; `pc.mk` installs it on `/product` like the
+  other fetched apps. F-Droid can update it in place (same signature). Its JNI library is
+  stored uncompressed (`extractNativeLibs="false"`), so nothing has to be unpacked.
+- **First-boot setup.** Smart Dock's own setup screen asks the user to grant five things by
+  hand. `aosp-device/desktop/smartdock-setup.sh` (init service `smartdock_setup` from
+  `init.desktop.rc`, on `sys.boot_completed=1`, in the `su` domain like the `pc*.sh`
+  helpers) does it instead, once per userdata (marker `/data/misc/smartdock-setup.done`),
+  so later user choices stay:
+  - allows its notification listener, the `SYSTEM_ALERT_WINDOW` and `GET_USAGE_STATS` app
+    ops, and grants `WRITE_SECURE_SETTINGS` (a development permission);
+  - makes it the `android.app.role.HOME` holder. Launcher3 and Smart Dock both declare
+    their HOME filter at priority 0, so the role controller has no fallback holder, and the
+    first boot reaches the HOME intent before the script runs: the "Use Smart Dock as
+    Home? Just once / Always" chooser is already up. The script closes it (BACK, only when
+    `ResolverActivity` is the resumed activity) and starts HOME again, which now goes to
+    the role holder. A `/product/etc/preferred-apps` entry does not help: HOME resolves
+    through the role, not PackageManager's preferred activities;
+  - turns on its accessibility service `DockService` (the dock itself), last.
+- **Script on /product.** Init runs it in `su`, a system (core) domain, and Treble's
+  neverallows forbid core domains from executing `/vendor` files, so the script and its
+  `.rc` are product modules. `su` is permissive on userdebug builds, which this product
+  is; a user build would need a domain of its own.
+- **No swipe lock screen.** Smart Dock hides its dock when `DockService` starts while the
+  keyguard is up (`dock.isVisible = !keyguardManager.isKeyguardLocked`) and only shows it
+  again when the dock is unpinned and pinned, so with Android's default swipe lock screen
+  the dock was missing after every boot. The overlay sets
+  `config_disableLockscreenByDefault=true`; a PIN or password the user sets later still
+  locks the PC (and brings the problem back: unpin and pin the dock with its pin button).
+  Turning the lock screen off at run time instead (`locksettings set-disabled true` while
+  the keyguard was showing) left the keyguard stuck until the next boot.
+- **Launcher3 taskbar crash.** With Smart Dock as home, Launcher3's taskbar (Launcher3 stays
+  the recents provider) is recreated on configuration changes, and a bubble bar update
+  posted before `onDestroy()` ran `TaskbarNavButtonController.onRecentsButtonLayoutChanged`
+  with `mControllers == null` ("Quickstep keeps stopping", twice on the first boot).
+  [tools/patches/aosp17-launcher3-taskbar-npe.patch](../tools/patches/aosp17-launcher3-taskbar-npe.patch)
+  (`git apply` in `aosp/packages/apps/Launcher3`) returns early there.
+- **Going back to Launcher3:** Settings → Apps → Default apps → Home app. Removing the
+  marker (`adb root; adb shell rm /data/misc/smartdock-setup.done`) runs the setup again
+  on the next boot.
 
 ## 2560x1080 landscape
 

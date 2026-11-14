@@ -1,0 +1,22 @@
+// Desktop mode for aosp_pc_x86_64 (docs/desktop-mode.md).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// Phase H4: makes Smart Dock the default launcher on the first boot. On /product: init
+// starts the script in the su domain (a system domain), which may not run vendor files.
+prebuilt_etc {
+    name: "init.desktop.rc",
+    src: "init.desktop.rc",
+    sub_dir: "init",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "smartdock-setup.sh",
+    src: "smartdock-setup.sh",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}

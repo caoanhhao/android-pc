@@ -1,0 +1,11 @@
+# Phase H4 (docs/desktop-mode.md): Smart Dock as the default launcher, set up once per
+# userdata on the PC and on Cuttlefish alike.
+on property:sys.boot_completed=1
+    start smartdock_setup
+
+service smartdock_setup /product/bin/smartdock-setup.sh
+    user root
+    group root
+    seclabel u:r:su:s0
+    disabled
+    oneshot

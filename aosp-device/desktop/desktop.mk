@@ -19,3 +19,8 @@ DEVICE_PACKAGE_OVERLAYS += $(PC_DEVICE_DIR)/desktop/overlay
 # desktop-first is forced.
 PRODUCT_PRODUCT_PROPERTIES += \
     persist.wm.debug.force_desktop_first_on_default_display_for_testing=true
+
+# Smart Dock (cu.axel.smartdock, from tools/fetch-apps.sh; pc.mk installs it) is the default
+# launcher: smartdock-setup.sh makes it the home app and grants its permissions once per
+# userdata (phase H4). Launcher3 stays installed as the recents provider and a second choice.
+PRODUCT_PACKAGES += init.desktop.rc smartdock-setup.sh

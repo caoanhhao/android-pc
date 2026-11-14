@@ -8,4 +8,8 @@
     <bool name="config_enterDesktopByDefaultOnFreeformDisplay">true</bool>
     <!-- A PC monitor does not turn: no auto-rotation. -->
     <bool name="config_supportAutoRotation">false</bool>
+    <!-- No swipe lock screen (H4): Smart Dock hides its dock when its accessibility service
+         starts behind the keyguard and does not bring it back, so with a lock screen the
+         dock would be missing after every boot. A PIN or password set later still locks. -->
+    <bool name="config_disableLockscreenByDefault">true</bool>
 </resources>

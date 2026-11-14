@@ -1,0 +1,16 @@
+diff --git a/quickstep/src/com/android/launcher3/taskbar/TaskbarNavButtonController.java b/quickstep/src/com/android/launcher3/taskbar/TaskbarNavButtonController.java
+index f2fd227..cb2fc91 100644
+--- a/quickstep/src/com/android/launcher3/taskbar/TaskbarNavButtonController.java
++++ b/quickstep/src/com/android/launcher3/taskbar/TaskbarNavButtonController.java
+@@ -286,6 +286,11 @@ public class TaskbarNavButtonController implements TaskbarControllers.LoggableTa
+      */
+     public void onRecentsButtonLayoutChanged(Rect bounds) {
+         mSystemUiProxy.notifyRecentsButtonPositionChanged(bounds);
++        // android-pc: a bubble bar update posted before the taskbar was destroyed (it is
++        // recreated on every configuration change) can still land here after onDestroy().
++        if (mControllers == null) {
++            return;
++        }
+         if (cueBarAceMigration() && mControllers.cueBarController != null) {
+             mControllers.cueBarController.onRecentsButtonLayoutChanged(bounds);
+         }

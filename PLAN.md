@@ -556,6 +556,18 @@ one session each, one build at a time (H1 first).
   (frameworks/base) answers `NoCredentialException` instead, as on a phone without a
   passkey. Checked on Cuttlefish with `tools/credman-test/`. Image
   `out/aosp17-usb-h2.img`. Details in `docs/arm-translation.md` ("H2").
+- **H4 — Smart Dock as the default launcher** (user request, 2026-11-15). Status
+  (2026-11-15): done on Cuttlefish, real-PC check pending. Smart Dock (F-Droid build 1.15.0,
+  `tools/fetch-apps.sh smartdock`) is a /product app; `aosp-device/desktop/smartdock-setup.sh`
+  (product init service, once per userdata) makes it the HOME role holder, closes the
+  first-boot launcher chooser and grants its accessibility service, notification listener,
+  overlay, usage-stats and `WRITE_SECURE_SETTINGS`. The swipe lock screen is off by default
+  (`config_disableLockscreenByDefault`), because the dock stays hidden when its service
+  starts behind the keyguard. `tools/patches/aosp17-launcher3-taskbar-npe.patch` fixes a
+  Launcher3 taskbar crash (still the recents provider) that the launcher change exposed.
+  Checked on Cuttlefish at 2560x1080, enforcing, fresh userdata and a reboot: the dock
+  comes up on both boots, apps open as freeform windows, no crash, no denials. Details in
+  `docs/desktop-mode.md`.
 
 ## Risks
 

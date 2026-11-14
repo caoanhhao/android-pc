@@ -3,7 +3,8 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux] [webview]   default: all six
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux] [webview] [smartdock]
+#                                                                  default: all seven
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
@@ -27,6 +28,10 @@
 #   WebView from the same emulator image, checked against Google's WebView certificate.
 #   aosp-device/webview/webview.mk makes it the default WebView provider, with AOSP's
 #   com.android.webview kept as a choice in Developer options (F9p). Personal use only.
+# - Smart Dock (cu.axel.smartdock), a desktop launcher with a dock and freeform windows:
+#   F-Droid's build, pinned by version code and SHA-256 and checked against the certificate
+#   F-Droid signs it with (SHA-256 51:8E:C9:46:...:7D:C3:E9:6C). The default launcher (H4,
+#   aosp-device/desktop/smartdock-setup.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
@@ -233,7 +238,25 @@ termux() {
     done
 }
 
+smartdock() {
+    local dl=$ROOT/out/downloads/smartdock
+    local apk=cu.axel.smartdock_1150.apk ver
+    local sha=c7c3231431fac5120012d269cfbdff80a28a38230a6980b0f9b5157a8e8b02ea
+    local cert=518ec946cdfd52cd3dc595bca852cc1829066e9c37234665b6dd36e77de3e96c
+    mkdir -p "$dl"
+    if [[ ! -f $dl/$apk ]]; then
+        curl -sSfL -o "$dl/$apk.part" "https://f-droid.org/repo/$apk"
+        echo "$sha  $dl/$apk.part" | sha256sum -c --quiet
+        mv "$dl/$apk.part" "$dl/$apk"
+    fi
+    echo "$sha  $dl/$apk" | sha256sum -c --quiet
+    "$HOST/apksigner" verify --print-certs "$dl/$apk" 2>/dev/null | grep -q "SHA-256 digest: $cert" ||
+        { echo "fetch-apps.sh: $apk is not signed with F-Droid's Smart Dock certificate" >&2; exit 1; }
+    ver=$("$HOST/aapt2" dump badging "$dl/$apk" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+    install_app SmartDock "$dl/$apk" "$apk ($ver) from https://f-droid.org/repo, signature checked"
+}
+
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
-for app in "${@:-chromium fdroid microg playstore termux webview}"; do
+for app in "${@:-chromium fdroid microg playstore termux webview smartdock}"; do
     for a in $app; do "$a"; done
 done
