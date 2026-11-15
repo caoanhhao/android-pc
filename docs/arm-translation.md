@@ -915,72 +915,89 @@ packer does. `build.sh` builds it with the AOSP host tools.
 Real PC, image `out/aosp17-usb-h3.img` (build `eng.caoanh.20261115.0441`), logs in
 `out/pclog-h3/boot-7` … `boot-11`, 2026-11-15. Where Winds Meet and Delta Force are listed
 and install from the Play Store; Genshin Impact (`com.miHoYo.GenshinImpact`) does not show
-up in search. Result: **no ROM change makes Play list it without posing as another
-device**, so this phase changes no code. The reasons follow.
+up in search.
 
-**What Play sees from this device** (from `state-300.txt` of boot-9 and the built
-`/vendor`, `/system`, `/product` permission files):
+**Cause: Genshin requires `android.hardware.opengles.aep`, and no entry declares it.**
+The Play build of version 7.2.0 (`versionCode 1258`, fetched from Google Play with
+`apkeep` on 2026-11-15, see below) has, from `aapt2 dump badging`:
 
-| Item | Value on the PC | Can it hide Genshin? |
+```
+uses-feature: name='android.hardware.opengles.aep'                  (required)
+uses-feature-not-required: android.hardware.touchscreen, .multitouch, .multitouch.distinct,
+  bluetooth, camera, camera.autofocus, microphone, sensor.accelerometer
+```
+
+The OpenGL ES 3.1 Android Extension Pack (AEP) is a required feature, and Play hides an
+app from search and refuses its install when the device lacks a required feature. This
+ROM declares no `android.hardware.opengles.aep` (`pm list features` source files:
+`handheld_core_hardware.xml` and the other `/vendor/etc/permissions` files of
+`aosp_pc_x86_64`). Where Winds Meet and Delta Force do not ask for AEP, which is why they
+are listed with the same device profile.
+
+An earlier version of this section (first I3 commit) blamed Play Console device-catalog
+filtering, before the manifest was available; that was wrong.
+
+What else Play sees from this device (`state-300.txt` of boot-9 and the built permission
+files) and does match:
+
+| Item | Value on the PC | Matches Genshin? |
 |---|---|---|
-| ABIs | `ro.product.cpu.abilist=x86_64,arm64-v8a` (libndk_translation) | No: the same list lets Play serve WWM's and Delta Force's arm64-only builds |
-| GLES | `ro.opengles.version=196609` (3.1, ANGLE on SwiftShader) | No: Genshin needs GLES 3.0 |
-| Vulkan | `vulkan.level=1`, 1.3 (Cuttlefish Vulkan APEX) | No: optional for Genshin |
-| Touch | `android.hardware.touchscreen`, `.multitouch`, `.multitouch.distinct`, `faketouch` features declared | No: the implied touchscreen requirement is met (the configuration says `-touch` because no touch panel is plugged in, which Play does not filter on) |
-| Screen | 2560x1080, 160 dpi (H4), `xlrg`, landscape and portrait features | No: Genshin was already hidden at 240 dpi (F9n), so the H4 density is not the cause |
-| Device type | `ro.build.characteristics=default` (not `tv`, not `automotive`) | No |
-| Telephony | no `android.hardware.telephony*` feature | No: Genshin's permissions do not imply telephony, and WWM/Delta Force are not hidden by it either |
-| RAM | `android.hardware.ram.normal` (not a low-RAM build; the PC has far more than 4 GB) | No |
-| Identity | `Android/aosp_pc_x86_64/pc_x86_64`, `test-keys`, `userdebug`, `ro.hardware=cutf_cvm`, `ro.soc.manufacturer=Google`, `ro.soc.model=vsoc_x86_64_only`, primary ABI `x86_64` | **Yes** (see below) |
-| Certification | microG checkin, not Play Protect certified, Play Integrity at best `MEETS_BASIC_INTEGRITY` (F9n) | **Yes** (see below) |
+| ABIs | `ro.product.cpu.abilist=x86_64,arm64-v8a` (libndk_translation) | Yes: the arm64 split is served |
+| GLES | `ro.opengles.version=196609` (3.1) on every entry | Yes, but AEP is missing |
+| Touch | touchscreen features declared; Genshin marks them not required anyway | Yes |
+| Screen | 2560x1080, 160 dpi (H4), `xlrg` | Yes: Genshin was already hidden at 240 dpi (F9n) |
+| Device type | `ro.build.characteristics=default` | Yes |
+| RAM | `android.hardware.ram.normal` | Yes |
 
-**Why Play hides it.** Everything Play's manifest filter checks matches. Two games with the
-same needs (arm64-only, GLES 3, large downloads) are listed on this device. That leaves the
-per-app filters that the developer sets in the Play Console device catalog; Play applies
-them silently and the app then neither appears in search nor installs:
-- exclusion of devices that do not meet Play's device integrity (the "uncertified device"
-  filter that also hides e.g. Netflix);
-- exclusion by SoC, by primary ABI `x86`/`x86_64`, or of unknown devices.
+**Why the ROM does not simply declare AEP.** The feature is a promise that every AEP
+extension works: `GL_ANDROID_extension_pack_es31a`, which includes geometry and
+tessellation shaders, ASTC LDR, sample shading, texture buffers, and the rest.
+- On the SwiftShader entries (pcfb, nouveau KMS) ANGLE runs on SwiftShader Vulkan, which
+  has no `geometryShader` or `tessellationShader`. ANGLE cannot expose AEP there, so
+  declaring it would be a lie that breaks any game that relies on it.
+- On the NVIDIA GPU entry (ANGLE on NVK) the hardware has all of it and ANGLE can expose
+  ES 3.2, which contains AEP. `ro.opengles.version` there still says 3.1 on purpose
+  (`docs/nvidia.md`, G4: raise it per entry once dEQP-GLES31/32 passes on NVK).
 
-HoYoverse's catalog rules are not public, but the outcome matches every x86_64 Android
-with ARM translation that the community reports: Genymotion, Waydroid and Bliss OS all get
-"not compatible" for Genshin from the Play Store, while the same game installs there from
-other sources. The logs hold no reason: Finsky does not log filtered search results, and
-no Genshin details page was opened in boots 7-11.
+So the device-side fix is AEP and ES 3.2 on the GPU entry only: a per-entry feature file
+(for example bind-mounted by `init.pc.rc` on that entry before `system_server` starts) and
+`ro.opengles.version=196610` there, after dEQP-GLES31 passes on NVK on the real PC. This
+is not done in I3. Play also has to pick up the new feature list (a new device-config
+upload; clearing the Play Store's cache after the update may be needed).
 
-**What could change it, and why we do not.** Each option makes the PC claim to be
-something it is not:
-- a Play-certified build fingerprint (copied from a phone) and a hardware attestation
-  keybox, to pass device integrity;
-- an ARM primary ABI (`arm64-v8a` first in `abilist`), which also breaks every x86_64 app
-  and the system itself;
-- a microG device profile of a real phone.
+**Install without Play (the route taken for now).** `PackageManager` does not enforce
+`uses-feature` at install time, so the Play files install on any entry. They were fetched
+from Google Play's own servers (Google-signed delivery of HoYoverse's APKs; no mirror
+site):
+- tool: `apkeep` 1.1.0 from EFF's GitHub release, GPG signature checked (key
+  `1073E74EB38BD6D19476CBF8EA9DBF9FB761A677`, William Budington, EFF);
+- token: Aurora Store's anonymous dispenser (`auroraoss.com/api/auth`), not the user's
+  account; Google Play ToS accepted by the user;
+- files in `~/Downloads/genshin/com.miHoYo.GenshinImpact/` on the build host:
+  `com.miHoYo.GenshinImpact.apk` (33 MB, base),
+  `com.miHoYo.GenshinImpact.config.arm64_v8a.apk` (145 MB),
+  `com.miHoYo.GenshinImpact.AssetBundles.apk` (514 MB, install-time asset pack); about
+  30 GB more are downloaded by the game itself.
 
-Spoofing a certified device breaks Google's terms and is out of scope (the same decision as
-F9n). Reporting the real SoC (`ro.soc.manufacturer=Intel`) instead of Cuttlefish's
-`vsoc_x86_64_only` would be honest, but an Intel desktop CPU is not on any phone SoC list
-either. It cannot be checked without the PC and a signed-in Play account, so it is not
-done blind.
+The three files are one app and must be installed in one session, from a machine with adb
+connected to the PC (Wireless debugging, `docs/mouse-input.md`):
 
-**What the user can do** (no ROM change needed):
-1. Confirm the reason on the PC. Open
-   `https://play.google.com/store/apps/details?id=com.miHoYo.GenshinImpact` in Chromium and
-   choose the Play Store. "Your device isn't compatible with this version" means the device
-   filter above. "This item isn't available in your country" means a region limit (then
-   another Play country, not the ROM, is the fix). Also check Play Store → Settings →
-   About → "Play Protect certification" (expected: "Device is not certified").
-2. Install with **Aurora Store** (open source, F-Droid). It downloads the same signed
-   `base.apk` and splits from Google's servers, either anonymously or with the user's own
-   account, and installs them as one session, so later updates still come with their
-   splits. Install it from F-Droid on the PC.
-3. Or use the download options on the official site, `https://genshin.hoyoverse.com`.
-   Do not use APK mirror sites.
+```
+adb install-multiple com.miHoYo.GenshinImpact*.apk
+```
 
-Even when installed, Genshin may stop at its own checks:
-- the Play build can refuse uncertified devices at login (community reports of error
-  `31-4302` on Waydroid);
-- its anti-cheat may refuse translated or x86 devices.
+or copy them to the PC (`adb push`, or a second USB drive as portable storage, F9i) and
+install them together with a split installer such as SAI. The user's data partition on
+the stick is never written from the build host (it is file-encrypted, and CLAUDE.md keeps
+it out of reach).
 
-Neither was tested here: no Genshin APK was downloaded or sideloaded on this host. If it
-starts but mouse clicks do nothing, add it to `persist.sys.pc.mouse_as_touch`
-(`docs/mouse-input.md`).
+Expected results:
+- Play keeps the game hidden, and it is not updated from Play: the next version must be
+  fetched the same way, or Aurora Store used on the PC.
+- Use the NVIDIA GPU entry. Genshin asks for AEP features that SwiftShader lacks, so on
+  the other entries it is likely to fail at its first GL context or shader compile.
+- The Play build may refuse uncertified devices at login (community reports of error
+  `31-4302` on Waydroid), and its anti-cheat may refuse translated or x86 devices. Not
+  tested here: nothing was installed from this host.
+- If it starts but mouse clicks do nothing, add it to `persist.sys.pc.mouse_as_touch`
+  (`docs/mouse-input.md`).
