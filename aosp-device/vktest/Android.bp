@@ -27,3 +27,23 @@ prebuilt_etc {
     system_ext_specific: true,
 }
 
+
+// J1: chooses NVK or SwiftShader for the NVK entry at post-fs-data (init.pc.rc). A platform
+// binary because it loads vulkan.nouveau from the Vulkan APEX's exported linker namespace,
+// as libvulkan does (libdl_android is not available to vendor code).
+cc_binary {
+    name: "pcvkprobe",
+    srcs: ["pcvkprobe.cpp"],
+    system_ext_specific: true,
+    header_libs: [
+        "hwvulkan_headers",
+        "libhardware_headers",
+        "vulkan_headers",
+    ],
+    shared_libs: [
+        "libbase",
+        "libdl_android",
+        "liblog",
+    ],
+    compile_multilib: "64",
+}

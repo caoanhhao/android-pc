@@ -60,9 +60,13 @@ service vendor.pclog /vendor/bin/pclog.sh
 # monitor. vkms is unloaded first so nouveau gets card0 (DRM takes the lowest free minor),
 # then loaded again as card1 (unused on the PC; in QEMU, without the GPU, it is card0 and the
 # entry still runs on it).
+# atomic=1 (Phase J1): nouveau sets DRIVER_ATOMIC only with this module option (default off in
+# 6.18). Without it DRM_CLIENT_CAP_ATOMIC fails, drm_hwcomposer finds no pipeline and runs a
+# headless null display: the monitor stays black. Toybox modprobe does not read module options
+# from the kernel command line, so the option is given here.
 on early-init && property:ro.boot.android_pc.gpu=nouveau
     exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -r -d /vendor/lib/modules vkms.ko
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nouveau.ko
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nouveau.ko atomic=1
     exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules vkms.ko
 
 # Android on KMS (Phase G2): drm_hwcomposer (picked by the entry's vendor APEX choice) drives
@@ -75,6 +79,15 @@ on early-init && property:ro.boot.android_pc.gpu=nouveau
 # vkms is reloaded after nouveau (see above).
 on early-init && property:ro.boot.android_pc.gpu=nouveau
     setprop ro.vendor.hwc.use_overlay_planes 0
+
+# NVK entry (Phase J1): androidboot.android_pc.vulkan=nouveau leaves ro.hardware.vulkan unset in
+# early-init; pcvkprobe sets it before SurfaceFlinger and gpuservice start (class core, at
+# boot): "nouveau" when NVK creates a device on the GPU, "pastel" (SwiftShader) otherwise, so a
+# failing NVK costs the GPU speed, not the picture. The setprop after it is the fallback for a
+# probe that never set it (a ro property keeps its first value, so it does nothing otherwise).
+on post-fs-data && property:ro.boot.android_pc.vulkan=nouveau
+    exec u:r:su:s0 root graphics -- /system_ext/bin/pcvkprobe
+    setprop ro.hardware.vulkan pastel
 
 # G1's test (the entry with androidboot.android_pc.kms=modetest, on the composer's no-op
 # display): lights the monitor with a modetest pattern, the preferred mode on every connected

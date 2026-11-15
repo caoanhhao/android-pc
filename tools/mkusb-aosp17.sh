@@ -157,6 +157,7 @@ entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
     [[ $2 == *display_finder_mode=* ]] && finder=
     [[ $2 == *$composer_apex=* ]] && composer=
     [[ $2 == *androidboot.hardware.vulkan=* ]] && vulkan=
+    [[ $2 == *androidboot.android_pc.vulkan=* ]] && vulkan=   # pcvkprobe chooses (J1)
     cat <<EOF
 /$1
 $([[ -n $3 ]] && echo "    comment: $3")
@@ -197,7 +198,10 @@ if [[ $menu == 1 ]]; then
         # draw on the RTX 4070; SwiftShader (pastel) is not loaded on this entry. The entry
         # above keeps SwiftShader on KMS as the fallback. pcvktest.sh runs vkjson and the
         # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/).
-        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.hardware.vulkan=nouveau" "$sound"
+        # J1: the entry asks for NVK with androidboot.android_pc.vulkan; pcvkprobe (init.pc.rc,
+        # post-fs-data) sets ro.hardware.vulkan to nouveau when NVK creates a device, else to
+        # pastel, so the entry falls back to SwiftShader instead of a SurfaceFlinger crash loop.
+        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.android_pc.vulkan=nouveau" "$sound"
         # G2 check: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
         # restarts during the composer test). G1's "modetest only" entry passed and was removed
         # in I4; --append "androidboot.android_pc.kms=modetest ..." still starts pcgpu.sh.

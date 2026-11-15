@@ -841,3 +841,114 @@ Kept, because the test has not passed on the real PC or an open bug needs it:
 | `pcgpu.sh` and its `init.pc.rc` trigger | Dormant without the entry; `mkusb-aosp17.sh --append "androidboot.android_pc.kms=modetest ..."` brings G1's test back if KMS needs a check without drm_hwcomposer. |
 | `gpu-perf.txt`, `suspend-test.txt` (nouveau entries) | G5's soak has not passed: no nouveau entry has shown a desktop yet. |
 | `pclog.sh` itself, timestats, screenshot snapshots | The only log of a real-PC boot. |
+
+## Phase J1. Picture on the nouveau and NVK entries
+
+Real-PC pclog `out/pclog-i/` (build `eng.caoanh.20261115.0906`, the I1 stick). I1's card order
+fix worked: `card0` is nouveau, `card0-DP-1` is connected (256-byte EDID, 2560x1080), `card1`
+is vkms. The monitor still stayed black on every NVIDIA entry, for two different reasons.
+
+### nouveau entries: no atomic modesetting
+
+`boot-12` ("NVIDIA nouveau") and `boot-14` ("VTS run") reach `sys.boot_completed=1`, but
+drm_hwcomposer logs `Failed to set atomic cap -1`, then `No pipelines available. Creating
+null-display for headless mode`, and SurfaceFlinger runs on that null display
+(`getDisplayIdentificationData failed`).
+
+nouveau in 6.18 (`gki/common/drivers/gpu/drm/nouveau/nouveau_drm.c`) sets `DRIVER_ATOMIC`
+only with the module option `atomic=1` (`MODULE_PARM_DESC(atomic, "Expose atomic ioctl
+(default: disabled)")`); without it `DRM_CLIENT_CAP_ATOMIC` returns `-EOPNOTSUPP`, and
+drm_hwcomposer needs atomic commits. The display engine itself (`dispnv50`) is atomic inside
+the kernel, so the option only exposes the ioctl. Fix: `init.pc.rc` loads
+`nouveau.ko atomic=1`. A kernel command line `nouveau.atomic=1` would not work: the
+kernel applies `module.option` words only to built-in code, and toybox `modprobe` (unlike
+kmod's) does not read them from `/proc/cmdline`.
+
+### NVK entry: NVK refused to create an instance
+
+`boot-13` ("NVIDIA GPU (NVK + ANGLE)"): `ANGLE Display::initialize error 0: Internal Vulkan
+error (-3)` at `vk_renderer.cpp:2616`, which is `vkCreateInstance`, then SurfaceFlinger
+`no suitable EGLConfig found` and a crash loop; `vk/vkjson.json` is `{}` (no instance). NVK
+never reached the GPU: `nvk_CreateInstance` reads the driver's GNU build-id for its pipeline
+cache UUID and returns `VK_ERROR_INITIALIZATION_FAILED` ("build-id too short. It needs to be
+a SHA") when it is shorter than 20 bytes. Soong links everything with `-Wl,--build-id=md5`
+(16 bytes; `readelf -n vulkan.nouveau.so` showed `fa4e09e1dae65d6666f627157a8a3a28`), where
+Mesa's meson build passes `--build-id=sha1`. Fix: `vulkan.nouveau` gets
+`ldflags: ["-Wl,--build-id=sha1"]` (`src/nouveau/android_bp_gen.py` and the generated
+`Android.bp`, in `tools/patches/aosp17-mesa-nvk.patch`; Soong puts module ldflags after the
+global ones, and the last `--build-id` wins).
+
+That was the only failure the logs show; whether NVK then runs ANGLE on AD104 with GSP-RM
+570.144 is the real-PC test. So the entry no longer depends on it:
+
+| Piece | Where | What |
+|---|---|---|
+| Entry | `tools/mkusb-aosp17.sh --menu` | "Android 17, NVIDIA GPU (NVK + ANGLE)" passes `androidboot.android_pc.vulkan=nouveau` instead of `androidboot.hardware.vulkan=nouveau`, so `ro.hardware.vulkan` stays unset in early-init (Cuttlefish's `init_graphics.vendor.rc` copies only `ro.boot.hardware.vulkan`) |
+| Probe | `aosp-device/vktest/pcvkprobe.cpp` (`/system_ext/bin/pcvkprobe`) | run by `init.pc.rc` at `post-fs-data`, before gpuservice and SurfaceFlinger start (`class_start core` at `boot`). Loads `vulkan.nouveau.so` from the Vulkan APEX's exported linker namespace as libvulkan does, creates an instance, enumerates the GPU, creates a device with a graphics queue, in a child process with a 20 s limit. Sets `ro.hardware.vulkan=nouveau` when that works, `pastel` (SwiftShader) otherwise, and `vendor.pc.vulkan_probe` to the device name or the failing step (also in dmesg as `pcvkprobe:`). `init.pc.rc` sets `pastel` after it in case the probe never set anything |
+| Triggers | `init.pcvktest.rc`, `init.pc.chromium.rc` | follow the effective `ro.hardware.vulkan` instead of `ro.boot.hardware.vulkan`: dEQP runs only when NVK was chosen |
+| Logs | `pclog.sh` | `== gles` lists `vendor.pc.vulkan_probe` |
+
+With SwiftShader chosen, the entry is the "NVIDIA nouveau" entry (KMS through
+drm_hwcomposer, ANGLE on SwiftShader). The probe cannot catch an NVK that creates a device
+but fails inside ANGLE later (missing features, GPU faults); that would still crash-loop
+SurfaceFlinger, and the logcat of the boot says why.
+
+### `ro.hardware.hwcomposer=ranchu` on the NVIDIA entries
+
+Not a bug: it comes from the shared bootconfig (`androidboot.hardware.hwcomposer=ranchu`)
+and only names a HIDL `hwcomposer.<name>.so` module that nothing loads here. The composer
+is the vendor APEX chosen per entry
+(`androidboot.vendor.apex.com.android.hardware.graphics.composer=...drm_hwcomposer`), as
+logcat shows (`hwc3-drm starting up`).
+
+### QEMU check (2026-11-15)
+
+Build `eng.caoanh.20261115.1254`, image `out/aosp17-usb-j1-qemu.img` (`--menu --append
+console=ttyS0,115200`, `default_entry: 6`, "NVIDIA GPU (NVK + ANGLE)"), `NO_WINDOW=1
+WRITABLE=1 tools/run-qemu-aosp17-usb.sh`. QEMU has no NVIDIA GPU, so this checks the boot
+path and the fallback only:
+
+- `readelf -n vulkan.nouveau.so`: 20-byte build-id (`ecd82208...`), was 16 bytes.
+- init: `modprobe -d /vendor/lib/modules nouveau.ko atomic=1`, `/sys/module/nouveau/parameters/atomic`
+  is `1` (the option is accepted; no device to bind).
+- `init_graphics.vendor.rc` no longer sets `ro.hardware.vulkan` (no `ro.boot.hardware.vulkan`);
+  at post-fs-data `pcvkprobe: ro.hardware.vulkan=pastel (pastel: NVK
+  vkEnumeratePhysicalDevices 0, 0 devices)`: NVK now creates its instance (it failed with -3 on
+  the PC before) and finds no GPU, so the entry takes SwiftShader. The probe took 0.1 s.
+- SurfaceFlinger: `GLES: ... ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device ...))`, one start,
+  no crash loop; `sys.boot_completed=1` at 36 s; `init.pc.chromium.rc` ran its `pastel` action;
+  `pcvktest.sh` did not start (NVK not chosen).
+
+An image with `--userdata 64` cannot be used for this check: system_server runs out of space
+(`fs-verity ... Error -28`) and restarts forever. The release image is made with
+`--userdata 64` only because a stick update never writes userdata.
+
+Release image `out/aosp17-usb-j1.img` (`--menu --userdata 64`, build
+`eng.caoanh.20261115.1254`, same security patch level 2026-06-05).
+
+### Real-PC test
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-j1.img /dev/sda
+```
+
+(type the full word `yes` at the confirmation; userdata is kept.)
+
+1. **"Android 17, NVIDIA nouveau"**: the boot animation and then the desktop on the DP
+   monitor at 2560x1080 (SwiftShader composition, so it may feel slower than pcfb). Use it
+   for a minute, reboot.
+2. **"Android 17, NVIDIA GPU (NVK + ANGLE)"**: the desktop must come up either way. Wait about
+   10 minutes on the desktop if it is on NVK (`pcvktest.sh` runs vkjson and the dEQP groups,
+   opening test windows), then open Chromium (a YouTube video, `chrome://gpu`) and Where Winds
+   Meet or Delta Force for a few minutes. Screenshot anything odd, reboot.
+3. Optional: "Android 17, NVIDIA nouveau, VTS run" once (Android restarts during the
+   composer test, about 10 minutes).
+4. On the build host, `tools/pclog-read.sh /dev/sda`, then in the new boots:
+   - nouveau boot: logcat has `drmhwc` with no `Failed to set atomic cap` and no
+     `null-display`; `state-*.txt` `== composer` shows drm_hwcomposer on `card0-DP-1`;
+   - NVK boot: `state-*.txt` `== gles` has `vendor.pc.vulkan_probe` (`nouveau: NVIDIA ...`
+     or `pastel: NVK <step>`), and dmesg a `pcvkprobe:` line; with NVK chosen, `vk/vkjson.json`
+     is no longer `{}`, `gles/egl.txt` names ANGLE on the NVIDIA device, `== swiftshader users`
+     is empty, `vk/summary.txt` and `gles/summary.txt` have the dEQP results;
+   - if SurfaceFlinger crash-loops on NVK (probe said `nouveau`, ANGLE failed later), logcat's
+     `ANGLE`/`MESA`/`nvk` lines and dmesg's `nouveau ... fault` lines say why.

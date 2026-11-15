@@ -1,10 +1,10 @@
 # Phase G3/G4 (docs/nvidia.md): Vulkan and GLES checks on the RTX 4070, on the NVK boot entry
-# only (androidboot.hardware.vulkan=nouveau).
+# only (androidboot.android_pc.vulkan=nouveau), and only when pcvkprobe chose NVK (J1).
 # pcvktest.sh writes `cmd gpu vkjson`, the dEQP-VK and dEQP-GLES3 smoke results into pclog
 # (boot-N/vk/, boot-N/gles/).
 # Started as soon as gpuservice runs (vkjson), not at boot_completed: on this entry ANGLE and
 # so SurfaceFlinger run on NVK too, and Android may never finish booting if NVK fails.
-on property:init.svc.gpu=running && property:ro.boot.hardware.vulkan=nouveau
+on property:init.svc.gpu=running && property:ro.hardware.vulkan=nouveau
     start vendor.pcvktest
 
 service vendor.pcvktest /vendor/bin/pcvktest.sh

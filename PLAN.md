@@ -626,6 +626,19 @@ one session each, one build at a time (I1 builds last and makes the release imag
   still `{}`), the VTS entry (never ran on the PC), `modetest`, `pcgpu.sh` (dormant), G5's
   `gpu-perf`/suspend test. Table with the evidence in `docs/nvidia.md` ("Phase I4").
 
+## Phase J — real-PC round 3
+
+- **J1 — still no picture on the nouveau and NVK entries** (pclog `out/pclog-i/`, build
+  `eng.caoanh.20261115.0906`). Status (2026-11-15): fix done, checked in QEMU, real-PC check
+  pending. Release image `out/aosp17-usb-j1.img` (build `eng.caoanh.20261115.1254`). nouveau
+  exposes atomic modesetting only with `atomic=1`, so drm_hwcomposer fell back to a headless
+  null display: `init.pc.rc` now loads `nouveau.ko atomic=1`. NVK refused to create an
+  instance because Soong's build-id is MD5 (16 bytes) and NVK needs SHA-1: `vulkan.nouveau`
+  links with `--build-id=sha1`. The NVK entry now asks for NVK with
+  `androidboot.android_pc.vulkan=nouveau`, and `pcvkprobe` (post-fs-data) sets
+  `ro.hardware.vulkan` to `nouveau` only when NVK creates a device, else `pastel`, so the entry
+  shows a picture either way. Details in `docs/nvidia.md` ("Phase J1").
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).

@@ -121,7 +121,7 @@ dump() {
         # Phase G4: who renders GLES (ANGLE's renderer string names the Vulkan driver), whether
         # any process still maps SwiftShader (pastel), and per-layer frame rates (timestats is
         # switched on at boot below, so a game's FPS is here on every entry).
-        echo "== gles"; getprop | grep -E 'hardware\.(egl|vulkan)\]|opengles'
+        echo "== gles"; getprop | grep -E 'hardware\.(egl|vulkan)\]|opengles|vulkan_probe'
         timeout 10 dumpsys SurfaceFlinger 2>&1 | grep -iE 'GLES:|RenderEngine|EGL (vendor|version)' | head -10
         echo "== swiftshader users"; grep -lE 'swiftshader|vulkan\.pastel' /proc/[0-9]*/maps 2>/dev/null |
             while read -r m; do p=${m%/maps}; echo "${p#/proc/} $(cat $p/comm)"; done
