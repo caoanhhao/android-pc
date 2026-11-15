@@ -637,7 +637,10 @@ one session each, one build at a time (I1 builds last and makes the release imag
   links with `--build-id=sha1`. The NVK entry now asks for NVK with
   `androidboot.android_pc.vulkan=nouveau`, and `pcvkprobe` (post-fs-data) sets
   `ro.hardware.vulkan` to `nouveau` only when NVK creates a device, else `pastel`, so the entry
-  shows a picture either way. Details in `docs/nvidia.md` ("Phase J1").
+  shows a picture either way. Monitor sound on these entries had the same cause (no mode on
+  DP-1, so no ELD); the jack → WiredAccessoryManager → HDMI Out chain already worked on the
+  modetest entry (`pclog-h3/boot-8`), so `atomic=1` fixes it too. Details in `docs/nvidia.md`
+  ("Phase J1").
 
 ## Risks
 

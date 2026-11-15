@@ -893,6 +893,32 @@ drm_hwcomposer, ANGLE on SwiftShader). The probe cannot catch an NVK that create
 but fails inside ANGLE later (missing features, GPU faults); that would still crash-loop
 SurfaceFlinger, and the logcat of the boot says why.
 
+### Monitor sound on the nouveau entries
+
+`boot-12` also had no sound from the monitor: all 16 `/proc/asound/card1/eld#*` read
+`monitor_present 0` / `eld_valid 0`, the Rust audio HAL listed card 1 (HDA NVidia, HDMI 0-3,
+devices 3, 7, 8, 9) but never got a connection, and no HDMI device reached AudioService.
+Same cause as the black screen: nouveau programs the ELD and the audio packets (GSP-RM
+`r535_sor_hda_eld`, `r535_sor_dp_audio`) only when an output is enabled with a mode, and
+drm_hwcomposer, on its headless null display, never enabled DP-1.
+
+The rest of the chain is already proven on this PC and monitor: `out/pclog-h3/boot-8` (the
+G1 "modetest only" entry, which lit DP-1 with modetest) has `eld#0.0` `monitor_present 1`,
+`eld_valid 1`, `monitor_name LG ULTRAGEAR`, then logcat `WiredAccessoryManager:
+MSG_NEW_DEVICE_STATE` (the `HDA NVidia HDMI/DP,pcm=3` jack's input switches,
+`config_useDevInputEventForAudioJack`) and the audio HAL `connected HDMI Out as port 11:
+card 1 device 3 (HDA NVidia: HDMI 0, Hdmi)`, and the user heard it. So once drm_hwcomposer
+commits a mode on DP-1 (J1's `atomic=1`), the chain is: nouveau modeset → ELD over the DRM
+audio component → HDMI codec jack on → `WiredAccessoryManager` → AudioService connects
+`AUDIO_DEVICE_OUT_HDMI` → the HAL's `Endpoint::connect_hdmi` picks the PCM whose jack is on
+(F9h, `docs/rust-hals.md`). No code change was needed for it.
+
+`WiredAccessoryManager: This kernel does not have HDMI audio support` is harmless: it is the
+`/sys/class/switch/hdmi*` (UEvent) path, which this kernel does not have; the jack comes in
+through input events. When Android turns the screen off, drm_hwcomposer disables the CRTC,
+the ELD goes away and media moves to the onboard codec until the screen is back (as on any
+KMS desktop).
+
 ### `ro.hardware.hwcomposer=ranchu` on the NVIDIA entries
 
 Not a bug: it comes from the shared bootconfig (`androidboot.hardware.hwcomposer=ranchu`)
@@ -935,8 +961,9 @@ sudo tools/update-usb-aosp17.sh out/aosp17-usb-j1.img /dev/sda
 (type the full word `yes` at the confirmation; userdata is kept.)
 
 1. **"Android 17, NVIDIA nouveau"**: the boot animation and then the desktop on the DP
-   monitor at 2560x1080 (SwiftShader composition, so it may feel slower than pcfb). Use it
-   for a minute, reboot.
+   monitor at 2560x1080 (SwiftShader composition, so it may feel slower than pcfb). Then play
+   a YouTube video or any sound: it must come out of the monitor's speakers (or its
+   headphone jack), and the volume keys must change it. Use it for a minute, reboot.
 2. **"Android 17, NVIDIA GPU (NVK + ANGLE)"**: the desktop must come up either way. Wait about
    10 minutes on the desktop if it is on NVK (`pcvktest.sh` runs vkjson and the dEQP groups,
    opening test windows), then open Chromium (a YouTube video, `chrome://gpu`) and Where Winds
@@ -946,6 +973,10 @@ sudo tools/update-usb-aosp17.sh out/aosp17-usb-j1.img /dev/sda
 4. On the build host, `tools/pclog-read.sh /dev/sda`, then in the new boots:
    - nouveau boot: logcat has `drmhwc` with no `Failed to set atomic cap` and no
      `null-display`; `state-*.txt` `== composer` shows drm_hwcomposer on `card0-DP-1`;
+   - monitor sound (nouveau and NVK boots): `== hdmi eld` has `monitor_present 1`,
+     `eld_valid 1`, `monitor_name LG ULTRAGEAR` on one pin; logcat has
+     `WiredAccessoryManager: MSG_NEW_DEVICE_STATE` and `connected HDMI Out as port 11: card 1
+     device N`; `== audio devices` lists HDMI;
    - NVK boot: `state-*.txt` `== gles` has `vendor.pc.vulkan_probe` (`nouveau: NVIDIA ...`
      or `pastel: NVK <step>`), and dmesg a `pcvkprobe:` line; with NVK chosen, `vk/vkjson.json`
      is no longer `{}`, `gles/egl.txt` names ANGLE on the NVIDIA device, `== swiftshader users`
