@@ -295,7 +295,16 @@ driver name.
 
 The beeps on the modetest entry were pclog's audio check (a 5 s 440 Hz tone, H1's test,
 whenever `audio-check.dex` is on the pclog partition), not the GPU. The modetest entry and the
-audio check are passed tests left for I4 to remove (`PLAN.md`, Phase I).
+audio check were passed tests; I4 removed both (`PLAN.md`, Phase I).
+
+QEMU check (2026-11-15, build `eng.caoanh.20261115.0906`, a `--menu --append
+console=ttyS0,115200` copy with `default_entry: 5`, "Android 17, NVIDIA nouveau"): init
+runs the three `modprobe` steps, vkms comes back `on minor 0` (no GPU for nouveau to bind),
+drm_hwcomposer drives `card0-Virtual-1` at 1024x768, `sys.boot_completed=1`, no
+`vendor_modprobe` denials, only Bluetooth's usual tombstones. QEMU cannot show the NVIDIA
+side; the real-PC check is the "NVIDIA nouveau" and "NVIDIA GPU (NVK + ANGLE)" entries showing
+the desktop on the monitor (`state-*.txt`: `card0-*` connectors are the NVIDIA ones, logcat
+`drmhwc: Found Backend ... driver 'nouveau'`). Release image `out/aosp17-usb-i.img` (I1-I4).
 
 ## G3. NVK Vulkan on Android
 

@@ -590,7 +590,9 @@ Bugs the user found on the real PC with build `eng.caoanh.20261115.0441` (the H3
 one session each, one build at a time (I1 builds last and makes the release image).
 
 - **I1 — no picture on the nouveau and NVK entries**. Status (2026-11-15): fix done,
-  real-PC check pending. Cuttlefish's `init.vendor.rc` loads vkms after a 5 s wait for a
+  checked in QEMU, real-PC check pending. Release image `out/aosp17-usb-i.img` (build
+  `eng.caoanh.20261115.0906`, I1-I4; `--menu --userdata 64`); in QEMU the nouveau entry
+  reaches `sys.boot_completed` on vkms after the unload/reload. Cuttlefish's `init.vendor.rc` loads vkms after a 5 s wait for a
   card0, before `init.pc.rc` loads nouveau, so vkms was card0, nouveau card1, and
   drm_hwcomposer (`/dev/dri/card0`) drove vkms's virtual connector. `init.pc.rc` now
   unloads vkms, loads nouveau (card0) and loads vkms again (card1). I4 removed the
