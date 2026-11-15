@@ -33,4 +33,5 @@ endif
 BOARD_VENDOR_SEPOLICY_DIRS += \
     device/android-pc/pc_x86_64/sepolicy/vendor \
     device/android-pc/pc_x86_64/pc/sepolicy \
+    device/android-pc/pc_x86_64/venus/sepolicy \
     $(sort $(wildcard device/android-pc/pc_x86_64/hals/*/sepolicy))

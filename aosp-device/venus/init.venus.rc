@@ -1,0 +1,30 @@
+# Phase K3 (docs/nvidia-proprietary.md): the Android side of NVIDIA's own driver, only on a boot
+# entry with androidboot.android_pc.vulkan=venus (tools/mkusb-aosp17.sh's $venus, part of the
+# NVIDIA entry's command line). Vulkan is Venus (vulkan.virtio) over the vtest socket of the glibc
+# sidecar (Phase K2), GLES is ANGLE on it, gralloc is minigbm's vtest backend.
+#
+# Like the NVK entry (pcvkprobe), the entry leaves ro.hardware.vulkan and ro.opengles.version
+# unset in early-init and pcvenusprobe.sh chooses at post-fs-data, before the allocator,
+# SurfaceFlinger and system_server start: Venus when the vtest socket is there, else SwiftShader
+# with minigbm's DRM scan (QEMU, or a sidecar that did not come up), so the entry still boots.
+
+# Test without the NVIDIA GPU (docs/nvidia-proprietary.md, "K3 test"): an entry with
+# androidboot.android_pc.venus_test=1 runs the vtest server that tools/venus-test.sh pushed to
+# /data/local/tmp/vtest (virgl_test_server on lavapipe, glibc). Before the probe below.
+on post-fs-data && property:ro.boot.android_pc.venus_test=1
+    start vendor.venus_test
+
+service vendor.venus_test /system/bin/sh /data/local/tmp/vtest/run.sh
+    user root
+    group root graphics
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+
+on post-fs-data && property:ro.boot.android_pc.vulkan=venus
+    # K2's sidecar (or the test server above) creates the socket
+    wait /dev/socket/vtest 20
+    exec u:r:su:s0 root graphics -- /vendor/bin/pcvenusprobe.sh
+    # fallbacks for a probe that never set them (a ro property keeps its first value)
+    setprop ro.hardware.vulkan pastel
+    setprop ro.opengles.version 196609

@@ -707,6 +707,15 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   (Vulkan 1.3, `opengles.aep`), all only on the `nvidia` entry. Testable without the real PC
   against a vtest server on the build host (lavapipe or the host's NVIDIA). Done when:
   Android in QEMU/Cuttlefish connected to a host vtest shows `Pipeline=Skia (Vulkan)` on Venus.
+  **Status (2026-11-15): done, checked in QEMU** — Venus (Mesa 26.2.6 + waydroid's patches,
+  NDK build, `tools/venus-android-build.sh`) in the Cuttlefish Vulkan APEX, minigbm `vtest`
+  backend (server allocations + udmabuf), ANGLE ES 3.2 without overrides, gpuid inside ANGLE,
+  AEP and ES 3.2 declared only when Venus runs; `$venus` in mkusb, `pcvenusprobe.sh` falls back
+  to SwiftShader without the socket. A host vtest cannot serve a VM (fds over SCM_RIGHTS), so
+  the test ran waydroid's `virgl_test_server` on lavapipe inside the guest
+  (`tools/venus-test.sh`): `Pipeline=Skia (Vulkan)`, vkjson driver `venus`
+  (docs/nvidia-proprietary.md, K3). For K2: socket `/dev/socket/vtest` (0666, before
+  SurfaceFlinger), vtest protocol 6.
 - **K4 — display and sound on nvidia-drm.** drm_hwcomposer on nvidia-drm importing the
   vtest-allocated (block-linear, modifier) dma-bufs, native mode on DP-1, hotplug; HDMI/DP
   audio through nvidia's ELD → the F9h Rust audio HAL. Done when: on the real PC the desktop

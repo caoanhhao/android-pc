@@ -1,0 +1,16 @@
+--- a/guest/hals/vulkan/Android.bp
++++ b/guest/hals/vulkan/Android.bp
+@@ -61,7 +61,12 @@
+     // (ro.hardware.vulkan=nouveau).  NAK is Rust and 64-bit only.
+     multilib: {
+         lib64: {
+-            native_shared_libs: ["vulkan.nouveau"],
++            native_shared_libs: [
++                "vulkan.nouveau",
++                // android-pc Phase K3: Venus over vtest on the NVIDIA (proprietary) entry
++                // (ro.hardware.vulkan=virtio), a prebuilt from tools/venus-android-build.sh.
++                "vulkan.virtio",
++            ],
+         },
+     },
+     prebuilts: [

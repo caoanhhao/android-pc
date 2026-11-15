@@ -1,0 +1,213 @@
+From 96c33f6f9b13090a86890e8e4f4c4b870a082d80 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Sun, 15 Nov 2026 15:30:31 +0700
+Subject: [PATCH] util/u_gralloc: read minigbm's native handles directly
+ (android-pc)
+
+Port of android-pc's AOSP Mesa change (u_gralloc_minigbm.c): AOSP 17 runs
+minigbm behind the AIDL allocator and the stable-C IMapper, so the CrOS
+backend (gralloc0) and the IMapper4 backend are not available and the
+fallback reports no modifier.  Reads cros_gralloc_handle (format,
+modifier, planes) when ro.hardware.gralloc is minigbm; properties via
+libc so the NDK build needs no libcutils.
+---
+ src/util/u_gralloc/meson.build          |   1 +
+ src/util/u_gralloc/u_gralloc.c          |   3 +
+ src/util/u_gralloc/u_gralloc.h          |   1 +
+ src/util/u_gralloc/u_gralloc_internal.h |   1 +
+ src/util/u_gralloc/u_gralloc_minigbm.c  | 133 ++++++++++++++++++++++++
+ 5 files changed, 139 insertions(+)
+ create mode 100644 src/util/u_gralloc/u_gralloc_minigbm.c
+
+diff --git a/src/util/u_gralloc/meson.build b/src/util/u_gralloc/meson.build
+index a4aee6f..0cffcd1 100644
+--- a/src/util/u_gralloc/meson.build
++++ b/src/util/u_gralloc/meson.build
+@@ -14,6 +14,7 @@ files_u_gralloc = files(
+   'u_gralloc_fallback.c',
+   'u_gralloc_cros_api.c',
+   'u_gralloc_libdrm.c',
++  'u_gralloc_minigbm.c',
+   'u_gralloc_qcom.c',
+ )
+ 
+diff --git a/src/util/u_gralloc/u_gralloc.c b/src/util/u_gralloc/u_gralloc.c
+index 960986f..22d6384 100644
+--- a/src/util/u_gralloc/u_gralloc.c
++++ b/src/util/u_gralloc/u_gralloc.c
+@@ -23,6 +23,9 @@ static const struct u_grallocs {
+    enum u_gralloc_type type;
+    struct u_gralloc *(*create)();
+ } u_grallocs[] = {
++   /* minigbm handles are read directly; NULL unless ro.hardware.gralloc
++    * is minigbm (android-pc). */
++   {.type = U_GRALLOC_TYPE_MINIGBM, .create = u_gralloc_minigbm_create},
+    /* Prefer the CrOS API as it is significantly faster than IMapper4 */
+    {.type = U_GRALLOC_TYPE_CROS, .create = u_gralloc_cros_api_create},
+ #ifdef USE_IMAPPER4_METADATA_API
+diff --git a/src/util/u_gralloc/u_gralloc.h b/src/util/u_gralloc/u_gralloc.h
+index 334b39e..9711cd5 100644
+--- a/src/util/u_gralloc/u_gralloc.h
++++ b/src/util/u_gralloc/u_gralloc.h
+@@ -54,6 +54,7 @@ enum u_gralloc_type {
+    U_GRALLOC_TYPE_LIBDRM,
+    U_GRALLOC_TYPE_QCOM,
+    U_GRALLOC_TYPE_FALLBACK,
++   U_GRALLOC_TYPE_MINIGBM,
+    U_GRALLOC_TYPE_COUNT,
+ };
+ 
+diff --git a/src/util/u_gralloc/u_gralloc_internal.h b/src/util/u_gralloc/u_gralloc_internal.h
+index 8097560..19704de 100644
+--- a/src/util/u_gralloc/u_gralloc_internal.h
++++ b/src/util/u_gralloc/u_gralloc_internal.h
+@@ -38,6 +38,7 @@ extern struct u_gralloc *u_gralloc_imapper_api_create(void);
+ extern struct u_gralloc *u_gralloc_qcom_create(void);
+ extern struct u_gralloc *u_gralloc_libdrm_create(void);
+ extern struct u_gralloc *u_gralloc_fallback_create(void);
++extern struct u_gralloc *u_gralloc_minigbm_create(void);
+ 
+ /* Helpers for legacy grallocs */
+ struct android_ycbcr;
+diff --git a/src/util/u_gralloc/u_gralloc_minigbm.c b/src/util/u_gralloc/u_gralloc_minigbm.c
+new file mode 100644
+index 0000000..7d74cbc
+--- /dev/null
++++ b/src/util/u_gralloc/u_gralloc_minigbm.c
+@@ -0,0 +1,133 @@
++/*
++ * Mesa 3-D graphics library
++ *
++ * Copyright © 2026 android-pc
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * Buffer info straight from minigbm's native handle (struct
++ * cros_gralloc_handle in minigbm/cros_gralloc/cros_gralloc_handle.h), the
++ * way gfxstream's GrallocMinigbm.cpp does it.  Needed when minigbm runs
++ * behind the AIDL allocator and the stable-C IMapper: the CrOS backend
++ * needs the gralloc0 module and a buffer it imported itself, and the
++ * IMapper backends need libui, which vendor code cannot link.  Unlike the
++ * fallback backend it reports the real format modifier and plane layout.
++ *
++ * Properties come from libc (__system_property_get), so an NDK build of a
++ * driver needs no libcutils.
++ */
++
++#include <errno.h>
++#include <string.h>
++
++#include <cutils/native_handle.h>
++#include <sys/system_properties.h>
++
++#include "drm-uapi/drm_fourcc.h"
++#include "util/log.h"
++#include "util/u_memory.h"
++
++#include "u_gralloc_internal.h"
++
++#define MINIGBM_MAGIC 0xABCDDCBA
++#define MINIGBM_MAX_PLANES 4
++#define MINIGBM_MAX_FDS (MINIGBM_MAX_PLANES + 1)
++/* minigbm's internal fourcc for HAL_PIXEL_FORMAT_YV12 */
++#define MINIGBM_FORMAT_YVU420_ANDROID fourcc_code('9', '9', '9', '7')
++
++/* struct cros_gralloc_handle, with native_handle_t's header spelled out */
++struct minigbm_handle {
++   int version;
++   int numFds;
++   int numInts;
++   int32_t fds[MINIGBM_MAX_FDS];
++   uint32_t strides[MINIGBM_MAX_PLANES];
++   uint32_t offsets[MINIGBM_MAX_PLANES];
++   uint32_t sizes[MINIGBM_MAX_PLANES];
++   uint32_t id;
++   uint32_t width;
++   uint32_t height;
++   uint32_t format;
++   uint32_t tiling;
++   uint64_t format_modifier;
++   uint64_t use_flags;
++   uint32_t magic;
++   uint32_t pixel_stride;
++   int32_t droid_format;
++   int64_t usage;
++   uint32_t num_planes;
++   uint64_t reserved_region_size;
++   uint64_t total_size;
++} __attribute__((packed));
++
++static const struct minigbm_handle *
++minigbm_handle(const native_handle_t *handle)
++{
++   if (!handle || handle->version != sizeof(native_handle_t))
++      return NULL;
++
++   size_t size = sizeof(native_handle_t) +
++                 sizeof(int) * (handle->numFds + handle->numInts);
++   if (size < sizeof(struct minigbm_handle))
++      return NULL;
++
++   const struct minigbm_handle *hnd = (const struct minigbm_handle *)handle;
++   if (hnd->magic != MINIGBM_MAGIC || hnd->num_planes == 0 ||
++       hnd->num_planes > MINIGBM_MAX_PLANES)
++      return NULL;
++
++   return hnd;
++}
++
++static int
++minigbm_get_buffer_basic_info(struct u_gralloc *gralloc,
++                              struct u_gralloc_buffer_handle *hnd,
++                              struct u_gralloc_buffer_basic_info *out)
++{
++   const struct minigbm_handle *mh = minigbm_handle(hnd->handle);
++   if (!mh) {
++      mesa_loge("not a minigbm buffer handle");
++      return -EINVAL;
++   }
++
++   out->drm_fourcc = mh->format == MINIGBM_FORMAT_YVU420_ANDROID ?
++                     DRM_FORMAT_YVU420 : mh->format;
++   out->modifier = mh->format_modifier;
++   out->num_planes = mh->num_planes;
++   for (uint32_t i = 0; i < mh->num_planes; i++) {
++      out->fds[i] = mh->fds[i];
++      out->offsets[i] = mh->offsets[i];
++      out->strides[i] = mh->strides[i];
++   }
++
++   return 0;
++}
++
++static int
++minigbm_destroy(struct u_gralloc *gralloc)
++{
++   FREE(gralloc);
++   return 0;
++}
++
++struct u_gralloc *
++u_gralloc_minigbm_create(void)
++{
++   char value[PROP_VALUE_MAX] = "";
++
++   __system_property_get("ro.hardware.gralloc", value);
++   if (strncmp(value, "minigbm", strlen("minigbm")) != 0)
++      return NULL;
++
++   struct u_gralloc *gr = CALLOC_STRUCT(u_gralloc);
++   if (!gr)
++      return NULL;
++
++   gr->ops.get_buffer_basic_info = minigbm_get_buffer_basic_info;
++   gr->ops.destroy = minigbm_destroy;
++
++   mesa_logi("Using minigbm native handles (ro.hardware.gralloc=%s)", value);
++
++   return gr;
++}
+-- 
+2.56.1
+

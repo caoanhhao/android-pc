@@ -107,7 +107,6 @@ androidboot.hardware.hwcomposer=ranchu
 androidboot.hardware.hwcomposer.display_framebuffer_format=rgba
 androidboot.hardware.egl=angle
 androidboot.cpuvulkan.version=4202496
-androidboot.opengles.version=196609
 androidboot.hardware.angle_feature_overrides_enabled=mapUnspecifiedColorSpaceToPassThrough
 androidboot.hardware.angle_feature_overrides_disabled=exposeES32ForTesting
 androidboot.vendor.apex.com.android.hardware.gatekeeper=com.android.hardware.gatekeeper.nonsecure
@@ -154,10 +153,14 @@ entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
     local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
     local vulkan=androidboot.hardware.vulkan=pastel
-    [[ $2 == *display_finder_mode=* ]] && finder=
-    [[ $2 == *$composer_apex=* ]] && composer=
-    [[ $2 == *androidboot.hardware.vulkan=* ]] && vulkan=
-    [[ $2 == *androidboot.android_pc.vulkan=* ]] && vulkan=   # pcvkprobe chooses (J1)
+    local gles=androidboot.opengles.version=196609   # ES 3.1 (the Venus probe sets its own, K3)
+    local own="$2 $extra"   # the entry's words and --append's: either overrides a default
+    [[ $own == *display_finder_mode=* ]] && finder=
+    [[ $own == *$composer_apex=* ]] && composer=
+    [[ $own == *androidboot.hardware.vulkan=* ]] && vulkan=
+    [[ $own == *androidboot.android_pc.vulkan=* ]] && vulkan=   # pcvkprobe chooses (J1)
+    [[ $own == *androidboot.opengles.version=* ]] && gles=
+    [[ $own == *androidboot.android_pc.vulkan=venus* ]] && gles=   # pcvenusprobe chooses (K3)
     cat <<EOF
 /$1
 $([[ -n $3 ]] && echo "    comment: $3")
@@ -165,7 +168,7 @@ $([[ -n $3 ]] && echo "    comment: $3")
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
 $([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
-    cmdline: $(echo $pc_cmdline $finder $composer $vulkan $2)
+    cmdline: $(echo $pc_cmdline $finder $composer $vulkan $gles $2)
 
 EOF
 }
@@ -191,6 +194,12 @@ if [[ $menu == 1 ]]; then
         # init.pc.rc loads nouveau. G2: Android on drm_hwcomposer (KMS, native mode, hotplug).
         nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
+        # K3 (docs/nvidia-proprietary.md): the graphics half of the NVIDIA proprietary entry, for
+        # its command line next to K1's modules and K4's composer: Vulkan is Venus over K2's vtest
+        # socket, GLES is ANGLE on it with ES 3.2 and the Android Extension Pack, HWUI is Skia on
+        # Vulkan. pcvenusprobe.sh (init.venus.rc) sets ro.hardware.vulkan and ro.opengles.version:
+        # without the socket (QEMU) the entry falls back to SwiftShader and ES 3.1.
+        venus="androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"
         entry "Android 17, NVIDIA nouveau" "$nv $drm" "$sound"
         # G3/G4: the whole graphics stack on the GPU. Vulkan is NVK (vulkan.nouveau in the
         # com.google.cf.vulkan APEX) and GLES is ANGLE (androidboot.hardware.egl=angle) on it, so

@@ -1,0 +1,6 @@
+# Phase K3: minigbm's vtest backend (with K4's scanout modifier lists) and Venus's options,
+# read by every process that uses gralloc or Vulkan.
+ro.vendor.minigbm.vtest     u:object_r:vendor_venus_prop:s0
+vendor.gralloc.vtest.       u:object_r:vendor_venus_prop:s0
+vendor.mesa.                u:object_r:vendor_venus_prop:s0
+vendor.venus.               u:object_r:vendor_venus_prop:s0

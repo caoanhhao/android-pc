@@ -1,0 +1,89 @@
+// Phase K3 (docs/nvidia-proprietary.md): the Android side of NVIDIA's own driver. Vulkan is Mesa
+// Venus over a vtest socket to the glibc sidecar's virgl_test_server (Phase K2), GLES is ANGLE on
+// it, gralloc is minigbm's vtest backend (tools/patches/aosp17-minigbm-vtest.patch). Everything
+// here acts only on a boot entry with androidboot.android_pc.vulkan=venus and a vtest socket
+// (init.venus.rc, pcvenusprobe.sh).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// Mesa 26.2.6 Venus with waydroid-nvidia's vtest patches, built with the NDK by
+// tools/venus-android-build.sh (prebuilt/x86_64/VERSION names the source). In the Cuttlefish
+// Vulkan APEX next to SwiftShader and NVK (tools/patches/aosp17-cf-vulkan-venus.patch).
+cc_prebuilt_library_shared {
+    name: "vulkan.virtio",
+    vendor: true,
+    compile_multilib: "64",
+    arch: {
+        x86_64: {
+            srcs: ["prebuilt/x86_64/vulkan.virtio.so"],
+        },
+    },
+    shared_libs: [
+        "libdrm",
+        "libhardware",
+        "liblog",
+        "libnativewindow",
+        "libsync",
+    ],
+    // The NDK build keeps Mesa's SONAME (libvulkan_virtio.so); the loader opens the file by name.
+    check_elf_files: false,
+    strip: {
+        none: true,
+    },
+    relative_install_path: "hw",
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "pcvenusprobe.sh",
+    src: "pcvenusprobe.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "init.venus.rc",
+    src: "init.venus.rc",
+    sub_dir: "init",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+// ANGLE's per-app GPU names (tools/patches/aosp17-angle-gpuid.patch): empty on every entry but
+// the Venus one, where pcvenusprobe.sh mounts gpuid.nvidia.conf over it.
+prebuilt_etc {
+    name: "gpuid.conf",
+    src: "gpuid.conf",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "gpuid.nvidia.conf",
+    src: "gpuid.nvidia.conf",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+// android.hardware.opengles.aep: declared only where ANGLE on Venus has ES 3.2 and the Android
+// Extension Pack. The permissions directory gets an empty file; pcvenusprobe.sh mounts the real
+// declaration (in /vendor/etc/venus) over it when Venus runs, before system_server reads it.
+prebuilt_etc {
+    name: "android.hardware.opengles.aep.pc.xml",
+    src: "permissions-empty.xml",
+    filename: "android.hardware.opengles.aep.pc.xml",
+    sub_dir: "permissions",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "android.hardware.opengles.aep.venus.xml",
+    src: "android.hardware.opengles.aep.xml",
+    filename: "android.hardware.opengles.aep.xml",
+    sub_dir: "venus",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
