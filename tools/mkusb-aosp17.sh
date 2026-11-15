@@ -224,8 +224,19 @@ if [[ $menu == 1 ]]; then
         # DisplayPort library in nvidia-modeset is C++, whose virtual calls clang does not kCFI-check;
         # FineIBT (the default on this CPU) removes the ENDBR they land on. K4: $venus (K3's
         # graphics on K2's sidecar) and drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
-        nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia cfi=kcfi module_blacklist=nouveau,nova_core,nova"
+        # K1b: the first real-PC boot of this entry hung with no log. ",warn": NVIDIA's code has
+        # never run under kCFI (distribution kernels build it with gcc), so a kCFI type mismatch
+        # is logged with a backtrace instead of killing the kernel; softlockup_panic and
+        # nmi_watchdog=panic turn a kernel lockup into a panic, which efi-pstore saves for
+        # pclog on the next boot (panic=10 reboots).
+        nvdiag="cfi=kcfi,warn softlockup_panic=1 nmi_watchdog=panic module_blacklist=nouveau,nova_core,nova"
+        nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
         entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $venus $drm" "$sound"
+        # K1b: the same modules on pcfb with the kernel log on the screen; pcnvidia.sh loads them
+        # one at a time after boot (nvidia, nvidia-uvm, nvidia-modeset, nvidia-drm without and
+        # then with KMS), so the screen shows where it stops.
+        entry "Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)" \
+            "androidboot.selinux=permissive androidboot.android_pc.gpu=nvidia-debug earlycon=efifb keep_bootcon loglevel=7 $nvdiag"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

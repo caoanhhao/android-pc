@@ -695,6 +695,10 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   host's version now), built by `tools/nvidia-build.sh` against the prebuilt GKI image (only a
   GKI namespace import was needed, no kernel change), entry needs `cfi=kcfi`; image
   `out/aosp17-usb-k1.img` (docs/nvidia-proprietary.md, K1).
+  **K1b (2026-11-15):** the combined K image hung on the real PC before pclog started (modules
+  loaded in early-init). Now loaded at post-fs step by step after pclog is up, `cfi=kcfi,warn`,
+  lockups panic, pclog copies efi-pstore; debug entry with the kernel log on screen that loads
+  the driver after boot. Image `out/aosp17-usb-k1b.img`; real-PC test pending.
 - **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
   NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
   read-only in the vendor partition (or its own partition if `super` is too small), started

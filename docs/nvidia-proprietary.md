@@ -194,6 +194,62 @@ DP-1 connected. If the desktop does not show but those hold, K1 is still done (t
 path is K4's); if nvidia.ko fails, the `NVRM:` lines say why (firmware path:
 `/vendor/firmware/nvidia/620.70.06/`).
 
+### K1b. First real-PC boot hung: diagnosis and changes (2026-11-15)
+
+**Result of the combined K image** (`out/aosp17-usb-k.img`, build `eng.caoanh.20261115.2013`):
+on "Android 17, NVIDIA (proprietary, Venus)" the screen went black after the firmware logo and
+the PC hung; pclog has no directory for that boot (`out/pclog-k`: boot-18 nouveau and boot-19
+NVK on the same build, both fine).
+
+What that says, offline:
+
+- pclog starts at `on init`. K1 loaded the modules with `exec` in **early-init**, which blocks
+  init, so anything that went wrong in `modprobe nvidia-drm.ko modeset=1` (or in nvidia.ko's
+  probe: GSP-RM boot, nvidia-drm's KMS takeover) happens before pclog runs: no boot
+  directory, exactly as seen. The black screen itself is normal for the entry (pcfb off,
+  `console=ttynull`), so it does not tell where it stopped.
+- QEMU already showed that the modules link and initialise on the GKI kernel; what QEMU cannot
+  reach is the probe of a real GPU, i.e. the whole of NVIDIA's resource manager.
+- The most likely kernel-side cause is **kCFI**: distribution kernels build nvidia-open with gcc,
+  so NVIDIA's code (NVOC-generated method tables, callbacks cast between function types, the
+  kernel-open/RM boundary) has never run with indirect-call type checks. One mismatch is a
+  `CFI failure` BUG, and with `PANIC_ON_OOPS` a panic. `cfi=kcfi` only removed the FineIBT
+  problem of the C++ virtual calls, not this. Other candidates are a GSP-RM boot failure that
+  hangs the GPU/PCIe link and the modeset takeover of the GOP framebuffer.
+- A panic should reboot after 10 s (`panic=10`); a hang that stays is either a hard lockup or
+  the panic path itself stuck (this board's firmware on the EFI reset or the pstore write).
+  The GKI image has `CONFIG_EFI_VARS_PSTORE=y` (enabled), so a panic may already be in the
+  board's EFI variables; nothing copied `/sys/fs/pstore` until now.
+
+Changes:
+
+| Piece | Change |
+|---|---|
+| `init.pc.rc`, `pcnvidia.sh load` | modules loaded at **post-fs** instead of early-init (still before K2's sidecar at late-fs and K4's pcnvdisplay at post-fs-data); the script waits until pclog has mounted its partition, then loads `nvidia`, `nvidia-modeset`, `nvidia-drm modeset=1`, `nvidia-uvm` one at a time, each with a `pcnvidia: step:` kernel log line and a `sync` before and after |
+| entry command line (`nvdiag`) | `cfi=kcfi,warn` (a kCFI mismatch prints `CFI failure at ...` with a backtrace and execution continues), `softlockup_panic=1 nmi_watchdog=panic` (a kernel lockup becomes a panic, which efi-pstore saves and `panic=10` reboots) |
+| `pclog.sh` | every boot copies `/sys/fs/pstore/*` (efi-pstore records of an earlier crash) into `boot-N/pstore/` and removes them (they would fill the NVRAM); the K1 dump block also runs on the debug entry and includes `pcnvidia.sh debug`'s report |
+| new entry **"Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)"** | `androidboot.android_pc.gpu=nvidia-debug`, pcfb on (Android on the GOP framebuffer as usual), `earlycon=efifb keep_bootcon loglevel=7` (the kernel log scrolls over the screen), the same `nvdiag` words. After `sys.boot_completed`, `pcnvidia.sh debug` waits 30 s, then loads `nvidia`, `nvidia-uvm`, `nvidia-modeset`, `nvidia-drm modeset=0` with 10 s pauses (makes `/dev/nvidia*`), writes `/data/vendor/pcgpu/nvidia.txt`, and last reloads `nvidia-drm modeset=1`, which takes the monitor over from pcfb. K2-K4's services do not run there (they key on `gpu=nvidia`) |
+
+QEMU check (build `eng.caoanh.20261115.2202`, `out/aosp17-usb-k1b-qemu.img`):
+
+- NVIDIA entry: `pcnvidia: step: mp -r vkms.ko` at 9.0 s (post-fs), `step: mp nvidia.ko`,
+  `NVRM: No NVIDIA GPU found.`, the later steps skip or fail cleanly, vkms back as card0,
+  `sys.boot_completed=1` (70 s: K3's wait for the vtest socket on this entry, no GPU here);
+  the command line carries `cfi=kcfi,warn` (`SMP alternatives: CFI: mismatch non-fatal!`).
+- Debug entry: Android on pcfb, `vendor.pcnvidia_debug` starts at boot completion and runs
+  each step 10 s apart (`step: mp nvidia.ko` at 61 s, `mp nvidia-uvm.ko` at 71 s, ...), all
+  failing cleanly without the GPU; `nvidia.txt` written, Android keeps running.
+- pstore: on the default entry `echo c > /proc/sysrq-trigger` panicked the kernel; it rebooted
+  after 10 s (`panic=10`), and on the next boot pclog had copied 17
+  `dmesg-efi_pstore-*` records (the panic's kernel log, plain text) into `boot-2/pstore/` and
+  emptied `/sys/fs/pstore`. efi-pstore (`pstore: Registered efi_pstore as persistent store
+  backend`) is what the PC uses too.
+
+What the next real-PC boot can show: on the debug entry, the last `pcnvidia: step:` line on
+the screen (or a `CFI failure`/`NVRM` message, or an oops) names the module and the stage; on
+the main entry, `boot-N/dmesg.*` now exists up to the step that died, and `boot-N/pstore/` on
+the boot after a panic holds the panic's kernel log.
+
 ## K2. glibc sidecar: NVIDIA's userspace and the vtest server
 
 NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its

@@ -120,20 +120,31 @@ service vendor.pcnova /vendor/bin/pcnova.sh
 # NVIDIA's own driver (Phase K1, docs/nvidia-proprietary.md), only on the Limine entry with
 # androidboot.android_pc.gpu=nvidia (pcfb.enable=0; nouveau and Nova are kept out by the
 # entry's module_blacklist). The open-gpu-kernel-modules are in modules.blocklist for every
-# other entry. As on the nouveau entry, vkms is unloaded first so nvidia-drm gets card0, then
-# loaded again as card1 (in QEMU, without the GPU, nvidia.ko refuses to load and vkms is card0).
-# nvidia-drm needs modeset=1 for KMS (and its render node); toybox modprobe does not read
-# module options from the kernel command line, so it is given here. fbdev=1 is not: the GKI
-# image has no fbdev emulation, so nvidia-drm 620 has no such option. modprobe pulls
-# nvidia-modeset and nvidia in for nvidia-drm; nvidia-uvm (CUDA, Vulkan's unified memory) is
-# separate. pcnvidia.sh then creates /dev/nvidia* (the modules make no device nodes; on
-# desktop Linux nvidia-modprobe does it) and logs what came up.
-on early-init && property:ro.boot.android_pc.gpu=nvidia
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -r -d /vendor/lib/modules vkms.ko
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nvidia-drm.ko modeset=1
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nvidia-uvm.ko
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules vkms.ko
-    exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh
+# other entry. pcnvidia.sh loads nvidia, nvidia-modeset, nvidia-drm modeset=1 (KMS and its
+# render node; toybox modprobe does not read module options from the kernel command line;
+# no fbdev=1, the GKI image has no fbdev emulation) and nvidia-uvm one at a time, moving vkms
+# off card0 first so nvidia-drm gets card0 (as on the nouveau entry, Phase I1; in QEMU,
+# without the GPU, nvidia.ko refuses to load and vkms is card0 again), then creates
+# /dev/nvidia*.
+# K1b: at post-fs, not early-init. In early-init nothing saves the kernel log yet (pclog
+# starts at init), and the first real-PC boot hung there with no log at all. post-fs is
+# still before K2's sidecar (late-fs) and K4's pcnvdisplay (post-fs-data); pcnvidia.sh waits
+# for pclog's mount and syncs between the steps.
+on post-fs && property:ro.boot.android_pc.gpu=nvidia
+    exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh load
+
+# K1b debug entry (androidboot.android_pc.gpu=nvidia-debug): Android on pcfb with the kernel
+# log on the screen (earlycon=efifb); the modules are loaded step by step once Android has
+# booted and pclog is running (pcnvidia.sh debug).
+on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nvidia-debug
+    start vendor.pcnvidia_debug
+
+service vendor.pcnvidia_debug /vendor/bin/pcnvidia.sh debug
+    user root
+    group root graphics
+    seclabel u:r:su:s0
+    oneshot
+    disabled
 
 # Until K3/K4 replace it: drm_hwcomposer (the entry's composer APEX) on nvidia-drm's card0 with
 # SwiftShader client composition, overlay planes off, minigbm dumb buffers on nvidia-drm's

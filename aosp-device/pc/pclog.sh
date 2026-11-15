@@ -36,6 +36,12 @@ echo $n > $mnt/last
 # Tombstones the previous boot had already seen (name size mtime), so that only new ones are
 # copied below (J2). Compared as text, not by time: this PC's clock is often hours off.
 mv $mnt/tombstones.seen $d/.tombstones-before 2>/dev/null || : > $d/.tombstones-before
+# Phase K1b: what the kernel saved from a previous boot that died (panic, oops, or a lockup
+# turned into a panic) through pstore: on the PC the backend is efi-pstore (EFI variables,
+# CONFIG_EFI_VARS_PSTORE). Copied, then removed: they would fill the board's NVRAM otherwise.
+if ls /sys/fs/pstore/* >/dev/null 2>&1; then
+    mkdir -p $d/pstore && cp /sys/fs/pstore/* $d/pstore/ && rm -f /sys/fs/pstore/*
+fi
 
 # log NAME PIECE-SIZE HEAD TAIL: stdin into NAME.aaa, NAME.aab, ... of PIECE-SIZE bytes; prune
 # keeps the first HEAD and the last TAIL pieces.
@@ -105,9 +111,9 @@ dump() {
         done
         echo "== modetest -c"; timeout 10 modetest -M nouveau -c 2>&1 | head -150
         echo "== debugfs nouveau"; ls -R /sys/kernel/debug/nouveau 2>&1 | head -30
-        # Phase K1 (docs/nvidia-proprietary.md): NVIDIA's own kernel modules on the nvidia entry:
+        # Phase K1 (docs/nvidia-proprietary.md): NVIDIA's own kernel modules on the nvidia entries:
         # what loaded, the driver's dmesg (NVRM, GSP, nvidia-drm), its /proc view, device nodes.
-        if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia ]; then
+        case "$(getprop ro.boot.android_pc.gpu)" in nvidia|nvidia-debug)
             echo "== nvidia modules"; grep -E '^(nvidia|nvidia_modeset|nvidia_drm|nvidia_uvm|nouveau|nova|nova_core|vkms) ' /proc/modules
             cat /proc/cmdline | tr ' ' '\n' | grep -E '^(cfi|module_blacklist|pcfb)'
             echo "== nvidia dmesg"; dmesg | grep -iE 'nvrm|nvidia|nvkms|gsp|pcnvidia|cfi failure|firmware' | head -n 200
@@ -120,7 +126,8 @@ dump() {
                 echo "${c##*/}: $(basename "$(readlink $c/device/driver)")"
             done
             echo "== modetest -c nvidia-drm"; timeout 10 modetest -M nvidia-drm -c 2>&1 | head -80
-        fi
+            echo "== pcnvidia debug"; cat /data/vendor/pcgpu/nvidia.txt 2>&1 | tail -n 150 ;;
+        esac
         # Phase K2 (docs/nvidia-proprietary.md): the NVIDIA glibc sidecar: its service and
         # processes, its output (stdio_to_kmsg), the vtest socket, nvidia-smi -q run from the
         # sidecar's root, and the SELinux denials of its domain (the entry is permissive).
