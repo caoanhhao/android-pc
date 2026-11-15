@@ -129,11 +129,13 @@ dump() {
             cat /vendor/bin/nvsidecar/VERSION 2>&1
             ps -A -o PID,PPID,USER,LABEL,RSS,NAME | grep -E 'nvsidecar|virgl_'
             ls -lZ /dev/socket/vtest /data/vendor/nvsidecar 2>&1
-            dmesg | grep -E 'nvsidecar|virgl|vtest|vkr' | head -n 100
+            # its output reaches logd's kernel buffer; the dmesg ring has wrapped by now
+            logcat -d -b all | grep -E ' nvsidecar|virgl|vtest|vkr' | tail -n 100
             echo "== nvidia-smi -q (sidecar)"
             LD_LIBRARY_PATH=/vendor/bin/nvsidecar/lib timeout 20 /vendor/bin/nvsidecar/lib/ld-linux-x86-64.so.2 \
                 /vendor/bin/nvsidecar/bin/nvidia-smi -q 2>&1 | head -n 300
-            echo "== avc nvsidecar"; dmesg | grep 'avc: denied' | grep -E 'nvsidecar|vtest_socket|nvidia_device' | head -n 80
+            echo "== avc nvsidecar"; logcat -d -b all | grep 'avc: denied' |
+                grep -E 'nvsidecar|vtest_socket|nvidia_device' | sed -E 's/.*avc: //; s/ (pid|ino)=[0-9]+//g' | sort -u | head -n 80
         fi
         for c in /sys/class/sound/card*; do
             [ "$(cat $c/device/vendor 2>/dev/null):$(cat $c/device/device 2>/dev/null)" = 0x10de:0x22bc ] || continue

@@ -194,6 +194,186 @@ DP-1 connected. If the desktop does not show but those hold, K1 is still done (t
 path is K4's); if nvidia.ko fails, the `NVRM:` lines say why (firmware path:
 `/vendor/firmware/nvidia/620.70.06/`).
 
+## K2. glibc sidecar: NVIDIA's userspace and the vtest server
+
+NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its
+own small glibc world inside Android: a read-only root with glibc, NVIDIA's userspace at the
+kernel modules' version (620.70.06) and waydroid-nvidia's patched `virgl_test_server`. Venus
+in Android (K3) and minigbm's vtest gralloc talk to it over the unix socket
+`/dev/socket/vtest`, as Waydroid talks to the host's server.
+
+### What was added
+
+| Piece | Where | What |
+|---|---|---|
+| Root builder | `tools/nvsidecar-build.sh [NV_VERSION]` | builds virglrenderer, assembles the root in `aosp/device/android-pc/nvsidecar/` (not in git) |
+| vtest patches | `tools/patches/nvsidecar-vrend-000{1,2,3}-*.patch` | waydroid-nvidia's `vrend-0001..0003`: `RESOURCE_IMPORT_BLOB` (v5), `ALLOC_DMABUF_IMAGE` (v6), `SYNC_EXPORT_FD` (v7) on virglrenderer 1.3.0 |
+| Host test | `tools/nvsidecar-hosttest.sh` | runs the root in a bwrap sandbox on the host's own RTX 4070 |
+| Install | `aosp-device/hals/nvsidecar/hal.mk` | copies the root to `/vendor/bin/nvsidecar/` (`PRODUCT_COPY_FILES`) |
+| Service | `aosp-device/hals/nvsidecar/{nvsidecar.sh,init.nvsidecar.rc}` | `vendor.nvsidecar`, only on `ro.boot.android_pc.gpu=nvidia` |
+| SELinux | `aosp-device/hals/nvsidecar/sepolicy/` | domain `nvsidecar`; types `nvsidecar_file`, `nvidia_device`, `vtest_socket`, `nvsidecar_data_file` |
+| Logs | `aosp-device/pc/pclog.sh` | `== nvsidecar`, `== nvidia-smi -q (sidecar)`, `== avc nvsidecar` |
+
+`hals/nvsidecar` is picked up by the `hals/*/hal.mk` and `hals/*/sepolicy` globs, so no shared
+makefile changed. It is not a HAL; it only borrows that wiring (as K4's `hals/nvdisplay` does).
+
+### The root
+
+`tools/nvsidecar-build.sh` (about 256 MiB):
+
+```
+/vendor/bin/nvsidecar/
+  bin/virgl_test_server, bin/virgl_render_server   virglrenderer 1.3.0 + vrend-0001..0003
+  bin/nvidia-smi                                   NVIDIA's binary
+  lib/ld-linux-x86-64.so.2, libc.so.6, ...         the build host's glibc (2.44) and deps
+  lib/libvirglrenderer.so.1, libvulkan.so.1        + GLVND libEGL.so.1, libGLdispatch.so.0
+  lib/libGLX_nvidia.so.0, libEGL_nvidia.so.0, libnvidia-{glcore,eglcore,glsi,tls,glvkspirv,
+      gpucomp,rtcore,allocator}.so.*, libnvidia-ml.so.1          NVIDIA 620.70.06
+  share/vulkan/icd.d/nvidia_icd.json               library_path = absolute path of libGLX_nvidia
+  share/glvnd/egl_vendor.d/10_nvidia.json          library_path = absolute path of libEGL_nvidia
+  VERSION
+```
+
+- **The dynamic loader.** virglrenderer is linked with
+  `--dynamic-linker=/vendor/bin/nvsidecar/lib/ld-linux-x86-64.so.2` and a `RUNPATH` of
+  `/vendor/bin/nvsidecar/lib`, so the kernel starts it with the root's own glibc loader and
+  `virgl_test_server` can exec `virgl_render_server` directly. NVIDIA's `nvidia-smi` keeps
+  `/lib64/ld-linux-x86-64.so.2` and is run through the loader explicitly
+  (`.../lib/ld-linux-x86-64.so.2 .../bin/nvidia-smi`). The service also sets
+  `LD_LIBRARY_PATH` to the root's `lib/` for what NVIDIA and the loaders `dlopen`.
+  (Meson's compiler sanity check cannot run a program with that interpreter on the build host,
+  so the link arguments are set with `meson configure` after the first setup.)
+- **Why `/vendor/bin`.** `fs_config` makes only `vendor/bin/*` mode 0755; the loader and the
+  programs must be executable (`execve` of an interpreter needs its x bit), and the board has
+  no `config.fs`. The whole root therefore sits below `/vendor/bin`.
+- **NVIDIA's files** come from the host's `/usr/lib` when the host runs `NV_VERSION`, otherwise
+  from `NVIDIA-Linux-x86_64-<ver>.run` (downloaded to `out/downloads/`, `--extract-only`).
+  Each library is stored under its soname (no symlinks, which `PRODUCT_COPY_FILES` would
+  duplicate). glibc and the other dependencies are the `ldd` closure of the root.
+- **What NVIDIA's Vulkan driver needs** was found by running the root in the sandbox with
+  `LD_DEBUG=files`. In 620.70.06 the Vulkan entry points (`libGLX_nvidia.so`) bring the
+  driver up through EGL: GLVND's `libEGL.so.1` → `libEGL_nvidia.so` →
+  `libnvidia-eglcore.so`. Without them `vk_icdGetInstanceProcAddr` returns no
+  `vkCreateInstance` and the loader reports "Found no drivers" (never seen on the host, whose
+  `/usr/lib` has them). `libGLX_nvidia.so` also `dlopen`s X11/xcb libraries (`libX11-xcb`,
+  `libxcb-{dri3,glx,present,randr,sync,xfixes}`); they are in the root, no X server is
+  involved. `libnvidia-rtcore` (ray tracing) is loaded at device creation.
+  Not shipped: CUDA, OptiX, NVENC/NVDEC, NGX, the OpenGL front ends, `libdbus` (optional).
+- **Size.** vendor.img was 345 MiB; the Cuttlefish vendor group (`odm vendor vendor_dlkm
+  odm_dlkm`) has 1404 MiB, so the root fits the existing `super` layout: no partition or group
+  change, and `tools/update-usb-aosp17.sh` updates the stick in place (it rewrites `super` as a
+  whole and keeps `userdata`).
+
+### The service
+
+`init.nvsidecar.rc`, on `ro.boot.android_pc.gpu=nvidia` only:
+
+- at `late-fs`: relabel K1's `/dev/nvidia*` nodes (`pcnvidia.sh` makes them with `mknod` as su
+  in early-init, so they carry `/dev`'s `device` label) to `nvidia_device`, then
+  `start vendor.nvsidecar`. late-fs comes before K3's `init.venus.rc` waits for the socket at
+  post-fs-data, and before `class_start core/hal` at boot;
+- at `post-fs-data`: `/data/vendor/nvsidecar{,/cache}` (HOME, NVIDIA's shader cache; used only
+  once clients connect);
+- `vendor.nvsidecar`: `user root` (only to create its socket in `/dev/socket`, which is
+  root:root 0755) with every capability dropped but `SYS_NICE` (NVIDIA's queue priorities),
+  `group graphics`, `stdio_to_kmsg`, `oneshot`, `disabled`.
+
+`nvsidecar.sh` (domain `nvsidecar`):
+
+1. prints the root's `VERSION`;
+2. exits without a socket when there is no `/dev/nvidiactl` or `nvidia-smi -L` sees no GPU
+   (QEMU, a module that did not load, a version mismatch): K3's `pcvenusprobe.sh` then finds
+   no `/dev/socket/vtest` and boots on SwiftShader;
+3. otherwise, with umask 0 (apps connect with their own uids), runs
+   `virgl_test_server --venus --no-virgl --no-fork --multi-clients --socket-path /dev/socket/vtest`
+   with `VK_DRIVER_FILES` = the root's `nvidia_icd.json` only,
+   `__EGL_VENDOR_LIBRARY_FILENAMES` = the root's NVIDIA EGL vendor file only and
+   `RENDER_SERVER_EXEC_PATH` = the root's `virgl_render_server`, and starts it again 2 s after
+   it exits. Its output (and the server's) reaches the kernel log through `stdio_to_kmsg`,
+   tag `nvsidecar` in `logcat -b all`. These are waydroid-vtest.service's flags without
+   `--rendernode`: with NVIDIA's ICD alone, vrend-0002's dma-buf allocator takes the only
+   device with the export extensions.
+
+### SELinux
+
+`nvsidecar` is an init daemon domain (`nvsidecar_exec` = `/vendor/bin/nvsidecar.sh`); the glibc
+programs run from `nvsidecar_file` without a transition. It may use the vendor shell and toybox,
+write the kernel log, read and execute its root, open `nvidia_device` and the DRM render nodes
+(`gpu_device`; cards only `getattr`), read `proc` and `sysfs` (`/proc/driver/nvidia`, PCI and DRM
+devices), `execmem` (NVIDIA's shader compiler), `sys_nice`, its data directory, create
+`vtest_socket` in `/dev/socket` (type transition on the name `vtest`) and use unix stream and
+seqpacket sockets (both `unix_stream_socket` to SELinux). Clients (`untrusted_app_all`,
+`platform_app`, `priv_app`, `system_app`, the other core domains, the allocator, composer and
+camera HAL servers; not `app_zygote` and the SDK sandbox, which the platform forbids unix
+sockets) may write the socket, `connectto` the server and exchange fds with it. Core processes
+connecting to a vendor socket is outside Treble's default, so the domain carries
+`socket_between_core_and_vendor_violators`; the wire format is vtest, not a system API, and the
+daemon only runs on the NVIDIA entry. The entry boots with `androidboot.selinux=permissive`
+(K1), so missing rules show up in pclog's `== avc nvsidecar` instead of breaking the boot; they
+are to be added from the first real-PC log.
+
+### Tests
+
+**Build host (bwrap).** `tools/nvsidecar-hosttest.sh` runs the root in a sandbox that has only
+`/vendor/bin/nvsidecar`, `/dev/nvidia*`, `/dev/dri`, `/proc`, `/sys` and an empty `/data` (no
+`/usr`, no `/lib64`), with the service's flags and environment on a private socket under
+`$XDG_RUNTIME_DIR` (Waydroid's `waydroid-vtest` service and socket are not touched), and the
+host's Mesa Venus as the client:
+
+```
+== nvidia-smi -L (sandbox)
+GPU 0: NVIDIA GeForce RTX 4070 (UUID: GPU-735380de-...)
+== virgl_test_server (sandbox), vulkaninfo through Venus (host)
+	apiVersion         = 1.4.334
+	deviceName         = Virtio-GPU Venus (NVIDIA GeForce RTX 4070)
+	driverName         = venus
+	conformanceVersion = 1.4.0.0
+== vtest-sync-fd (waydroid-nvidia's patched Venus, protocol 7)
+  real sync_file fds: 10 of 10
+PASS (0 failures)
+```
+
+**QEMU (no NVIDIA GPU).** vendor and super built on top of the K1 and K3 commits (vendor.img
+543 MiB, was 345 MiB; SELinux policy with every neverallow check passing), image
+`out/aosp17-usb-k2-qemu.img` (`--menu --userdata 2048 --append "console=ttyS0,115200
+androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"`),
+`default_entry` set to "NVIDIA (proprietary, Venus)" in its `limine.conf`, booted with
+`NO_WINDOW=1 AUDIO=none tools/run-qemu-aosp17-usb.sh`, read over adb:
+
+| Check | Result |
+|---|---|
+| boot | `sys.boot_completed=1` |
+| service | started at late-fs, `nvsidecar: nvidia 620.70.06 ...` then `nvsidecar: no /dev/nvidiactl (no NVIDIA GPU, or nvidia.ko did not load): not starting`, exit 0 after 43 ms; `init.svc.vendor.nvsidecar=stopped`, no `/dev/socket/vtest` |
+| fallback | `vendor.venus.probe=swiftshader`, `ro.hardware.vulkan=pastel` (K3's probe found no socket) |
+| labels | `/vendor/bin/nvsidecar.sh` `nvsidecar_exec`, the root `nvsidecar_file` (mode 0755 from fs_config), `/data/vendor/nvsidecar{,/cache}` `nvsidecar_data_file` root:graphics 0770 |
+| second start | a stray `/dev/nvidiactl` (root:root, no driver behind it) appeared 30 s after boot; `start vendor.nvsidecar` then got past the first check and stopped at the second: `nvidia-smi sees no GPU: not starting` |
+| glibc on Android | `ld-linux-x86-64.so.2 nvidia-smi -L` runs (NVIDIA's "couldn't communicate with the NVIDIA driver", exit 9); `virgl_test_server` with the service's environment starts on Android's kernel and binds its socket |
+| SELinux | no `avc: denied` for `nvsidecar`, `vtest_socket` or `nvidia_device` |
+
+The service's output goes to the kernel log, but on this boot the dmesg ring had wrapped
+before adb came up; logd's copy (`logcat -b all`, tag `nvsidecar`) has it, so pclog reads it
+from there. `virgl_test_server` run by hand without `LD_LIBRARY_PATH` stops at `libexpat.so.1`
+(a dependency of `libgbm`, which has no run path of its own): the root needs the environment
+the service sets.
+
+**Real PC (pending, with K4's image).** In pclog's `boot-N/state*`: `== nvsidecar` shows
+`init.svc: running`, `virgl_test_server` in `u:r:nvsidecar:s0` and `/dev/socket/vtest` as
+`vtest_socket`; `== nvidia-smi -q (sidecar)` lists the RTX 4070 with driver 620.70.06;
+`getprop vendor.venus.probe` is `venus`; `== avc nvsidecar` lists the rules still missing.
+
+### Changing the driver version
+
+Kernel modules and userspace must match exactly. After K1's `tools/nvidia-build.sh` builds a
+new version, run `tools/nvsidecar-build.sh <version>` (no argument: the host's version), then
+`tools/nvsidecar-hosttest.sh` if the host runs that version, then the vendor image.
+
+### Status
+
+**Code done, checked on the build host (bwrap, the RTX 4070) and in QEMU (starts, fails
+cleanly), real-PC test pending.** No release image: K4 builds the combined one. Done when, on
+the real PC, `nvidia-smi` from the sidecar lists the RTX 4070 and `virgl_test_server` runs
+(pclog `== nvsidecar`, `== nvidia-smi -q (sidecar)`).
+
 ## K3. Android side: Venus, gralloc, ANGLE, features
 
 The Android half of waydroid-nvidia's design. It acts only on a boot entry with

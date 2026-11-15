@@ -1,0 +1,12 @@
+/vendor/bin/nvsidecar\.sh      u:object_r:nvsidecar_exec:s0
+/vendor/bin/nvsidecar(/.*)?    u:object_r:nvsidecar_file:s0
+/data/vendor/nvsidecar(/.*)?   u:object_r:nvsidecar_data_file:s0
+/dev/socket/vtest              u:object_r:vtest_socket:s0
+
+# NVIDIA's own driver (K1's pcnvidia.sh creates the nodes).
+/dev/nvidiactl                 u:object_r:nvidia_device:s0
+/dev/nvidia-modeset            u:object_r:nvidia_device:s0
+/dev/nvidia-uvm                u:object_r:nvidia_device:s0
+/dev/nvidia-uvm-tools          u:object_r:nvidia_device:s0
+/dev/nvidia[0-9]+              u:object_r:nvidia_device:s0
+/dev/nvidia-caps(/.*)?         u:object_r:nvidia_device:s0

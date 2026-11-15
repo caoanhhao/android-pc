@@ -701,6 +701,15 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   by init in its own SELinux domain with the vtest socket where Venus expects it. Done when:
   on the real PC `nvidia-smi` (inside the sidecar) lists the RTX 4070 and
   `virgl_test_server` runs.
+  **Status (2026-11-15): code done, checked on the build host and in QEMU, real-PC test
+  pending** — 256 MiB glibc root at `/vendor/bin/nvsidecar` (fits the vendor group, no layout
+  change): glibc 2.44, NVIDIA 620.70.06 (incl. GLVND EGL, which NVIDIA's Vulkan needs),
+  virglrenderer 1.3.0 + vtest patches v5-v7 linked with the root's ld.so as interpreter
+  (`tools/nvsidecar-build.sh`); `vendor.nvsidecar` starts at late-fs on the nvidia entry in its
+  own domain and creates `/dev/socket/vtest`, or exits without it when no GPU answers
+  `nvidia-smi`. Host bwrap test with only the root: Venus vulkaninfo shows the RTX 4070,
+  protocol-7 sync_files 10/10; QEMU: fails cleanly, Venus falls back to SwiftShader
+  (docs/nvidia-proprietary.md, K2).
 - **K3 — Android side: Venus, gralloc, GLES, features.** Build waydroid-nvidia's Venus
   (patched Mesa) for AOSP 17 x86_64 + arm64-bridge ABIs, `minigbm-vtest` as gralloc,
   ANGLE → Venus as GLES (ES 3.2 + AEP), `gpuid`, and the honest feature declarations

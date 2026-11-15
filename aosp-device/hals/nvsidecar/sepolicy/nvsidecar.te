@@ -1,0 +1,65 @@
+# Phase K2 (docs/nvidia-proprietary.md): the NVIDIA glibc sidecar, nvsidecar.sh and the
+# glibc programs it runs from /vendor/bin/nvsidecar (virgl_test_server, its
+# virgl_render_server children with NVIDIA's Vulkan driver, nvidia-smi).
+type nvsidecar, domain, mlstrustedsubject;
+type nvsidecar_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(nvsidecar)
+type nvsidecar_tmpfs, file_type;
+tmpfs_domain(nvsidecar)
+
+# The glibc root: run from the script without a domain change.
+type nvsidecar_file, vendor_file_type, file_type;
+# /dev/nvidiactl, /dev/nvidiaN, /dev/nvidia-modeset, /dev/nvidia-uvm*, /dev/nvidia-caps/
+# (K1's pcnvidia.sh makes them, init.nvsidecar.rc relabels them).
+type nvidia_device, dev_type;
+# The vtest socket every Venus and gralloc client connects to (mlstrustedobject: apps run at
+# their own MLS categories).
+type vtest_socket, file_type, mlstrustedobject;
+# HOME and NVIDIA's shader cache.
+type nvsidecar_data_file, file_type, data_file_type;
+
+# nvsidecar.sh: vendor sh and toybox (rm, sleep, cat, tr); output to the kernel log.
+allow nvsidecar vendor_shell_exec:file rx_file_perms;
+allow nvsidecar vendor_toolbox_exec:file rx_file_perms;
+allow nvsidecar kmsg_device:chr_file { getattr write };
+allow nvsidecar nvsidecar_file:dir r_dir_perms;
+allow nvsidecar nvsidecar_file:file { rx_file_perms execute_no_trans };
+allow nvsidecar self:process { fork sigchld signal sigkill setsched getsched };
+# NVIDIA's driver generates code (shader compiler).
+allow nvsidecar self:process execmem;
+allow nvsidecar self:capability sys_nice;
+
+# The GPU: NVIDIA's control and GPU nodes, nvidia-drm's render node; the cards are only
+# looked at.
+allow nvsidecar nvidia_device:dir r_dir_perms;
+allow nvsidecar nvidia_device:chr_file rw_file_perms;
+allow nvsidecar gpu_device:dir r_dir_perms;
+allow nvsidecar gpu_device:chr_file rw_file_perms;
+allow nvsidecar graphics_device:chr_file getattr;
+# /proc/driver/nvidia, the PCI and DRM devices in sysfs.
+allow nvsidecar proc:file r_file_perms;
+r_dir_file(nvsidecar, sysfs)
+
+allow nvsidecar nvsidecar_data_file:dir create_dir_perms;
+allow nvsidecar nvsidecar_data_file:file create_file_perms;
+
+# The server: its socket in /dev/socket, the clients' connections, and the socketpairs to its
+# render server children (SOCK_SEQPACKET pairs are unix_stream_socket to SELinux).
+allow nvsidecar socket_device:dir rw_dir_perms;
+type_transition nvsidecar socket_device:sock_file vtest_socket "vtest";
+allow nvsidecar vtest_socket:sock_file { create unlink getattr setattr };
+allow nvsidecar self:unix_stream_socket create_stream_socket_perms;
+
+# Clients: every process that renders through Venus (apps, SurfaceFlinger, system_server,
+# ...) or allocates and maps gralloc buffers (the allocator, the composer, the camera HAL).
+# Apps are named by type: app_zygote and the SDK sandbox may not use unix sockets.
+# They connect to the socket and exchange fds (dma-bufs, sync_files) with the server.
+# Core processes talking to a vendor daemon over a socket is what Treble forbids by default;
+# the socket's wire format is vtest, not a system API, and this daemon only exists on the
+# NVIDIA entry.
+typeattribute nvsidecar socket_between_core_and_vendor_violators;
+define(`nvsidecar_clients', `{ untrusted_app_all platform_app priv_app system_app coredomain -appdomain -app_zygote hal_graphics_allocator_server hal_graphics_composer_server hal_camera_server }')
+allow nvsidecar_clients vtest_socket:sock_file write;
+allow nvsidecar_clients nvsidecar:unix_stream_socket connectto;
+allow nvsidecar_clients nvsidecar:fd use;
+allow nvsidecar nvsidecar_clients:fd use;

@@ -1,0 +1,32 @@
+# Phase K2 (docs/nvidia-proprietary.md): the NVIDIA glibc sidecar, only on the entry with
+# androidboot.android_pc.gpu=nvidia. nvsidecar.sh runs NVIDIA's Vulkan driver behind
+# waydroid-nvidia's vtest server; Venus (K3) and minigbm's vtest gralloc connect to
+# /dev/socket/vtest.
+#
+# Started at late-fs: the socket must be there before K3's init.venus.rc waits for it at
+# post-fs-data (and before class core/hal start at boot). K1's pcnvidia.sh has made the
+# /dev/nvidia* nodes in early-init (as su, so they carry /dev's label until relabelled here).
+on late-fs && property:ro.boot.android_pc.gpu=nvidia
+    restorecon /dev/nvidiactl
+    restorecon /dev/nvidia-modeset
+    restorecon /dev/nvidia0
+    restorecon /dev/nvidia-uvm
+    restorecon /dev/nvidia-uvm-tools
+    restorecon_recursive /dev/nvidia-caps
+    start vendor.nvsidecar
+
+# HOME and NVIDIA's shader cache; the server's render processes only use it after a client
+# connects, which is after post-fs-data.
+on post-fs-data && property:ro.boot.android_pc.gpu=nvidia
+    mkdir /data/vendor/nvsidecar 0770 root graphics
+    mkdir /data/vendor/nvsidecar/cache 0770 root graphics
+
+# uid 0 only to create its socket in /dev/socket (root:root 0755); every other capability is
+# dropped (SYS_NICE: NVIDIA's high/realtime queue priorities, VK_EXT_global_priority).
+service vendor.nvsidecar /vendor/bin/nvsidecar.sh
+    user root
+    group graphics
+    capabilities SYS_NICE
+    stdio_to_kmsg
+    oneshot
+    disabled
