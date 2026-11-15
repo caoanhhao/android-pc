@@ -8,7 +8,10 @@ PRODUCT=${PRODUCT:-aosp_pc_x86_64}
 "$ROOT/tools/aosp-device-link.sh" || exit 1
 cd "$ROOT/aosp" || exit 1
 export TARGET_KERNEL_USE=${TARGET_KERNEL_USE:-6.18}   # android17-6.18 GKI instead of the 6.12 default
-export SOONG_GOMEMLIMIT=${SOONG_GOMEMLIMIT:-18GiB}   # soong_build heap cap; analysis OOMs at 25 GB otherwise (local build/soong patch)
+# soong_build heap cap (local build/soong patch) and no incremental analysis: under the 20 GB
+# limited-build.sh cap, 18GiB plus incremental analysis gets the analysis OOM-killed.
+export SOONG_GOMEMLIMIT=${SOONG_GOMEMLIMIT:-14GiB}
+export SOONG_INCREMENTAL_ANALYSIS=${SOONG_INCREMENTAL_ANALYSIS:-false}
 # A build number per run (AOSP's default is the constant eng.<user>): Android rescans and upgrades
 # its system apps only when the build fingerprint changes, and tools/update-usb-aosp17.sh puts a
 # new build over a stick's old one with the user's data kept (docs/usb-boot-aosp17.md §10).

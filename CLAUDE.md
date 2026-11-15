@@ -14,6 +14,9 @@ earlier Rust kernel lives on the `aosp-16` branch).
   the i7-13700K is degraded and P-core load froze the host and oopsed its kernel
   (docs/aosp-build.md, "Flaky host"). systemd's `AllowedCPUs` does nothing here (no
   cpuset controller for the user), so always pin with `taskset`.
+- AOSP builds lower Soong's memory: `SOONG_GOMEMLIMIT=14GiB SOONG_INCREMENTAL_ANALYSIS=false`
+  (the defaults in `tools/aosp17-build.sh`; set them yourself for a bare `m`). With 18GiB
+  and incremental analysis the Soong analysis gets OOM-killed under the 20 GB cap.
 - Split builds into the smallest targets possible (e.g. AOSP: individual modules
   or one image at a time — `m -j12 <module>`, then `systemimage`, `vendorimage`,
   ... — not a full `m`), checking free disk between steps.
