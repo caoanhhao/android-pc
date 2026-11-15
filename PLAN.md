@@ -597,6 +597,15 @@ one session each, one build at a time (I1 builds last and makes the release imag
   "modetest only" entry (G1's test, its static colour pattern is by design) and pclog's
   audio check (the 440 Hz beeps, H1's test, `audio-check.dex` on the pclog partition) are
   passed tests to remove. Details in `docs/nvidia.md` ("Real-PC result and fix").
+- **I3 — Genshin Impact not in the Play Store**. Status (2026-11-15): analysed, no ROM
+  change. Every manifest check Play makes matches (arm64 via the bridge, GLES 3.1,
+  touchscreen features, no TV/automotive type; Genshin was already hidden at 240 dpi, so
+  H4's density is not the cause), and WWM and Delta Force are listed with the same profile.
+  What is left is the developer's Play Console device-catalog filtering of uncertified /
+  x86_64 / Cuttlefish-SoC devices, which only a spoofed certified identity would pass (out
+  of scope). The user can confirm the reason on the game's Play page and install it with
+  Aurora Store (same Google-signed splits) or from genshin.hoyoverse.com. Details in
+  `docs/arm-translation.md` ("I3").
 
 ## Risks
 
