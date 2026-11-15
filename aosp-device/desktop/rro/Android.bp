@@ -1,0 +1,13 @@
+// Desktop mode, phase I2 (docs/desktop-mode.md): no navigation bar, so Launcher3's taskbar
+// stays away and Smart Dock's dock is the only bar.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "pc_desktop_overlay_frameworks_base_core",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

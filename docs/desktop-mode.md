@@ -1,10 +1,10 @@
-# Desktop mode and the 2560x1080 landscape display (F9f, H4)
+# Desktop mode and the 2560x1080 landscape display (F9f, H4, I2)
 
 The PC is driven with a mouse and keyboard on a 2560x1080 ultrawide monitor, so
 `aosp_pc_x86_64` boots into AOSP 17's own desktop windowing on its primary display,
 locked to landscape. The window manager draws the window captions. The default launcher is
-Smart Dock (H4, below); AOSP's Launcher3 (Quickstep) stays installed as the recents
-provider and as a second launcher.
+Smart Dock (H4, below); AOSP's Launcher3 (Quickstep) stays installed only as the recents
+provider, with no home screen and no taskbar (I2).
 
 Everything is in `aosp-device/desktop/` (included by `aosp_pc_x86_64.mk`), and the boot
 resolution is a `tools/mkusb-aosp17.sh` default.
@@ -33,8 +33,9 @@ enters it per app (the app handle at the top of a fullscreen app → "Desktop", 
 window).
 
 Using it: apps open as resizable windows with a caption bar (minimize, maximize, close,
-and the app-handle menu for fullscreen/split). Launcher3's taskbar along the bottom shows
-pinned and running apps; the home screen sits behind the windows. `adb shell dumpsys
+and the app-handle menu for fullscreen/split). Smart Dock's dock along the bottom shows
+pinned and running apps (until I2 it was Launcher3's taskbar); the wallpaper sits behind
+the windows. `adb shell dumpsys
 activity containers` shows the tasks as `mode=freeform`.
 
 Why not `android.hardware.type.pc`: on a "pc" device WindowManager forces freeform too,
@@ -60,12 +61,14 @@ default launcher on 2026-11-15.
   so later user choices stay:
   - allows its notification listener, the `SYSTEM_ALERT_WINDOW` and `GET_USAGE_STATS` app
     ops, and grants `WRITE_SECURE_SETTINGS` (a development permission);
-  - makes it the `android.app.role.HOME` holder. Launcher3 and Smart Dock both declare
-    their HOME filter at priority 0, so the role controller has no fallback holder, and the
-    first boot reaches the HOME intent before the script runs: the "Use Smart Dock as
-    Home? Just once / Always" chooser is already up. The script closes it (BACK, only when
-    `ResolverActivity` is the resumed activity) and starts HOME again, which now goes to
-    the role holder. A `/product/etc/preferred-apps` entry does not help: HOME resolves
+  - makes it the `android.app.role.HOME` holder. Until I2, Launcher3 and Smart Dock both
+    declared their HOME filter at priority 0, so the role controller had no fallback
+    holder, and the first boot reached the HOME intent before the script ran: the "Use
+    Smart Dock as Home? Just once / Always" chooser was already up. The script closes it
+    (BACK, only when `ResolverActivity` is the resumed activity) and starts HOME again,
+    which then goes to the role holder. Since I2 Smart Dock is the only HOME activity
+    (besides Settings' `FallbackHome`), so the chooser no longer comes up and this step is
+    a safety net. A `/product/etc/preferred-apps` entry does not help: HOME resolves
     through the role, not PackageManager's preferred activities;
   - turns on its accessibility service `DockService` (the dock itself), last.
 - **Script on /product.** Init runs it in `su`, a system (core) domain, and Treble's
@@ -88,12 +91,56 @@ default launcher on 2026-11-15.
   (`git apply` in `aosp/packages/apps/Launcher3`) returns early there.
 - **Settings hides the dock.** Settings (and other sensitive screens such as permission
   dialogs) sets `HIDE_NON_SYSTEM_OVERLAY_WINDOWS`, so while one of its windows is visible
-  every app overlay, the dock included, is hidden and Launcher3's taskbar shows instead.
-  The dock comes back when that window closes. This is Android's overlay protection, not
-  a bug to fix.
-- **Going back to Launcher3:** Settings → Apps → Default apps → Home app. Removing the
-  marker (`adb root; adb shell rm /data/misc/smartdock-setup.done`) runs the setup again
-  on the next boot.
+  every app overlay, the dock included, is hidden. Until I2 Launcher3's taskbar showed
+  instead; since I2 there is no bar while such a window is visible (use its caption bar's
+  close button, or Esc/Alt+Tab). The dock comes back when that window closes. This is
+  Android's overlay protection, not a bug to fix.
+- **Running the setup again:** removing the marker (`adb root; adb shell rm
+  /data/misc/smartdock-setup.done`) runs it on the next boot. Launcher3 can no longer be
+  chosen as home (I2, below); another launcher installed from F-Droid or Play can, in
+  Settings → Apps → Default apps → Home app.
+
+## Launcher3 only as the recents provider (I2)
+
+On the real PC with the H3 build (`out/pclog-h3/boot-9`), Smart Dock was the HOME role
+holder and the resumed home activity, but Launcher3's taskbar (window `Taskbar`, a trusted
+overlay owned by `com.android.launcher3`, `[0,963][2560,1080]`) was drawn over the same
+strip as Smart Dock's dock (`[0,1024][2560,1080]`), so the old launcher's bar with its
+back/home/recents buttons was what the user saw, and Launcher3 was still offered as a
+second home app. Removing Launcher3 is not an option: in AOSP 17 the recents screen
+(overview) lives in Quickstep (`config_recentsComponentName`), SystemUI has no recents of
+its own any more, and Smart Dock's recents button, Alt+Tab and the recents key all end in
+Quickstep's `OverviewCommandHelper`. So Launcher3 stays, reduced to recents:
+
+| Piece | Where | Effect |
+|---|---|---|
+| `android:enabled="false"` on `QuickstepLauncher` | [tools/patches/aosp17-launcher3-recents-only.patch](../tools/patches/aosp17-launcher3-recents-only.patch), `quickstep/AndroidManifest-launcher.xml` | Launcher3's home activity is disabled: Smart Dock is the only HOME candidate (Settings → Default apps and the first-boot chooser no longer list Launcher3) |
+| `resolveActivity(..., MATCH_DISABLED_COMPONENTS)` | same patch, `OverviewComponentObserver` | Quickstep looks up its own home activity at start (and dereferenced a null `ResolveInfo` once it was disabled); with the flag it still finds it, sees that the default home is another app and uses its fallback `RecentsActivity` |
+| `config_showNavigationBar=false` | RRO `pc_desktop_overlay_frameworks_base_core` (`aosp-device/desktop/rro/`, `/vendor/overlay`, priority 10 over Cuttlefish's phone overlay that sets it to true) | WindowManager reports no navigation bar, SystemUI sets `SYSUI_STATE_NAVIGATION_BAR_DISABLED`, and Launcher3's `TaskbarManager` creates no taskbar; SystemUI draws no navigation bar either. Smart Dock's dock has its own back, home and recents buttons |
+
+Both are part of the OS partitions (`system_ext`, `vendor`), so they apply when the stick is
+updated with `tools/update-usb-aosp17.sh`; nothing in userdata has to change. An existing
+userdata already has Smart Dock as the HOME role holder (H4's setup script), and Android
+rescans the system apps because the build fingerprint changes, picking up the disabled
+activity. `git apply` the patch in `aosp/packages/apps/Launcher3`, next to H4's taskbar
+NPE patch.
+
+Known limit: in desktop mode Quickstep's fallback `RecentsActivity` opens as a small
+freeform window (`bounds=[1074,186][1486,918]`, caption "Quickstep") rather than full
+screen. This is how recents already behaved with Smart Dock as home since H4 (Quickstep
+was not the default home then either); Smart Dock's dock lists the running apps, which is
+the usual way to switch.
+
+Checked on Cuttlefish (2026-11-15, `--display0=width=2560,height=1080,dpi=160
+--resume=false`, fresh userdata): `cmd package query-activities -a MAIN -c HOME` lists
+only `cu.axel.smartdock/.activities.LauncherActivity` and `com.android.settings.FallbackHome`;
+the HOME role holder is `cu.axel.smartdock` and its `LauncherActivity` is resumed after
+boot with no chooser; `dumpsys window` has no `Taskbar` or `NavigationBar` window, only
+Smart Dock's dock, which shows its back/home/recents buttons; Quickstep's
+`OverviewComponentObserver` reports `isDefaultHome=false`, `overviewIntent=...RecentsActivity`;
+`KEYCODE_APP_SWITCH` and Smart Dock's recents button both open
+`com.android.quickstep.RecentsActivity` (`OverviewCommandHelper` `TOGGLE`); no
+Launcher3, Quickstep or Smart Dock entries in the crash log.
 
 ## 2560x1080 landscape
 

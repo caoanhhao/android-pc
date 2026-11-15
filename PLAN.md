@@ -598,6 +598,15 @@ one session each, one build at a time (I1 builds last and makes the release imag
   audio check (the 440 Hz beeps, H1's test) as passed tests; `pcgpu.sh` stays, reachable
   with `--append "androidboot.android_pc.kms=modetest ..."`. Details in `docs/nvidia.md`
   ("Real-PC result and fix").
+- **I2 — the old launcher still shows next to Smart Dock**. Status (2026-11-15): done,
+  checked on Cuttlefish (I1 builds the image). Smart Dock was already home; what showed was
+  Launcher3's taskbar drawn over the dock, and Launcher3 was still a second home choice.
+  Launcher3 stays only as the recents provider (AOSP 17 has no recents outside Quickstep):
+  `tools/patches/aosp17-launcher3-recents-only.patch` disables its home activity, and the
+  `pc_desktop_overlay_frameworks_base_core` RRO turns the navigation bar off, so no taskbar
+  is drawn. Smart Dock is the only HOME candidate; its dock's recents button still opens
+  Quickstep's recents. OS partitions only, so the stick update applies it with userdata kept.
+  Details in `docs/desktop-mode.md` ("Launcher3 only as the recents provider").
 - **I3 — Genshin Impact not in the Play Store**. Status (2026-11-15): analysed, no ROM
   change. Every manifest check Play makes matches (arm64 via the bridge, GLES 3.1,
   touchscreen features, no TV/automotive type; Genshin was already hidden at 240 dpi, so

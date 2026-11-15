@@ -21,7 +21,8 @@ appops set $PKG SYSTEM_ALERT_WINDOW allow
 appops set $PKG GET_USAGE_STATS allow
 pm grant $PKG android.permission.WRITE_SECURE_SETTINGS
 
-# Launcher3 and Smart Dock both offer HOME at priority 0, so without this Android asks.
+# Smart Dock is the only HOME activity since I2 (Launcher3's is disabled), but the role is
+# set explicitly, as on H4 builds where both offered HOME at priority 0 and Android asked.
 if cmd role add-role-holder --user 0 android.app.role.HOME $PKG 0; then
     k "home is $(cmd role get-role-holders --user 0 android.app.role.HOME)"
 else
@@ -29,9 +30,9 @@ else
     exit 0
 fi
 
-# The first boot reached the HOME intent before this ran, while Launcher3 and Smart Dock
-# still tied, so the "Use Smart Dock as Home?" chooser is up: close it, and HOME now goes
-# to the role holder.
+# On H4 builds the first boot reached the HOME intent before this ran, while Launcher3 and
+# Smart Dock still tied, so the "Use Smart Dock as Home?" chooser was up: close it if it
+# ever shows, and HOME then goes to the role holder.
 if dumpsys activity activities | grep -m1 ' ResumedActivity:' | grep -q ResolverActivity; then
     input keyevent KEYCODE_BACK
     sleep 2

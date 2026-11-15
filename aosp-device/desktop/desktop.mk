@@ -22,5 +22,8 @@ PRODUCT_PRODUCT_PROPERTIES += \
 
 # Smart Dock (cu.axel.smartdock, from tools/fetch-apps.sh; pc.mk installs it) is the default
 # launcher: smartdock-setup.sh makes it the home app and grants its permissions once per
-# userdata (phase H4). Launcher3 stays installed as the recents provider and a second choice.
-PRODUCT_PACKAGES += init.desktop.rc smartdock-setup.sh
+# userdata (phase H4). Launcher3 stays installed only as the recents provider (phase I2):
+# tools/patches/aosp17-launcher3-recents-only.patch disables its home activity, and the
+# pc_desktop_overlay_frameworks_base_core RRO turns the navigation bar off, so it draws no
+# taskbar.
+PRODUCT_PACKAGES += init.desktop.rc smartdock-setup.sh pc_desktop_overlay_frameworks_base_core

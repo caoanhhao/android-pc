@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Desktop mode on aosp_pc_x86_64 (phase I2, docs/desktop-mode.md). -->
+<resources>
+    <!-- No navigation bar on the PC's display. SystemUI then reports
+         SYSUI_STATE_NAVIGATION_BAR_DISABLED and Launcher3 (still the recents provider) draws
+         no taskbar over Smart Dock's dock, whose own back, home and recents buttons take
+         its place. -->
+    <bool name="config_showNavigationBar">false</bool>
+</resources>

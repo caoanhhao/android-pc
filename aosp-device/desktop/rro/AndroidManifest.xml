@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="android.pc.desktop.overlay">
+
+    <application android:hasCode="false" />
+
+    <!-- Above Cuttlefish's phone overlay (priority 2), which turns the navigation bar on. -->
+    <overlay
+      android:targetPackage="android"
+      android:isStatic="true"
+      android:priority="10"
+      />
+</manifest>

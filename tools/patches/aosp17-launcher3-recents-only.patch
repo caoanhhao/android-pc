@@ -1,0 +1,31 @@
+diff --git a/quickstep/AndroidManifest-launcher.xml b/quickstep/AndroidManifest-launcher.xml
+index d6aa886..57de367 100644
+--- a/quickstep/AndroidManifest-launcher.xml
++++ b/quickstep/AndroidManifest-launcher.xml
+@@ -53,7 +53,9 @@
+             android:resumeWhilePausing="true"
+             android:taskAffinity=""
+             android:exported="true"
+-            android:enabled="true">
++            android:enabled="false">
++            <!-- android-pc: disabled, Smart Dock is the only home app; Quickstep still
++                 provides recents through its fallback RecentsActivity. -->
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+                 <action android:name="android.intent.action.SHOW_WORK_APPS" />
+diff --git a/quickstep/src/com/android/quickstep/OverviewComponentObserver.java b/quickstep/src/com/android/quickstep/OverviewComponentObserver.java
+index de98fe6..bc17d38 100644
+--- a/quickstep/src/com/android/quickstep/OverviewComponentObserver.java
++++ b/quickstep/src/com/android/quickstep/OverviewComponentObserver.java
+@@ -124,7 +124,10 @@ public final class OverviewComponentObserver {
+         mCurrentPrimaryHomeIntent = createHomeIntent();
+         mMyPrimaryHomeIntent = new Intent(mCurrentPrimaryHomeIntent).setPackage(
+                 context.getPackageName());
+-        ResolveInfo info = context.getPackageManager().resolveActivity(mMyPrimaryHomeIntent, 0);
++        // android-pc: the home activity is disabled in the manifest (Smart Dock is home), so
++        // match disabled components to still find it.
++        ResolveInfo info = context.getPackageManager().resolveActivity(mMyPrimaryHomeIntent,
++                PackageManager.MATCH_DISABLED_COMPONENTS);
+         ComponentName myHomeComponent =
+                 new ComponentName(context.getPackageName(), info.activityInfo.name);
+         mMyPrimaryHomeIntent.setComponent(myHomeComponent);
