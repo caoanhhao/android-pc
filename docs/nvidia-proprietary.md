@@ -269,7 +269,7 @@ makefile changed. It is not a HAL; it only borrows that wiring (as K4's `hals/nv
 `init.nvsidecar.rc`, on `ro.boot.android_pc.gpu=nvidia` only:
 
 - at `late-fs`: relabel K1's `/dev/nvidia*` nodes (`pcnvidia.sh` makes them with `mknod` as su
-  in early-init, so they carry `/dev`'s `device` label) to `nvidia_device`, then
+  at post-fs, so they carry `/dev`'s `device` label) to `nvidia_device`, then
   `start vendor.nvsidecar`. late-fs comes before K3's `init.venus.rc` waits for the socket at
   post-fs-data, and before `class_start core/hal` at boot;
 - at `post-fs-data`: `/data/vendor/nvsidecar{,/cache}` (HOME, NVIDIA's shader cache; used only

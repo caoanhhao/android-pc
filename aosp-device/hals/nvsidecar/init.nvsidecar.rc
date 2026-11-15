@@ -4,8 +4,9 @@
 # /dev/socket/vtest.
 #
 # Started at late-fs: the socket must be there before K3's init.venus.rc waits for it at
-# post-fs-data (and before class core/hal start at boot). K1's pcnvidia.sh has made the
-# /dev/nvidia* nodes in early-init (as su, so they carry /dev's label until relabelled here).
+# post-fs-data (and before class core/hal start at boot). K1's pcnvidia.sh has loaded the
+# modules and made the /dev/nvidia* nodes at post-fs (as su, so they carry /dev's label until
+# relabelled here). The debug entry (gpu=nvidia-debug) does not start the sidecar.
 on late-fs && property:ro.boot.android_pc.gpu=nvidia
     restorecon /dev/nvidiactl
     restorecon /dev/nvidia-modeset
