@@ -229,14 +229,23 @@ if [[ $menu == 1 ]]; then
         # is logged with a backtrace instead of killing the kernel; softlockup_panic and
         # nmi_watchdog=panic turn a kernel lockup into a panic, which efi-pstore saves for
         # pclog on the next boot (panic=10 reboots).
-        nvdiag="cfi=kcfi,warn softlockup_panic=1 nmi_watchdog=panic module_blacklist=nouveau,nova_core,nova"
+        # K1c: the kCFI mismatches the first boots hit are fixed in the module; ",warn" stays until
+        # a real-PC boot logs no "CFI failure" at all. intel_iommu=off: the GKI image turns the
+        # Intel IOMMU on by default (INTEL_IOMMU_DEFAULT_ON) and the RTX 4070 then sits behind DMA
+        # remapping; the build host, where this driver version runs fine, has it off. Tried
+        # against the Xid 51 (BAD_TSG) of the K1b boot.
+        nvbase="cfi=kcfi,warn intel_iommu=off module_blacklist=nouveau,nova_core,nova"
+        nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
         entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $venus $drm" "$sound"
         # K1b: the same modules on pcfb with the kernel log on the screen; pcnvidia.sh loads them
         # one at a time after boot (nvidia, nvidia-uvm, nvidia-modeset, nvidia-drm without and
-        # then with KMS), so the screen shows where it stops.
+        # then with KMS), so the screen shows where it stops. K1c: loglevel=5 (errors, warnings and
+        # pcnvidia's markers; not the info and audit flood) and no lockup panics: at loglevel=7 the
+        # earlycon framebuffer console was so slow that printk held a CPU for 22 s and
+        # softlockup_panic killed the boot.
         entry "Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)" \
-            "androidboot.selinux=permissive androidboot.android_pc.gpu=nvidia-debug earlycon=efifb keep_bootcon loglevel=7 $nvdiag"
+            "androidboot.selinux=permissive androidboot.android_pc.gpu=nvidia-debug earlycon=efifb keep_bootcon loglevel=5 $nvbase"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

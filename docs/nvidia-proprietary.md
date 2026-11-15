@@ -250,6 +250,94 @@ the screen (or a `CFI failure`/`NVRM` message, or an oops) names the module and 
 the main entry, `boot-N/dmesg.*` now exists up to the step that died, and `boot-N/pstore/` on
 the boot after a panic holds the panic's kernel log.
 
+### K1c. kCFI fixes, Xid 51, safe debug entry (2026-11-15)
+
+**K1b real-PC result** (build `eng.caoanh.20261115.2202`, logs in `out/pclog-k1b`):
+
+- The original hang was kCFI. `boot-20/pstore` held the earlier boot's panic:
+  `CFI failure at kgspAllocateScrubberUcodeImage_IMPL+0x3a/0xe0 [nvidia] (target:
+  ksec2GetBinArchiveSecurescrubUcode_AD10X+0x0/0x20 [nvidia]; ...)`, `Oops: invalid opcode`,
+  `Kernel panic - not syncing: Fatal exception`.
+- Main entry with `cfi=kcfi,warn` (`boot-21`): that one CFI failure (logged, not fatal), then all
+  four modules load, `[drm] Initialized nvidia-drm 0.0.0 for 0000:01:00.0`, DP-1 connected,
+  K2's server allocates on the RTX 4070 from 27.6 s, `sys.boot_completed` at 42.6 s. At 45.09 s
+  GSP reports `Xid 51, BAD_TSG encountered on runlist: 0 with error code: 4` and `Xid 154 ...
+  (PF FLR)`; every later GPFIFO channel allocation (class `c56f`) fails with
+  `NV_ERR_RESET_REQUIRED`.
+- Debug entry (`boot-20`): `watchdog: BUG: soft lockup - CPU#6 stuck for 22s! [init:1]` in
+  `console_flush_all`, then `softlockup_panic` at 590 s: the earlycon framebuffer console at
+  `loglevel=7` was far too slow.
+
+**kCFI mismatches, fixed** (`tools/patches/nvidia-open-kcfi.patch`):
+
+- `ksec2GetBinArchiveSecurescrubUcode_AD10X` and `ksec2GetBinArchiveBlUcode_TU102`: the generated
+  BINDATA getters are defined as `(struct KernelSec2 *)`, but KernelSec2's NVOC method table
+  declares and calls them as `(struct OBJGPU *, struct KernelSec2 *)`. The bindata files do not
+  include the NVOC header, so no compiler sees it; with gcc it works because the getter ignores
+  its argument. Now defined with both parameters (a script compared all 64 BINDATA getter
+  definitions with their NVOC declarations; these two are the only differences).
+- `__iom_dtor_OBJRPC` and `__iom_dtor_OBJRPCSTRUCTURECOPY`: defined as `(POBJRPC)` and cast to
+  `NVOC_DYNAMIC_DTOR` (`void (*)(Dynamic *)`), which `objDelete` calls. Now take `Dynamic *`
+  (empty bodies). They would have trapped at teardown.
+- Search: the cores rebuilt with `-Wcast-function-type-strict` give 720 casts. 710 are NVOC's
+  exported-method tables, stored as `void (*)(void)` and cast back to the same `(void *, void *)`
+  or `(void *)` type before the call (`rs_resource.c`, `deferred_api.c`, `gpu.c`), which kCFI
+  accepts; the timer wrapper in `timer.c` swaps types but always calls through the real one; the
+  two IOM destructors are fixed. nvidia-modeset's C code has none.
+- Check on the binary: the scrubber call site now checks hash `-0x74827754`, and the target's
+  preamble carries `0x8b7d88ac`, the same value.
+
+`cfi=kcfi,warn` stays on the entry until a real-PC boot shows no `CFI failure` line at all
+(the search covers casts and the generated getters, not every NVOC path). After that the
+entry can use plain `cfi=kcfi`.
+
+**Xid 51.** It is not kCFI: the warn-mode boot logged one CFI failure in 45 s, at 17 s, in the
+scrubber getter, which returns the right archive whatever its argument. So the scrubber image was
+correct, and GSP and the display ran for 28 s before the Xid. The `BAD_TSG` message and its error
+code come from the GSP firmware (not in the open sources). It came about 2 s after boot
+completed, when apps start and K2's server creates their Vulkan devices, so it is a
+runlist/channel failure under the first real load. The remaining difference from the build
+host, where 620.70.06 runs Android games through the same server, is the kernel environment.
+The clear one is the **IOMMU**: the GKI image has `CONFIG_INTEL_IOMMU_DEFAULT_ON=y`, so the RTX
+4070's DMA (instance blocks, USERD, GPFIFOs in system memory) goes through VT-d remapping; the
+Arch host has it off. Both NVIDIA entries now boot with `intel_iommu=off`. That is a hypothesis
+for the next real-PC run, not a proven cause. If the Xid stays, the next A/B is K2's: the
+sidecar keeps `CAP_SYS_NICE`, so NVIDIA honours the HIGH/REALTIME queue priorities HWUI and
+SurfaceFlinger ask for and builds high-priority channels/TSGs, which the host (no SYS_NICE)
+never does; after that, the clang code generation of the RM cores.
+
+**Debug entry made safe:** `loglevel=5` (errors, warnings and pcnvidia's markers, now logged at
+warning level; not the info/audit flood) and no `softlockup_panic`/`nmi_watchdog=panic`;
+`keep_bootcon` stays (without it the screen console stops when `ttynull` registers).
+
+QEMU check (build `eng.caoanh.20261115.2345`): the NVIDIA entry boots on vkms without the GPU
+(command line has `cfi=kcfi,warn intel_iommu=off`, `sys.boot_completed` at 90 s, K3's socket
+wait included); the debug entry runs every step to the last one (`mp nvidia-drm.ko modeset=1`
+at 109 s, `NVRM: No NVIDIA GPU found.`) and Android keeps running on pcfb; the default entry
+is unchanged.
+
+**Real-PC test (K1c).** Image `out/aosp17-usb-k1c.img` (`--menu --userdata 64`). Update the
+stick in place (keeps apps and data; the partitions are usually not mounted, else
+`udisksctl unmount -b /dev/sdaN` first; type the full word `yes`):
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-k1c.img /dev/sda
+```
+
+On the PC (Limine remembers the last entry: pick each one by hand):
+
+1. **"Android 17, NVIDIA (proprietary, Venus)"**: wait for the desktop, open two or three apps
+   (Settings, Chrome), leave it 5 minutes. Note whether the desktop appears and whether it
+   freezes or goes black later. If it reboots by itself, that was a panic (pstore keeps it).
+2. **"Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)"**: Android on
+   the UEFI framebuffer with warnings/errors scrolling over it; about 30 s after boot the
+   `pcnvidia: step: ...` lines appear, 10 s apart. Photograph the screen if it stops, or note
+   the last step reached (the screen goes dark at the last step, `nvidia-drm.ko modeset=1`).
+3. Boot the default entry once (pclog copies any pstore record), plug the stick into the build
+   host, `tools/pclog-read.sh /dev/sda`. In the NVIDIA boot: `dmesg.*` must have **no**
+   `CFI failure` and, if the IOMMU was the cause, **no** `Xid`; check `== nvidia modules`,
+   `== /proc/driver/nvidia`, `== drm cards`; in later boots `pstore/` if one rebooted itself.
+
 ## K2. glibc sidecar: NVIDIA's userspace and the vtest server
 
 NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its

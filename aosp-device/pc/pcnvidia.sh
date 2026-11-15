@@ -17,7 +17,7 @@
 #                       which takes the monitor over from pcfb. Report in
 #                       /data/vendor/pcgpu/nvidia.txt (pclog copies it).
 export PATH=/system/bin:/vendor/bin:$PATH
-k() { echo "pcnvidia: $*" > /dev/kmsg; }
+k() { echo "<4>pcnvidia: $*" > /dev/kmsg; }   # warning level: shown at the debug entry's loglevel=5
 mp() { modprobe -d /vendor/lib/modules "$@"; }
 step() {   # step PAUSE COMMAND...: marker, sync, pause, run, result, sync
     local pause=$1; shift

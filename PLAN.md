@@ -699,6 +699,11 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   loaded in early-init). Now loaded at post-fs step by step after pclog is up, `cfi=kcfi,warn`,
   lockups panic, pclog copies efi-pstore; debug entry with the kernel log on screen that loads
   the driver after boot. Image `out/aosp17-usb-k1b.img`; real-PC test pending.
+  **K1c (2026-11-15):** K1b's logs: the hang was a kCFI trap (SEC2 scrubber getter called through
+  a mismatched NVOC pointer); with `,warn` the driver came up, Venus ran on the RTX 4070, then
+  Xid 51 (BAD_TSG) at the first post-boot load. Fixed four kCFI mismatches
+  (`nvidia-open-kcfi.patch`), `intel_iommu=off` on the NVIDIA entries (the host runs without the
+  IOMMU), safe debug entry. Image `out/aosp17-usb-k1c.img`; real-PC test pending.
 - **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
   NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
   read-only in the vendor partition (or its own partition if `super` is too small), started

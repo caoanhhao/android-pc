@@ -25,9 +25,15 @@ LB=$ROOT/tools/limited-build.sh
 grep -q "^NVIDIA_VERSION = $NV_VERSION\$" "$NV/version.mk" || { echo "nvidia-build: $NV is not $NV_VERSION"; exit 1; }
 # nvidia-open-gki-ns.patch: nvidia and nvidia-modeset import the GKI namespace that
 # filp_open() and close_fd() are exported in (modpost refuses the modules otherwise).
-P=$ROOT/tools/patches/nvidia-open-gki-ns.patch
-git -C "$NV" apply --reverse --check "$P" 2>/dev/null || git -C "$NV" apply "$P" \
-  || { echo "nvidia-build: $P does not apply"; exit 1; }
+# nvidia-open-kcfi.patch (K1c): functions whose definition does not match the function
+# pointer type they are called through, which kCFI traps (the first real-PC boot panicked in
+# the SEC2 scrubber one): two generated BINDATA getters of KernelSec2 that the NVOC method
+# table calls with (pGpu, this), and two IOM destructors stored as NVOC_DYNAMIC_DTOR.
+for p in nvidia-open-gki-ns.patch nvidia-open-kcfi.patch; do
+  P=$ROOT/tools/patches/$p
+  git -C "$NV" apply --reverse --check "$P" 2>/dev/null || git -C "$NV" apply "$P" \
+    || { echo "nvidia-build: $P does not apply"; exit 1; }
+done
 
 # The GKI toolchain (gki/build/kernel/kleaf: clang r584948c, rust 1.91.1.p3, bindgen).
 CLANG=$GKI/prebuilts/clang/host/linux-x86/clang-r584948c/bin

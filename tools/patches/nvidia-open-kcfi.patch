@@ -1,0 +1,104 @@
+diff --git a/src/nvidia/generated/g_bindata_ksec2GetBinArchiveBlUcode_TU102.c b/src/nvidia/generated/g_bindata_ksec2GetBinArchiveBlUcode_TU102.c
+index 4aedeb3..43349de 100644
+--- a/src/nvidia/generated/g_bindata_ksec2GetBinArchiveBlUcode_TU102.c
++++ b/src/nvidia/generated/g_bindata_ksec2GetBinArchiveBlUcode_TU102.c
+@@ -139,7 +139,8 @@ static const BINDATA_ARCHIVE __ksec2GetBinArchiveBlUcode_TU102 =
+ 
+ 
+ #if defined(BINDATA_INCLUDE_FUNCTION)
+-const BINDATA_ARCHIVE *ksec2GetBinArchiveBlUcode_TU102(struct KernelSec2 *pKernelSec2)
++struct OBJGPU; // android-pc K1c: the NVOC method pointer passes pGpu too (kCFI)
++const BINDATA_ARCHIVE *ksec2GetBinArchiveBlUcode_TU102(struct OBJGPU *pGpu, struct KernelSec2 *pKernelSec2)
+ {
+     return &__ksec2GetBinArchiveBlUcode_TU102;
+ }
+@@ -147,7 +148,8 @@ const BINDATA_ARCHIVE *ksec2GetBinArchiveBlUcode_TU102(struct KernelSec2 *pKerne
+ 
+ 
+ #if defined(BINDATA_INCLUDE_FUNCTION_STUB)
+-const BINDATA_ARCHIVE *ksec2GetBinArchiveBlUcode_TU102(struct KernelSec2 *pKernelSec2)
++struct OBJGPU; // android-pc K1c: the NVOC method pointer passes pGpu too (kCFI)
++const BINDATA_ARCHIVE *ksec2GetBinArchiveBlUcode_TU102(struct OBJGPU *pGpu, struct KernelSec2 *pKernelSec2)
+ {
+     return NULL;
+ }
+diff --git a/src/nvidia/generated/g_bindata_ksec2GetBinArchiveSecurescrubUcode_AD10X.c b/src/nvidia/generated/g_bindata_ksec2GetBinArchiveSecurescrubUcode_AD10X.c
+index 5ca2f8c..e1d13f4 100644
+--- a/src/nvidia/generated/g_bindata_ksec2GetBinArchiveSecurescrubUcode_AD10X.c
++++ b/src/nvidia/generated/g_bindata_ksec2GetBinArchiveSecurescrubUcode_AD10X.c
+@@ -1261,7 +1261,8 @@ static const BINDATA_ARCHIVE __ksec2GetBinArchiveSecurescrubUcode_AD10X =
+ 
+ 
+ #if defined(BINDATA_INCLUDE_FUNCTION)
+-const BINDATA_ARCHIVE *ksec2GetBinArchiveSecurescrubUcode_AD10X(struct KernelSec2 *pKernelSec2)
++struct OBJGPU; // android-pc K1c: the NVOC method pointer passes pGpu too (kCFI)
++const BINDATA_ARCHIVE *ksec2GetBinArchiveSecurescrubUcode_AD10X(struct OBJGPU *pGpu, struct KernelSec2 *pKernelSec2)
+ {
+     return &__ksec2GetBinArchiveSecurescrubUcode_AD10X;
+ }
+@@ -1269,7 +1270,8 @@ const BINDATA_ARCHIVE *ksec2GetBinArchiveSecurescrubUcode_AD10X(struct KernelSec
+ 
+ 
+ #if defined(BINDATA_INCLUDE_FUNCTION_STUB)
+-const BINDATA_ARCHIVE *ksec2GetBinArchiveSecurescrubUcode_AD10X(struct KernelSec2 *pKernelSec2)
++struct OBJGPU; // android-pc K1c: the NVOC method pointer passes pGpu too (kCFI)
++const BINDATA_ARCHIVE *ksec2GetBinArchiveSecurescrubUcode_AD10X(struct OBJGPU *pGpu, struct KernelSec2 *pKernelSec2)
+ {
+     return NULL;
+ }
+diff --git a/src/nvidia/generated/g_rpc_iom.c b/src/nvidia/generated/g_rpc_iom.c
+index 36640a8..f6d0f23 100644
+--- a/src/nvidia/generated/g_rpc_iom.c
++++ b/src/nvidia/generated/g_rpc_iom.c
+@@ -60,12 +60,12 @@ rpcSetPropertiesSpecial
+ 
+ extern const struct NVOC_CLASS_DEF __iom_class_def_OBJRPC;
+ 
+-void      __iom_dtor_OBJRPC(POBJRPC);
++void      __iom_dtor_OBJRPC(Dynamic *); // android-pc K1c: the NVOC_DYNAMIC_DTOR type (kCFI)
+ 
+ const struct NVOC_RTTI __iom_rtti_OBJRPC_OBJRPC =
+ {
+     &__iom_class_def_OBJRPC,
+-    (NVOC_DYNAMIC_DTOR)&__iom_dtor_OBJRPC,
++    &__iom_dtor_OBJRPC,
+     0,
+ };
+ 
+@@ -120,7 +120,7 @@ NV_STATUS __iom_vctor_OBJRPC(Dynamic *pDynamic, va_list args)
+     return status;
+ }
+ 
+-void __iom_dtor_OBJRPC(POBJRPC pRpc)
++void __iom_dtor_OBJRPC(Dynamic *pDynamic)
+ {
+ }
+ 
+diff --git a/src/nvidia/generated/g_rpcstructurecopy_iom.c b/src/nvidia/generated/g_rpcstructurecopy_iom.c
+index f980ad7..35d1dfe 100644
+--- a/src/nvidia/generated/g_rpcstructurecopy_iom.c
++++ b/src/nvidia/generated/g_rpcstructurecopy_iom.c
+@@ -49,12 +49,12 @@ rpcstructurecopySetPropertiesSpecial
+ 
+ extern const struct NVOC_CLASS_DEF __iom_class_def_OBJRPCSTRUCTURECOPY;
+ 
+-void      __iom_dtor_OBJRPCSTRUCTURECOPY(POBJRPCSTRUCTURECOPY);
++void      __iom_dtor_OBJRPCSTRUCTURECOPY(Dynamic *); // android-pc K1c: the NVOC_DYNAMIC_DTOR type (kCFI)
+ 
+ const struct NVOC_RTTI __iom_rtti_OBJRPCSTRUCTURECOPY_OBJRPCSTRUCTURECOPY =
+ {
+     &__iom_class_def_OBJRPCSTRUCTURECOPY,
+-    (NVOC_DYNAMIC_DTOR)&__iom_dtor_OBJRPCSTRUCTURECOPY,
++    &__iom_dtor_OBJRPCSTRUCTURECOPY,
+     0,
+ };
+ 
+@@ -109,7 +109,7 @@ NV_STATUS __iom_vctor_OBJRPCSTRUCTURECOPY(Dynamic *pDynamic, va_list args)
+     return status;
+ }
+ 
+-void __iom_dtor_OBJRPCSTRUCTURECOPY(POBJRPCSTRUCTURECOPY pRpcstructurecopy)
++void __iom_dtor_OBJRPCSTRUCTURECOPY(Dynamic *pDynamic)
+ {
+ }
+ 
