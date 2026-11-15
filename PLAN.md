@@ -584,6 +584,20 @@ one session each, one build at a time (H1 first).
   UI density is now 160 dpi by default (`mkusb-aosp17.sh --density`, was 240): 1 dp = 1 px,
   a desktop-sized UI for mouse and keyboard instead of touch.
 
+## Phase I — real-PC round 2
+
+Bugs the user found on the real PC with build `eng.caoanh.20261115.0441` (the H3 stick),
+one session each, one build at a time (I1 builds last and makes the release image).
+
+- **I1 — no picture on the nouveau and NVK entries**. Status (2026-11-15): fix done,
+  real-PC check pending. Cuttlefish's `init.vendor.rc` loads vkms after a 5 s wait for a
+  card0, before `init.pc.rc` loads nouveau, so vkms was card0, nouveau card1, and
+  drm_hwcomposer (`/dev/dri/card0`) drove vkms's virtual connector. `init.pc.rc` now
+  unloads vkms, loads nouveau (card0) and loads vkms again (card1). For I4: the
+  "modetest only" entry (G1's test, its static colour pattern is by design) and pclog's
+  audio check (the 440 Hz beeps, H1's test, `audio-check.dex` on the pclog partition) are
+  passed tests to remove. Details in `docs/nvidia.md` ("Real-PC result and fix").
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).

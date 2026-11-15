@@ -269,6 +269,34 @@ Checklist, monitor on the RTX 4070 with its speakers on, a second monitor at han
 Done when the desktop runs on KMS at the monitor's native mode with sound, and the
 default (pcfb) entry still works.
 
+### Real-PC result and fix (Phase I1, 2026-11-15)
+
+The first real-PC run (build `eng.caoanh.20261115.0441`, pclog `boot-7` "NVIDIA nouveau,
+VTS run", `boot-11` NVK, `boot-8` modetest) showed no picture on the nouveau and NVK
+entries, although nouveau and GSP-RM 570.144 came up fine (`NVIDIA AD104`, 12282 MiB VRAM)
+and the modetest entry lit the monitor with its colour pattern.
+
+Root cause: the card order. Cuttlefish's `init.vendor.rc` (installed as
+`init.cutf_cvm.rc`) does `wait /dev/dri/card0` and then `modprobe vkms.ko` in `early-init`,
+before `init.pc.rc`'s actions. On the nouveau entries there is no card yet (pcfb is off and
+nouveau is loaded by `init.pc.rc` afterwards), so the wait times out after 5 s, vkms becomes
+**card0** and nouveau **card1** (`[drm] Initialized nouveau 1.4.0 ... on minor 1`).
+drm_hwcomposer opens `vendor.hwc.drm.device=/dev/dri/card0`, i.e. vkms:
+`drmhwc: Found Backend 'generic' for 'Virtual-1' and driver 'vkms'`. Android ran on vkms's
+virtual connector (`card0-Virtual-1` connected, every `card1-*` NVIDIA connector unused,
+nothing ever set a mode there). In QEMU (G2's check) vkms is the only card, so the bug never
+showed there; the modetest entry worked because `modetest -M nouveau` picks the card by driver.
+
+Fix (`aosp-device/pc/init.pc.rc`, nouveau entries only): unload vkms, load nouveau (DRM gives
+it the lowest free minor, card0), then load vkms again (card1, unused on the PC; card0 in
+QEMU, where the entry keeps running on it as before). minigbm is unaffected (it takes the
+first render node, nouveau's `renderD128`; vkms has none), and `pcgpu.sh` finds nouveau by
+driver name.
+
+The beeps on the modetest entry were pclog's audio check (a 5 s 440 Hz tone, H1's test,
+whenever `audio-check.dex` is on the pclog partition), not the GPU. The modetest entry and the
+audio check are passed tests left for I4 to remove (`PLAN.md`, Phase I).
+
 ## G3. NVK Vulkan on Android
 
 ### What changed
