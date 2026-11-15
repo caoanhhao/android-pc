@@ -983,3 +983,119 @@ sudo tools/update-usb-aosp17.sh out/aosp17-usb-j1.img /dev/sda
      is empty, `vk/summary.txt` and `gles/summary.txt` have the dEQP results;
    - if SurfaceFlinger crash-loops on NVK (probe said `nouveau`, ANGLE failed later), logcat's
      `ANGLE`/`MESA`/`nvk` lines and dmesg's `nouveau ... fault` lines say why.
+
+## Phase J2. Usable desktop on the nouveau entries, NVK runtime link fix
+
+Real-PC pclog `out/pclog-j1/` (build `eng.caoanh.20261115.1254`, the J1 stick): `boot-16`
+"NVIDIA nouveau", `boot-17` "NVIDIA GPU (NVK + ANGLE)". J1 worked as far as it went: DP-1
+lights up at 2560x1080 through drm_hwcomposer, and the NVK entry fell back to SwiftShader. But
+the picture flickered, the lock screen could not be unlocked, and SystemUI was killed for
+ANRs ("NotificationShade is not responding", then "crashed too many times").
+
+### Slow desktop: every buffer in VRAM, read by the CPU
+
+SurfaceFlinger's timestats for `boot-16`: **23 frames in 113 s** (`totalFrames = 23`,
+`displayOnTime = 113051 ms`), apps report `Davey! duration=900ms`, and binder calls into
+SurfaceFlinger take 15-48 s. No GPU error or atomic timeout in dmesg. This is the risk noted in
+G2: minigbm's `nouveau` backend was the generic dumb driver, and nouveau's dumb buffers are
+VRAM objects (`nouveau_display_dumb_create`), which the CPU reaches through the uncached,
+write-combined BAR1 mapping. With SwiftShader every app draws with blending (reads its own
+buffer back) and SurfaceFlinger composes by reading every layer, all from VRAM.
+
+Fix: `tools/patches/aosp17-minigbm-nouveau-gart.patch` (`git apply` in `aosp/external/minigbm`,
+after the two earlier minigbm patches) gives minigbm its own `nouveau` backend (`nouveau.c`):
+buffers are made with `DRM_NOUVEAU_GEM_NEW` in `NOUVEAU_GEM_DOMAIN_GART`, i.e. system memory,
+which nouveau maps cached on x86 (`nouveau_sgdma_create_ttm`: `ttm_cached` without AGP), with
+the dumb driver's sizes and nouveau's 256-byte pitch. Mapping and freeing still use
+`MODE_MAP_DUMB` / `MODE_DESTROY_DUMB`, which work on any nouveau GEM object. A buffer that the
+display scans out is moved to VRAM by the kernel when the plane pins it
+(`nv50_wndw_prepare_fb` → `nouveau_bo_pin(VRAM)` validates the BO into VRAM), so scanout keeps
+working; with overlay planes off that is only SurfaceFlinger's client target. Every app buffer
+also carries `BO_USE_SCANOUT` (Android's `HW_COMPOSER` usage), so the backend cannot pick by
+usage. If `GEM_NEW` fails it falls back to a dumb buffer.
+
+### drm_hwcomposer messages
+
+- `Failed to commit pset ret=-22` once at start, with a kernel `WARNING ... drm_atomic.c:422`
+  ("enabled without mode blob"): nouveau inherits the GOP's mode at load
+  (`nv50_display_read_hw_or_state` sets the head `enable`/`active` without a mode blob), and
+  drm_hwcomposer's `ResetConnectorsAndCrtcs` (`MODE_ID=0`, `ACTIVE=0`) does not clear `enable`,
+  because the blob is already NULL. This is upstream nouveau's state readout and part of why
+  `atomic` is off by default. Harmless here: drm_hwcomposer's first frame sets `MODE_ID`, and
+  the display lights up.
+- `Test-only seamless=0 ret=-22` on most frames: the planner's attempt to put layers on planes
+  is refused; it then composes everything on the client (`kValidateFailed`), which is the
+  intended path with overlay planes off.
+- `Previously validated composition was not presented` / SurfaceFlinger `NOT_VALIDATED` (10
+  times): SurfaceFlinger validated a frame again before presenting the last one, a symptom of
+  frames that took seconds. Expected to go away with the buffer fix.
+
+### NVK: crash in `vkGetPhysicalDeviceProperties`
+
+`boot-17`: `pcvkprobe: ro.hardware.vulkan=pastel (pastel: NVK crashed (signal 11))`; the
+probe's tombstone shows a call to address 0 from
+`vulkan.nouveau.so (vk_common_GetPhysicalDeviceProperties+81)`. That is the runtime calling
+`dispatch_table.GetPhysicalDeviceProperties2`, which was NULL: `nm` showed
+`vk_common_GetPhysicalDeviceProperties2` (and `vk_common_CmdCopyBuffer`, `CmdBeginRenderPass`,
+`CreateRenderPass`, `QueueSubmit`, ...) missing from the driver. The dispatch tables refer to
+the `vk_common_*` entrypoints weakly, and Soong linked `vulkan_runtime` as a plain static
+library, so the linker never pulled those objects in. Meson links `vulkan_lite_runtime`,
+`vulkan_runtime`, `vulkan_instance` and `vulkan_wsi` with `link_whole`; `vulkan.nouveau` now
+has them in `whole_static_libs` (`android_bp_gen.py` and `src/nouveau/Android.bp`, in
+`aosp17-mesa-nvk.patch`). After it all of the above are defined. The probe already did its job:
+the entry fell back instead of crash-looping.
+
+### "SurfaceFlinger crashed 98 times" was old tombstones
+
+The `boot-16`/`boot-17` tombstone folders hold SurfaceFlinger aborts (`no suitable EGLConfig
+found`) dated `04:20-04:45 UTC`, from the I-build NVK boots (`out/pclog-i/boot-13`); in both J1
+boots SurfaceFlinger started once and ran ANGLE on SwiftShader (`renderer: ANGLE (Google,
+Vulkan 1.3.0 (SwiftShader Device ...))`). `pclog.sh` copied all of `/data/tombstones` (the last
+32, kept across boots) into every boot. It now copies only tombstones that the previous boot had
+not seen: the previous boot's list (`name size mtime`, compared as text, since this PC's
+clock is often hours off) is kept as `pclog/tombstones.seen`. The first boot after the update
+copies the old ones once more.
+
+### QEMU check (2026-11-15)
+
+Build `eng.caoanh.20261115.1455`, `out/aosp17-usb-j2-qemu.img` (`--menu --append
+console=ttyS0,115200`, `default_entry: 6`, NVK entry), `NO_WINDOW=1 WRITABLE=1
+tools/run-qemu-aosp17-usb.sh`. QEMU has neither the NVIDIA GPU nor nouveau's minigbm backend
+(minigbm runs on vkms there), so the GART buffers and NVK's device path are real-PC checks only:
+
+- `nm vulkan.nouveau.so`: `vk_common_GetPhysicalDeviceProperties2`, `CmdCopyBuffer`,
+  `CmdBlitImage`, `CmdBeginRenderPass`, `CreateRenderPass`, `QueueSubmit`, `CmdPipelineBarrier`,
+  ... all defined (were missing). `libminigbm_gralloc.so` has the `nouveau` backend.
+- `pcvkprobe: ro.hardware.vulkan=pastel (pastel: NVK vkEnumeratePhysicalDevices 0, 0 devices)`,
+  SurfaceFlinger once, on ANGLE/SwiftShader, `sys.boot_completed=1` at 30 s.
+- pclog tombstones: first boot copied its 7 (Bluetooth's usual ones) and wrote
+  `tombstones.seen`; after `reboot`, `boot-2/tombstones/` had only the 7 new ones
+  (`tombstone_07`-`13`), not the earlier ones.
+
+Release image `out/aosp17-usb-j2.img` (`--menu --userdata 64`, build `eng.caoanh.20261115.1455`,
+patch level 2026-06-05).
+
+### Real-PC test
+
+Before the update: the stick must not be mounted on the host (the desktop automounts its
+`metadata` and `pclog` partitions; a mounted partition can be written under the update):
+
+```bash
+udisksctl unmount -b /dev/sda2; udisksctl unmount -b /dev/sda5
+```
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-j2.img /dev/sda
+```
+
+1. **"Android 17, NVIDIA nouveau"**: desktop on DP-1 without flicker; unlock (swipe up), open
+   the notification shade, Settings, Chromium with a YouTube video (sound on the monitor's
+   speakers too). It should feel close to the pcfb entry. Reboot after a few minutes.
+2. **"Android 17, NVIDIA GPU (NVK + ANGLE)"**: the desktop comes up either way. Wait ~10 min if
+   on NVK (dEQP windows), then Chromium (`chrome://gpu`) and a game. Reboot.
+3. On the host, `tools/pclog-read.sh /dev/sda`, and in the two new boots:
+   - `== timestats`: `totalFrames` in the thousands over the boot (was 23 in 113 s), few
+     `missedFrames`; no `am_anr` for SystemUI in logcat;
+   - NVK boot: `vendor.pc.vulkan_probe` = `nouveau: NVIDIA GeForce RTX 4070 ...` (or the step
+     that failed), `vk/vkjson.json`, `gles/egl.txt`, dEQP summaries;
+   - `tombstones/` holds only that boot's crashes.

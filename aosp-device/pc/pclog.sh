@@ -33,6 +33,9 @@ done
 d=$mnt/boot-$n
 mkdir $d || { rm -rf $mnt/boot-*; mkdir $d; } || exit 1
 echo $n > $mnt/last
+# Tombstones the previous boot had already seen (name size mtime), so that only new ones are
+# copied below (J2). Compared as text, not by time: this PC's clock is often hours off.
+mv $mnt/tombstones.seen $d/.tombstones-before 2>/dev/null || : > $d/.tombstones-before
 
 # log NAME PIECE-SIZE HEAD TAIL: stdin into NAME.aaa, NAME.aab, ... of PIECE-SIZE bytes; prune
 # keeps the first HEAD and the last TAIL pieces.
@@ -143,7 +146,16 @@ dump() {
         dmesg | grep -E 'PM: suspend (entry|exit)|ACPI: PM: (Preparing|Waking)|pcwake:' | tail -n 30
         echo "== media files"; ls -lR /data/media/0/DCIM /data/media/0/Recordings /data/media/0/Music 2>&1 | head -40
     } > $d/state-$1.txt 2>&1
-    mkdir -p $d/tombstones && cp /data/tombstones/tombstone_?? $d/tombstones/ 2>/dev/null
+    # Only this boot's tombstones: /data/tombstones keeps the last 32 across boots, and old
+    # ones copied into every boot made a fixed crash look like a crash loop (J2).
+    mkdir -p $d/tombstones
+    stat -c '%n %s %Y' /data/tombstones/tombstone_?? 2>/dev/null > $d/.tombstones-now
+    if [ -s $d/.tombstones-now ]; then
+        grep -vxF -f $d/.tombstones-before $d/.tombstones-now | while read -r f _; do
+            cp $f $d/tombstones/
+        done
+        cp $d/.tombstones-now $mnt/tombstones.seen
+    fi
     # Raw EDID of each DRM connector that has one (decode on the host: edid-decode FILE).
     for c in /sys/class/drm/card*-*; do
         [ -s $c/edid ] && cp $c/edid $d/edid-${c##*/}.bin

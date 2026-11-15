@@ -292,10 +292,10 @@ index f4db0e79..29e34fbc 100644
     }
 diff --git a/src/nouveau/Android.bp b/src/nouveau/Android.bp
 new file mode 100644
-index 00000000..91ec6d64
+index 00000000..28cba4df
 --- /dev/null
 +++ b/src/nouveau/Android.bp
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1057 @@
 +/*
 + * Copyright (C) 2026 android-pc
 + * SPDX-License-Identifier: Apache-2.0
@@ -1307,7 +1307,18 @@ index 00000000..91ec6d64
 +    // is a 20-byte SHA-1; Soong links with --build-id=md5 (16 bytes).
 +    // Meson passes -Wl,--build-id=sha1 for the same reason.
 +    ldflags: ["-Wl,--build-id=sha1"],
-+    whole_static_libs: ["nvk"],
++    // Meson links the Vulkan runtime and WSI with link_whole: their
++    // vk_common_* entrypoints are only referenced weakly from the
++    // dispatch tables, so a plain static link drops them and leaves NULL
++    // entries (vkGetPhysicalDeviceProperties crashed calling a NULL
++    // GetPhysicalDeviceProperties2).
++    whole_static_libs: [
++        "nvk",
++        "vulkan_instance",
++        "vulkan_lite_runtime",
++        "vulkan_runtime",
++        "vulkan_wsi",
++    ],
 +    static_libs: [
 +        "_mesa_u_gralloc",
 +        "blake3",
@@ -1326,11 +1337,7 @@ index 00000000..91ec6d64
 +        "nouveau_nvidia_headers_c",
 +        "nouveau_ws",
 +        "vtn",
-+        "vulkan_instance",
-+        "vulkan_lite_runtime",
-+        "vulkan_runtime",
 +        "vulkan_util",
-+        "vulkan_wsi",
 +        "xmlconfig",
 +        "libnak_rs",
 +        "libnil",
@@ -1348,10 +1355,10 @@ index 00000000..91ec6d64
 +}
 diff --git a/src/nouveau/android_bp_gen.py b/src/nouveau/android_bp_gen.py
 new file mode 100644
-index 00000000..dc7438b9
+index 00000000..3d26551e
 --- /dev/null
 +++ b/src/nouveau/android_bp_gen.py
-@@ -0,0 +1,722 @@
+@@ -0,0 +1,729 @@
 +# Copyright © 2026 android-pc
 +# SPDX-License-Identifier: MIT
 +
@@ -2031,7 +2038,18 @@ index 00000000..dc7438b9
 +    // is a 20-byte SHA-1; Soong links with --build-id=md5 (16 bytes).
 +    // Meson passes -Wl,--build-id=sha1 for the same reason.
 +    ldflags: ["-Wl,--build-id=sha1"],
-+    whole_static_libs: ["nvk"],
++    // Meson links the Vulkan runtime and WSI with link_whole: their
++    // vk_common_* entrypoints are only referenced weakly from the
++    // dispatch tables, so a plain static link drops them and leaves NULL
++    // entries (vkGetPhysicalDeviceProperties crashed calling a NULL
++    // GetPhysicalDeviceProperties2).
++    whole_static_libs: [
++        "nvk",
++        "vulkan_instance",
++        "vulkan_lite_runtime",
++        "vulkan_runtime",
++        "vulkan_wsi",
++    ],
 +    static_libs: [
 +        "_mesa_u_gralloc",
 +        "blake3",
@@ -2050,11 +2068,7 @@ index 00000000..dc7438b9
 +        "nouveau_nvidia_headers_c",
 +        "nouveau_ws",
 +        "vtn",
-+        "vulkan_instance",
-+        "vulkan_lite_runtime",
-+        "vulkan_runtime",
 +        "vulkan_util",
-+        "vulkan_wsi",
 +        "xmlconfig",
 +        "libnak_rs",
 +        "libnil",

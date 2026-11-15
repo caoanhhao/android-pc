@@ -641,6 +641,17 @@ one session each, one build at a time (I1 builds last and makes the release imag
   DP-1, so no ELD); the jack → WiredAccessoryManager → HDMI Out chain already worked on the
   modetest entry (`pclog-h3/boot-8`), so `atomic=1` fixes it too. Details in `docs/nvidia.md`
   ("Phase J1").
+- **J2 — J1 on the PC: flickering desktop that could not be unlocked; NVK crashed** (pclog
+  `out/pclog-j1/`). Status (2026-11-15): fix done, checked in QEMU, real-PC check pending.
+  Release image `out/aosp17-usb-j2.img` (build `eng.caoanh.20261115.1455`). The desktop ran at
+  23 frames in 113 s because minigbm's nouveau buffers were dumb VRAM objects that SwiftShader
+  read back through BAR1: a new minigbm `nouveau` backend allocates GART (cached system
+  memory) buffers, which nouveau moves to VRAM only to scan out
+  (`aosp17-minigbm-nouveau-gart.patch`). NVK crashed in `vkGetPhysicalDeviceProperties` on a
+  NULL `vk_common_*` entrypoint: Soong dropped the weakly referenced runtime objects, so
+  `vulkan.nouveau` now links the Vulkan runtime and WSI whole, as meson does. The "98
+  SurfaceFlinger crashes" were old tombstones from earlier boots; `pclog.sh` now copies only
+  new ones. Details in `docs/nvidia.md` ("Phase J2").
 
 ## Risks
 
