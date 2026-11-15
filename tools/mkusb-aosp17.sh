@@ -222,9 +222,10 @@ if [[ $menu == 1 ]]; then
         # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), nouveau and Nova blacklisted,
         # pcfb off, drm_hwcomposer on nvidia-drm with SwiftShader until K3/K4. cfi=kcfi: the
         # DisplayPort library in nvidia-modeset is C++, whose virtual calls clang does not kCFI-check;
-        # FineIBT (the default on this CPU) removes the ENDBR they land on.
+        # FineIBT (the default on this CPU) removes the ENDBR they land on. K4: $venus (K3's
+        # graphics on K2's sidecar) and drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia cfi=kcfi module_blacklist=nouveau,nova_core,nova"
-        entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $drm" "$sound"
+        entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $venus $drm" "$sound"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

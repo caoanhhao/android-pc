@@ -148,6 +148,15 @@ dump() {
         timeout 10 dumpsys android.hardware.graphics.composer3.IComposer/default 2>&1 | head -150
         echo "== displays"; timeout 10 dumpsys display 2>&1 | grep -E 'DisplayDeviceInfo|mBaseDisplayInfo|mActiveSfDisplayMode|supportedModes' | cut -c1-600 | head -20
         echo "== pcgpu"; tail -n 40 /data/vendor/pcgpu/modetest-*.txt 2>&1 | head -120
+        # Phase K4 (docs/nvidia-proprietary.md): drm_hwcomposer on nvidia-drm, the card and the
+        # scanout modifiers pcnvdisplay gave gralloc, KMS state, planes (IN_FORMATS).
+        if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia ]; then
+            echo "== nvdisplay"; getprop vendor.pc.nvdisplay; getprop vendor.hwc.drm.device
+            getprop | grep 'gralloc.vtest.modifiers' | head -20
+            dmesg | grep -E 'pcnvdisplay|nvidia-drm' | head -40
+            echo "== modetest nvidia-drm"; timeout 10 modetest -M nvidia-drm -c -e 2>&1 | head -80
+            timeout 10 modetest -M nvidia-drm -p 2>&1 | grep -E '^[0-9]+\s|type:|value: [0-9]$|AB24:' | cut -c1-300 | head -60
+        fi
         # Phase G6: NVIDIA's Rust drivers Nova on the nova entry (pcnova.sh's report, fresh dmesg).
         if [ "$(getprop ro.boot.android_pc.gpu)" = nova ]; then
             echo "== nova"; cat /data/vendor/pcgpu/nova.txt 2>&1

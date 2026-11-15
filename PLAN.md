@@ -729,6 +729,15 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   vtest-allocated (block-linear, modifier) dma-bufs, native mode on DP-1, hotplug; HDMI/DP
   audio through nvidia's ELD → the F9h Rust audio HAL. Done when: on the real PC the desktop
   shows on the monitor from the NVIDIA entry with sound.
+  **Status (2026-11-15): code done, QEMU check passed, real-PC test pending** — Cuttlefish's
+  drm_hwcomposer unchanged on nvidia-drm; `pcnvdisplay` (post-fs-data, nvidia entry) points it
+  at the nvidia-drm card by name and publishes the primary planes' `IN_FORMATS` modifiers
+  (LINEAR + block-linear kind 6 on the host's RTX 4070) to K3's vtest gralloc, so the client
+  target always scans out; overlay planes off (client composition); fences through
+  `IN_FENCE_FD`/`OUT_FENCE_PTR`; monitor sound needs no code (ELD via unsolicited events, J1's
+  chain). `$venus` added to the entry. QEMU: every entry boots, the nvidia entry steps aside
+  (no GPU). Combined image `out/aosp17-usb-k.img` (K1-K4, build
+  `eng.caoanh.20261115.2013`; docs/nvidia-proprietary.md, K4).
 - **K5 — games and soak.** Where Winds Meet, Genshin Impact (Play Store should now list it:
   `opengles.aep`), Delta Force on the NVIDIA entry; frame rate compared with the Nova and
   nouveau entries; suspend/resume; 1-hour soak with GPU temperature. Done when: games run on

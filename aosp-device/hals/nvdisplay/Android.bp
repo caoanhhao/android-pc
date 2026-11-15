@@ -1,0 +1,21 @@
+// Phase K4 (docs/nvidia-proprietary.md): display on nvidia-drm for the "NVIDIA (proprietary,
+// Venus)" boot entry. drm_hwcomposer itself is Cuttlefish's APEX, unchanged; this only points
+// it at the nvidia-drm card and gives gralloc the modifiers the primary planes scan out.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+cc_binary {
+    name: "pcnvdisplay",
+    srcs: ["pcnvdisplay.cpp"],
+    vendor: true,
+    shared_libs: [
+        "libbase",
+        "libdrm",
+        "liblog",
+    ],
+    init_rc: ["init.nvdisplay.rc"],
+    cflags: ["-Wall", "-Werror"],
+    visibility: ["//visibility:public"],
+}

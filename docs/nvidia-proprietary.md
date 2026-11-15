@@ -477,3 +477,139 @@ block-linear buffers and the scanout modifiers (K2 and K4, on the PC).
 Build note: `tools/aosp-device-link.sh` keeps mtimes, so a file edited before the last build's
 outputs were written is not copied again by ninja; the first test image had an old
 `init.venus.rc`. `touch` the edited files under `aosp-device/` before building.
+
+## K4. Display and sound on nvidia-drm
+
+### What changed
+
+| Piece | Where | What |
+|---|---|---|
+| Composer | the entry's command line (`$drm`, K1) | Cuttlefish's drm_hwcomposer APEX, unchanged, on nvidia-drm (`modeset=1`): atomic commits, the monitor's preferred mode, hotplug, vblank, fences |
+| Card and modifiers | `aosp-device/hals/nvdisplay/pcnvdisplay.cpp` (`/vendor/bin/pcnvdisplay`), `init.nvdisplay.rc` | runs at `post-fs-data` on `androidboot.android_pc.gpu=nvidia`, before class `hal` (composer, allocator). Finds the `nvidia-drm` card by driver name, sets `vendor.hwc.drm.device` to it, reads `IN_FORMATS` of every primary plane and writes the modifiers they all scan out as `vendor.gralloc.vtest.modifiers.<fourcc hex>.<n>` for K3's minigbm vtest backend. `vendor.pc.nvdisplay` and `pcnvdisplay:` kernel log lines say what it found |
+| Overlay planes | `init.pc.rc` (K1's block) | `ro.vendor.hwc.use_overlay_planes=0`, as on the nouveau entries |
+| Entry | `tools/mkusb-aosp17.sh` | K1's "Android 17, NVIDIA (proprietary, Venus)" gets K3's `$venus` words |
+| Logs | `aosp-device/pc/pclog.sh` | `== nvdisplay` (props, `pcnvdisplay`/`nvidia-drm` dmesg), `== modetest nvidia-drm` (connectors, encoders, planes with types and AB24 modifiers) |
+
+### How the pieces fit
+
+- **Which card.** Cuttlefish's `init.cutf_cvm.rc` loads vkms in `early-init` when no
+  `card0` exists after 5 s (I1). K1 unloads vkms, loads nvidia-drm and loads vkms again, so
+  nvidia-drm is `card0`; `pcnvdisplay` does not rely on it and points drm_hwcomposer
+  (`vendor.hwc.drm.device`) at the card whose `drmGetVersion` name is `nvidia-drm`. It drops
+  DRM master right after each open (the first opener of a primary node becomes master, and
+  drm_hwcomposer needs it). It waits up to 30 s for that card only when the PCI bus has an
+  NVIDIA display controller (`10de`, class `03`); without one (QEMU) it returns at once and
+  changes nothing, so the composer stays on `card0` (vkms).
+- **Scanout-able buffers.** On this RTX 4070 with nvidia-open 620.70.06 (checked with the
+  same code on the build host, whose monitor is on the same card), every primary plane's
+  `IN_FORMATS` has, for AB24/XB24/AR24/XR24/RG16/AB30/XB30/AB4H/XB4H, `LINEAR` and
+  `NVIDIA_BLOCK_LINEAR_2D` kind 6, GEN 2, sector layout 1, uncompressed, block heights 0-5
+  (`0x0300000000606010`-`0x0300000000606015`). The vtest server allocates window buffers with
+  NVIDIA Vulkan and picks, from the list gralloc passes, a modifier with color-attachment
+  features that is dma-buf exportable; for NVIDIA that is `…606010`-`…606015` (LINEAR has no
+  color-attachment support), usually `…606014` (waydroid-nvidia `venus/notes-dmabuf.md`). So
+  every buffer drm_hwcomposer is handed for scanout is one the primary plane takes, and the
+  dma-buf exported by the sidecar's VkDevice is imported by `drmPrimeFDToHandle` +
+  `drmModeAddFB2WithModifiers` without a copy.
+- **Composition.** Overlay planes are off: SurfaceFlinger composes every layer itself
+  (RenderEngine on ANGLE → Venus → NVIDIA Vulkan) into its client target, the only buffer
+  scanned out. That target is allocated with `HW_COMPOSER` usage (`BO_USE_SCANOUT`, the
+  vtest server's SCANOUT flag) and, through the list above, always gets a scanout modifier:
+  this is the "client composition into a scanout-capable buffer" path, taken for every
+  frame. nvidia-drm has 4 CRTCs, each with a primary, an overlay (same `IN_FORMATS`) and a
+  cursor plane; the overlays and cursors stay unused. Enabling overlays is a K5 experiment
+  (`ro.vendor.hwc.use_overlay_planes=1`); drm_hwcomposer's test-only commit already falls back
+  to client composition for a layer the planes refuse.
+- **CPU buffers.** drm_hwcomposer imports every layer's buffer into the card when
+  SurfaceFlinger hands it over, also for layers it then composes on the client. On the Venus
+  entry minigbm makes CPU, cursor and video buffers as LINEAR udmabufs (K3). nvidia-drm
+  620.70.06 imports those too: on the build host a 64x64 udmabuf goes through
+  `drmPrimeFDToHandle` and `drmModeAddFB2WithModifiers(ARGB8888, LINEAR)` on the NVIDIA card
+  without error, so they cost no failed imports or log noise.
+- **Mode, hotplug, vsync, fences.** nvidia-drm exposes `OUT_FENCE_PTR` and `VRR_ENABLED` on
+  its CRTCs, `IN_FENCE_FD` on every plane, `DRM_CAP_ADDFB2_MODIFIERS`, vblank events and
+  hotplug uevents (`modeset=1`). drm_hwcomposer offers the connector's modes with the EDID's
+  preferred one first (the LG ULTRAGEAR's 2560x1080 at 144 Hz), gets present fences from
+  `OUT_FENCE_PTR`, and passes the client target's acquire fence as `IN_FENCE_FD`; nvidia-drm
+  waits for it before the flip. That fence is a real NVIDIA sync_file when Venus and the
+  server use vtest protocol 7 (`VCMD_SYNC_EXPORT_FD`, waydroid-nvidia `venus/notes-fence.md`),
+  else `-1` after Venus's CPU wait; either is correct, as NVIDIA attaches no implicit fences
+  to these dma-bufs. Connector names follow nvidia-drm's numbering (on the build host the DP
+  monitor is `DP-2`; nouveau called the same port `DP-1`).
+- **Sound on the monitor.** The NVIDIA driver registers no DRM audio component; the
+  `10de:22bc` codec driver (`snd-hda-codec-nvhdmi`, `nvhdmi.c` in 6.18) then stays on
+  unsolicited jack events, and the GPU writes the ELD to the codec when the DP link carries a
+  mode. The build host shows this with the same driver, card and monitor:
+  `/proc/asound/card2/eld#0.0` `monitor_present 1`, `eld_valid 1`, `monitor_name LG
+  ULTRAGEAR`. From there the chain is J1's: jack on → `WiredAccessoryManager` → AudioService
+  connects `HDMI Out` → the F9h Rust audio HAL's `Endpoint::connect_hdmi` picks the HDMI PCM
+  whose jack is on. No code change; drm_hwcomposer's first commit on the connector lights the
+  link. As on the nouveau entries, a screen Android turns off disables the CRTC and the sound
+  moves to the onboard codec until it comes back.
+
+### QEMU check (2026-11-15)
+
+Build `eng.caoanh.20261115.2013` (K1-K4), image `out/aosp17-usb-k4-qemu.img` (`--menu
+--userdata 2048 --append console=ttyS0,115200`), entries 1 and 5-9 booted once each with
+`NO_WINDOW=1 tools/run-qemu-aosp17-usb.sh` and a vsock adb (`default_entry` set in the image's
+`limine.conf` with mtools). QEMU has no NVIDIA GPU, so on the NVIDIA entry the check is that
+every K piece steps aside and the entry still boots.
+
+| Entry | `sys.boot_completed` | Notes |
+|---|---|---|
+| 1 SELinux permissive | 1 (31 s) | ranchu on pcfb, `Pipeline=Skia (OpenGL)` |
+| 5 NVIDIA nouveau | 1 (35 s) | drm_hwcomposer on vkms (`card0`) |
+| 6 NVIDIA GPU (NVK + ANGLE) | 1 (35 s) | same, NVK falls back to `pastel` |
+| 7 NVIDIA nouveau, VTS run | 1 (35 s) | same (stopped before the VTS run) |
+| 8 NVIDIA Nova | 1 (30 s) | ranchu on pcfb |
+| 9 NVIDIA (proprietary, Venus) | 1 (66 s) | see below |
+
+On the NVIDIA entry the command line now carries `androidboot.android_pc.vulkan=venus
+androidboot.hardware.guest_hwui_renderer=skiavk` next to K1's words. `pcnvdisplay` finds no
+`10de` display controller and returns in 4 ms (`vendor.pc.nvdisplay=none: no NVIDIA GPU`,
+`pcnvdisplay: no NVIDIA GPU, composer stays on /dev/dri/card0`), so drm_hwcomposer stays on
+vkms and no `vendor.gralloc.vtest.modifiers.*` is set; `vendor.nvsidecar` is `stopped` (K2),
+`vendor.venus.probe=swiftshader` after K3's 20 s socket wait (the longer boot), so
+`ro.hardware.vulkan=pastel` and ES 3.1. The only K4 denial is init executing
+`/vendor/bin/pcnvdisplay` (`vendor_file`, `permissive=1`), the same as K1's `pcnvidia.sh`; the
+entry is permissive. Bluetooth's crash loop (no controller in QEMU) and a `dlkm_loader`
+abort on the pcfb entries show on the other entries as well and are not from K4.
+
+### Status
+
+**Code done, QEMU check passed, real-PC test pending.** Release image
+`out/aosp17-usb-k.img` (`--menu --userdata 64`, build `eng.caoanh.20261115.2013`, security
+patch 2026-06-05) carries K1-K4 together.
+
+### Real-PC test
+
+Unmount the stick's FAT partitions if the desktop mounted them (`udisksctl unmount -b
+/dev/sda2`, `udisksctl unmount -b /dev/sda5`; do not open the stick in a file manager), then
+update it in place (keeps apps and data; type the full word `yes`):
+
+```bash
+sudo tools/update-usb-aosp17.sh out/aosp17-usb-k.img /dev/sda
+```
+
+On the PC (monitor on the RTX 4070's DisplayPort), entry **"Android 17, NVIDIA (proprietary,
+Venus)"**:
+
+1. Picture: the GOP picture, a short black screen while GSP boots, then the lock screen at
+   2560x1080 on the monitor. Unlock and use the desktop for a minute (launcher, settings,
+   a scroll in Chrome).
+2. Sound on the monitor: play a video; the output device should be "HDMI Out" and the sound
+   should come from the monitor.
+3. `adb shell dumpsys gfxinfo com.android.systemui | grep Pipeline` → `Skia (Vulkan)`;
+   `adb shell getprop vendor.venus.probe` → `venus`.
+4. Where Winds Meet and Genshin Impact: frame rate (in-game counter or `dumpsys gfxinfo`)
+   against the same scene on the Nova entry.
+5. Back on the build host, `tools/pclog-read.sh /dev/sda`; in the nvidia boot's
+   `state-*.txt`: `== nvdisplay` (`vendor.pc.nvdisplay` naming the nvidia-drm card and
+   `AB24:7 ...`, `vendor.hwc.drm.device` = that card, the modifier props), `== modetest
+   nvidia-drm` (the DP connector `connected`, a CRTC with the 2560x1080 mode), the eld and
+   audio device sections (`monitor_present 1`, `HDMI Out` connected), and K2/K3's sections
+   (`vendor.nvsidecar` running, `vendor.venus.probe=venus`).
+
+If the screen stays black: `vendor.pc.nvdisplay` and the `pcnvdisplay:` lines say whether the
+card was found; drm_hwcomposer's errors are in logcat (`hwc`), an import failure there means a
+buffer without a scanout modifier.
