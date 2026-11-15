@@ -653,6 +653,69 @@ one session each, one build at a time (I1 builds last and makes the release imag
   SurfaceFlinger crashes" were old tombstones from earlier boots; `pclog.sh` now copies only
   new ones. Details in `docs/nvidia.md` ("Phase J2").
 
+## Phase K — NVIDIA's own driver on bare-metal Android (Venus over vtest)
+
+Goal: games and the desktop render on the RTX 4070 at full speed. Decided 2026-11-15 after
+the real-PC rounds: Nova has no 3D at all (games run on SwiftShader), and NVK on Ada is
+still young. The user's `~/projects/waydroid-nvidia` already runs Android (Waydroid,
+LineageOS 20) on this RTX 4070 through NVIDIA's own driver: Mesa **Venus** in Android sends
+Vulkan over a **vtest** unix socket to a patched `virgl_test_server` that runs on the
+NVIDIA Vulkan driver (`nvidia-open` 615.78.08); GLES is ANGLE on Venus; gralloc allocates
+through vtest; Genshin Impact runs on Vulkan 1.3 there. Phase K moves that design onto
+the bare-metal stick: the "host" side runs inside Android itself.
+
+```
+App / SurfaceFlinger ─GLES─► ANGLE ─┐
+                     ─Vulkan────────┴─► Venus (vulkan.virtio.so, vtest transport)
+gralloc (minigbm-vtest) ───────────────┐  unix socket
+                                        ▼
+  glibc sidecar (started by init): patched virgl_test_server --venus
+        └─► NVIDIA userspace (libnvidia-*, nvidia_icd.json) ─► /dev/nvidia*, /dev/dri (nvidia-drm)
+                                                                   ▲
+  drm_hwcomposer on nvidia-drm (modeset=1) scans out the same dma-bufs ──┘
+  kernel: nvidia-open modules (nvidia, nvidia-modeset, nvidia-drm, nvidia-uvm) + GSP firmware
+```
+
+The phase reuses waydroid-nvidia's patches and shims (Mesa `mesa-26.2.6` Venus patches,
+virglrenderer `1.3.0` vtest dma-buf patches, `minigbm-vtest`, `gpuid`, `hwc-yuv`,
+`mapper-yv12`, feature declarations incl. `opengles.aep`) and its notes in `venus/notes-*.md`.
+NVIDIA's userspace is binary and glibc-only; it is used for this personal stick only and is
+not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K adds an
+**"NVIDIA (proprietary, Venus)"** boot entry (`androidpc.gpu=nvidia`).
+
+- **K1 — nvidia-open kernel modules on GKI android17-6.18.** Build `nvidia.ko`,
+  `nvidia-modeset.ko`, `nvidia-drm.ko`, `nvidia-uvm.ko` from `open-gpu-kernel-modules` at the
+  same version as the userspace (start with 615.78.08, the host's) as vendor modules, ship
+  `gsp_ga10x.bin`/`gsp_tu10x.bin` in `/vendor/firmware/nvidia/<version>/`, load them only on
+  the new entry (`nvidia-drm modeset=1 fbdev=1`, nouveau/Nova blocklisted, `pcfb.enable=0`).
+  Risk: symbols outside the GKI KMI list; if the prebuilt GKI cannot load the modules, build
+  the GKI kernel with `tools/gki-build.sh` and say what changed. Done when: on the real PC the
+  modules load, GSP boots, `/dev/nvidia*` exist and `card0` (nvidia-drm) shows DP-1 connected.
+- **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
+  NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
+  read-only in the vendor partition (or its own partition if `super` is too small), started
+  by init in its own SELinux domain with the vtest socket where Venus expects it. Done when:
+  on the real PC `nvidia-smi` (inside the sidecar) lists the RTX 4070 and
+  `virgl_test_server` runs.
+- **K3 — Android side: Venus, gralloc, GLES, features.** Build waydroid-nvidia's Venus
+  (patched Mesa) for AOSP 17 x86_64 + arm64-bridge ABIs, `minigbm-vtest` as gralloc,
+  ANGLE → Venus as GLES (ES 3.2 + AEP), `gpuid`, and the honest feature declarations
+  (Vulkan 1.3, `opengles.aep`), all only on the `nvidia` entry. Testable without the real PC
+  against a vtest server on the build host (lavapipe or the host's NVIDIA). Done when:
+  Android in QEMU/Cuttlefish connected to a host vtest shows `Pipeline=Skia (Vulkan)` on Venus.
+- **K4 — display and sound on nvidia-drm.** drm_hwcomposer on nvidia-drm importing the
+  vtest-allocated (block-linear, modifier) dma-bufs, native mode on DP-1, hotplug; HDMI/DP
+  audio through nvidia's ELD → the F9h Rust audio HAL. Done when: on the real PC the desktop
+  shows on the monitor from the NVIDIA entry with sound.
+- **K5 — games and soak.** Where Winds Meet, Genshin Impact (Play Store should now list it:
+  `opengles.aep`), Delta Force on the NVIDIA entry; frame rate compared with the Nova and
+  nouveau entries; suspend/resume; 1-hour soak with GPU temperature. Done when: games run on
+  the RTX 4070 at playable frame rates; then the NVIDIA entry may become the default.
+
+Order: K1 → K2 → K4, with K3 in parallel (it needs no NVIDIA hardware); K5 last. Every step
+that needs the real PC ends with the `tools/update-usb-aosp17.sh` command for the user and a
+pclog read.
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
