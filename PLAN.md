@@ -593,10 +593,11 @@ one session each, one build at a time (I1 builds last and makes the release imag
   real-PC check pending. Cuttlefish's `init.vendor.rc` loads vkms after a 5 s wait for a
   card0, before `init.pc.rc` loads nouveau, so vkms was card0, nouveau card1, and
   drm_hwcomposer (`/dev/dri/card0`) drove vkms's virtual connector. `init.pc.rc` now
-  unloads vkms, loads nouveau (card0) and loads vkms again (card1). For I4: the
+  unloads vkms, loads nouveau (card0) and loads vkms again (card1). I4 removed the
   "modetest only" entry (G1's test, its static colour pattern is by design) and pclog's
-  audio check (the 440 Hz beeps, H1's test, `audio-check.dex` on the pclog partition) are
-  passed tests to remove. Details in `docs/nvidia.md` ("Real-PC result and fix").
+  audio check (the 440 Hz beeps, H1's test) as passed tests; `pcgpu.sh` stays, reachable
+  with `--append "androidboot.android_pc.kms=modetest ..."`. Details in `docs/nvidia.md`
+  ("Real-PC result and fix").
 - **I3 — Genshin Impact not in the Play Store**. Status (2026-11-15): analysed, no ROM
   change. Every manifest check Play makes matches (arm64 via the bridge, GLES 3.1,
   touchscreen features, no TV/automotive type; Genshin was already hidden at 240 dpi, so
@@ -606,6 +607,13 @@ one session each, one build at a time (I1 builds last and makes the release imag
   of scope). The user can confirm the reason on the game's Play page and install it with
   Aurora Store (same Google-signed splits) or from genshin.hoyoverse.com. Details in
   `docs/arm-translation.md` ("I3").
+- **I4 — remove the graphics tests that passed** (user request). Status (2026-11-15): done,
+  Soong check only (I1 builds the image). Gone: G4's frame-rate benchmark (`pcgfxbench.sh`,
+  angeles, hwuimacro), the "modetest only" Limine entry, pclog's audio check and HDMI beeps;
+  `pclog.sh` deletes their leftovers on the pclog partition and in `/data/local/tmp`, the OS
+  files go with the stick update. Kept for open bugs: `pcvktest.sh` + dEQP (NVK's vkjson is
+  still `{}`), the VTS entry (never ran on the PC), `modetest`, `pcgpu.sh` (dormant), G5's
+  `gpu-perf`/suspend test. Table with the evidence in `docs/nvidia.md` ("Phase I4").
 
 ## Risks
 

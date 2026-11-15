@@ -14,15 +14,3 @@ service vendor.pcvktest /vendor/bin/pcvktest.sh
     disabled
     oneshot
 
-# G4: frame-rate benchmark on every entry (pcfb's SwiftShader is the baseline for NVK), once
-# per build, Vulkan driver and GPU entry, 90 s after boot so the desktop has settled
-# (boot-N/bench/).
-on property:sys.boot_completed=1
-    start vendor.pcgfxbench
-
-service vendor.pcgfxbench /vendor/bin/pcgfxbench.sh
-    user root
-    group root graphics sdcard_rw media_rw
-    seclabel u:r:su:s0
-    disabled
-    oneshot

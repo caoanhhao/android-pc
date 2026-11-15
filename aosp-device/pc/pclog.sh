@@ -164,55 +164,20 @@ dump() {
 # so a game's frame rate on NVK can be set against the same game on pcfb.
 (for i in $(seq 60); do [ "$(getprop init.svc.surfaceflinger)" = running ] && break; sleep 2; done
  sleep 20; dumpsys SurfaceFlinger --timestats -enable > /dev/null 2>&1) &
-# Audio check (tools/audio-check/AudioCheck.java, copied to the pclog partition as
-# audio-check.dex by tools/mkusb-aosp17.sh): a 440 Hz tone, then a mic recording.
-if [ -f $mnt/audio-check.dex ]; then
-    (
-        for t in 240 480; do
-            sleep $((t - ${prev:-0}))
-            prev=$t
-            cp $mnt/audio-check.dex /data/local/tmp/audio-check.dex
-            # This service starts on "init", before /data is mounted and before init
-            # exports BOOTCLASSPATH & co. (derive_classpath writes them at post-fs-data);
-            # app_process aborts without them.
-            while read -r cmd name value; do
-                [ "$cmd" = export ] && export "$name=$value"
-            done < /data/system/environ/classpath
-            {
-                echo "== $t s: play 5 s 440 Hz"
-                CLASSPATH=/data/local/tmp/audio-check.dex timeout 30 app_process /system/bin AudioCheck play 5 440
-                echo "== $t s: record 10 s"
-                CLASSPATH=/data/local/tmp/audio-check.dex timeout 30 app_process /system/bin AudioCheck record 10
-            } >> $d/audio-check.txt 2>&1
-        done
-    ) &
-fi
-# HDMI check: a 3 s, 375 Hz beep on each HDMI PCM in turn (4 s apart), straight through
-# ALSA, so the log says which PCM (if any) the monitor plays.
-(
-    sleep 150
-    w=/data/local/tmp/beep.wav p=/data/local/tmp/beep-period.raw
-    : > $p
-    for i in $(seq 64); do printf '\000\020\000\020' >> $p; done
-    for i in $(seq 64); do printf '\000\360\000\360' >> $p; done
-    # RIFF header: 48 kHz, stereo, 16 bit, 576000 data bytes (3 s).
-    printf 'RIFF\044\312\010\000WAVEfmt \020\000\000\000\001\000\002\000' > $w
-    printf '\200\273\000\000\000\356\002\000\004\000\020\000data\000\312\010\000' >> $w
-    for i in $(seq 1125); do cat $p; done >> $w
-    grep HDMI /proc/asound/pcm | while IFS=- read -r card rest; do
-        dev=${rest%%:*}
-        echo "== $(cut -d' ' -f1 /proc/uptime) s: beep on card $((10#$card)) device $((10#$dev))"
-        timeout 10 tinyplay $w -D $((10#$card)) -d $((10#$dev)) 2>&1
-        echo "exit $?"
-        sleep 4
-    done >> $d/hdmi-check.txt 2>&1
-) &
+# Phase I4 (docs/nvidia.md): the audio check (440 Hz tone + mic recording), the HDMI beeps and
+# G4's frame-rate benchmark passed on the real PC and are gone; delete what they left behind
+# on the pclog partition and in /data (the stick update rewrites neither).
+rm -f $mnt/audio-check.dex
+(for i in $(seq 120); do [ "$(getprop sys.boot_completed)" = 1 ] && break; sleep 5; done
+ rm -rf /data/local/tmp/pcbench /data/local/tmp/audio-check.dex /data/local/tmp/beep.wav \
+     /data/local/tmp/beep-period.raw) &
 # Phase G5 (docs/nvidia.md), nouveau entries only:
 # - every 5 s for an hour, GSP-RM's P-state (P0 under load, P8 idle: GSP-RM raises the clocks
 #   itself) and the GPU temperature, into boot-N/gpu-perf.txt;
 # - once per build, a suspend/resume cycle with an RTC wake 20 s later, when the G3/G4
-#   tests are not running, into boot-N/suspend-test.txt: nouveau saves VRAM, stops GSP-RM,
-#   then boots it again and restores the display; the desktop must come back by itself.
+#   tests (pcvktest.sh) are not running, into boot-N/suspend-test.txt: nouveau saves VRAM,
+#   stops GSP-RM, then boots it again and restores the display; the desktop must come back
+#   by itself.
 if [ "$(getprop ro.boot.android_pc.gpu)" = nouveau ]; then
     [ -d /sys/kernel/debug/nouveau ] || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
     (
@@ -232,7 +197,7 @@ if [ "$(getprop ro.boot.android_pc.gpu)" = nouveau ]; then
         [ "$(cat $mnt/suspend-test.done 2>/dev/null)" = "$build" ] && exit
         for i in $(seq 360); do
             [ "$(getprop sys.boot_completed)" = 1 ] && [ $(cut -d. -f1 /proc/uptime) -ge 420 ] &&
-                ! pgrep -f 'pcvktest.sh|pcgfxbench.sh' > /dev/null && break
+                ! pgrep -f pcvktest.sh > /dev/null && break
             sleep 10
         done
         echo "$build" > $mnt/suspend-test.done   # first, so a hang is not repeated next boot

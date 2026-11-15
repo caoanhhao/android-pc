@@ -32,7 +32,7 @@
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
 #                          permissive, enforcing, kernel log on screen, no pcfb, NVIDIA
-#                          nouveau (Phase G: KMS desktop, VTS run, modetest only), Nova (G6)
+#                          nouveau (Phase G: KMS desktop, VTS run), Nova (G6)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -196,13 +196,12 @@ if [[ $menu == 1 ]]; then
         # SurfaceFlinger's client composition for drm_hwcomposer, HWUI, Chromium and games all
         # draw on the RTX 4070; SwiftShader (pastel) is not loaded on this entry. The entry
         # above keeps SwiftShader on KMS as the fallback. pcvktest.sh runs vkjson and the
-        # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/);
-        # pcgfxbench.sh measures frame rates on every entry (boot-N/bench/).
+        # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/).
         entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.hardware.vulkan=nouveau" "$sound"
-        # G2 checks: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
-        # restarts during the composer test), and G1's modetest pattern without Android's picture.
+        # G2 check: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
+        # restarts during the composer test). G1's "modetest only" entry passed and was removed
+        # in I4; --append "androidboot.android_pc.kms=modetest ..." still starts pcgpu.sh.
         entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"
-        entry "Android 17, NVIDIA nouveau, modetest only (no Android picture)" "$nv androidboot.android_pc.kms=modetest androidboot.hardware.hwcomposer.mode=noop androidboot.hardware.hwcomposer.display_finder_mode=noop"
         # G6: NVIDIA's Rust drivers Nova (nova-core + nova DRM), an experiment: Android stays on
         # pcfb (Nova has no display yet), nouveau is not loaded, pcnova.sh loads Nova after boot.
         entry "Android 17, NVIDIA Nova (Rust driver experiment)" "androidboot.selinux=permissive androidboot.android_pc.gpu=nova"
@@ -298,9 +297,6 @@ for p in "${parts[@]}"; do
                     "$host/mmd" -i "$fat" ::/android/vts
                     for t in $vts; do "$host/mcopy" -i "$fat" "$t" ::/android/vts/; done
                 fi
-            elif [[ $1 == pclog && -f $ROOT/out/audio-check/classes.dex ]]; then
-                # pclog.sh runs it (tone + mic recording; tools/audio-check.sh builds it)
-                MTOOLS_SKIP_CHECK=1 "$host/mcopy" -i "$fat" "$ROOT/out/audio-check/classes.dex" ::/audio-check.dex
             fi
             dd if="$fat" of="$out" bs=1M seek="$off" conv=notrunc,sparse status=none ;;
         zero) ;;   # the image file is sparse zeros already

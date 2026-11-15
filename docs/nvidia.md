@@ -792,3 +792,43 @@ What each result means:
 | Use on this PC | the GPU stack for G2-G5 | an experiment to follow upstream: worth retrying when the GKI branch moves to a release where nova-core runs booter and starts GSP-RM (the work continues upstream after 6.18) |
 
 The Real-PC results go here once the stick has been booted on the Nova entry.
+
+## Phase I4. Graphics tests removed after the real-PC run
+
+The user asked to drop the graphics test apps whose tests have passed, so they no longer
+ship. Evidence: the real-PC pclogs `out/pclog-g6/` (G6 stick) and `out/pclog-h3/` (H3 stick,
+build `eng.caoanh.20261115.0441`: `boot-7` "VTS run", `boot-8` "modetest only", `boot-9` and
+`boot-10` Nova, `boot-11` NVK); `out/pclog-g2q*`, `pclog-g4q1` are QEMU runs.
+
+Removed:
+
+| Item | Where it was | Evidence it passed |
+|---|---|---|
+| Frame-rate benchmark: `pcgfxbench.sh`, `angeles`, `hwuimacro` (`/system_ext/etc/pcvktest/`) | `aosp-device/vktest/` (`vktest.mk`, `Android.bp`, `init.pcvktest.rc`) | Ran on every boot it was meant to: `pclog-g6/boot-4` and `pclog-h3/boot-9` (pcfb/SwiftShader) wrote `bench/summary.txt`, angeles 57 fps, all hwui scenes measured. Per-layer FPS stays in pclog's `== timestats` on every entry. Restore from git (commit before I4) to measure NVK once it renders. |
+| "modetest only" Limine entry | `tools/mkusb-aosp17.sh --menu` | `pclog-h3/boot-8`: the colour pattern on the monitor and the HDMI beeps heard (G1's test). I1 found the no-picture cause elsewhere (card order) and listed this entry as passed. |
+| Audio check (440 Hz tone + mic recording via `app_process`, `audio-check.dex` on the pclog partition) | `aosp-device/pc/pclog.sh`, copied by `mkusb-aosp17.sh` | `audio-check.txt` in `pclog-f9g`, `pclog-g6` and `pclog-h3/boot-8`/`boot-9`: tone played to device type 9 (HDMI), recording made. These were the "harsh beeps". |
+| HDMI beeps (375 Hz `tinyplay` on each HDMI PCM at 150 s) | `aosp-device/pc/pclog.sh` | `hdmi-check.txt` on every real-PC boot, `tinyplay` exit 0, and the user heard the monitor on `boot-8` (H1's question answered). The ELD/jack state stays in pclog's state dumps (`== hdmi eld`, `== asound`). |
+
+The stick update rewrites the OS partitions, so the removed files under `/vendor` and
+`/system_ext` disappear with it; no app had been installed from them into userdata. What they
+left outside the OS partitions is deleted by `pclog.sh` on the next boot: `audio-check.dex` on
+the pclog partition (the update never writes it) and `/data/local/tmp/{pcbench,
+audio-check.dex,beep.wav,beep-period.raw}` (userdata is kept). `tools/audio-check.sh` (an adb
+tool on the host, not in the image) stays.
+
+Build note: soong_ui deletes files of removed modules from `$PRODUCT_OUT` only after a full
+build (`.installable_files` is written under `FULL_BUILD`), and the per-image steps of
+`tools/aosp17-build.sh` pack whatever is in the staging directories. So the old
+`vendor/bin/pcgfxbench.sh` and `system_ext/etc/pcvktest/{angeles,hwuimacro}` were deleted
+from `out/target/product/pc_x86_64/` by hand; do the same whenever a module is dropped.
+
+Kept, because the test has not passed on the real PC or an open bug needs it:
+
+| Item | Why |
+|---|---|
+| `pcvktest.sh`, the dEQP APK, `init.pcvktest.rc` (NVK entry only) | NVK never came up on the real PC: `vk/vkjson.json` is `{}` in `pclog-g3/boot-1` and `pclog-h3/boot-11`, so no dEQP group ever ran. Needed once I1's display fix lets the NVK entry render. |
+| "NVIDIA nouveau, VTS run" entry, VTS binaries on the ESP | Passed only in QEMU on vkms (`pclog-g2q3`); on the PC (`pclog-h3/boot-7`) the log stops before the VTS start at 200 s. It is the composer test for drm_hwcomposer on nouveau, I1's bug. |
+| `modetest` (`/system/bin`), pclog's `== modetest -c`, `== drm connectors`, EDID copies | Connector and mode state for I1's no-picture bug. |
+| `pcgpu.sh` and its `init.pc.rc` trigger | Dormant without the entry; `mkusb-aosp17.sh --append "androidboot.android_pc.kms=modetest ..."` brings G1's test back if KMS needs a check without drm_hwcomposer. |
+| `gpu-perf.txt`, `suspend-test.txt` (nouveau entries) | G5's soak has not passed: no nouveau entry has shown a desktop yet. |
+| `pclog.sh` itself, timestats, screenshot snapshots | The only log of a real-PC boot. |

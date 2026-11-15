@@ -11,7 +11,7 @@
 # - turns the screen on after a wake that did not come from an alarm: a USB keyboard's key or
 #   the ACPI power button wake the kernel, but Android gets no key that wakes the screen (the
 #   ACPI button driver swallows the press that woke it), so it would suspend again;
-# - holds a wakelock while pcvktest.sh or pcgfxbench.sh (G3/G4 tests, first boot of a build)
+# - holds a wakelock while pcvktest.sh (G3/G4 tests, first boot of a build on the NVK entry)
 #   run unattended, so a screen timeout does not suspend them halfway.
 export PATH=/system/bin:/vendor/bin:$PATH
 k() { echo "pcwake: $*" > /dev/kmsg; }
@@ -45,7 +45,7 @@ ok=$(cat /sys/power/suspend_stats/success) alarm=$(sum $alarms) held= i=0
 while sleep 1; do
     i=$((i + 1))
     if [ $((i % 5)) = 0 ]; then
-        if pgrep -f 'pcvktest.sh|pcgfxbench.sh' > /dev/null; then
+        if pgrep -f pcvktest.sh > /dev/null; then
             [ -n "$held" ] || { echo pcwake > /sys/power/wake_lock; held=1; k "tests running, wakelock held"; }
         elif [ -n "$held" ]; then
             echo pcwake > /sys/power/wake_unlock; held=; k "tests done, wakelock released"

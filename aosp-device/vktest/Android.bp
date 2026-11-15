@@ -1,6 +1,6 @@
-// Phase G3/G4 (docs/nvidia.md): on-device Vulkan and GLES checks for the nouveau boot entry,
-// and a frame-rate benchmark for every entry. The real PC has no adb, so the dEQP APK and the
-// benchmark binaries ship in the image and pcvktest.sh / pcgfxbench.sh run them at boot.
+// Phase G3/G4 (docs/nvidia.md): on-device Vulkan and GLES checks for the NVK boot entry. The
+// real PC has no adb, so the dEQP APK ships in the image and pcvktest.sh runs it at boot.
+// (I4 removed G4's frame-rate benchmark, pcgfxbench.sh with angeles and hwuimacro.)
 
 sh_binary {
     name: "pcvktest.sh",
@@ -9,13 +9,6 @@ sh_binary {
     // pc_deqp_apk (system_ext) is in PRODUCT_PACKAGES next to this one (vktest.mk).
     required: ["init.pcvktest.rc"],
     visibility: ["//visibility:public"],
-}
-
-sh_binary {
-    name: "pcgfxbench.sh",
-    src: "pcgfxbench.sh",
-    vendor: true,
-    required: ["init.pcvktest.rc"],
 }
 
 prebuilt_etc {
@@ -34,20 +27,3 @@ prebuilt_etc {
     system_ext_specific: true,
 }
 
-// G4 benchmark binaries (native tests, normally installed into /data by tradefed). Shipped as
-// plain files; pcgfxbench.sh copies them to /data/local/tmp and makes them executable.
-prebuilt_etc {
-    name: "pc_bench_angeles",
-    src: ":angeles",
-    filename: "angeles",
-    sub_dir: "pcvktest",
-    system_ext_specific: true,
-}
-
-prebuilt_etc {
-    name: "pc_bench_hwuimacro",
-    src: ":hwuimacro",
-    filename: "hwuimacro",
-    sub_dir: "pcvktest",
-    system_ext_specific: true,
-}
