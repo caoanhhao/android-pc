@@ -1,0 +1,30 @@
+--- a/drv.c
++++ b/drv.c
+@@ -50,6 +50,7 @@
+ extern const struct backend backend_mediatek;
+ extern const struct backend backend_meson;
+ extern const struct backend backend_nouveau;
++extern const struct backend backend_nvidia_drm;
+ extern const struct backend backend_komeda;
+ extern const struct backend backend_radeon;
+ extern const struct backend backend_rockchip;
+@@ -80,7 +81,7 @@
+ 	&backend_evdi,	    &backend_komeda,	&backend_marvell, &backend_mediatek,
+ 	&backend_meson,	    &backend_nouveau,	&backend_radeon,  &backend_rockchip,
+ 	&backend_sun4i_drm, &backend_synaptics, &backend_udl,	  &backend_virtgpu,
+-	&backend_vkms,	    &backend_mock
++	&backend_vkms,	    &backend_nvidia_drm, &backend_mock
+ };
+ 
+ void drv_preload(bool load)
+--- a/dumb_driver.c
++++ b/dumb_driver.c
+@@ -75,6 +75,8 @@
+ INIT_DUMB_DRIVER(synaptics)
+ INIT_DUMB_DRIVER(udl)
+ INIT_DUMB_DRIVER(vkms)
++/* android-pc Phase K1: NVIDIA's own nvidia-drm (modeset=1), dumb buffers until vtest (K3). */
++INIT_DUMB_DRIVER_WITH_NAME(nvidia_drm, "nvidia-drm")
+ 
+ #ifndef DRV_ROCKCHIP
+ INIT_DUMB_DRIVER(rockchip)

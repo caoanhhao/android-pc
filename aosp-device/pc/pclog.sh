@@ -105,6 +105,36 @@ dump() {
         done
         echo "== modetest -c"; timeout 10 modetest -M nouveau -c 2>&1 | head -150
         echo "== debugfs nouveau"; ls -R /sys/kernel/debug/nouveau 2>&1 | head -30
+        # Phase K1 (docs/nvidia-proprietary.md): NVIDIA's own kernel modules on the nvidia entry:
+        # what loaded, the driver's dmesg (NVRM, GSP, nvidia-drm), its /proc view, device nodes.
+        if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia ]; then
+            echo "== nvidia modules"; grep -E '^(nvidia|nvidia_modeset|nvidia_drm|nvidia_uvm|nouveau|nova|nova_core|vkms) ' /proc/modules
+            cat /proc/cmdline | tr ' ' '\n' | grep -E '^(cfi|module_blacklist|pcfb)'
+            echo "== nvidia dmesg"; dmesg | grep -iE 'nvrm|nvidia|nvkms|gsp|pcnvidia|cfi failure|firmware' | head -n 200
+            echo "== /proc/driver/nvidia"; for f in /proc/driver/nvidia/version /proc/driver/nvidia/params \
+                /proc/driver/nvidia/registry /proc/driver/nvidia/gpus/*/information /proc/driver/nvidia/gpus/*/power; do
+                [ -f "$f" ] && { echo "-- $f"; head -n 60 "$f"; }
+            done
+            echo "== /dev/nvidia*"; ls -lZ /dev/nvidia* /dev/nvidia-caps 2>&1; ls -lZ /dev/dri 2>&1
+            echo "== drm cards"; for c in /sys/class/drm/card? /sys/class/drm/renderD*; do
+                echo "${c##*/}: $(basename "$(readlink $c/device/driver)")"
+            done
+            echo "== modetest -c nvidia-drm"; timeout 10 modetest -M nvidia-drm -c 2>&1 | head -80
+        fi
+        # Phase K2 (docs/nvidia-proprietary.md): the NVIDIA glibc sidecar: its service and
+        # processes, its output (stdio_to_kmsg), the vtest socket, nvidia-smi -q run from the
+        # sidecar's root, and the SELinux denials of its domain (the entry is permissive).
+        if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia ]; then
+            echo "== nvsidecar"; echo "init.svc: $(getprop init.svc.vendor.nvsidecar)"
+            cat /vendor/bin/nvsidecar/VERSION 2>&1
+            ps -A -o PID,PPID,USER,LABEL,RSS,NAME | grep -E 'nvsidecar|virgl_'
+            ls -lZ /dev/socket/vtest /data/vendor/nvsidecar 2>&1
+            dmesg | grep -E 'nvsidecar|virgl|vtest|vkr' | head -n 100
+            echo "== nvidia-smi -q (sidecar)"
+            LD_LIBRARY_PATH=/vendor/bin/nvsidecar/lib timeout 20 /vendor/bin/nvsidecar/lib/ld-linux-x86-64.so.2 \
+                /vendor/bin/nvsidecar/bin/nvidia-smi -q 2>&1 | head -n 300
+            echo "== avc nvsidecar"; dmesg | grep 'avc: denied' | grep -E 'nvsidecar|vtest_socket|nvidia_device' | head -n 80
+        fi
         for c in /sys/class/sound/card*; do
             [ "$(cat $c/device/vendor 2>/dev/null):$(cat $c/device/device 2>/dev/null)" = 0x10de:0x22bc ] || continue
             echo "== eld ${c##*/} (10de:22bc)"

@@ -1,0 +1,34 @@
+diff --git a/kernel-open/nvidia-modeset/nvidia-modeset-linux.c b/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
+index a239238..b069225 100644
+--- a/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
++++ b/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
+@@ -2296,6 +2296,10 @@ module_init(nvkms_init);
+ module_exit(nvkms_exit);
+ 
+   MODULE_LICENSE("Dual MIT/GPL");
++#if defined(CONFIG_ANDROID_VENDOR_HOOKS)
++  /* Android GKI: filp_open() is exported in this namespace only (android-pc Phase K1). */
++  MODULE_IMPORT_NS("ANDROID_GKI_VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
++#endif
+ 
+ MODULE_INFO(supported, "external");
+ MODULE_VERSION(NV_VERSION_STRING);
+diff --git a/kernel-open/nvidia/nv.c b/kernel-open/nvidia/nv.c
+index 03bc901..f0c94ef 100644
+--- a/kernel-open/nvidia/nv.c
++++ b/kernel-open/nvidia/nv.c
+@@ -145,6 +145,14 @@ MODULE_IMPORT_NS("CXL");
+ #endif  // defined(NV_MODULE_IMPORT_NS_TAKES_CONSTANT)
+ #endif  // defined(MODULE_IMPORT_NS)
+ 
++/*
++ * Android GKI: filp_open() and close_fd() are exported in this namespace only
++ * (android-pc Phase K1, docs/nvidia-proprietary.md).
++ */
++#if defined(CONFIG_ANDROID_VENDOR_HOOKS)
++MODULE_IMPORT_NS("ANDROID_GKI_VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
++#endif
++
+ const NvBool nv_is_rm_firmware_supported_os = NV_TRUE;
+ 
+ // Deprecated, use NV_REG_ENABLE_GPU_FIRMWARE instead

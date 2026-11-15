@@ -11,3 +11,9 @@ blocklist nouveau.ko
 # Phase G6: NVIDIA's Rust drivers Nova load only on the nova boot entry (init.pc.rc, pcnova.sh).
 blocklist nova.ko
 blocklist nova_core.ko
+
+# Phase K1: NVIDIA's own kernel modules load only on the NVIDIA (proprietary) entry (init.pc.rc).
+blocklist nvidia.ko
+blocklist nvidia-modeset.ko
+blocklist nvidia-drm.ko
+blocklist nvidia-uvm.ko

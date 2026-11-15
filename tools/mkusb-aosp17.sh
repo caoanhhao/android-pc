@@ -32,7 +32,7 @@
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
 #                          permissive, enforcing, kernel log on screen, no pcfb, NVIDIA
-#                          nouveau (Phase G: KMS desktop, VTS run), Nova (G6)
+#                          nouveau (Phase G: KMS desktop, VTS run), Nova (G6), NVIDIA (K)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -209,6 +209,13 @@ if [[ $menu == 1 ]]; then
         # G6: NVIDIA's Rust drivers Nova (nova-core + nova DRM), an experiment: Android stays on
         # pcfb (Nova has no display yet), nouveau is not loaded, pcnova.sh loads Nova after boot.
         entry "Android 17, NVIDIA Nova (Rust driver experiment)" "androidboot.selinux=permissive androidboot.android_pc.gpu=nova"
+        # Phase K (docs/nvidia-proprietary.md): NVIDIA's own driver. K1: the open kernel modules
+        # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), nouveau and Nova blacklisted,
+        # pcfb off, drm_hwcomposer on nvidia-drm with SwiftShader until K3/K4. cfi=kcfi: the
+        # DisplayPort library in nvidia-modeset is C++, whose virtual calls clang does not kCFI-check;
+        # FineIBT (the default on this CPU) removes the ENDBR they land on.
+        nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia cfi=kcfi module_blacklist=nouveau,nova_core,nova"
+        entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $drm" "$sound"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

@@ -691,6 +691,10 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   Risk: symbols outside the GKI KMI list; if the prebuilt GKI cannot load the modules, build
   the GKI kernel with `tools/gki-build.sh` and say what changed. Done when: on the real PC the
   modules load, GSP boots, `/dev/nvidia*` exist and `card0` (nvidia-drm) shows DP-1 connected.
+  **Status (2026-11-15): code done, QEMU check passed, real-PC test pending** — 620.70.06 (the
+  host's version now), built by `tools/nvidia-build.sh` against the prebuilt GKI image (only a
+  GKI namespace import was needed, no kernel change), entry needs `cfi=kcfi`; image
+  `out/aosp17-usb-k1.img` (docs/nvidia-proprietary.md, K1).
 - **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
   NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
   read-only in the vendor partition (or its own partition if `super` is too small), started

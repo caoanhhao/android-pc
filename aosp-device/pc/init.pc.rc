@@ -117,6 +117,30 @@ service vendor.pcnova /vendor/bin/pcnova.sh
     oneshot
     disabled
 
+# NVIDIA's own driver (Phase K1, docs/nvidia-proprietary.md), only on the Limine entry with
+# androidboot.android_pc.gpu=nvidia (pcfb.enable=0; nouveau and Nova are kept out by the
+# entry's module_blacklist). The open-gpu-kernel-modules are in modules.blocklist for every
+# other entry. As on the nouveau entry, vkms is unloaded first so nvidia-drm gets card0, then
+# loaded again as card1 (in QEMU, without the GPU, nvidia.ko refuses to load and vkms is card0).
+# nvidia-drm needs modeset=1 for KMS (and its render node); toybox modprobe does not read
+# module options from the kernel command line, so it is given here. fbdev=1 is not: the GKI
+# image has no fbdev emulation, so nvidia-drm 620 has no such option. modprobe pulls
+# nvidia-modeset and nvidia in for nvidia-drm; nvidia-uvm (CUDA, Vulkan's unified memory) is
+# separate. pcnvidia.sh then creates /dev/nvidia* (the modules make no device nodes; on
+# desktop Linux nvidia-modprobe does it) and logs what came up.
+on early-init && property:ro.boot.android_pc.gpu=nvidia
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -r -d /vendor/lib/modules vkms.ko
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nvidia-drm.ko modeset=1
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nvidia-uvm.ko
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules vkms.ko
+    exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh
+
+# Until K3/K4 replace it: drm_hwcomposer (the entry's composer APEX) on nvidia-drm's card0 with
+# SwiftShader client composition, overlay planes off, minigbm dumb buffers on nvidia-drm's
+# render node (tools/patches/aosp17-minigbm-nvidia-dumb.patch), as G2 did on nouveau.
+on early-init && property:ro.boot.android_pc.gpu=nvidia
+    setprop ro.vendor.hwc.use_overlay_planes 0
+
 # Suspend on the nouveau entries (Phase G5, docs/nvidia.md). Cuttlefish's suspend_blocker
 # holds a wakelock forever; without it Android suspends the PC when the screen is off.
 # nouveau saves VRAM and restarts GSP-RM across a suspend; pcfb cannot (the firmware does not

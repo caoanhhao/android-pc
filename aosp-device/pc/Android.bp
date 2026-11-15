@@ -94,3 +94,11 @@ sh_binary {
     vendor: true,
     visibility: ["//visibility:public"],
 }
+
+// Phase K1: creates /dev/nvidia* for NVIDIA's own driver on the nvidia entry (init.pc.rc).
+sh_binary {
+    name: "pcnvidia.sh",
+    src: "pcnvidia.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}

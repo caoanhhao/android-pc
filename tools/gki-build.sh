@@ -7,14 +7,14 @@
 #   aosp/device/android-pc/kernel/6.18/vendor/       Cuttlefish modules + the PC modules
 #   aosp/device/android-pc/firmware/                 device firmware for /vendor/firmware
 #
-# STEPS picks what runs (default "gki virt pc install firmware"); each Bazel step goes through
+# STEPS picks what runs (default "gki virt pc nvidia install firmware"); each Bazel step goes through
 # tools/limited-build.sh and is retried (the host is flaky). Extra Bazel flags: BAZEL_FLAGS.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GKI=$ROOT/gki
 PKG=$GKI/android-pc
 DEST=$ROOT/aosp/device/android-pc/kernel/6.18
-STEPS=${STEPS:-"gki virt pc install firmware"}
+STEPS=${STEPS:-"gki virt pc nvidia install firmware"}
 # --notrim: export every symbol the GKI image has (vendor modules use more than the KMI
 # symbol lists); --lto=none: much faster and lighter than the release LTO build.
 # --defconfig_fragment (Phase G6, docs/nvidia.md): CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y in the
@@ -87,6 +87,11 @@ for s in $STEPS; do case $s in
   gki)  bazel_run //common:kernel_x86_64_dist ;;
   virt) bazel_run //common-modules/virtual-device:virtual_device_x86_64_dist ;;
   pc)   bazel_run //android-pc:pc_x86_64_dist ;;
+  # Phase K1 (docs/nvidia-proprietary.md): NVIDIA's open kernel modules, built outside Kleaf
+  # against the GKI image; skipped (with a note) when gki/nvidia-open is not checked out.
+  nvidia)
+    if [ -d "$GKI/nvidia-open" ]; then "$ROOT/tools/nvidia-build.sh" || { echo "STEP_FAILED nvidia"; exit 1; }
+    else echo "gki-build: no gki/nvidia-open, NVIDIA modules not built (see tools/nvidia-build.sh)"; fi ;;
   install)
     D=$GKI/out
     rm -rf "$DEST.new" && mkdir -p "$DEST.new/system_dlkm" "$DEST.new/vendor" || exit 1
@@ -99,6 +104,8 @@ for s in $STEPS; do case $s in
     # exports (IWLWIFI_LEDS selects MAC80211_LEDS, whose LED triggers iwlmvm needs).
     # Only virtual-device's external modules (goldfish, v4l2loopback, virtio-media) stay.
     cp "$D"/pc_x86_64/dist/*.ko "$DEST.new/vendor/" || exit 1
+    # NVIDIA's modules (Phase K1), when tools/nvidia-build.sh has built them.
+    if ls "$D"/nvidia/dist/*.ko >/dev/null 2>&1; then cp "$D"/nvidia/dist/*.ko "$DEST.new/vendor/" || exit 1; fi
     rm -rf "$DEST" && mv "$DEST.new" "$DEST"
     echo "installed into $DEST: $(ls "$DEST/system_dlkm" | wc -l) system_dlkm, $(ls "$DEST/vendor" | wc -l) vendor modules"
     strings "$DEST/kernel-6.18" | grep -m1 '^6\.18\.' ;;
@@ -120,6 +127,14 @@ for s in $STEPS; do case $s in
     for n in booter_load booter_unload bootloader gsp; do
       zstd -q -d -f "$FW/nvidia/ad104/gsp/$n-570.144.bin.zst" -o "$FWD/nvidia/ad104/gsp/$n-570.144.bin" || exit 1
     done
+    # NVIDIA's own driver (Phase K1): GSP-RM and its ucode bundle for Ampere/Ada (ga10x: the
+    # RTX 4070), from the host's nvidia-utils, at the version of tools/nvidia-build.sh (nvidia.ko
+    # asks for nvidia/<version>/<name>.bin). The tu10x set (Turing, GA100) is left out (28 MiB).
+    NVV=${NV_VERSION:-620.70.06}
+    if [ -d "$GKI/nvidia-open" ]; then
+      [ -f "$FW/nvidia/$NVV/gsp_ga10x.bin" ] || { echo "gki-build: no $FW/nvidia/$NVV (nvidia-utils $NVV)"; exit 1; }
+      mkdir -p "$FWD/nvidia/$NVV" && cp "$FW/nvidia/$NVV"/{gsp,ucodes}_ga10x.bin "$FWD/nvidia/$NVV/" || exit 1
+    fi
     echo "firmware: $(find "$FWD" -type f | wc -l) files, $(du -sh "$FWD" | cut -f1)" ;;
   *) echo "gki-build: unknown step $s"; exit 2 ;;
 esac; done
