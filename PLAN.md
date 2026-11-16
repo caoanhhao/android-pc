@@ -704,6 +704,9 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   Xid 51 (BAD_TSG) at the first post-boot load. Fixed four kCFI mismatches
   (`nvidia-open-kcfi.patch`), `intel_iommu=off` on the NVIDIA entries (the host runs without the
   IOMMU), safe debug entry. Image `out/aosp17-usb-k1c.img`; real-PC test pending.
+  **K1d (2026-11-16):** kCFI fixed for real (no CFI failure), Xid 51 stays with the IOMMU off; its
+  trigger is microG DroidGuard opening two ANGLE/Vulkan displays at once. A/B entries: driver
+  only (no Venus), sidecar without SYS_NICE (K2), RM built by gcc (cfi=off); debug entry removed.
 - **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
   NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
   read-only in the vendor partition (or its own partition if `super` is too small), started
@@ -755,6 +758,56 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
 Order: K1 → K2 → K4, with K3 in parallel (it needs no NVIDIA hardware); K5 last. Every step
 that needs the real PC ends with the `tools/update-usb-aosp17.sh` command for the user and a
 pclog read.
+
+## Phase L — NVIDIA's driver as the device's native GPU driver
+
+Decided 2026-11-16 by the user after the K1c real-PC test: the GPU must render, and a
+fallback to the CPU (SwiftShader) when it fails is not acceptable. Phase K's sidecar + vtest +
+Venus route is a forwarding layer, not a device driver. Phase L brings the RTX 4070 up the way
+a vendor brings up new hardware on Android: kernel driver (`nvidia-open`, K1) plus the vendor
+Vulkan driver loaded **in-process** by the Android Vulkan loader as `vulkan.<name>.so`, with the
+Android HALs (gralloc, composer) on top of the same driver. NVIDIA's userspace is built for
+glibc, so the missing piece is a **glibc-ABI compatibility layer on bionic** that lets bionic
+processes load NVIDIA's ICD and its dependencies. No CPU rendering path on the NVIDIA entry: if
+the GPU fails, that is a bug to fix, not to hide.
+
+```
+App / SurfaceFlinger / HWUI ─Vulkan─► Android Vulkan loader ─► vulkan.nvidia.so (L3 HAL shim:
+        VK_ANDROID_native_buffer, AHardwareBuffer, swapchain on gralloc buffers)
+                                          └─► NVIDIA libnvidia-*.so / ICD, loaded through
+                                              L2 nvglibc: glibc ABI (libc.so.6, libpthread,
+                                              libdl, libm, ld-linux symbols, TLS) on bionic
+GLES ─► ANGLE ─► same Vulkan                 ▼
+gralloc (L3): buffers from NVIDIA Vulkan/nvidia-drm with DRM modifiers, dma-buf
+composer: drm_hwcomposer on nvidia-drm (K4)
+kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
+```
+
+- **L1 — GPU stable on the kernel side.** Root-cause and fix NVRM `Xid 51 BAD_TSG` → `Xid 154`
+  → `NV_ERR_RESET_REQUIRED` seen ~45-57 s after boot on the NVIDIA entry (pclog-k1b, pclog-k1c),
+  with the same 620.70.06 userspace that works on the build host. Done when a real-PC boot runs
+  for 30 minutes with no Xid while a test client creates channels and renders.
+- **L2 — nvglibc: NVIDIA's glibc libraries inside bionic processes.** A loader + glibc-ABI shim
+  (symbol versions `GLIBC_2.x`, `__libc_*`, `errno`/TLS layout, `dl*`, `pthread_*`, `stat`
+  structs, `fopen`/stdio, `getauxval`, `__cxa_*`) so `dlopen` of NVIDIA's ICD from a bionic
+  process works; built with Soong for x86_64. Developed and tested on the build host first: a
+  `linux_bionic` (AOSP host bionic) test program that runs `vkCreateInstance` /
+  `vkEnumeratePhysicalDevices` / a compute dispatch on the host's RTX 4070 through the shim.
+  Done when that host test passes and the same binary works on the real PC.
+- **L3 — Android Vulkan HAL and gralloc on the native driver.** `vulkan.nvidia.so` (hwvulkan
+  module) wrapping NVIDIA's ICD through L2: Android WSI (`VK_ANDROID_native_buffer`,
+  `VK_ANDROID_external_memory_android_hardware_buffer`) built on NVIDIA's dma-buf and DRM
+  modifier support; a gralloc (allocator/mapper AIDL) whose buffers NVIDIA can render to and
+  nvidia-drm can scan out; drm_hwcomposer on nvidia-drm (K4). Done when SurfaceFlinger and HWUI
+  run on Vulkan on the RTX 4070 on the real PC (`dumpsys gfxinfo` Pipeline = Skia (Vulkan),
+  device `NVIDIA GeForce RTX 4070`, driver NVIDIA 620.70.06).
+- **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
+  declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
+  frame rates; then the NVIDIA entry may become the default.
+
+Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
+removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm
+display, DP audio) stay.
 
 ## Risks
 
