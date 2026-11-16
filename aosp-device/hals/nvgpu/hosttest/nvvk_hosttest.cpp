@@ -208,6 +208,20 @@ T D(const char* name) {
 #define IFN(name) I<PFN_vk##name>("vk" #name)
 #define DFN(name) D<PFN_vk##name>("vk" #name)
 
+int NvidiaFds() {
+    int n = 0;
+    char path[64], target[128];
+    for (int fd = 0; fd < 1024; fd++) {
+        snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+        const ssize_t len = readlink(path, target, sizeof(target) - 1);
+        if (len > 0) {
+            target[len] = 0;
+            n += !strncmp(target, "/dev/nvidia", 11);
+        }
+    }
+    return n;
+}
+
 bool HasExt(const std::vector<VkExtensionProperties>& exts, const char* name) {
     for (auto& e : exts)
         if (!strcmp(e.extensionName, name))
@@ -230,11 +244,14 @@ void Setup() {
     CHECK(!HasExt(iexts, "VK_KHR_surface") && !HasExt(iexts, "VK_KHR_xcb_surface"),
           "window-system instance extensions not hidden");
     CHECK(HasExt(iexts, "VK_KHR_get_physical_device_properties2"), "instance exts");
+    // what zygote does (it preloads the HAL): no NVIDIA device may be open yet
+    CHECK(NvidiaFds() == 0, "%d /dev/nvidia* fds open after open + instance extensions", NvidiaFds());
 
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "nvvk_hosttest", 1,
                              nullptr, 0, VK_API_VERSION_1_3};
     VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr, 0, &app};
     VK(vk.hal->CreateInstance(&ici, nullptr, &vk.instance));
+    printf("ok   no /dev/nvidia* fd until vkCreateInstance (%d after it)\n", NvidiaFds());
     CHECK(*reinterpret_cast<uintptr_t*>(vk.instance) == HWVULKAN_DISPATCH_MAGIC,
           "instance does not start with the loader magic");
     uint32_t count = 8;

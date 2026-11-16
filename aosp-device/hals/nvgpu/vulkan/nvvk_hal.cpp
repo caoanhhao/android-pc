@@ -7,7 +7,10 @@
 // vulkan.nvidia: the hwvulkan module, NVIDIA's ICD, and the instance/device plumbing. The
 // Android-specific entry points are in nvvk_wsi.cpp; see nvvk_priv.h for the design.
 
+#include <dirent.h>
 #include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 
 #include <algorithm>
@@ -29,8 +32,11 @@ constexpr char kIcdLibrary[] = "libGLX_nvidia.so.0";
 
 struct Icd {
     void* lib = nullptr;
+    PFN_vkNegotiateLoaderICDInterfaceVersion negotiate = nullptr;
     PFN_vkGetInstanceProcAddr gipa = nullptr;  // vk_icdGetInstanceProcAddr
     uint32_t interface_version = 0;
+    std::once_flag started_once;
+    bool started = false;
 };
 Icd g_icd;
 
@@ -135,6 +141,29 @@ VkResult FilterExtensions(VkResult result, std::vector<VkExtensionProperties>& e
     return n < exts.size() ? VK_INCOMPLETE : VK_SUCCESS;
 }
 
+// Open fds of NVIDIA's device nodes in this process.
+int CountGpuFds() {
+    int n = 0;
+    if (DIR* dir = opendir("/proc/self/fd")) {
+        while (dirent* e = readdir(dir)) {
+            char path[64], target[128];
+            snprintf(path, sizeof(path), "/proc/self/fd/%s", e->d_name);
+            const ssize_t len = readlink(path, target, sizeof(target) - 1);
+            if (len <= 0)
+                continue;
+            target[len] = 0;
+            n += !strncmp(target, "/dev/nvidia", 11);
+        }
+        closedir(dir);
+    }
+    return n;
+}
+
+// Opening the module only loads NVIDIA's libraries: that opens no device. Zygote opens this HAL
+// to preload it (Android's loader also enumerates the instance extensions then), and every fd
+// zygote holds at fork must be on its allowlist; NVIDIA's ICD opens /dev/nvidiactl, /dev/nvidia0,
+// /dev/nvidia-modeset and the DRM render node as soon as its interface is negotiated. So that
+// happens in StartIcd(), at the first call that needs the driver, in the process that renders.
 bool LoadIcd() {
     char err[512] = "";
 
@@ -143,26 +172,36 @@ bool LoadIcd() {
         NVVK_LOGE("cannot load NVIDIA's Vulkan driver %s: %s", kIcdLibrary, err);
         return false;
     }
-    auto negotiate = reinterpret_cast<PFN_vkNegotiateLoaderICDInterfaceVersion>(
+    g_icd.negotiate = reinterpret_cast<PFN_vkNegotiateLoaderICDInterfaceVersion>(
         IcdSym(g_icd.lib, "vk_icdNegotiateLoaderICDInterfaceVersion"));
     g_icd.gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         IcdSym(g_icd.lib, "vk_icdGetInstanceProcAddr"));
-    if (!negotiate || !g_icd.gipa) {
+    if (!g_icd.negotiate || !g_icd.gipa) {
         NVVK_LOGE("%s has no vk_icdNegotiateLoaderICDInterfaceVersion/vk_icdGetInstanceProcAddr",
                   kIcdLibrary);
         return false;
     }
-    // Version 5: dispatchable objects start with the loader magic, the loader owns no surfaces
-    // (this module creates none), and apiVersion > 1.0 is fine.
-    g_icd.interface_version = 5;
-    VkResult result = negotiate(&g_icd.interface_version);
-    if (result != VK_SUCCESS || g_icd.interface_version < 2) {
-        NVVK_LOGE("%s: ICD interface negotiation failed (%d, version %u)", kIcdLibrary, result,
-                  g_icd.interface_version);
-        return false;
-    }
-    NVVK_LOGI("loaded %s (ICD interface %u)", kIcdLibrary, g_icd.interface_version);
+    if (int fds = CountGpuFds())
+        NVVK_LOGE("loading %s opened %d /dev/nvidia* fds; a process that forks (zygote) aborts",
+                  kIcdLibrary, fds);
     return true;
+}
+
+bool StartIcd() {
+    std::call_once(g_icd.started_once, [] {
+        // Version 5: dispatchable objects start with the loader magic, the loader owns no
+        // surfaces (this module creates none), and apiVersion > 1.0 is fine.
+        g_icd.interface_version = 5;
+        VkResult result = g_icd.negotiate(&g_icd.interface_version);
+        if (result != VK_SUCCESS || g_icd.interface_version < 2) {
+            NVVK_LOGE("%s: ICD interface negotiation failed (%d, version %u)", kIcdLibrary, result,
+                      g_icd.interface_version);
+            return;
+        }
+        NVVK_LOGI("started %s (ICD interface %u)", kIcdLibrary, g_icd.interface_version);
+        g_icd.started = true;
+    });
+    return g_icd.started;
 }
 
 PFN_vkVoidFunction NvGlobal(const char* name) {
@@ -185,6 +224,33 @@ void ResolveInstanceFns(VkInstance instance) {
 
 // ---- global and instance entry points ----
 
+// NVIDIA 620's instance extensions minus kHiddenInstanceExtensions: the answer before the driver
+// has started (Android's loader asks when it opens the module, in zygote too).
+const VkExtensionProperties kInstanceExtensions[] = {
+    {"VK_EXT_debug_report", 10},
+    {"VK_EXT_debug_utils", 2},
+    {"VK_EXT_layer_settings", 2},
+    {"VK_KHR_device_group_creation", 1},
+    {"VK_KHR_external_fence_capabilities", 1},
+    {"VK_KHR_external_memory_capabilities", 1},
+    {"VK_KHR_external_semaphore_capabilities", 1},
+    {"VK_KHR_get_physical_device_properties2", 2},
+};
+
+std::vector<VkExtensionProperties> DriverInstanceExtensions() {
+    auto fn = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+        NvGlobal("vkEnumerateInstanceExtensionProperties"));
+    uint32_t n = 0;
+    std::vector<VkExtensionProperties> exts;
+    if (fn(nullptr, &n, nullptr) == VK_SUCCESS) {
+        exts.resize(n);
+        if (fn(nullptr, &n, exts.data()) != VK_SUCCESS)
+            n = 0;
+    }
+    exts.resize(n);
+    return exts;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL EnumerateInstanceExtensionProperties(const char* layer,
                                                                     uint32_t* count,
                                                                     VkExtensionProperties* props) {
@@ -192,22 +258,38 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumerateInstanceExtensionProperties(const char* 
         *count = 0;
         return VK_SUCCESS;
     }
-    auto fn = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
-        NvGlobal("vkEnumerateInstanceExtensionProperties"));
-    uint32_t n = 0;
-    VkResult result = fn(nullptr, &n, nullptr);
-    std::vector<VkExtensionProperties> exts(n);
-    if (result == VK_SUCCESS)
-        result = fn(nullptr, &n, exts.data());
-    exts.resize(n);
-    return FilterExtensions(result, exts, false, count, props);
+    std::vector<VkExtensionProperties> exts;
+    if (g_icd.started)
+        exts = DriverInstanceExtensions();
+    else
+        exts.assign(std::begin(kInstanceExtensions), std::end(kInstanceExtensions));
+    return FilterExtensions(VK_SUCCESS, exts, false, count, props);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo* info,
                                               const VkAllocationCallbacks* allocator,
                                               VkInstance* instance) {
+    if (!StartIcd())
+        return VK_ERROR_INITIALIZATION_FAILED;
+    // The loader passes what EnumerateInstanceExtensionProperties listed, possibly the static
+    // list: keep what the driver really has.
+    const std::vector<VkExtensionProperties> have = DriverInstanceExtensions();
+    std::vector<const char*> names;
+    for (uint32_t i = 0; i < info->enabledExtensionCount; i++) {
+        const char* name = info->ppEnabledExtensionNames[i];
+        bool found = false;
+        for (const auto& e : have)
+            found = found || !strcmp(e.extensionName, name);
+        if (found)
+            names.push_back(name);
+        else
+            NVVK_LOGW("instance extension %s not in NVIDIA's driver; left out", name);
+    }
+    VkInstanceCreateInfo nv = *info;
+    nv.enabledExtensionCount = static_cast<uint32_t>(names.size());
+    nv.ppEnabledExtensionNames = names.data();
     auto fn = reinterpret_cast<PFN_vkCreateInstance>(NvGlobal("vkCreateInstance"));
-    VkResult result = fn(info, allocator, instance);
+    VkResult result = fn(&nv, allocator, instance);
     if (result != VK_SUCCESS) {
         NVVK_LOGE("NVIDIA vkCreateInstance failed: %d", result);
         return result;
@@ -457,6 +539,8 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance
     if (instance)
         if (PFN_vkVoidFunction fn = FindHook(kDeviceHooks, name))
             return fn;
+    if (!StartIcd())
+        return nullptr;
     return g_icd.gipa(instance, name);
 }
 

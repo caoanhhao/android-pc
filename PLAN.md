@@ -828,6 +828,12 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   `androidboot.android_pc.nvprio=1` lifts it). Host test on the RTX 4070 (tools/nvgpu-hosttest.sh)
   passes byte-exact; QEMU: the entry fails visibly (ICD finds no GPU, SurfaceFlinger aborts),
   the default entry is unchanged. Image `out/aosp17-usb-l3.img` (docs/nvidia-native.md, L3).
+  **L3b (2026-11-16):** first real-PC boot: SurfaceFlinger rendered on the RTX 4070 (no Xid in
+  10 min) but zygote crash-looped: its graphics-driver preload had NVIDIA's ICD open
+  /dev/nvidiactl, which zygote's fd allowlist refuses at fork. The HAL now starts the ICD only at
+  vkCreateInstance (opening the module opens no device), and the entry disables the zygote
+  preload. QEMU: a preloading zygote holds no /dev/nvidia* fd and forks system_server. Image
+  `out/aosp17-usb-l3b.img`.
 - **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
   declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
   frame rates; then the NVIDIA entry may become the default.

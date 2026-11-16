@@ -240,7 +240,10 @@ if [[ $menu == 1 ]]; then
         # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver
         # (vulkan.nvidia through nvglibc), HWUI and SurfaceFlinger on Skia/Vulkan, ANGLE for GLES,
         # minigbm's "nvidia" backend. No Venus, no sidecar, no CPU fallback.
-        nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk"
+        # No graphics driver preload in zygote (ro.zygote.disable_gl_preload): every fd zygote holds
+        # at fork must be on its allowlist, and NVIDIA's driver keeps /dev/nvidia* open once it
+        # starts (vulkan.nvidia only starts it at vkCreateInstance now, docs/nvidia-native.md).
+        nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true"
         entry "Android 17, NVIDIA (proprietary)" "$nvp $nvl3 $drm" "$sound"
         # Phase L1: the Xid 51 (BAD_TSG) hunt. The debug entry (pcfb plus the kernel log on the
         # screen, driver loaded after boot) is gone: pcfb and earlycon kept writing to the UEFI

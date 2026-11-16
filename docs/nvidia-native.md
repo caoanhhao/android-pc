@@ -307,3 +307,42 @@ at MEDIUM because Phase K's Xid 51 came right after a high-priority channel star
     as before, minigbm on vkms. Two crashes (`dlkm_loader`: a vendor_dlkm
     module list check; `com.android.bluetooth`: no Bluetooth controller in QEMU) touch nothing
     of L3.
+
+### L3b: zygote must not hold NVIDIA's device fds (2026-11-16)
+
+First real-PC boot of the entry (build `eng.caoanh.20261116.1950`, out/pclog-l1b/boot-28):
+`vulkan.nvidia: device NVIDIA GeForce RTX 4070, driver NVIDIA 620.70.06`, SurfaceFlinger's
+GaneshVkRenderEngine up on the GPU, no Xid in 615 s, but zygote64 crash-looped (100 tombstones,
+`JNI FatalError called: (system_server) Not allowlisted (61): /dev/nvidiactl` from
+`FileDescriptorInfo::CreateFromFd` ← `ForkCommon` ← `nativeForkSystemServer`), so system_server
+never started. Zygote preloads the graphics driver (`ZygoteInit.preloadGraphicsDriver`), Android's
+loader opens the HAL and enumerates its instance extensions, and the HAL used to negotiate the ICD
+interface right there. Measured on the build host: `dlopen()` of NVIDIA's ICD opens no device;
+`vk_icdNegotiateLoaderICDInterfaceVersion` opens `/dev/nvidiactl`, `/dev/nvidia0` (several),
+`/dev/nvidia-modeset` and the render node and keeps them for the life of the process (the
+tombstone lists the same set in zygote). zygote's fd allowlist (`fd_utils.cpp`) aborts any fork
+that holds them; adding them there would share one NVIDIA client between every app.
+
+Fix, both:
+- `vulkan.nvidia` only loads the libraries when the module is opened and negotiates at the first
+  call that needs the driver (`vkCreateInstance`, or a `vkGetInstanceProcAddr` of a function it
+  does not implement itself), in the process that renders. Until then
+  `vkEnumerateInstanceExtensionProperties` answers from the list NVIDIA 620 has (checked against
+  the driver's real list at `vkCreateInstance`). If loading the module ever opened a
+  `/dev/nvidia*` fd, the HAL logs it as an error. The host test checks that no `/dev/nvidia*` fd is
+  open after opening the module and enumerating the instance extensions (12 after
+  `vkCreateInstance`).
+- The entry sets `androidboot.hardware.guest_disable_renderer_preload=true`
+  (`ro.zygote.disable_gl_preload`): zygote does not load the graphics driver at all, every app
+  loads it itself.
+
+QEMU (build `eng.caoanh.20261116.2040`, the entry's words without the preload switch, so zygote
+does preload the driver): with SurfaceFlinger stopped (it aborts without a GPU and takes zygote
+with it), a restarted zygote maps `vulkan.nvidia.so`, libnvglibc, nvglibc's soname libraries and
+`libGLX_nvidia.so.0`, holds no `/dev/nvidia*` fd, and forks system_server; no `Not allowlisted`
+abort. Release image `out/aosp17-usb-l3b.img` (with the preload switch).
+
+Left as they are (nvglibc log lines, harmless): `undefined symbol: ErrorF` (an X server function
+NVIDIA's GLX code looks up optionally), `libnvtegrahv.so` and `libdbus-1.so.3` not provided (the
+driver goes on without them), and `Could not initialize protected content Vulkan RenderEngine`
+(NVIDIA has no protected memory; SurfaceFlinger runs without a protected context).
