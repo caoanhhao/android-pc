@@ -197,8 +197,8 @@ if [[ $menu == 1 ]]; then
         # K3 (docs/nvidia-proprietary.md): the graphics half of the NVIDIA proprietary entry, for
         # its command line next to K1's modules and K4's composer: Vulkan is Venus over K2's vtest
         # socket, GLES is ANGLE on it with ES 3.2 and the Android Extension Pack, HWUI is Skia on
-        # Vulkan. pcvenusprobe.sh (init.venus.rc) sets ro.hardware.vulkan and ro.opengles.version:
-        # without the socket (QEMU) the entry falls back to SwiftShader and ES 3.1.
+        # Vulkan. pcvenusprobe.sh (init.venus.rc) sets ro.hardware.vulkan and ro.opengles.version;
+        # no CPU fallback: without the sidecar's socket (QEMU) nothing draws.
         venus="androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"
         entry "Android 17, NVIDIA nouveau" "$nv $drm" "$sound"
         # G3/G4: the whole graphics stack on the GPU. Vulkan is NVK (vulkan.nouveau in the
