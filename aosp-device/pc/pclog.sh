@@ -294,11 +294,20 @@ if [ "$(getprop ro.boot.android_pc.gpu)" = nouveau ]; then
 fi
 # Phase L2 (docs/nvidia-native.md), NVIDIA entries: nvglibc_vktest loads NVIDIA's glibc Vulkan
 # driver into a bionic process through nvglibc and runs a compute dispatch on the GPU, once per
-# boot 30 s after boot completed, into boot-N/nvglibc-vktest.txt (exit status at the end).
+# boot, into boot-N/nvglibc-vktest.txt (exit status at the end): 30 s after boot completed on
+# gpu=nvidia; on gpu=nvidia-l1 only after L1's pcnvtest has finished ("done after" in its log),
+# so that it stays the only GPU client while it hunts the Xid.
 case "$(getprop ro.boot.android_pc.gpu)" in nvidia|nvidia-l1)
     (
         for i in $(seq 120); do [ "$(getprop sys.boot_completed)" = 1 ] && break; sleep 5; done
         sleep 30
+        if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia-l1 ]; then
+            for i in $(seq 360); do
+                grep -q 'done after' /data/vendor/pcgpu/nvtest.txt 2>/dev/null && break
+                sleep 10
+            done
+            grep -q 'done after' /data/vendor/pcgpu/nvtest.txt 2>/dev/null || exit
+        fi
         f=$d/nvglibc-vktest.txt
         echo "== $(cut -d' ' -f1 /proc/uptime) s: nvglibc_vktest" > $f
         __GL_SHADER_DISK_CACHE=0 NVGLIBC_DEBUG=1 timeout 120 /vendor/bin/nvglibc_vktest >> $f 2>&1

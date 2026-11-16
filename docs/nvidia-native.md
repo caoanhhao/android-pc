@@ -132,7 +132,7 @@ Cost: 512 bytes per thread in every dynamically linked process.
 | Packages | `aosp-device/hals/nvglibc/hal.mk` |
 | bionic | `tools/patches/aosp17-bionic-static-tls-surplus.patch` |
 | Host test | `tools/nvglibc-hosttest.sh` |
-| Real PC | `aosp-device/pc/pclog.sh`: on the `nvidia`/`nvidia-l1` entries, 30 s after boot completed, `nvglibc_vktest` into `boot-N/nvglibc-vktest.txt` (exit status and any `NVRM: Xid` lines appended) |
+| Real PC | `aosp-device/pc/pclog.sh`: `nvglibc_vktest` into `boot-N/nvglibc-vktest.txt` (exit status and any `NVRM: Xid` lines appended), 30 s after boot completed on `gpu=nvidia`; on `gpu=nvidia-l1` only after L1's pcnvtest has finished, so that it stays the only GPU client |
 
 `nvglibc_vktest` drives the ICD without a Vulkan loader, as a hwvulkan HAL does:
 `vk_icdNegotiateLoaderICDInterfaceVersion` (5), `vkCreateInstance` (1.3),
