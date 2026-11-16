@@ -18,6 +18,12 @@ export LD_LIBRARY_PATH=$R/lib:/vendor/lib64/nvidia
 export HOME=/data/vendor/pcgpu
 export __GL_SHADER_DISK_CACHE_PATH=/data/vendor/pcgpu/glcache
 export VK_DRIVER_FILES=$R/share/vulkan/icd.d/nvidia_icd.json
+# NVIDIA's Vulkan driver initialises through its EGL driver (GLVND): without the vendor JSON it
+# finds none and vkCreateInstance fails with VK_ERROR_INCOMPATIBLE_DRIVER (-9), as on the first
+# L1 run after L3 moved the libraries. The JSON is beside the libraries.
+for j in /vendor/lib64/nvidia/10_nvidia.json $R/share/glvnd/egl_vendor.d/10_nvidia.json; do
+    [ -f "$j" ] && { export __EGL_VENDOR_LIBRARY_FILENAMES=$j; break; }
+done
 out=/data/vendor/pcgpu/nvtest.txt
 mkdir -p /data/vendor/pcgpu/glcache
 log() { echo "<4>pcnvtest: $*" > /dev/kmsg; echo "$(cut -d' ' -f1 /proc/uptime) $*" >> $out; }
@@ -46,6 +52,13 @@ log "start, $(grep CapEff /proc/self/status), Xid so far: $seen"
 step smi smi -L
 step smi-q smi -q -d PERFORMANCE,CLOCK,TEMPERATURE
 step info t info
+# If the driver cannot even create an instance, say why once (the Vulkan loader's own view),
+# and stop: every later step would fail the same way.
+if ! t info > /dev/null 2>&1; then
+    step loader-debug env VK_LOADER_DEBUG=error,warn,driver t info
+    log "vkCreateInstance fails: no channel test possible; env: VK_DRIVER_FILES=$VK_DRIVER_FILES __EGL_VENDOR_LIBRARY_FILENAMES=$__EGL_VENDOR_LIBRARY_FILENAMES"
+    exit 1
+fi
 step copy t copy
 step pair t pair 5
 step many t many 16

@@ -428,6 +428,22 @@ platform-signed system app). PcLogStrip shows the file's tail in a semi-transpar
 the right 30% of the screen. The overlay never takes focus or touches, so the UI under and
 beside it keeps working, and the kernel console stays off the framebuffer.
 
+**First L1 run (build `eng.caoanh.20261116.1459`, L3's image; `out/pclog-l3` boot-23 and
+boot-24).** `nvidia-smi` worked, but every pcnvtest step failed with `vkCreateInstance = -9`
+(`VK_ERROR_INCOMPATIBLE_DRIVER`), so nothing reached the GPU and there was no Xid in 900 s. The
+cause: L3 moved NVIDIA's libraries to `/vendor/lib64/nvidia` and renamed them in the JSONs, and
+NVIDIA's Vulkan ICD initialises through its GLVND EGL driver. pcnvtest.sh had never named the
+EGL vendor JSON, which the root's old absolute path had covered. Reproduced on the build host
+with L3's layout: without `__EGL_VENDOR_LIBRARY_FILENAMES`, -9 (the loader says only *Could not
+get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr'*); with it, the RTX 4070 and `copy` OK.
+pcnvtest.sh now sets it, and if `info` still fails it runs the loader once with
+`VK_LOADER_DEBUG=error,warn,driver` into the log and stops.
+
+The same boots showed the L1 entries' desktop as slow and striped. That is expected for a
+driver-only entry: SwiftShader draws 2560x1080 at 144 Hz into nvidia-drm dumb buffers, which
+live in VRAM and are read back by the CPU through BAR1 (284 frames in 300 s). The desktop on
+the GPU is L3's entry.
+
 ## K2. glibc sidecar: NVIDIA's userspace and the vtest server
 
 NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its
