@@ -14,6 +14,9 @@
 # `tools/mkusb-aosp17.sh --append`) goes to out/aosp17-usb-serial.log, the QEMU monitor to
 # a UNIX socket out/aosp17-usb-monitor.sock
 # (`echo "screendump out/s.ppm" | ncat -U out/aosp17-usb-monitor.sock`).
+# POINTER=usb-mouse gives Android a relative mouse instead of the USB tablet, which Android
+# classifies as a rotary encoder (absolute axes without BTN_TOUCH), so it shows no pointer;
+# click into the window to grab the mouse, Ctrl+Alt+G releases it.
 # NO_WINDOW=1 runs without a window. MEM (MiB, default 4096), CPUS (default 4).
 # The VM runs pinned to the E-cores VM_CPUS (default 12-15) with a memory cap and nice 5:
 # a VM on the host's P-cores froze it (docs/aosp-build.md, "Flaky host").
@@ -47,7 +50,7 @@ exec systemd-run --user --scope --quiet --nice=5 -p MemoryMax=$(( ${MEM:-4096} +
     -device qemu-xhci,id=xhci \
     -drive if=none,id=stick,format=raw,file="$img",snapshot=$([[ -n ${WRITABLE:-} ]] && echo off || echo on) \
     -device usb-storage,bus=xhci.0,drive=stick,removable=on,bootindex=0 \
-    -device usb-kbd,bus=xhci.0 -device usb-tablet,bus=xhci.0 \
+    -device usb-kbd,bus=xhci.0 -device "${POINTER:-usb-tablet}",bus=xhci.0 \
     -netdev user,id=net0,hostfwd=tcp:127.0.0.1:5556-:5555 -device e1000e,netdev=net0 \
     -audiodev "$audiodev" -device intel-hda -device hda-duplex,audiodev=snd0 \
     -vga std "${display[@]}" \
