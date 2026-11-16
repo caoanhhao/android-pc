@@ -359,8 +359,8 @@ echo "Kernel: $(strings "$work/boot/kernel" | grep -m1 -o '^6\.18\.[^ ]*')"
 echo "Command line: $pc_cmdline"
 echo
 echo "A stick that already runs Android: update it in place, keeping apps and data (no dd):"
-echo "  sudo tools/update-usb-aosp17.sh --dry-run $out /dev/sdX"
-echo "  sudo tools/update-usb-aosp17.sh $out /dev/sdX"
+echo "  tools/update-usb-aosp17.sh --dry-run $out /dev/sdX   (no sudo: it asks for the password itself)"
+echo "  tools/update-usb-aosp17.sh $out /dev/sdX"
 echo "A new, empty stick only:"
 if [[ -n $disk ]]; then
     # Everything up to userdata plus its first 64 MiB (zeros: fs_mgr formats a wiped

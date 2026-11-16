@@ -706,17 +706,21 @@ Find the stick (a SanDisk of about 57 GB on `usb`; `/dev/sda` on the build host 
 lsblk -o NAME,SIZE,MODEL,TRAN
 ```
 
-Check what the update would do (needs root to read the stick; writes nothing):
+Run the script as yourself, never with `sudo`: for a stick it asks for the sudo password
+once at the start and runs only the commands that read or write `/dev/sdX` (`sfdisk`, `dd`,
+`mcopy` on the stick) through `sudo`, keeping the ticket fresh for the whole run.
+
+Check what the update would do (writes nothing):
 
 ```bash
-sudo tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-f9.img /dev/sda
+tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-f9.img /dev/sda
 ```
 
 Then update (asks for `yes` after showing the stick; ~9 GB written, then read back and
 compared):
 
 ```bash
-sudo tools/update-usb-aosp17.sh out/aosp17-usb-f9.img /dev/sda
+tools/update-usb-aosp17.sh out/aosp17-usb-f9.img /dev/sda
 ```
 
 The script refuses a disk that is not on USB, has mounted partitions, is not an

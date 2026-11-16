@@ -39,6 +39,13 @@ earlier Rust kernel lives on the `aosp-16` branch).
 - The stick is updated **only** with `tools/update-usb-aosp17.sh NEW.img /dev/sdX`: it
   rewrites the OS partitions (esp, vbmeta*, boot, init_boot, vendor_boot, super) and
   leaves `userdata`, `metadata`, `misc`, `frp`, `pclog` and the partition table alone.
+- Run it **without `sudo`**: it asks for the password itself and runs only the commands on
+  the stick as root. When a new stick image is ready, the session runs the update itself
+  (don't hand the user the command): check with `lsblk -o NAME,SIZE,MODEL,TRAN` that
+  `/dev/sdX` is the SanDisk USB stick, then type
+  `tools/update-usb-aosp17.sh --yes NEW.img /dev/sdX` into the Terminal panel
+  (`run_in_terminal`, not Bash: sudo needs a terminal); the user types the password there.
+  Read the tab to the end and report `Read back and compared: OK` or the error.
 - Never hand the user a whole-image `dd` (or anything that wipes `userdata`) for the
   stick. If an update cannot be done in place (layout changed, AVB key changed, security
   patch level would go back), stop and tell the user why before suggesting a full reflash.

@@ -6,7 +6,11 @@
 #
 # NEW.img: an image made by tools/mkusb-aosp17.sh from the new build (any userdata size,
 #          e.g. `tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-f9.img`).
-# TARGET:  the stick (/dev/sdX, whole disk; run with sudo) or a stick image file.
+# TARGET:  the stick (/dev/sdX, whole disk) or a stick image file.
+#
+# Run it as yourself, not with sudo: for a stick it asks for the sudo password once, at the
+# start, and runs only the commands that read or write /dev/sdX as root (sfdisk, dd, mcopy
+# on the stick). The password stays cached while it runs, even through a long write.
 #
 # Only the OS partitions are rewritten: esp (Limine, kernel, initrd), vbmeta*_a, boot_a,
 # init_boot_a, vendor_boot_a and super. userdata (apps, accounts, files), metadata (the
@@ -35,7 +39,7 @@ while [[ $# -gt 0 ]]; do
         --yes) yes=1 ;;
         --force) force=1 ;;
         --no-verify) verify=0 ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         -*) echo "update-usb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) args+=("$1") ;;
     esac
@@ -61,18 +65,28 @@ if [[ -b $target ]]; then
     [[ $(lsblk -dno TYPE "$target") == disk ]] || die "$target is not a whole disk"
     [[ $(lsblk -dno TRAN "$target") == usb ]] || die "$target is not a USB disk"
     if lsblk -no MOUNTPOINTS "$target" | grep -q .; then die "$target has mounted partitions (unmount them)"; fi
-    [[ -r $target ]] || die "cannot read $target: run with sudo"
-    (( dry || EUID == 0 )) || die "writing $target needs root: run with sudo (or use --dry-run)"
+    (( EUID != 0 )) || die "run it without sudo: it asks for the password itself, only for the commands on $target"
 elif [[ ! -f $target ]]; then
     die "no stick or image $target"
 fi
 
 work=$(mktemp -d)
-trap '/usr/bin/rm -rf "$work"' EXIT
+keep=""
+trap '[[ -n $keep ]] && kill "$keep" 2>/dev/null; /usr/bin/rm -rf "$work"' EXIT
+
+# R: the prefix for commands on TARGET (sudo for a stick, nothing for an image file).
+R=() RS=""
+if (( device )); then
+    R=(sudo --) RS="sudo -- "
+    sudo -v -p "[sudo] password for %p (to read and write $target): " || die "no sudo"
+    # Keep the sudo ticket fresh: writing super alone can outlast its 5-minute timeout.
+    ( while sleep 60; do sudo -n -v 2>/dev/null || exit; done ) &
+    keep=$!
+fi
 
 # Layout as "name start_MiB size_MiB uuid" lines (sfdisk reads a GPT from a file or a disk).
-layout() {
-    sfdisk --json "$1" | python3 -I -c '
+layout() {   # layout FILE [PREFIX...]
+    "${@:2}" sfdisk --json "$1" | python3 -I -c '
 import json, sys
 t = json.load(sys.stdin)["partitiontable"]
 ss = t.get("sectorsize", 512)
@@ -83,7 +97,7 @@ for p in t["partitions"]:
     print(p.get("name", "-"), start // 1048576, size // 1048576, p.get("uuid", "-").lower())'
 }
 layout "$new" > "$work/new.layout" || die "$new has no readable GPT"
-layout "$target" > "$work/target.layout" || die "$target has no readable GPT"
+layout "$target" "${R[@]}" > "$work/target.layout" || die "$target has no readable GPT"
 part() { awk -v n="$2" '$1 == n { print $'"$3"' }' "$work/$1.layout"; }   # part new|target NAME FIELD
 
 # Is TARGET an android-pc stick, and is NEW a stick image?
@@ -108,8 +122,8 @@ fi
 
 # --- can the new build open the old data? -------------------------------------------------
 extract() {   # extract new|target PART FILE: copy a partition out of NEW or TARGET
-    local img=$new; [[ $1 == target ]] && img=$target
-    dd if="$img" of="$3" bs=1M skip="$(part "$1" "$2" 2)" count="$(part "$1" "$2" 3)" status=none
+    local img=$new run=(); [[ $1 == target ]] && img=$target run=("${R[@]}")
+    "${run[@]}" dd if="$img" bs=1M skip="$(part "$1" "$2" 2)" count="$(part "$1" "$2" 3)" status=none > "$3"
 }
 avb() {   # avb FILE: "key-sha1 rollback-index" of a vbmeta image
     "$host/avbtool" info_image --image "$1" 2>/dev/null | awk '
@@ -130,8 +144,8 @@ fi
 # Build info: android/build.txt on the ESP (tools/mkusb-aosp17.sh writes it; sticks made
 # before it existed have none, and their build number was the default eng.<user>).
 buildinfo() {   # buildinfo new|target: the ESP's android/build.txt, or nothing
-    local img=$new; [[ $1 == target ]] && img=$target
-    MTOOLS_SKIP_CHECK=1 "$host/mcopy" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
+    local img=$new run=(); [[ $1 == target ]] && img=$target run=("${R[@]}")
+    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
         ::/android/build.txt - 2>/dev/null || true
 }
 prop() { sed -n "s/^$2=//p" <<<"$1" | head -1; }
@@ -166,15 +180,15 @@ cmds=()
 for p in "${OS_PARTS[@]}"; do
     ns=$(part new "$p" 2) nz=$(part new "$p" 3) ts=$(part target "$p" 2) tz=$(part target "$p" 3)
     oflag=""; (( device )) && oflag=" oflag=direct"
-    cmds+=("dd if=$new of=$target bs=1M skip=$ns seek=$ts count=$nz conv=notrunc,fsync$oflag status=none")
-    (( tz > nz )) && cmds+=("dd if=/dev/zero of=$target bs=1M seek=$(( ts + nz )) count=$(( tz - nz )) conv=notrunc,fsync$oflag status=none")
+    cmds+=("${RS}dd if=$new of=$target bs=1M skip=$ns seek=$ts count=$nz conv=notrunc,fsync$oflag status=none")
+    (( tz > nz )) && cmds+=("${RS}dd if=/dev/zero of=$target bs=1M seek=$(( ts + nz )) count=$(( tz - nz )) conv=notrunc,fsync$oflag status=none")
 done
 echo
 echo "Partitions written: ${OS_PARTS[*]}"
 echo "Kept as they are:   ${KEEP_PARTS[*]} pclog (and the partition table)"
 if (( dry )); then
     echo; echo "Commands (dry run, nothing written):"
-    for c in "${cmds[@]}"; do echo "  $( (( device )) && echo "sudo ")$c"; done
+    for c in "${cmds[@]}"; do echo "  $c"; done
     exit 0
 fi
 if (( device && ! yes )); then
@@ -188,7 +202,7 @@ if (( verify )); then
     for p in "${OS_PARTS[@]}"; do
         ns=$(part new "$p" 2) nz=$(part new "$p" 3) ts=$(part target "$p" 2)
         cmp -n $(( nz * 1048576 )) <(dd if="$new" bs=1M skip="$ns" count="$nz" status=none) \
-            <(dd if="$target" bs=1M skip="$ts" count="$nz" iflag=$( (( device )) && echo direct || echo fullblock) status=none) \
+            <("${R[@]}" dd if="$target" bs=1M skip="$ts" count="$nz" iflag=$( (( device )) && echo direct || echo fullblock) status=none) \
             >/dev/null || die "$p reads back different from the new image: write it again"
     done
     echo "Read back and compared: OK"
