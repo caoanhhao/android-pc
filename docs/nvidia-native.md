@@ -352,8 +352,20 @@ driver goes on without them), and `Could not initialize protected content Vulkan
 `tools/run-qemu-aosp17-vfio.sh [IMAGE]` boots an image like `tools/run-qemu-aosp17-usb.sh`
 (same lock, E-cores, 4 vCPUs, 4 GB) with the RTX 4070's PCI functions (GPU and HDMI audio)
 passed through, so the NVIDIA entries can be tested without writing the stick and rebooting
-the PC. Pick the NVIDIA entry in the QEMU window's menu; Android's picture then comes out of
-the RTX 4070's own ports, the QEMU window keeps the std VGA.
+the PC. An image made without `--menu` has a single entry, so the NVIDIA entry's words go in
+with `--append` (the entry's own words override the defaults):
+
+```
+tools/mkusb-aosp17.sh --append "androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia cfi=kcfi,warn intel_iommu=off module_blacklist=nouveau,nova_core,nova softlockup_panic=1 nmi_watchdog=panic androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true androidboot.vendor.apex.com.android.hardware.graphics.composer=com.android.hardware.graphics.composer.drm_hwcomposer" out/aosp17-usb-qemu-nv.img
+POINTER=usb-mouse QEMU_EXTRA="-device vhost-vsock-pci,guest-cid=3" tools/run-qemu-aosp17-vfio.sh out/aosp17-usb-qemu-nv.img
+```
+
+Android's picture then comes out of the RTX 4070's own ports (a cable from the card to the
+monitor's other input), the QEMU window keeps the std VGA; adb is `vsock:3:5555`. The card
+stays on `vfio-pci` after QEMU exits: given back to `nvidia`, its new DRM node is opened by
+Hyprland's hotplug handling (`AQ_DRM_DEVICES` only filters the devices present at its start),
+and it could not be passed again until the next login. `run-qemu-aosp17-vfio.sh --release`
+(or a reboot) gives it back.
 
 The host must leave the card alone first:
 

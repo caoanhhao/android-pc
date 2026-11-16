@@ -5,8 +5,11 @@
 #
 #   tools/run-qemu-aosp17-vfio.sh [IMAGE]    default out/aosp17-usb.img (not a --disk stick image:
 #                                            its userdata does not fit in the file)
+#   tools/run-qemu-aosp17-vfio.sh --release  give the card back to nvidia / snd_hda_intel
 #
-# Pick the NVIDIA entry in the QEMU window's boot menu. Android's picture comes out of the
+# The image must boot an NVIDIA entry: an image made without --menu has a single entry, so
+# give it the entry's words with mkusb-aosp17.sh --append (docs/nvidia-native.md, "VFIO in
+# QEMU"). Android's picture comes out of the
 # RTX 4070's own ports (the monitor's input on that card); the QEMU window keeps the std VGA
 # (boot menu, pcfb on the other entries). Everything else is tools/run-qemu-aosp17-usb.sh
 # (same VM limits, lock, adb, QEMU_EXTRA, WRITABLE, NO_WINDOW, ...).
@@ -16,12 +19,17 @@
 #   - Hyprland and SDDM's Xorg on the iGPU (~/.config/hypr/scripts/gpu-mode igpu, monitor
 #     cable on the motherboard, reboot), no process with /dev/nvidia* or the card's DRM nodes open.
 # The script asks for the password (sudo) to unload the nvidia modules and bind the card's
-# functions to vfio-pci, and gives them back to nvidia / snd_hda_intel when QEMU exits.
+# functions to vfio-pci. They stay there when QEMU exits, ready for the next run: given back,
+# the card's new DRM node would be opened by Hyprland's hotplug handling (AQ_DRM_DEVICES
+# covers only the devices present at its start), so it could not be passed again until the
+# next login. --release (or a reboot) gives it back.
 # A card the guest left in a bad state (Xid) may need a host reboot to be usable again.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+release=""
+[[ ${1:-} == --release ]] && { release=1; shift; }
 img=${1:-$ROOT/out/aosp17-usb.img}
-[[ -f $img ]] || { echo "run-qemu-aosp17-vfio.sh: no $img" >&2; exit 1; }
+[[ -n $release || -f $img ]] || { echo "run-qemu-aosp17-vfio.sh: no $img" >&2; exit 1; }
 die() { echo "run-qemu-aosp17-vfio.sh: $*" >&2; exit 1; }
 
 gpu=$(lspci -Dnd 10de::0300 | awk 'NR==1 {print $1}')
@@ -63,6 +71,7 @@ $root_holders"
             die "could not unload the nvidia modules (something still uses them: lsmod | grep nvidia)"
     fi
     for f in "${fns[@]}"; do
+        [[ ${host_driver[$f]} == vfio-pci ]] && continue   # still bound from an earlier run
         echo vfio-pci | sudo tee "/sys/bus/pci/devices/$f/driver_override" >/dev/null
         [[ -e /sys/bus/pci/devices/$f/driver ]] && echo "$f" | sudo tee "/sys/bus/pci/devices/$f/driver/unbind" >/dev/null
         echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null
@@ -79,16 +88,24 @@ give_back() {
         echo | sudo tee "/sys/bus/pci/devices/$f/driver_override" >/dev/null || true
         [[ $(driver_of "$f") == vfio-pci ]] && echo "$f" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true
     done
-    [[ ${host_driver[$gpu]} == nvidia ]] && sudo modprobe nvidia_drm || true
+    sudo modprobe nvidia_drm || true
     for f in "${fns[@]}"; do echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null || true; done
     for f in "${fns[@]}"; do echo "  $f: $(driver_of "$f")"; done
 }
 
-trap give_back EXIT
+if [[ -n $release ]]; then
+    give_back
+    exit
+fi
+trap give_back EXIT   # only if binding fails: once QEMU starts the card stays on vfio-pci
 bind_vfio
+trap - EXIT
 extra=""
 for f in "${fns[@]}"; do
     # rombar=0: the guest boots from the std VGA; the card's VBIOS is read by its own driver.
     extra+=" -device vfio-pci,host=$f,rombar=0"
 done
-QEMU_EXTRA="$extra ${QEMU_EXTRA:-}" "$ROOT/tools/run-qemu-aosp17-usb.sh" "$img"
+status=0
+QEMU_EXTRA="$extra ${QEMU_EXTRA:-}" "$ROOT/tools/run-qemu-aosp17-usb.sh" "$img" || status=$?
+echo "run-qemu-aosp17-vfio.sh: the card stays on vfio-pci; $0 --release gives it back to the host"
+exit "$status"
