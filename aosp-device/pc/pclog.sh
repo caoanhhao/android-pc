@@ -292,6 +292,22 @@ if [ "$(getprop ro.boot.android_pc.gpu)" = nouveau ]; then
         } >> $f 2>&1
     ) &
 fi
+# Phase L2 (docs/nvidia-native.md), NVIDIA entries: nvglibc_vktest loads NVIDIA's glibc Vulkan
+# driver into a bionic process through nvglibc and runs a compute dispatch on the GPU, once per
+# boot 30 s after boot completed, into boot-N/nvglibc-vktest.txt (exit status at the end).
+case "$(getprop ro.boot.android_pc.gpu)" in nvidia|nvidia-l1)
+    (
+        for i in $(seq 120); do [ "$(getprop sys.boot_completed)" = 1 ] && break; sleep 5; done
+        sleep 30
+        f=$d/nvglibc-vktest.txt
+        echo "== $(cut -d' ' -f1 /proc/uptime) s: nvglibc_vktest" > $f
+        __GL_SHADER_DISK_CACHE=0 NVGLIBC_DEBUG=1 timeout 120 /vendor/bin/nvglibc_vktest >> $f 2>&1
+        echo "== exit $? at $(cut -d' ' -f1 /proc/uptime) s" >> $f
+        dmesg | grep -E 'NVRM: Xid' | tail -n 20 >> $f
+        sync
+    ) &
+    ;;
+esac
 # Graphics VTS (Phase G2), on the "VTS run" boot entry only: the binaries tools/mkusb-aosp17.sh
 # put in the ESP's android/vts, each into boot-N/vts-NAME.txt. Allocator and mapper run beside
 # the desktop; the composer test needs the composer to itself, so SurfaceFlinger is stopped

@@ -1,0 +1,142 @@
+// Phase L2 (docs/nvidia-native.md): nvglibc, NVIDIA's glibc-built userspace driver inside bionic
+// processes. libnvglibc.so (core, /vendor/lib64) plus the glibc sonames as trampoline libraries
+// in /vendor/lib64/nvglibc/, and nvglibc_vktest, which runs a Vulkan compute dispatch on the GPU
+// through them. hal.mk lists them all (`required` would be a cycle: the soname libraries link
+// against libnvglibc). NVIDIA's libraries themselves are not built here.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+cc_defaults {
+    name: "nvglibc_defaults",
+    vendor: true,
+    compile_multilib: "64",
+    enabled: false,
+    arch: {
+        x86_64: {
+            enabled: true,
+        },
+    },
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+    ],
+}
+
+cc_library_shared {
+    name: "libnvglibc",
+    defaults: ["nvglibc_defaults"],
+    srcs: [
+        "src/core.c",
+        "src/libc.c",
+        "src/pthread.c",
+    ],
+    local_include_dirs: ["src"],
+    export_include_dirs: ["include"],
+    shared_libs: [
+        "libdl",
+        "liblog",
+    ],
+    // libgcc_s.so.1's _Unwind_* for NVIDIA's statically linked libstdc++ (libnvglibc_gcc_s).
+    static_libs: ["libunwind"],
+    visibility: ["//visibility:public"],
+}
+
+// The soname libraries: assembler only (src/trampolines.h), no C runtime. Soong's own -soname
+// comes first on the link line, so the ldflags one wins.
+cc_defaults {
+    name: "nvglibc_soname_defaults",
+    defaults: ["nvglibc_defaults"],
+    relative_install_path: "nvglibc",
+    local_include_dirs: ["src"],
+    nocrt: true,
+    system_shared_libs: [],
+    stl: "none",
+    sanitize: {
+        never: true,
+    },
+    // Mostly no .text, which create_minidebuginfo rejects; nothing to strip anyway.
+    strip: {
+        none: true,
+    },
+}
+
+cc_library_shared {
+    name: "libnvglibc_c",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/libc_so_6.S"],
+    shared_libs: ["libnvglibc"],
+    ldflags: ["-Wl,-soname,libc.so.6"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_gcc_s",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/gcc_s_so_1.S"],
+    shared_libs: ["libnvglibc"],
+    ldflags: ["-Wl,-soname,libgcc_s.so.1"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_x11",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/x11_so_6.S"],
+    ldflags: ["-Wl,-soname,libX11.so.6"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_xext",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,libXext.so.6"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_pthread",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,libpthread.so.0"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_dl",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,libdl.so.2"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_m",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,libm.so.6"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_rt",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,librt.so.1"],
+}
+
+cc_library_shared {
+    name: "libnvglibc_ld",
+    defaults: ["nvglibc_soname_defaults"],
+    srcs: ["src/empty.S"],
+    ldflags: ["-Wl,-soname,ld-linux-x86-64.so.2"],
+}
+
+cc_binary {
+    name: "nvglibc_vktest",
+    defaults: ["nvglibc_defaults"],
+    srcs: ["test/nvglibc_vktest.c"],
+    local_include_dirs: ["test"],
+    header_libs: ["vulkan_headers"],
+    shared_libs: [
+        "libdl",
+        "libnvglibc",
+    ],
+    visibility: ["//visibility:public"],
+}

@@ -1,0 +1,260 @@
+diff --git a/libc/bionic/bionic_elf_tls.cpp b/libc/bionic/bionic_elf_tls.cpp
+index f8d9dca..eca75a5 100644
+--- a/libc/bionic/bionic_elf_tls.cpp
++++ b/libc/bionic/bionic_elf_tls.cpp
+@@ -277,6 +277,18 @@ void __init_static_tls(void* static_tls) {
+   }
+ }
+ 
++void __init_static_tls_surplus(void* static_tls) {
++  TlsModules& modules = __libc_shared_globals()->tls_modules;
++  ScopedSignalBlocker ssb;
++  ScopedReadLock locker(&modules.rwlock);
++  for (size_t i = modules.static_module_count; i < modules.module_count; ++i) {
++    const TlsModule& module = modules.module_table[i];
++    if (module.static_offset == SIZE_MAX || module.segment.init_size == 0) continue;
++    memcpy(static_cast<char*>(static_tls) + module.static_offset, module.segment.init_ptr,
++           module.segment.init_size);
++  }
++}
++
+ static inline size_t dtv_size_in_bytes(size_t module_count) {
+   return sizeof(TlsDtv) + module_count * sizeof(void*);
+ }
+diff --git a/libc/bionic/libc_init_dynamic.cpp b/libc/bionic/libc_init_dynamic.cpp
+index 9f59370..6eb5821 100644
+--- a/libc/bionic/libc_init_dynamic.cpp
++++ b/libc/bionic/libc_init_dynamic.cpp
+@@ -164,6 +164,7 @@ __noreturn void __libc_init(void* raw_args,
+   // This roundabout way is needed so we don't use the static libc linked into the linker, which
+   // will not affect the process.
+   __libc_shared_globals()->memtag_stack_dlopen_callback = memtag_stack_dlopen_callback;
++  __libc_shared_globals()->static_tls_init_callback = __pthread_internal_init_static_tls;
+ 
+   exit(main(args.argc - __libc_shared_globals()->initial_linker_arg_count,
+             args.argv + __libc_shared_globals()->initial_linker_arg_count,
+diff --git a/libc/bionic/pthread_create.cpp b/libc/bionic/pthread_create.cpp
+index 60b5b07..88cfc19 100644
+--- a/libc/bionic/pthread_create.cpp
++++ b/libc/bionic/pthread_create.cpp
+@@ -476,6 +476,8 @@ int pthread_create(pthread_t* thread_out, pthread_attr_t const* attr,
+ #endif
+ 
+   ScopedReadLock locker(&g_thread_creation_lock);
++  __init_static_tls_surplus(reinterpret_cast<char*>(tcb) -
++                            __libc_shared_globals()->static_tls_layout.offset_bionic_tcb());
+ 
+ // This has to be done under g_thread_creation_lock or g_thread_list_lock to avoid racing with
+ // __pthread_internal_remap_stack_with_mte.
+diff --git a/libc/bionic/pthread_internal.cpp b/libc/bionic/pthread_internal.cpp
+index 7c66c75..f724448 100644
+--- a/libc/bionic/pthread_internal.cpp
++++ b/libc/bionic/pthread_internal.cpp
+@@ -199,6 +199,18 @@ __LIBC_HIDDEN__ void* __allocate_stack_mte_ringbuffer(size_t n, pthread_internal
+ }
+ #endif
+ 
++// The linker's static TLS surplus: copies a dlopen()ed module's image into every thread. Threads
++// being created hold g_thread_creation_lock for reading and copy it themselves
++// (__init_static_tls_surplus), so none is missed.
++void __pthread_internal_init_static_tls(size_t offset, const void* init, size_t init_size) {
++  ScopedWriteLock creation_locker(&g_thread_creation_lock);
++  ScopedReadLock list_locker(&g_thread_list_lock);
++  const size_t tcb_offset = __libc_shared_globals()->static_tls_layout.offset_bionic_tcb();
++  for (pthread_internal_t* t = g_thread_list; t != nullptr; t = t->next) {
++    memcpy(reinterpret_cast<char*>(t->bionic_tcb) - tcb_offset + offset, init, init_size);
++  }
++}
++
+ bool __pthread_internal_remap_stack_with_mte() {
+ #if defined(__aarch64__)
+   ScopedWriteLock creation_locker(&g_thread_creation_lock);
+diff --git a/libc/bionic/pthread_internal.h b/libc/bionic/pthread_internal.h
+index b3133a9..766d0b4 100644
+--- a/libc/bionic/pthread_internal.h
++++ b/libc/bionic/pthread_internal.h
+@@ -281,6 +281,8 @@ __LIBC_HIDDEN__ extern void __bionic_atfork_run_parent();
+ // Re-map all threads and successively launched threads with PROT_MTE. Returns 'true' if remapping
+ // took place, 'false' on error or if the stacks were already remapped in the past.
+ __LIBC_HIDDEN__ bool __pthread_internal_remap_stack_with_mte();
++__LIBC_HIDDEN__ void __pthread_internal_init_static_tls(size_t offset, const void* init,
++                                                        size_t init_size);
+ 
+ extern "C" bool android_run_on_all_threads(bool (*func)(void*), void* arg);
+ 
+diff --git a/libc/bionic/sys_thread_properties.cpp b/libc/bionic/sys_thread_properties.cpp
+index 064bca1..ac41144 100644
+--- a/libc/bionic/sys_thread_properties.cpp
++++ b/libc/bionic/sys_thread_properties.cpp
+@@ -135,6 +135,8 @@ void __libc_iterate_dynamic_tls(pid_t tid,
+   for (size_t i = modules.static_module_count; i < dtv->count; ++i) {
+     void* dtls_begin = dtv->modules[i];
+     if (dtls_begin == nullptr) continue;
++    // dlopen()ed modules in the linker's static TLS surplus are not in the allocator.
++    if (i < modules.module_count && modules.module_table[i].static_offset != SIZE_MAX) continue;
+     void* dtls_end =
+         static_cast<void*>(static_cast<char*>(dtls_begin) + allocator.get_chunk_size(dtls_begin));
+     size_t dso_id = __tls_module_idx_to_id(i);
+diff --git a/libc/private/bionic_elf_tls.h b/libc/private/bionic_elf_tls.h
+index bc0ffa9..86776de 100644
+--- a/libc/private/bionic_elf_tls.h
++++ b/libc/private/bionic_elf_tls.h
+@@ -185,6 +185,9 @@ struct TlsModules {
+ };
+ 
+ void __init_static_tls(void* static_tls);
++// Copies the images of the modules dlopen()ed into the static TLS surplus (call with
++// g_thread_creation_lock held, so that __pthread_internal_init_static_tls cannot miss the thread).
++void __init_static_tls_surplus(void* static_tls);
+ 
+ // Dynamic Thread Vector. Each thread has a different DTV. For each module
+ // (executable or solib), the DTV has a pointer to that module's TLS memory. The
+diff --git a/libc/private/bionic_globals.h b/libc/private/bionic_globals.h
+index a7a4afe..f56239c 100644
+--- a/libc/private/bionic_globals.h
++++ b/libc/private/bionic_globals.h
+@@ -157,6 +157,9 @@ struct libc_shared_globals {
+   void (*memtag_stack_dlopen_callback)() = nullptr;
+   pthread_mutex_t crash_detail_page_lock = PTHREAD_MUTEX_INITIALIZER;
+   crash_detail_page_t* crash_detail_page = nullptr;
++
++  // Copies a static TLS image into every thread (the linker's static TLS surplus).
++  void (*static_tls_init_callback)(size_t offset, const void* init, size_t init_size) = nullptr;
+ };
+ 
+ __LIBC_HIDDEN__ libc_shared_globals* __libc_shared_globals();
+diff --git a/linker/linker.cpp b/linker/linker.cpp
+index 05f1a46..fcbdb45 100644
+--- a/linker/linker.cpp
++++ b/linker/linker.cpp
+@@ -2248,6 +2248,7 @@ void* do_dlopen(const char* name, int flags,
+     LD_LOG(kLogDlopen,
+            "... dlopen calling constructors: realpath=\"%s\", soname=\"%s\", handle=%p",
+            si->get_realpath(), si->get_soname(), handle);
++    linker_init_static_tls_surplus();
+     si->call_constructors();
+     failure_guard.Disable();
+     LD_LOG(kLogDlopen,
+diff --git a/linker/linker_tls.cpp b/linker/linker_tls.cpp
+index d407bc4..bdb889e 100644
+--- a/linker/linker_tls.cpp
++++ b/linker/linker_tls.cpp
+@@ -44,6 +44,19 @@
+ static bool g_static_tls_finished;
+ static std::vector<TlsModule> g_tls_modules;
+ 
++// Static TLS surplus for libraries that are dlopen()ed after startup but use the initial-exec
++// TLS model (DF_STATIC_TLS), as glibc's rtld.optional_static_tls (512 bytes there too). Needed
++// for glibc-built vendor libraries loaded through a glibc ABI layer (android-pc, NVIDIA's
++// libnvidia-tls, GLVND's libGLdispatch). The surplus is zero in every thread's fresh static TLS
++// mapping; a segment with a non-zero image is copied into every thread once the library is
++// relocated (linker_init_static_tls_surplus(), before its constructors) and into new threads by
++// pthread_create (__init_static_tls_surplus). Such libraries are never unloaded.
++static constexpr size_t kStaticTlsSurplusSize = 512;
++static constexpr size_t kStaticTlsSurplusAlign = 64;
++static size_t g_static_tls_surplus_cursor = SIZE_MAX;
++static size_t g_static_tls_surplus_end = 0;
++static std::vector<soinfo*> g_static_tls_surplus_pending;  // images still to copy
++
+ static size_t get_unused_module_index() {
+   for (size_t i = 0; i < g_tls_modules.size(); ++i) {
+     if (g_tls_modules[i].soinfo_ptr == nullptr) {
+@@ -89,7 +102,9 @@ static void unregister_tls_module(soinfo* si) {
+ 
+   soinfo_tls* si_tls = si->get_tls();
+   TlsModule& mod = g_tls_modules[__tls_module_id_to_idx(si_tls->module_id)];
+-  CHECK(mod.static_offset == SIZE_MAX);
++  // Only a surplus module whose dlopen() failed gets here; its surplus bytes stay used.
++  std::erase(g_static_tls_surplus_pending, si);
++  CHECK(mod.static_offset == SIZE_MAX || mod.static_offset >= g_static_tls_surplus_end - kStaticTlsSurplusSize);
+   CHECK(mod.soinfo_ptr == si);
+   mod = {};
+   si_tls->module_id = kTlsUninitializedModuleId;
+@@ -132,11 +147,49 @@ void linker_setup_exe_static_tls(const char* progname) {
+ 
+ void linker_finalize_static_tls() {
+   g_static_tls_finished = true;
+-  __libc_shared_globals()->static_tls_layout.finish_layout();
++  StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++  TlsSegment surplus;
++  surplus.aligned_size = {.size = kStaticTlsSurplusSize,
++                          .align = {.value = kStaticTlsSurplusAlign}};
++  g_static_tls_surplus_cursor = layout.reserve_solib_segment(surplus);
++  g_static_tls_surplus_end = g_static_tls_surplus_cursor + kStaticTlsSurplusSize;
++  layout.finish_layout();
+   TlsModules& modules = __libc_shared_globals()->tls_modules;
+   modules.static_module_count = modules.module_count;
+ }
+ 
++static bool has_df_static_tls(const soinfo* si) {
++  if (si->dynamic == nullptr) return false;
++  for (const ElfW(Dyn)* d = si->dynamic; d->d_tag != DT_NULL; ++d) {
++    if (d->d_tag == DT_FLAGS && (d->d_un.d_val & DF_STATIC_TLS) != 0) return true;
++  }
++  return false;
++}
++
++static size_t reserve_static_tls_surplus(soinfo* si, const TlsSegment& seg) {
++  if (g_static_tls_surplus_cursor == SIZE_MAX || !has_df_static_tls(si)) return SIZE_MAX;
++  bool zero_image = true;
++  const char* init = static_cast<const char*>(seg.init_ptr);
++  for (size_t i = 0; i < seg.init_size; ++i) {
++    if (init[i] != 0) zero_image = false;
++  }
++  if (!zero_image && __libc_shared_globals()->static_tls_init_callback == nullptr) return SIZE_MAX;
++  const TlsAlign align = seg.aligned_size.align;
++  if (align.value > kStaticTlsSurplusAlign) return SIZE_MAX;
++  const size_t cursor = g_static_tls_surplus_cursor;
++  const size_t offset = ((cursor - align.skew + align.value - 1) & ~(align.value - 1)) + align.skew;
++  if (offset < cursor || offset > g_static_tls_surplus_end ||
++      seg.aligned_size.size > g_static_tls_surplus_end - offset) {
++    return SIZE_MAX;
++  }
++  g_static_tls_surplus_cursor = offset + seg.aligned_size.size;
++  si->set_nodelete();
++  if (seg.init_size != 0) g_static_tls_surplus_pending.push_back(si);
++  LD_DEBUG(any, "[ \"%s\" uses %zu bytes of the static TLS surplus at offset %zu ]",
++           si->get_realpath(), seg.aligned_size.size, offset);
++  return offset;
++}
++
+ void register_soinfo_tls(soinfo* si) {
+   // ldd skips registration of the executable's TLS segment above to avoid the
+   // arm32/arm64 underalignment error. For consistency, also skip registration
+@@ -151,10 +204,23 @@ void register_soinfo_tls(soinfo* si) {
+   if (!g_static_tls_finished) {
+     StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+     static_offset = layout.reserve_solib_segment(si_tls->segment);
++  } else {
++    static_offset = reserve_static_tls_surplus(si, si_tls->segment);
+   }
+   register_tls_module(si, static_offset);
+ }
+ 
++void linker_init_static_tls_surplus() {
++  auto* cb = __libc_shared_globals()->static_tls_init_callback;
++  for (soinfo* si : g_static_tls_surplus_pending) {
++    soinfo_tls* si_tls = si->get_tls();
++    if (cb == nullptr || si_tls == nullptr || si_tls->module_id == kTlsUninitializedModuleId) continue;
++    const TlsModule& mod = get_tls_module(si_tls->module_id);
++    cb(mod.static_offset, mod.segment.init_ptr, mod.segment.init_size);
++  }
++  g_static_tls_surplus_pending.clear();
++}
++
+ void unregister_soinfo_tls(soinfo* si) {
+   soinfo_tls* si_tls = si->get_tls();
+   if (si_tls == nullptr || si_tls->module_id == kTlsUninitializedModuleId) {
+diff --git a/linker/linker_tls.h b/linker/linker_tls.h
+index 5a20a64..71c8754 100644
+--- a/linker/linker_tls.h
++++ b/linker/linker_tls.h
+@@ -39,6 +39,8 @@ void linker_setup_exe_static_tls(const char* progname);
+ void linker_finalize_static_tls();
+ 
+ void register_soinfo_tls(soinfo* si);
++// Copies the images of dlopen()ed static-TLS-surplus modules into all threads (after relocation).
++void linker_init_static_tls_surplus();
+ void unregister_soinfo_tls(soinfo* si);
+ 
+ const TlsModule& get_tls_module(size_t module_id);

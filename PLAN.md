@@ -794,6 +794,17 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   `linux_bionic` (AOSP host bionic) test program that runs `vkCreateInstance` /
   `vkEnumeratePhysicalDevices` / a compute dispatch on the host's RTX 4070 through the shim.
   Done when that host test passes and the same binary works on the real PC.
+  **Status (2026-11-16): host test passes, real-PC run pending** — bionic's own linker loads the
+  glibc libraries; glibc's sonames are trampoline libraries (`libc.so.6` = 386 forwards to bionic,
+  74 translated: pthread mutex/cond on glibc's layout, sigaction, sysconf, stat, locales, dl*,
+  `link_map` chain), driver libraries are loaded leaves-first by path so no namespace is needed
+  (`aosp-device/hals/nvglibc`); a bionic patch gives `dlopen()`ed `DF_STATIC_TLS` libraries
+  (libnvidia-tls, libGLdispatch) a 512-byte static TLS surplus
+  (`tools/patches/aosp17-bionic-static-tls-surplus.patch`). The device binary
+  `/vendor/bin/nvglibc_vktest` runs on the build host's RTX 4070 in a device-like bwrap
+  (`tools/nvglibc-hosttest.sh`): vkCreateDevice + compute dispatch 65536/65536 correct; pclog
+  runs it on the NVIDIA entries (`boot-N/nvglibc-vktest.txt`). Needs the system image (patched
+  runtime APEX) and vendor image of the next L1/L3 stick build (docs/nvidia-native.md, L2).
 - **L3 — Android Vulkan HAL and gralloc on the native driver.** `vulkan.nvidia.so` (hwvulkan
   module) wrapping NVIDIA's ICD through L2: Android WSI (`VK_ANDROID_native_buffer`,
   `VK_ANDROID_external_memory_android_hardware_buffer`) built on NVIDIA's dma-buf and DRM
