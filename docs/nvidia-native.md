@@ -200,3 +200,110 @@ libnvidia-glvkspirv, libnvidia-rtcore. Missing and tolerated: libnvtegrahv.so, l
 **2026-11-16: host test passes** (above); packaged for the vendor partition and in pclog on the
 NVIDIA entries. Real-PC run pending: it needs a stick image with the bionic patch (runtime APEX
 and bootstrap linker/libc, i.e. the system image) and the vendor image, built by L1 or L3.
+
+## L3. Android Vulkan HAL and gralloc on NVIDIA's own driver
+
+Goal: SurfaceFlinger, HWUI and every app draw with NVIDIA's own Vulkan driver, loaded in-process,
+on the "Android 17, NVIDIA (proprietary)" boot entry. No CPU rendering path on that entry: if
+the driver fails, SurfaceFlinger fails and logcat says why.
+
+```
+App / HWUI / SurfaceFlinger (Skia on Vulkan), ANGLE (GLES)
+  └─ Android Vulkan loader (sphal namespace; ro.vulkan.apex emptied on the entry)
+       └─ /vendor/lib64/hw/vulkan.nvidia.so  (hwvulkan module, hals/nvgpu/vulkan)
+            ├─ VK_ANDROID_native_buffer, VK_ANDROID_external_memory_android_hardware_buffer
+            │    on VK_EXT_external_memory_dma_buf + VK_EXT_image_drm_format_modifier + sync fds
+            └─ libnvglibc (L2) ─► /vendor/lib64/nvidia/libGLX_nvidia.so.0 (NVIDIA 620.70.06 ICD)
+gralloc: minigbm "nvidia" backend (block-linear, nvgr_layout.h) ─► nvidia-drm / udmabuf dma-bufs
+composer: drm_hwcomposer on nvidia-drm (K4), client composition, IN_FENCE_FD / OUT_FENCE_PTR
+```
+
+### Pieces
+
+| Piece | Where | What |
+|---|---|---|
+| Vulkan HAL | `aosp-device/hals/nvgpu/vulkan/` (`vulkan.nvidia`) | NVIDIA's dispatchable objects already start with the loader magic `0x01CDC0DE` (= `HWVULKAN_DISPATCH_MAGIC`), so every handle is NVIDIA's and almost every entry point is NVIDIA's function itself (no wrapping, no per-call cost). Hooked: instance/device creation (extension lists: window-system and swapchain extensions hidden, the two Android ones added; the NVIDIA extensions they need enabled on every device), `vkGetPhysicalDevice{Properties2,ImageFormatProperties2,ExternalBufferProperties}`, `vkCreateImage`/`vkDestroyImage`/`vkBindImageMemory2`/`vkCreateImageView`, `vkCreateBuffer`, `vkAllocateMemory`/`vkFreeMemory`, `vkCreateSamplerYcbcrConversion`, `vkGetDeviceImageMemoryRequirements`, the AHB queries, the gralloc-usage queries, `vkAcquireImageANDROID`, `vkQueueSignalReleaseImageANDROID`. |
+| Buffer layout | `aosp-device/hals/nvgpu/include/nvgr/nvgr_layout.h` | shared by the HAL and the gralloc (below) |
+| gralloc | `tools/patches/aosp17-minigbm-nvidia.patch` → `aosp/external/minigbm/nvidia.c` | replaces K1's nvidia-drm dumb backend; with `ro.hardware.vulkan=nvidia` it allocates as below, otherwise it is still K1's dumb backend (the L1 test entries) |
+| Init | `aosp-device/hals/nvgpu/init.nvgpu.rc` | on `androidboot.hardware.vulkan=nvidia`: `ro.vulkan.apex` empty, `debug.renderengine.backend=skiavkthreaded` |
+| NVIDIA userspace | `aosp-device/hals/nvgpu/hal.mk`, `hals/nvsidecar/hal.mk` | NVIDIA's ICD, GLVND libEGL/libGLdispatch, libEGL_nvidia and libnvidia-{glsi,tls,gpucomp,glcore,eglcore,glvkspirv,rtcore,allocator} (the set nvglibc loads, L2) from K2's glibc root to `/vendor/lib64/nvidia` (nvglibc's first driver directory; the sphal namespace reaches `/vendor/lib64` only), with an EGL vendor JSON naming `libEGL_nvidia.so.0` bare; vulkan.nvidia sets `__EGL_VENDOR_LIBRARY_FILENAMES` to it. The rest of the root stays at `/vendor/bin/nvsidecar` for L1's glibc test client, with bare-name ICD and EGL JSONs. |
+| SELinux | `aosp-device/hals/nvgpu/sepolicy/file_contexts`, K2's `file_contexts` | the HAL, libnvglibc, `/vendor/lib64/nvglibc/`, `/vendor/lib64/nvidia/` as `same_process_hal_file` (apps may map only those executable); `/dev/nvidia*` as `gpu_device` (AOSP's GPU rules then cover every client). The entry stays SELinux-permissive. |
+| Entry | `tools/mkusb-aosp17.sh` | "Android 17, NVIDIA (proprietary)": K1's `$nvp` + `androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk` + `$drm`. K3's `$venus` is gone; K2's server starts only with `androidboot.android_pc.vulkan=venus`, which no entry has. |
+| Host test | `tools/nvgpu-hosttest.sh`, `aosp-device/hals/nvgpu/hosttest/` | the HAL and the gralloc backend built with gcc for the build host and run on its RTX 4070 (below) |
+
+### Buffer layout (measured on the RTX 4070, NVIDIA 620.70.06)
+
+The AHB extension creates a `VkImage` before it sees the buffer (and Android's swapchain may
+create images before their buffers exist, `VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT`).
+Mesa's drivers defer the image's layout to bind time; a thin layer over NVIDIA's own handles
+cannot. So the layout of every buffer of an image format depends only on its format and size,
+and the HAL creates the image with exactly that layout (`VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT`,
+explicit plane offsets and pitches), then checks the buffer it imports against it (a mismatch is
+an error in logcat, never a silent fallback).
+
+- **Block-linear, always**: NVIDIA lists `DRM_FORMAT_MOD_LINEAR` only as sampled/storage, never
+  as a color attachment, so linear buffers could not be rendered to. Modifier
+  `DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, h)` (what `DRM_NVIDIA_GET_DEV_INFO` and
+  the primary planes' `IN_FORMATS` report: no compression, desktop sector layout, kind 6),
+  `h` = the smallest block (8·2^h rows) that holds the height, at most 4.
+- Pitch = row bytes aligned to 64 (a GOB is 64 bytes × 8 rows), rows aligned to the block height.
+- GOB swizzle (offset of byte x, row y inside a GOB):
+  `(x&32)<<3 | (y&4)<<5 | (x&16)<<2 | (y&3)<<4 | (x&15)`, i.e. 16-byte sectors, four rows of the
+  left 32 bytes, then the right 32 (checked byte by byte against images NVIDIA wrote).
+- Multi-planar formats (NV12/NV21, YV12, P010): planes packed one after another. NVIDIA's own
+  implicit layouts start planes at 64 KiB, but for an explicit layout it sizes the image, and maps
+  it on the GPU, as the sum of the plane sizes: a 64 KiB-aligned last plane faulted (Xid 39 on the
+  test's channel). Vulkan also requires even sizes for 4:2:0 images (NVIDIA faults on odd ones).
+- **Memory**: buffers only the GPU touches live in video memory
+  (`DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY` on nvidia-drm's render node, scanout-capable when
+  asked, exported as a dma-buf). Buffers the CPU, camera, video or sensors touch live in system
+  memory: a sealed memfd turned into a dma-buf by `/dev/udmabuf`. BAR1 is only 256 MiB on this
+  card and nvidia-drm keeps a CPU mapping of video memory in BAR1 until the buffer is freed, so
+  CPU-mapped buffers must not be video memory.
+- **CPU access** goes through a linear shadow in the mapper (Android's own plane layout, YV12 as
+  Y, V, U): lock detiles, unlock tiles back (a write-only lock of the whole buffer skips the
+  detile).
+- **Cache coherency**: NVIDIA reads and writes imported system memory without snooping the CPU
+  caches (measured: lost and stale cache lines). The allocator flushes a new buffer's zeroed lines,
+  and the mapper flushes (`clflush`) around every CPU read and write of system memory.
+- Formats Vulkan never images (blobs, RGB888, RAW16, ...) are linear system memory, pitch 256.
+
+### WSI
+
+`vkGetSwapchainGrallocUsage*ANDROID` and the AHB usage query return GPU usages only, so window
+buffers are video memory. `vkAcquireImageANDROID` imports the dequeue fence as a temporary
+`SYNC_FD` payload of the semaphore and/or fence (-1 = signalled). `vkQueueSignalReleaseImageANDROID`
+submits the waits plus a signal of a per-queue exportable semaphore and exports it as the
+release `sync_file`, which SurfaceFlinger and drm_hwcomposer (`IN_FENCE_FD`) wait on.
+`VkPhysicalDevicePresentationPropertiesANDROID.sharedImage` is false (no front-buffer rendering).
+Queue global priorities above MEDIUM (SurfaceFlinger and HWUI ask for REALTIME/HIGH) are capped
+at MEDIUM because Phase K's Xid 51 came right after a high-priority channel started;
+`androidboot.android_pc.nvprio=1` lifts the cap.
+
+### Checked
+
+- Host test (`tools/nvgpu-hosttest.sh`, RTX 4070, 620.70.06): the hwvulkan module as Android's
+  loader drives it (extension lists, the loader magic, presentation properties, device with a
+  REALTIME queue); a 3-buffer swapchain with one buffer bound late, 6 frames
+  acquire → clear → release, each frame read back through an AHB import as SurfaceFlinger does
+  after waiting on the release fence; AHB export; a 64 KiB blob AHB as a `VkBuffer`; CPU → GPU
+  for RGBA8888 (333×77, 2560×1080), RGB565, RGBA_FP16, RGBA_1010102, R8, NV12 (1920×1080,
+  176×144), YV12, P010; GPU → CPU for RGBA8888 in system and video memory, NV12, YV12. Every
+  byte compared: 0 differences.
+- QEMU: build `eng.caoanh.20261116.1459` (system, vendor, super on top of the L1 and L2 commits).
+  - NVIDIA entry (`out/aosp17-usb-l3-qemu-nv.img`: the entry's words through `--append`, QEMU has
+    no NVIDIA GPU): `ro.hardware.vulkan=nvidia`, `ro.vulkan.apex` empty (the APEX's own setprop
+    is refused, as intended), `debug.renderengine.backend=skiavkthreaded`,
+    `debug.hwui.renderer=skiavk`, nvsidecar not started. The loader opens
+    `/vendor/lib64/hw/vulkan.nvidia.so` in the sphal namespace, nvglibc loads NVIDIA's ICD from
+    `/vendor/lib64/nvidia` (`same_process_hal_file`), and the ICD refuses to start without a GPU:
+    `E vulkan.nvidia: libGLX_nvidia.so.0: ICD interface negotiation failed (-3, version 5)`,
+    `E vulkan: failed to open Vulkan HAL device: No such device`, then SurfaceFlinger aborts
+    with `Could not initialize Vulkan RenderEngine!` and restarts in a loop. That is the intended
+    behaviour without NVIDIA hardware: no SwiftShader, the failure is in logcat. No SELinux
+    denial for the HAL, nvglibc or NVIDIA's files.
+  - Default entry (`out/aosp17-usb-l3-qemu.img`, `--menu`, entry 1): boots
+    (`sys.boot_completed=1` after ~80 s), SwiftShader (`pastel`) from the Cuttlefish Vulkan APEX
+    as before, minigbm on vkms. Two crashes (`dlkm_loader`: a vendor_dlkm
+    module list check; `com.android.bluetooth`: no Bluetooth controller in QEMU) touch nothing
+    of L3.

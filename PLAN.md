@@ -816,6 +816,18 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   nvidia-drm can scan out; drm_hwcomposer on nvidia-drm (K4). Done when SurfaceFlinger and HWUI
   run on Vulkan on the RTX 4070 on the real PC (`dumpsys gfxinfo` Pipeline = Skia (Vulkan),
   device `NVIDIA GeForce RTX 4070`, driver NVIDIA 620.70.06).
+  **Status (2026-11-16): code done, host test and QEMU check passed, real-PC test pending.**
+  `vulkan.nvidia` (aosp-device/hals/nvgpu) is an SP-HAL in /vendor/lib64/hw that loads NVIDIA's
+  ICD through nvglibc and adds VK_ANDROID_native_buffer and the AHB extension on NVIDIA's dma-buf
+  and DRM modifier support; gralloc is a new minigbm "nvidia" backend
+  (tools/patches/aosp17-minigbm-nvidia.patch) whose image buffers are all block-linear with a
+  layout fixed by format and size (nvgr_layout.h; NVIDIA cannot render to linear), video memory
+  for GPU-only buffers, udmabuf system memory with a mapper shadow and clflush for CPU ones.
+  Entry "Android 17, NVIDIA (proprietary)": ro.hardware.vulkan=nvidia, HWUI and SurfaceFlinger on
+  Skia/Vulkan, no Venus/sidecar, no fallback; queue priorities capped at MEDIUM (Xid 51 suspect,
+  `androidboot.android_pc.nvprio=1` lifts it). Host test on the RTX 4070 (tools/nvgpu-hosttest.sh)
+  passes byte-exact; QEMU: the entry fails visibly (ICD finds no GPU, SurfaceFlinger aborts),
+  the default entry is unchanged. Image `out/aosp17-usb-l3.img` (docs/nvidia-native.md, L3).
 - **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
   declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
   frame rates; then the NVIDIA entry may become the default.

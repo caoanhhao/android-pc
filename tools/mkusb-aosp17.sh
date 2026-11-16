@@ -237,7 +237,11 @@ if [[ $menu == 1 ]]; then
         nvbase="cfi=kcfi,warn intel_iommu=off module_blacklist=nouveau,nova_core,nova"
         nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
-        entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $venus $drm" "$sound"
+        # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver
+        # (vulkan.nvidia through nvglibc), HWUI and SurfaceFlinger on Skia/Vulkan, ANGLE for GLES,
+        # minigbm's "nvidia" backend. No Venus, no sidecar, no CPU fallback.
+        nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk"
+        entry "Android 17, NVIDIA (proprietary)" "$nvp $nvl3 $drm" "$sound"
         # Phase L1: the Xid 51 (BAD_TSG) hunt. The debug entry (pcfb plus the kernel log on the
         # screen, driver loaded after boot) is gone: pcfb and earlycon kept writing to the UEFI
         # framebuffer after nvidia.ko owned the GPU, which froze the PC both times. The L1 test

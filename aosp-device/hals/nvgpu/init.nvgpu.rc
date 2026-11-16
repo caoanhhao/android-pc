@@ -1,0 +1,18 @@
+# Phase L3 (docs/nvidia-native.md): NVIDIA's own Vulkan driver as the device's Vulkan driver, on
+# the entry with androidboot.hardware.vulkan=nvidia (the "NVIDIA (proprietary)" entry,
+# androidboot.android_pc.gpu=nvidia).
+#
+# - ro.hardware.vulkan=nvidia comes from the bootconfig (init_graphics.vendor.rc). The loader must
+#   open /vendor/lib64/hw/vulkan.nvidia.so in the sphal linker namespace, where nvglibc and
+#   NVIDIA's libraries (/vendor/lib64/nvidia) are visible, not from the Cuttlefish Vulkan APEX:
+#   ro.vulkan.apex is set empty here, before that APEX's `on init` sets it.
+# - HWUI draws with Skia on Vulkan (androidboot.hardware.guest_hwui_renderer=skiavk), and so does
+#   SurfaceFlinger's RenderEngine (below). GLES (boot animation, GL apps) is ANGLE on the same
+#   Vulkan driver.
+# - minigbm's "nvidia" backend gives every buffer the layout vulkan.nvidia expects when
+#   ro.hardware.vulkan is nvidia.
+# There is no CPU fallback: when NVIDIA's driver fails, SurfaceFlinger fails, and logcat says why
+# (tags vulkan.nvidia, nvglibc, SurfaceFlinger, RenderEngine).
+on early-init && property:ro.boot.hardware.vulkan=nvidia
+    setprop ro.vulkan.apex ""
+    setprop debug.renderengine.backend skiavkthreaded

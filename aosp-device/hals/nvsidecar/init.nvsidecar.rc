@@ -14,18 +14,23 @@ on late-fs && property:ro.boot.android_pc.gpu=nvidia
     restorecon /dev/nvidia-uvm
     restorecon /dev/nvidia-uvm-tools
     restorecon_recursive /dev/nvidia-caps
+
+# Phase L3: the server only for Venus (androidboot.android_pc.vulkan=venus). The NVIDIA entry runs
+# NVIDIA's driver in-process now (vulkan.nvidia, docs/nvidia-native.md) and no entry uses Venus;
+# the image no longer carries the sidecar root either (hal.mk).
+on late-fs && property:ro.boot.android_pc.gpu=nvidia && property:ro.boot.android_pc.vulkan=venus
     start vendor.nvsidecar
 
 # A/B for the Xid 51 (BAD_TSG) seen on the real PC (docs/nvidia-proprietary.md, K2): an entry with
 # androidboot.android_pc.nvnice=0 runs the server without SYS_NICE, so NVIDIA grants no
 # high/realtime queue priority, as on the build host's waydroid-vtest. vendor.nvsidecar then
 # exits at once (nvsidecar.sh reads the property) and this one creates the socket.
-on late-fs && property:ro.boot.android_pc.gpu=nvidia && property:ro.boot.android_pc.nvnice=0
+on late-fs && property:ro.boot.android_pc.gpu=nvidia && property:ro.boot.android_pc.vulkan=venus && property:ro.boot.android_pc.nvnice=0
     start vendor.nvsidecar_nonice
 
 # HOME and NVIDIA's shader cache; the server's render processes only use it after a client
 # connects, which is after post-fs-data.
-on post-fs-data && property:ro.boot.android_pc.gpu=nvidia
+on post-fs-data && property:ro.boot.android_pc.gpu=nvidia && property:ro.boot.android_pc.vulkan=venus
     mkdir /data/vendor/nvsidecar 0770 root graphics
     mkdir /data/vendor/nvsidecar/cache 0770 root graphics
 

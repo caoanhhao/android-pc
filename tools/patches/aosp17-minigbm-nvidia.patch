@@ -1,0 +1,618 @@
+--- a/Android.bp
++++ b/Android.bp
+@@ -47,6 +47,7 @@
+         "mediatek.c",
+         "msm.c",
+         "nouveau.c",
++        "nvidia.c",
+         "rockchip.c",
+         "vc4.c",
+         "virtgpu.c",
+@@ -117,6 +118,9 @@
+             cflags: ["-DANDROID_API_LEVEL=%d"],
+         },
+     },
++
++    // android-pc Phase L3: nvidia.c's buffer layout, shared with vulkan.nvidia
++    include_dirs: ["device/android-pc/pc_x86_64/hals/nvgpu/include"],
+ }
+ 
+ cc_library_headers {
+--- a/dumb_driver.c
++++ b/dumb_driver.c
+@@ -75,8 +75,7 @@
+ INIT_DUMB_DRIVER(synaptics)
+ INIT_DUMB_DRIVER(udl)
+ INIT_DUMB_DRIVER(vkms)
+-/* android-pc Phase K1: NVIDIA's own nvidia-drm (modeset=1), dumb buffers until vtest (K3). */
+-INIT_DUMB_DRIVER_WITH_NAME(nvidia_drm, "nvidia-drm")
++/* nvidia-drm: nvidia.c (android-pc Phase L3; K1's dumb buffers without vulkan.nvidia) */
+ 
+ #ifndef DRV_ROCKCHIP
+ INIT_DUMB_DRIVER(rockchip)
+--- /dev/null
++++ b/nvidia.c
+@@ -0,0 +1,583 @@
++/*
++ * Copyright 2026 The Android PC Authors. All rights reserved.
++ * Use of this source code is governed by a BSD-style license that can be
++ * found in the LICENSE file.
++ */
++
++/*
++ * nvidia: gralloc on NVIDIA's own nvidia-drm (modeset=1) for vulkan.nvidia, NVIDIA's Vulkan
++ * driver as the device's native driver (android-pc Phase L3, docs/nvidia-native.md).
++ *
++ * With ro.hardware.vulkan=nvidia, every buffer of a format Vulkan can sample or render
++ * (nvgr_fmt_from_drm()) is NVIDIA block-linear with the layout of nvgr_layout.h, which depends
++ * on the format and size only, so the Vulkan HAL knows it before it sees the buffer
++ * (VK_ANDROID_external_memory_android_hardware_buffer, deferred swapchain images). NVIDIA
++ * cannot render to its linear layout, so there is no linear variant of these.
++ *   - GPU-only buffers live in video memory: DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY on the
++ *     render node, exported as a dma-buf (scanout-capable when BO_USE_SCANOUT is asked).
++ *   - Buffers the CPU, camera, video or sensors touch live in system memory (a sealed memfd made
++ *     a dma-buf by /dev/udmabuf): NVIDIA's BAR1 is only 256 MiB here and nvidia-drm keeps a
++ *     CPU mapping of video memory in BAR1 until the buffer is freed.
++ *   - Other formats (blobs, RGB888, RAW16, ...) are linear system memory, 256-byte pitch.
++ * The CPU sees a block-linear buffer through a linear shadow: lock fills it (detile), unlock
++ * writes it back (tile). The meta strides/offsets describe that shadow, in Android's own plane
++ * layout (YV12: Y, V, U); bo->handle is the dma-buf fd, as in the dma_heap backend.
++ *
++ * NVIDIA reads and writes imported system memory without snooping the CPU caches, so every
++ * CPU access to system memory is bracketed by cache-line flushes (nvgr_clflush()).
++ *
++ * Without ro.hardware.vulkan=nvidia (the NVIDIA test entries that draw with SwiftShader) this
++ * is K1's dumb-buffer backend: linear nvidia-drm dumb buffers.
++ */
++
++#include <errno.h>
++#include <fcntl.h>
++#include <linux/memfd.h>
++#include <linux/udmabuf.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <xf86drm.h>
++
++#include <nvgr/nvgr_layout.h>
++
++#include "drv_helpers.h"
++#include "drv_priv.h"
++#include "external/dma-buf.h"
++#include "util.h"
++
++/* nvidia-drm's nv_drm_common_ioctl.h (MIT), the parts used here */
++#define DRM_NVIDIA_GET_DEV_INFO 0x03
++#define DRM_NVIDIA_GEM_ALLOC_NVKMS_MEMORY 0x0b
++#define NV_GEM_ALLOC_NO_SCANOUT (1 << 0)
++
++struct drm_nvidia_get_dev_info_params {
++	uint32_t gpu_id;
++	uint32_t mig_device;
++	uint32_t primary_index;
++	uint32_t supports_alloc;
++	uint32_t generic_page_kind;
++	uint32_t page_kind_generation;
++	uint32_t sector_layout;
++	uint32_t supports_sync_fd;
++	uint32_t supports_semsurf;
++};
++
++struct drm_nvidia_gem_alloc_nvkms_memory_params {
++	uint32_t handle;
++	uint8_t block_linear;
++	uint8_t compressible;
++	uint16_t __pad0;
++	uint64_t memory_size;
++	uint32_t flags;
++	uint32_t __pad1;
++};
++
++#define DRM_IOCTL_NVIDIA_GET_DEV_INFO                                                              \
++	DRM_IOWR(DRM_COMMAND_BASE + DRM_NVIDIA_GET_DEV_INFO, struct drm_nvidia_get_dev_info_params)
++#define DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY                                                    \
++	DRM_IOWR(DRM_COMMAND_BASE + DRM_NVIDIA_GEM_ALLOC_NVKMS_MEMORY,                             \
++		 struct drm_nvidia_gem_alloc_nvkms_memory_params)
++
++static const uint32_t render_formats[] = {
++	DRM_FORMAT_ARGB8888,	DRM_FORMAT_XRGB8888,	DRM_FORMAT_ABGR8888,
++	DRM_FORMAT_XBGR8888,	DRM_FORMAT_RGB565,	DRM_FORMAT_ABGR2101010,
++	DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR16161616F
++};
++
++static const uint32_t render_texture_formats[] = { DRM_FORMAT_R8, DRM_FORMAT_GR88, DRM_FORMAT_R16,
++						   DRM_FORMAT_GR1616 };
++
++static const uint32_t yuv_formats[] = { DRM_FORMAT_NV12, DRM_FORMAT_NV21, DRM_FORMAT_YVU420,
++					DRM_FORMAT_YVU420_ANDROID, DRM_FORMAT_P010 };
++
++static const uint32_t linear_only_formats[] = { DRM_FORMAT_BGR888 };
++
++/* the K1 dumb-buffer backend's formats (no Vulkan on NVIDIA) */
++static const uint32_t dumb_scanout_render_formats[] = { DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888,
++							DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
++							DRM_FORMAT_BGR888,   DRM_FORMAT_RGB565 };
++static const uint32_t dumb_texture_only_formats[] = { DRM_FORMAT_R8, DRM_FORMAT_NV12,
++						      DRM_FORMAT_NV21, DRM_FORMAT_YVU420,
++						      DRM_FORMAT_YVU420_ANDROID };
++
++/* Buffers some agent other than the GPU (CPU, camera, video, sensors) reads or writes. */
++#define NVIDIA_SYSMEM_USE                                                                          \
++	(BO_USE_SW_MASK | BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER |     \
++	 BO_USE_HW_VIDEO_ENCODER | BO_USE_RENDERSCRIPT | BO_USE_FRONT_RENDERING |                  \
++	 BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA)
++
++struct nvidia_priv {
++	bool native; /* ro.hardware.vulkan=nvidia: block-linear buffers for vulkan.nvidia */
++	pthread_mutex_t lock;
++	int udmabuf;
++};
++
++/* the CPU's view of a block-linear buffer */
++struct nvidia_shadow {
++	uint8_t *gpu; /* the dma-buf, mapped */
++	size_t gpu_length;
++};
++
++static bool nvidia_native(struct bo *bo)
++{
++	return ((struct nvidia_priv *)bo->drv->priv)->native;
++}
++
++/* A blob (HAL_PIXEL_FORMAT_BLOB: R8, height 1) or a data buffer is never an image. */
++static const struct nvgr_fmt *nvidia_bl_format(uint32_t format, uint32_t height, uint64_t use_flags)
++{
++	if (use_flags & (BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA))
++		return NULL;
++	if (format == DRM_FORMAT_R8 && height == 1)
++		return NULL;
++	return nvgr_fmt_from_drm(format);
++}
++
++/* CPU plane p of format is GPU (Vulkan order) plane ...: YV12 keeps V before U on the CPU. */
++static uint32_t nvidia_gpu_plane(uint32_t format, uint32_t p)
++{
++	static const uint32_t yvu[] = { 0, 2, 1 };
++
++	if (format == DRM_FORMAT_YVU420 || format == DRM_FORMAT_YVU420_ANDROID)
++		return yvu[p];
++	return p;
++}
++
++/* System memory: a sealed memfd turned into a dma-buf by udmabuf, flushed from the CPU caches. */
++static int nvidia_alloc_sysmem(struct bo *bo, size_t size)
++{
++	struct nvidia_priv *priv = bo->drv->priv;
++	struct udmabuf_create create = { 0 };
++	int memfd, fd;
++	void *map;
++
++	pthread_mutex_lock(&priv->lock);
++	if (priv->udmabuf == -1) {
++		priv->udmabuf = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
++		if (priv->udmabuf < 0) {
++			drv_loge("nvidia: cannot open /dev/udmabuf (%s)\n", strerror(errno));
++			priv->udmabuf = -2;
++		}
++	}
++	pthread_mutex_unlock(&priv->lock);
++	if (priv->udmabuf < 0)
++		return -ENODEV;
++
++	size = ALIGN(size, getpagesize());
++	memfd = memfd_create("minigbm-nvidia", MFD_CLOEXEC | MFD_ALLOW_SEALING);
++	if (memfd < 0)
++		return -errno;
++	if (ftruncate(memfd, size) || fcntl(memfd, F_ADD_SEALS, F_SEAL_SHRINK)) {
++		fd = -errno;
++		goto out;
++	}
++
++	create.memfd = memfd;
++	create.flags = UDMABUF_FLAGS_CLOEXEC;
++	create.offset = 0;
++	create.size = size;
++	fd = ioctl(priv->udmabuf, UDMABUF_CREATE, &create);
++	if (fd < 0) {
++		fd = -errno;
++		drv_loge("nvidia: UDMABUF_CREATE of %zu bytes failed (%s)\n", size, strerror(-fd));
++		goto out;
++	}
++
++	/*
++	 * The kernel zeroed the new pages through the cache: write those lines back now, or they
++	 * would land on top of what the GPU writes later.
++	 */
++	map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, 0);
++	if (map != MAP_FAILED) {
++		nvgr_clflush(map, size);
++		munmap(map, size);
++	}
++
++	bo->meta.total_size = size;
++	bo->handle.fd = fd;
++	fd = 0;
++out:
++	close(memfd);
++	return fd;
++}
++
++/* Video memory on nvidia-drm, block-linear, as a dma-buf. */
++static int nvidia_alloc_vidmem(struct bo *bo, size_t size, bool scanout)
++{
++	struct drm_nvidia_gem_alloc_nvkms_memory_params alloc = { 0 };
++	int ret, fd;
++
++	alloc.block_linear = 1;
++	alloc.memory_size = ALIGN(size, getpagesize());
++	alloc.flags = scanout ? 0 : NV_GEM_ALLOC_NO_SCANOUT;
++	if (drmIoctl(bo->drv->fd, DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY, &alloc)) {
++		ret = -errno;
++		drv_loge("nvidia: GEM_ALLOC_NVKMS_MEMORY of %llu bytes failed (%s)\n",
++			 (unsigned long long)alloc.memory_size, strerror(-ret));
++		return ret;
++	}
++	ret = drmPrimeHandleToFD(bo->drv->fd, alloc.handle, DRM_CLOEXEC | DRM_RDWR, &fd);
++	drmCloseBufferHandle(bo->drv->fd, alloc.handle); /* the dma-buf keeps the memory */
++	if (ret) {
++		drv_loge("nvidia: exporting a GEM buffer failed (%d)\n", ret);
++		return ret;
++	}
++	bo->meta.total_size = alloc.memory_size;
++	bo->handle.fd = fd;
++	return 0;
++}
++
++static int nvidia_bo_create_bl(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
++			       uint64_t use_flags, const struct nvgr_fmt *fmt)
++{
++	struct nvgr_layout layout;
++	size_t cpu_size;
++
++	nvgr_compute_layout(fmt, width, height, &layout);
++	/* the CPU shadow: Android's plane layout with the GPU's pitch (64-byte aligned) */
++	drv_bo_from_format(bo, layout.pitches[0], 1, height, format);
++	cpu_size = bo->meta.total_size;
++
++	int ret = (use_flags & NVIDIA_SYSMEM_USE) ?
++		      nvidia_alloc_sysmem(bo, layout.size) :
++		      nvidia_alloc_vidmem(bo, layout.size, use_flags & (BO_USE_SCANOUT | BO_USE_CURSOR));
++	if (ret)
++		return ret;
++	if (bo->meta.total_size < cpu_size) {
++		drv_loge("nvidia: %.4s %ux%u: shadow (%zu) larger than the buffer (%zu)\n",
++			 (const char *)&format, width, height, cpu_size, bo->meta.total_size);
++		close(bo->handle.fd);
++		return -EINVAL;
++	}
++	bo->meta.format_modifier = layout.modifier;
++	bo->meta.tiling = 1;
++	return 0;
++}
++
++static int nvidia_bo_create_linear(struct bo *bo, uint32_t width, uint32_t height, uint32_t format)
++{
++	uint32_t aligned_width = width, aligned_height = height, stride;
++
++	/* the sizes of drv_dumb_bo_create() (vtest.c does the same) */
++	switch (format) {
++	case DRM_FORMAT_R16:
++		aligned_width = ALIGN(width, 16);
++		break;
++	case DRM_FORMAT_YVU420_ANDROID:
++		aligned_width = ALIGN(width, 32);
++		aligned_height = 3 * DIV_ROUND_UP(height, 2);
++		break;
++	case DRM_FORMAT_YVU420:
++	case DRM_FORMAT_NV12:
++	case DRM_FORMAT_NV21:
++	case DRM_FORMAT_P010:
++		aligned_height = 3 * DIV_ROUND_UP(height, 2);
++		break;
++	default:
++		break;
++	}
++	stride = ALIGN(aligned_width * drv_bytes_per_pixel_from_format(format, 0), 256);
++	drv_bo_from_format(bo, stride, 1, height, format);
++	int ret = nvidia_alloc_sysmem(bo, MAX(bo->meta.total_size, (size_t)stride * aligned_height));
++	if (ret)
++		return ret;
++	bo->meta.format_modifier = DRM_FORMAT_MOD_LINEAR;
++	bo->meta.tiling = 0;
++	return 0;
++}
++
++static int nvidia_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
++			    uint64_t use_flags)
++{
++	const struct nvgr_fmt *fmt;
++
++	if (!nvidia_native(bo))
++		return drv_dumb_bo_create(bo, width, height, format, use_flags);
++
++	fmt = nvidia_bl_format(format, height, use_flags);
++	if (fmt)
++		return nvidia_bo_create_bl(bo, width, height, format, use_flags, fmt);
++	return nvidia_bo_create_linear(bo, width, height, format);
++}
++
++static int nvidia_bo_create_with_modifiers(struct bo *bo, uint32_t width, uint32_t height,
++					   uint32_t format, const uint64_t *modifiers,
++					   uint32_t count)
++{
++	const struct nvgr_fmt *fmt;
++	struct nvgr_layout layout;
++
++	if (!nvidia_native(bo))
++		return drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR) ?
++			       drv_dumb_bo_create(bo, width, height, format, 0) :
++			       -EINVAL;
++
++	fmt = nvidia_bl_format(format, height, BO_USE_NONE);
++	if (!fmt)
++		return drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR) ?
++			       nvidia_bo_create_linear(bo, width, height, format) :
++			       -EINVAL;
++	nvgr_compute_layout(fmt, width, height, &layout);
++	if (!drv_has_modifier(modifiers, count, layout.modifier))
++		return -EINVAL;
++	return nvidia_bo_create_bl(bo, width, height, format, BO_USE_SCANOUT, fmt);
++}
++
++static int nvidia_bo_destroy(struct bo *bo)
++{
++	if (!nvidia_native(bo))
++		return drv_dumb_bo_destroy(bo);
++	return close(bo->handle.fd);
++}
++
++static int nvidia_bo_import(struct bo *bo, struct drv_import_fd_data *data)
++{
++	int fd;
++
++	if (!nvidia_native(bo))
++		return drv_prime_bo_import(bo, data);
++
++	/* every plane is in the same dma-buf */
++	fd = fcntl(data->fds[0], F_DUPFD_CLOEXEC, 0);
++	if (fd < 0)
++		return -errno;
++	bo->handle.fd = fd;
++	return 0;
++}
++
++static int nvidia_bo_export(struct bo *bo, size_t plane)
++{
++	int fd;
++
++	if (!nvidia_native(bo))
++		return drv_prime_bo_export(bo, plane);
++	fd = fcntl(bo->handle.fd, F_DUPFD_CLOEXEC, 0);
++	return fd >= 0 ? fd : -errno;
++}
++
++static bool nvidia_is_bl(struct bo *bo)
++{
++	return nvgr_log2_block_h(bo->meta.format_modifier) >= 0;
++}
++
++static void *nvidia_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
++{
++	struct nvidia_shadow *shadow;
++	void *addr;
++
++	if (!nvidia_native(bo))
++		return drv_dumb_bo_map(bo, vma, map_flags);
++
++	vma->length = bo->meta.total_size;
++	if (!nvidia_is_bl(bo))
++		return mmap(NULL, vma->length, drv_get_prot(map_flags), MAP_SHARED, bo->handle.fd, 0);
++
++	shadow = calloc(1, sizeof(*shadow));
++	if (!shadow)
++		return MAP_FAILED;
++	shadow->gpu_length = bo->meta.total_size;
++	shadow->gpu = mmap(NULL, shadow->gpu_length, PROT_READ | PROT_WRITE, MAP_SHARED,
++			   bo->handle.fd, 0);
++	if (shadow->gpu == MAP_FAILED) {
++		drv_loge("nvidia: mapping a block-linear buffer failed (%s)\n", strerror(errno));
++		free(shadow);
++		return MAP_FAILED;
++	}
++	addr = mmap(NULL, vma->length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++	if (addr == MAP_FAILED) {
++		munmap(shadow->gpu, shadow->gpu_length);
++		free(shadow);
++		return MAP_FAILED;
++	}
++	vma->priv = shadow;
++	return addr;
++}
++
++static int nvidia_bo_unmap(struct bo *bo, struct vma *vma)
++{
++	struct nvidia_shadow *shadow = vma->priv;
++
++	if (shadow) {
++		munmap(shadow->gpu, shadow->gpu_length);
++		free(shadow);
++		vma->priv = NULL;
++	}
++	return drv_bo_munmap(bo, vma);
++}
++
++static int nvidia_bo_sync(struct bo *bo, bool start, uint32_t map_flags)
++{
++	struct dma_buf_sync args = { 0 };
++
++	args.flags = start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END;
++	if (map_flags & BO_MAP_READ)
++		args.flags |= DMA_BUF_SYNC_READ;
++	if (map_flags & BO_MAP_WRITE)
++		args.flags |= DMA_BUF_SYNC_WRITE;
++	return ioctl(bo->handle.fd, DMA_BUF_IOCTL_SYNC, &args) ? -errno : 0;
++}
++
++/* Detile (to_shadow) or tile every plane between the dma-buf and the CPU's shadow. */
++static void nvidia_bl_copy(struct bo *bo, struct nvidia_shadow *shadow, uint8_t *cpu,
++			   bool to_shadow)
++{
++	const struct nvgr_fmt *fmt = nvgr_fmt_from_drm(bo->meta.format);
++	struct nvgr_layout layout;
++
++	nvgr_compute_layout(fmt, bo->meta.width, bo->meta.height, &layout);
++	for (uint32_t p = 0; p < layout.num_planes; p++) {
++		const uint32_t g = nvidia_gpu_plane(bo->meta.format, p);
++
++		nvgr_bl_copy(shadow->gpu + layout.offsets[g], cpu + bo->meta.offsets[p],
++			     bo->meta.strides[p], layout.pitches[g], layout.log2_block_h,
++			     layout.widths[g] * fmt->cpp[g], 0, layout.heights[g], to_shadow);
++	}
++}
++
++static int nvidia_bo_invalidate(struct bo *bo, struct mapping *mapping)
++{
++	struct vma *vma = mapping->vma;
++	struct nvidia_shadow *shadow = vma->priv;
++	const bool full = mapping->rect.x == 0 && mapping->rect.y == 0 &&
++			  mapping->rect.width == bo->meta.width &&
++			  mapping->rect.height == bo->meta.height;
++
++	if (!nvidia_native(bo))
++		return 0;
++	nvidia_bo_sync(bo, true, vma->map_flags);
++	if (!shadow) {
++		nvgr_clflush(vma->addr, vma->length);
++		return 0;
++	}
++	/* a write-only lock of the whole buffer overwrites it all: nothing to read */
++	if ((vma->map_flags & BO_MAP_READ) || !full) {
++		nvgr_clflush(shadow->gpu, shadow->gpu_length);
++		nvidia_bl_copy(bo, shadow, vma->addr, true);
++	}
++	return 0;
++}
++
++static int nvidia_bo_flush(struct bo *bo, struct mapping *mapping)
++{
++	struct vma *vma = mapping->vma;
++	struct nvidia_shadow *shadow = vma->priv;
++
++	if (!nvidia_native(bo))
++		return 0;
++	if (vma->map_flags & BO_MAP_WRITE) {
++		if (shadow) {
++			nvidia_bl_copy(bo, shadow, vma->addr, false);
++			nvgr_clflush(shadow->gpu, shadow->gpu_length);
++		} else {
++			nvgr_clflush(vma->addr, vma->length);
++		}
++	}
++	return nvidia_bo_sync(bo, false, vma->map_flags);
++}
++
++static int nvidia_init_dumb(struct driver *drv)
++{
++	drv_add_combinations(drv, dumb_scanout_render_formats,
++			     ARRAY_SIZE(dumb_scanout_render_formats), &LINEAR_METADATA,
++			     BO_USE_RENDER_MASK | BO_USE_SCANOUT);
++	drv_add_combinations(drv, dumb_texture_only_formats, ARRAY_SIZE(dumb_texture_only_formats),
++			     &LINEAR_METADATA, BO_USE_TEXTURE_MASK);
++	drv_modify_combination(drv, DRM_FORMAT_R8, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
++				   BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA);
++	drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	drv_modify_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA, BO_USE_HW_VIDEO_ENCODER);
++	return drv_modify_linear_combinations(drv);
++}
++
++static int nvidia_init(struct driver *drv)
++{
++	struct drm_nvidia_get_dev_info_params info = { 0 };
++	struct nvidia_priv *priv;
++	const char *vulkan = drv_get_os_option("ro.hardware.vulkan");
++
++	priv = calloc(1, sizeof(*priv));
++	if (!priv)
++		return -ENOMEM;
++	pthread_mutex_init(&priv->lock, NULL);
++	priv->udmabuf = -1;
++	priv->native = vulkan && !strcmp(vulkan, "nvidia");
++	drv->priv = priv;
++	if (!priv->native)
++		return nvidia_init_dumb(drv);
++
++	/* nvgr_layout.h's modifiers are the RTX 40 series' (Ada) */
++	if (drmIoctl(drv->fd, DRM_IOCTL_NVIDIA_GET_DEV_INFO, &info) || !info.supports_alloc ||
++	    info.generic_page_kind != NVGR_PAGE_KIND ||
++	    info.page_kind_generation != NVGR_KIND_GENERATION ||
++	    info.sector_layout != NVGR_SECTOR_LAYOUT)
++		drv_loge("nvidia: GPU block-linear parameters (alloc %u kind %#x gen %u sector %u) "
++			 "differ from nvgr_layout.h's: buffers will not match vulkan.nvidia\n",
++			 info.supports_alloc, info.generic_page_kind, info.page_kind_generation,
++			 info.sector_layout);
++
++	drv_add_combinations(drv, render_formats, ARRAY_SIZE(render_formats), &LINEAR_METADATA,
++			     BO_USE_RENDER_MASK | BO_USE_SCANOUT | BO_USE_TEXTURE_MASK |
++				 BO_USE_CURSOR | BO_USE_FRONT_RENDERING);
++	drv_add_combinations(drv, render_texture_formats, ARRAY_SIZE(render_texture_formats),
++			     &LINEAR_METADATA, BO_USE_RENDER_MASK | BO_USE_TEXTURE_MASK);
++	drv_add_combinations(drv, yuv_formats, ARRAY_SIZE(yuv_formats), &LINEAR_METADATA,
++			     BO_USE_TEXTURE_MASK);
++	drv_add_combinations(drv, linear_only_formats, ARRAY_SIZE(linear_only_formats),
++			     &LINEAR_METADATA, BO_USE_TEXTURE_MASK);
++
++	drv_modify_combination(drv, DRM_FORMAT_R8, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
++				   BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA);
++	drv_modify_combination(drv, DRM_FORMAT_R16, &LINEAR_METADATA,
++			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	drv_modify_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	drv_modify_combination(drv, DRM_FORMAT_YVU420_ANDROID, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++	drv_modify_combination(drv, DRM_FORMAT_P010, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER);
++
++	return drv_modify_linear_combinations(drv);
++}
++
++static void nvidia_close(struct driver *drv)
++{
++	struct nvidia_priv *priv = drv->priv;
++
++	if (priv->udmabuf >= 0)
++		close(priv->udmabuf);
++	pthread_mutex_destroy(&priv->lock);
++	free(priv);
++	drv->priv = NULL;
++}
++
++const struct backend backend_nvidia_drm = {
++	.name = "nvidia-drm",
++	.init = nvidia_init,
++	.close = nvidia_close,
++	.bo_create = nvidia_bo_create,
++	.bo_create_with_modifiers = nvidia_bo_create_with_modifiers,
++	.bo_destroy = nvidia_bo_destroy,
++	.bo_import = nvidia_bo_import,
++	.bo_export = nvidia_bo_export,
++	.bo_map = nvidia_bo_map,
++	.bo_unmap = nvidia_bo_unmap,
++	.bo_invalidate = nvidia_bo_invalidate,
++	.bo_flush = nvidia_bo_flush,
++	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,
++};

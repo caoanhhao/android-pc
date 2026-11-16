@@ -1,0 +1,7 @@
+# Phase L3 (docs/nvidia-native.md): the same-process Vulkan HAL and what it loads in every
+# process that draws (apps, SurfaceFlinger, system_server): only same_process_hal_file may be
+# mapped executable there. /dev/nvidia* are gpu_device (hals/nvsidecar/sepolicy/file_contexts).
+/vendor/lib64/hw/vulkan\.nvidia\.so     u:object_r:same_process_hal_file:s0
+/vendor/lib64/libnvglibc\.so            u:object_r:same_process_hal_file:s0
+/vendor/lib64/nvglibc(/.*)?             u:object_r:same_process_hal_file:s0
+/vendor/lib64/nvidia(/.*)?              u:object_r:same_process_hal_file:s0

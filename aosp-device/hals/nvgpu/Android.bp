@@ -1,0 +1,61 @@
+// Phase L3 (docs/nvidia-native.md): NVIDIA's own Vulkan driver as the device's Vulkan driver on
+// the "NVIDIA (proprietary)" boot entry (ro.hardware.vulkan=nvidia).
+//
+// - vulkan.nvidia: the hwvulkan module. NVIDIA's ICD (libGLX_nvidia.so.0, glibc) runs in-process
+//   through nvglibc (Phase L2); this adds VK_ANDROID_native_buffer and
+//   VK_ANDROID_external_memory_android_hardware_buffer on NVIDIA's dma-buf and DRM modifier
+//   support. A same-process HAL in /vendor/lib64/hw, loaded in the sphal linker namespace (not
+//   from the Cuttlefish Vulkan APEX: init.nvgpu.rc empties ro.vulkan.apex on the entry), because
+//   nvglibc and NVIDIA's libraries live in /vendor/lib64. 64-bit only: NVIDIA's userspace here is
+//   x86_64.
+// - gralloc is minigbm's "nvidia" backend (tools/patches/aosp17-minigbm-nvidia.patch); both
+//   share include/nvgr/nvgr_layout.h (minigbm reaches it through include_dirs).
+// - the composer is drm_hwcomposer on nvidia-drm (K4, hals/nvdisplay).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+cc_library_shared {
+    name: "vulkan.nvidia",
+    vendor: true,
+    compile_multilib: "64",
+    relative_install_path: "hw",
+    srcs: [
+        "vulkan/nvvk_buffer.cpp",
+        "vulkan/nvvk_hal.cpp",
+        "vulkan/nvvk_platform_android.cpp",
+        "vulkan/nvvk_wsi.cpp",
+    ],
+    local_include_dirs: ["include"],
+    header_libs: [
+        "hwvulkan_headers",
+        "libnativebase_headers",
+        "minigbm_headers",
+        "vulkan_headers",
+    ],
+    shared_libs: [
+        "libdl",
+        "liblog",
+        "libnativewindow",
+        "libnvglibc",
+    ],
+    cflags: [
+        "-DVK_USE_PLATFORM_ANDROID_KHR",
+        "-Wall",
+        "-Werror",
+        "-Wno-missing-field-initializers",
+        "-Wno-unused-parameter",
+    ],
+    // Only the hwvulkan module symbol is the API.
+    version_script: "vulkan/vulkan.nvidia.map",
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "init.nvgpu.rc",
+    src: "init.nvgpu.rc",
+    sub_dir: "init",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}

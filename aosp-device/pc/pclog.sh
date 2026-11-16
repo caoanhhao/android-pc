@@ -144,6 +144,15 @@ dump() {
             echo "== avc nvsidecar"; logcat -d -b all | grep 'avc: denied' |
                 grep -E 'nvsidecar|vtest_socket|nvidia_device' | sed -E 's/.*avc: //; s/ (pid|ino)=[0-9]+//g' | sort -u | head -n 80
         fi
+        # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver in-process (vulkan.nvidia through
+        # nvglibc): what the graphics stack chose, the HAL's and its clients' log lines, and the
+        # renderer HWUI really uses.
+        if [ "$(getprop ro.hardware.vulkan)" = nvidia ]; then
+            echo "== vulkan.nvidia"
+            getprop | grep -E 'ro.hardware.(vulkan|egl)|ro.vulkan.apex|renderengine|hwui.renderer'
+            logcat -d -b all | grep -E 'vulkan.nvidia|nvglibc|RenderEngine|VulkanManager|vulkan  |minigbm' | head -n 150
+            echo "== gfxinfo systemui"; timeout 10 dumpsys gfxinfo com.android.systemui 2>&1 | grep -iE 'pipeline|vulkan|driver|janky|total frames' | head -n 20
+        fi
         for c in /sys/class/sound/card*; do
             [ "$(cat $c/device/vendor 2>/dev/null):$(cat $c/device/device 2>/dev/null)" = 0x10de:0x22bc ] || continue
             echo "== eld ${c##*/} (10de:22bc)"
