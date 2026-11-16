@@ -7,10 +7,6 @@
 // "pastel" (SwiftShader) otherwise, so the entry still shows a picture when NVK cannot run.
 // The Vulkan calls run in a child process with a time limit: a GPU that hangs costs at most
 // kTimeoutSeconds of boot time. vendor.pc.vulkan_probe says what happened (pclog records it).
-//
-// `pcvkprobe DRIVER --check` (Phase K3, pcvenusprobe.sh and pcvenuswatch.sh) probes
-// vulkan.DRIVER.so the same way, prints the result and exits 0 when a device was created,
-// without setting any property.
 
 #define LOG_TAG "pcvkprobe"
 
@@ -57,7 +53,7 @@ void Log(const char* fmt, ...) {
 
 // The child: returns 0 when NVK gives a device with a graphics queue. Writes one line (the
 // device name or the failing step) to `out`.
-int Probe(int out, const std::string& driver) {
+int Probe(int out) {
     std::string apex = android::base::GetProperty("ro.vulkan.apex", "com.google.cf.vulkan");
     std::replace(apex.begin(), apex.end(), '.', '_');
     android_namespace_t* ns = android_get_exported_namespace(apex.c_str());
@@ -69,10 +65,9 @@ int Probe(int out, const std::string& driver) {
             .flags = ANDROID_DLEXT_USE_NAMESPACE,
             .library_namespace = ns,
     };
-    const std::string lib = "vulkan." + driver + ".so";
-    void* so = android_dlopen_ext(lib.c_str(), RTLD_LOCAL | RTLD_NOW, &info);
+    void* so = android_dlopen_ext("vulkan.nouveau.so", RTLD_LOCAL | RTLD_NOW, &info);
     if (!so) {
-        dprintf(out, "dlopen %s: %s", lib.c_str(), dlerror());
+        dprintf(out, "dlopen vulkan.nouveau.so: %s", dlerror());
         return 1;
     }
     auto* module = static_cast<hwvulkan_module_t*>(dlsym(so, HAL_MODULE_INFO_SYM_AS_STR));
@@ -148,15 +143,13 @@ int Probe(int out, const std::string& driver) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const std::string probe_driver = argc > 1 ? argv[1] : "nouveau";
-    const bool check = argc > 2 && strcmp(argv[2], "--check") == 0;
+int main() {
     int fds[2];
     if (pipe2(fds, O_CLOEXEC) != 0) return 1;
     pid_t pid = fork();
     if (pid == 0) {
         close(fds[0]);
-        _exit(Probe(fds[1], probe_driver));
+        _exit(Probe(fds[1]));
     }
     close(fds[1]);
 
@@ -181,10 +174,6 @@ int main(int argc, char** argv) {
         line[std::max<ssize_t>(n, 0)] = 0;
     }
     if (why.empty()) why = line;
-    if (check) {
-        printf("%s: %s\n", ok ? "ok" : "failed", ok ? line : why.c_str());
-        return ok ? 0 : 1;
-    }
 
     const char* driver = ok ? "nouveau" : "pastel";
     std::string result = ok ? std::string("nouveau: ") + line : "pastel: NVK " + why;
