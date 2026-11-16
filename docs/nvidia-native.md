@@ -360,6 +360,25 @@ NVIDIA's GLX code looks up optionally), `libnvtegrahv.so` and `libdbus-1.so.3` n
 driver goes on without them), and `Could not initialize protected content Vulkan RenderEngine`
 (NVIDIA has no protected memory; SurfaceFlinger runs without a protected context).
 
+## L4. Games on the native driver: Where Winds Meet (VFIO, 2026-11-17)
+
+Where Winds Meet (`com.netease.yyvn` 1.15.7, arm64 through the native bridge, NetEase's Messiah
+engine) in the VFIO VM on the NVIDIA entry: the game picks GLES itself (`OpenGLRendor` in its
+log; the arm64 Vulkan proxy is there but unused), so it draws through
+`libproxy_arm64_to_x86_64_libGLESv2` → ANGLE → `vulkan.nvidia` → the RTX 4070.
+
+| Step | What happened | Fix |
+|---|---|---|
+| Install | split APKs from the user's Waydroid install, `adb install-multiple` (3.7 GB), then 737 MB of resources and the shader warm-up in the game | — |
+| Load after login | the game aborted itself (SIGABRT from its own arm64 code) while loading the world; the 4 GB guest had 600 MB left, zram 1.1 GB used, `am_low_memory` 12 | guest RAM 12 GB (`MEM=12288`, allowed by the user for this test; the 4 GB rule stays for other VMs) |
+| World all white, no HUD icons, black loading screens | the engine ships ASTC textures (`TextureASTC`/`TextureNewASTC` in `Engine/Config/Built.key`); NVIDIA's desktop Vulkan has no ASTC (`textureCompressionASTC_LDR = VK_FALSE`), and AOSP's ANGLE is built without `third_party/astc-encoder`, so ANGLE could not decode ASTC on the CPU (its `AstcDecompressorNoOp`) | `tools/patches/aosp17-angle-astcenc.patch` (`git apply` in `aosp/external/angle`): ARM's astc-encoder decoder at ANGLE's DEPS revision `2319d9c` (Apache-2.0, `ASTCENC_DECOMPRESS_ONLY`) as `angle_astcenc`, `AstcDecompressor.cpp` instead of the no-op, `-DANGLE_HAS_ASTCENC`: ANGLE exposes `GL_KHR_texture_compression_astc_ldr` as emulated and decodes ASTC to RGBA8 on upload |
+| SIGFPE in `UtilsVk::copyImageBits` | `glCopyImageSubData` between two `GL_RGBA4` images with different actual formats; that path only handles RGB emulated as RGBA and divides by `pixelBytes / channelCount`, 0 for packed formats | same patch: such copies fail with a warning (`glCopyImageSubData between emulated formats not supported`) instead of crashing |
+
+Result: the world renders fully (bamboo forest, fog, shadows, the character, every HUD icon),
+`out/vfio-l4/wwm-world.png`; ~30 fps at 2560x1080 (33.4 ms per frame from SurfaceFlinger's
+latency, the game's default cap), no Xid. Open: the RGBA4 copies are skipped (no visible
+effect seen yet); ASTC decode costs CPU on texture upload.
+
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
 `tools/run-qemu-aosp17-vfio.sh [IMAGE]` boots an image like `tools/run-qemu-aosp17-usb.sh`

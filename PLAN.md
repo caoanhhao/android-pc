@@ -841,6 +841,11 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
 - **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
   declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
   frame rates; then the NVIDIA entry may become the default.
+  **L4a (2026-11-17):** Where Winds Meet renders its world fully in the VFIO VM on the RTX 4070
+  (GLES via ANGLE on vulkan.nvidia, ~30 fps at 2560x1080), after ANGLE got ARM's ASTC decoder
+  (NVIDIA has no ASTC; the game ships ASTC textures, so the world was white) and a guard for a
+  `glCopyImageSubData` divide-by-zero; the game needs more than the 4 GB guest RAM (12 GB used).
+  Details in docs/nvidia-native.md, L4. Real-PC check pending.
 
 Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
 removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm
