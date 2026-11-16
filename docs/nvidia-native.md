@@ -362,10 +362,12 @@ The host must leave the card alone first:
 2. Hyprland on the iGPU: `~/.config/hypr/scripts/gpu-mode igpu` (points
    `config/custom/gpu.lua` at `~/.config/hypr/gpu/igpu.lua` instead of `gpu/nvidia.lua`:
    `AQ_DRM_DEVICES` = the iGPU only, Mesa EGL/GLX/GBM/Vulkan/VA-API for Hyprland, its apps and
-   the systemd user services, so nothing opens `/dev/nvidia*`; it also installs
-   `/etc/X11/xorg.conf.d/10-android-pc-igpu-only.conf`, because SDDM keeps its greeter's root
-   Xorg running for the whole session and that Xorg otherwise holds the card), monitor on a
-   motherboard port, reboot (this board's iGPU ports are only probed at boot). Without a
+   the systemd user services, so nothing opens `/dev/nvidia*`), monitor on a motherboard
+   port, reboot (this board's iGPU ports are only probed at boot). No display manager: SDDM
+   keeps its greeter's root Xorg running for the whole session and that Xorg holds the card,
+   so login is a getty autologin on tty1 (`~/.config/hypr/system/getty-autologin.conf` in
+   `/etc/systemd/system/getty@tty1.service.d/`, SDDM disabled) and `~/.zprofile` starts
+   Hyprland, which locks the screen with hyprlock. Without a
    monitor on the iGPU, `igpu.lua` falls back to `nvidia.lua`. `gpu-mode nvidia` undoes it.
 3. The launcher refuses to start while the IOMMU is off, while the card's IOMMU group holds
    another device that is not a bridge, or while a process holds `/dev/nvidia*` or the card's
