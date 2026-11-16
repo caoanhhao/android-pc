@@ -381,6 +381,8 @@ effect seen yet); ASTC decode costs CPU on texture upload.
 Build `eng.caoanh.20261117.0224` (the patch in the full image set) boots the NVIDIA entry in the
 VFIO VM with the same `libGLESv2_angle.so` (md5 `99d86416…`) as the WWM run; QEMU image
 `out/aosp17-usb-l4a-qemu-nv.img` (the WWM run itself used `out/aosp17-usb-l4-qemu-nv.img`).
+Stick update image `out/aosp17-usb-l4a.img` (`tools/mkusb-aosp17.sh --menu --userdata 64`, same
+build); on the real PC WWM runs on the "Android 17, NVIDIA (proprietary)" entry.
 
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
