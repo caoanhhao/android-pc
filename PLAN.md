@@ -838,6 +838,8 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   entry boots to the desktop on NVIDIA's Vulkan (SurfaceFlinger and HWUI), after a HAL fix: it
   imported minigbm buffers with the handle's total_size, which includes the separate metadata
   region. Image `out/aosp17-usb-l3c.img`.
+  User test (2026-11-17, QEMU with the RTX 4070 via VFIO): Where Winds Meet opens with full
+  graphics. Real-PC test of the same build (already on the stick) pending.
 - **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
   declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
   frame rates; then the NVIDIA entry may become the default.
