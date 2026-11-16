@@ -5,6 +5,7 @@
 PRODUCT_PACKAGES += \
     init.venus.rc \
     pcvenusprobe.sh \
+    pcvenuswatch.sh \
     gpuid.conf \
     gpuid.nvidia.conf \
     android.hardware.opengles.aep.pc.xml \

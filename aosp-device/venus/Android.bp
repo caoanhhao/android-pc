@@ -36,9 +36,36 @@ cc_prebuilt_library_shared {
     visibility: ["//visibility:public"],
 }
 
+// ro.hardware.vulkan=venus: per process, Venus or (vendor.venus.state=off) SwiftShader
+// (vkswitch.c). In the Vulkan APEX next to both drivers.
+cc_library_shared {
+    name: "vulkan.venus",
+    vendor: true,
+    compile_multilib: "64",
+    srcs: ["vkswitch.c"],
+    header_libs: [
+        "hwvulkan_headers",
+        "libhardware_headers",
+        "vulkan_headers",
+    ],
+    shared_libs: [
+        "libdl",
+        "liblog",
+    ],
+    relative_install_path: "hw",
+    visibility: ["//visibility:public"],
+}
+
 sh_binary {
     name: "pcvenusprobe.sh",
     src: "pcvenusprobe.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "pcvenuswatch.sh",
+    src: "pcvenuswatch.sh",
     vendor: true,
     visibility: ["//visibility:public"],
 }

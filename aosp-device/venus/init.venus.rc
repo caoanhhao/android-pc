@@ -28,3 +28,12 @@ on post-fs-data && property:ro.boot.android_pc.vulkan=venus
     # fallbacks for a probe that never set them (a ro property keeps its first value)
     setprop ro.hardware.vulkan pastel
     setprop ro.opengles.version 196609
+
+# Started by pcvenusprobe.sh when Venus runs: falls back to SwiftShader when the GPU stops
+# creating devices after an Xid (pcvenuswatch.sh).
+service vendor.venus_watch /vendor/bin/pcvenuswatch.sh
+    user root
+    group root graphics
+    seclabel u:r:su:s0
+    disabled
+    oneshot

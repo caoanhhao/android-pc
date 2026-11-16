@@ -737,6 +737,10 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   (`tools/venus-test.sh`): `Pipeline=Skia (Vulkan)`, vkjson driver `venus`
   (docs/nvidia-proprietary.md, K3). For K2: socket `/dev/socket/vtest` (0666, before
   SurfaceFlinger), vtest protocol 6.
+  K1d (2026-11-16): the entry survives a GPU wedge: `vulkan.venus` switch driver,
+  `pcvkprobe virtio --check` (vkCreateDevice) before choosing Venus, and `pcvenuswatch.sh`
+  falls back to SwiftShader and restarts the graphics stack once when Venus stops creating
+  devices after an Xid (QEMU: fake Xid 154 → desktop back on SwiftShader).
 - **K4 — display and sound on nvidia-drm.** drm_hwcomposer on nvidia-drm importing the
   vtest-allocated (block-linear, modifier) dma-bufs, native mode on DP-1, hotplug; HDMI/DP
   audio through nvidia's ELD → the F9h Rust audio HAL. Done when: on the real PC the desktop

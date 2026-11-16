@@ -11,7 +11,7 @@ index 3ee956c..4a3cc8c 100644
      ],
  }
 diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
-index 037ac5c..0cb5692 100644
+index 037ac5c..114da8a 100644
 --- a/cros_gralloc/cros_gralloc_driver.cc
 +++ b/cros_gralloc/cros_gralloc_driver.cc
 @@ -7,6 +7,7 @@
@@ -22,21 +22,38 @@ index 037ac5c..0cb5692 100644
  #include <cutils/properties.h>
  #include <fcntl.h>
  #include <hardware/gralloc.h>
-@@ -134,6 +135,14 @@ static struct driver *init_try_nodes()
+@@ -134,6 +135,19 @@ static struct driver *init_try_nodes()
  
  	struct driver *drv;
  	char const *render_nodes_fmt = "%s/renderD%d";
-+	const char *vtest = drv_get_os_option("ro.vendor.minigbm.vtest");
++	const char *option = drv_get_os_option("ro.vendor.minigbm.vtest");
++	const bool vtest = option && !strcmp(option, "true");
++	option = drv_get_os_option("vendor.venus.state");
++	const bool venus_off = option && !strcmp(option, "off");
 +
 +	/*
 +	 * android-pc (Phase K3): Venus over vtest has no DRM device of its own; the vtest
-+	 * backend allocates through the vtest server and udmabuf.
++	 * backend allocates through the vtest server and udmabuf. After a GPU wedge
++	 * (pcvenuswatch.sh: vendor.venus.state=off, then the graphics stack restarts) the
++	 * processes run SwiftShader and allocate on the DRM node, as on the other entries.
 +	 */
-+	if (vtest && !strcmp(vtest, "true"))
++	if (vtest && !venus_off)
 +		return drv_create(-1, &backend_vtest);
  	char const *card_nodes_fmt = "%s/card%d";
  	uint32_t num_nodes = DRM_NUM_NODES;
  	uint32_t min_render_node = DRM_RENDER_NODE_START;
+@@ -167,6 +181,11 @@ static void drv_destroy_and_close(struct driver *drv)
+ 
+ static bool is_running_with_software_rendering()
+ {
++	/* android-pc (Phase K3): the vulkan.venus switch runs SwiftShader after a GPU wedge */
++	const char *venus_state = drv_get_os_option("vendor.venus.state");
++	if (venus_state && !strcmp(venus_state, "off"))
++		return true;
++
+ 	const char *vulkan_driver = drv_get_os_option("ro.hardware.vulkan");
+ 	if (!vulkan_driver)
+ 		vulkan_driver = drv_get_os_option("ro.board.platform");
 diff --git a/drv_helpers.h b/drv_helpers.h
 index 314ad69..21d7c95 100644
 --- a/drv_helpers.h
@@ -51,10 +68,10 @@ index 314ad69..21d7c95 100644
  uint32_t drv_vertical_subsampling_from_format(uint32_t format, size_t plane);
 diff --git a/vtest.c b/vtest.c
 new file mode 100644
-index 0000000..0000000
+index 0000000..b5f384e
 --- /dev/null
 +++ b/vtest.c
-@@ -0,0 +1,609 @@
+@@ -0,0 +1,619 @@
 +/*
 + * Copyright 2026 The Android PC Authors. All rights reserved.
 + * Use of this source code is governed by a BSD-style license that can be
@@ -386,6 +403,7 @@ index 0000000..0000000
 +	struct vtest_priv *priv = bo->drv->priv;
 +	uint32_t flags = VCMD_ALLOC_DMABUF_IMAGE_FLAG_RENDER | VCMD_ALLOC_DMABUF_IMAGE_FLAG_TEXTURE;
 +	struct vtest_image image;
++	bool attempt_server = true;
 +	bool warn;
 +	int ret = -EPIPE;
 +
@@ -393,8 +411,17 @@ index 0000000..0000000
 +		flags |= VCMD_ALLOC_DMABUF_IMAGE_FLAG_SCANOUT;
 +
 +	pthread_mutex_lock(&priv->lock);
++	/*
++	 * pcvenuswatch.sh turns Venus off after a GPU wedge (vendor.venus.state=off): the server
++	 * may still answer, but its buffers would be on a GPU nobody can render with any more.
++	 */
++	const char *state = drv_get_os_option("vendor.venus.state");
++	if (state && !strcmp(state, "off")) {
++		ret = -ENODEV;
++		attempt_server = false;
++	}
 +	/* a second try on a new connection when the server went away (restarted) */
-+	for (int attempt = 0; attempt < 2 && ret == -EPIPE; attempt++) {
++	for (int attempt = 0; attempt_server && attempt < 2 && ret == -EPIPE; attempt++) {
 +		if (priv->sock < 0) {
 +			ret = vtest_connect(priv->socket_path);
 +			if (ret < 0)
