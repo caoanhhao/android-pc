@@ -132,7 +132,7 @@ dump() {
         # processes, its output (stdio_to_kmsg), the vtest socket, nvidia-smi -q run from the
         # sidecar's root, and the SELinux denials of its domain (the entry is permissive).
         if [ "$(getprop ro.boot.android_pc.gpu)" = nvidia ]; then
-            echo "== nvsidecar"; echo "init.svc: $(getprop init.svc.vendor.nvsidecar)"
+            echo "== nvsidecar"; echo "init.svc: $(getprop init.svc.vendor.nvsidecar) nonice: $(getprop init.svc.vendor.nvsidecar_nonice)"
             cat /vendor/bin/nvsidecar/VERSION 2>&1
             ps -A -o PID,PPID,USER,LABEL,RSS,NAME | grep -E 'nvsidecar|virgl_'
             ls -lZ /dev/socket/vtest /data/vendor/nvsidecar 2>&1

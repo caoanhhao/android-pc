@@ -16,6 +16,13 @@ on late-fs && property:ro.boot.android_pc.gpu=nvidia
     restorecon_recursive /dev/nvidia-caps
     start vendor.nvsidecar
 
+# A/B for the Xid 51 (BAD_TSG) seen on the real PC (docs/nvidia-proprietary.md, K2): an entry with
+# androidboot.android_pc.nvnice=0 runs the server without SYS_NICE, so NVIDIA grants no
+# high/realtime queue priority, as on the build host's waydroid-vtest. vendor.nvsidecar then
+# exits at once (nvsidecar.sh reads the property) and this one creates the socket.
+on late-fs && property:ro.boot.android_pc.gpu=nvidia && property:ro.boot.android_pc.nvnice=0
+    start vendor.nvsidecar_nonice
+
 # HOME and NVIDIA's shader cache; the server's render processes only use it after a client
 # connects, which is after post-fs-data.
 on post-fs-data && property:ro.boot.android_pc.gpu=nvidia
@@ -24,10 +31,20 @@ on post-fs-data && property:ro.boot.android_pc.gpu=nvidia
 
 # uid 0 only to create its socket in /dev/socket (root:root 0755); every other capability is
 # dropped (SYS_NICE: NVIDIA's high/realtime queue priorities, VK_EXT_global_priority).
-service vendor.nvsidecar /vendor/bin/nvsidecar.sh
+service vendor.nvsidecar /vendor/bin/nvsidecar.sh nice
     user root
     group graphics
     capabilities SYS_NICE
+    stdio_to_kmsg
+    oneshot
+    disabled
+
+# The same without SYS_NICE (a capability list keeps uid 0 for /dev/socket but drops the rest;
+# NET_BIND_SERVICE is unused).
+service vendor.nvsidecar_nonice /vendor/bin/nvsidecar.sh nonice
+    user root
+    group graphics
+    capabilities NET_BIND_SERVICE
     stdio_to_kmsg
     oneshot
     disabled

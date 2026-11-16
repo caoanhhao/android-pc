@@ -21,7 +21,16 @@ export VK_DRIVER_FILES=$R/share/vulkan/icd.d/nvidia_icd.json
 export __EGL_VENDOR_LIBRARY_FILENAMES=$R/share/glvnd/egl_vendor.d/10_nvidia.json
 export RENDER_SERVER_EXEC_PATH=$R/bin/virgl_render_server
 
+# $1: nice (vendor.nvsidecar, with SYS_NICE) or nonice (vendor.nvsidecar_nonice, without it;
+# entries with androidboot.android_pc.nvnice=0, which start both services).
+if [ "$1" = nice ] && [ "$(getprop ro.boot.android_pc.nvnice)" = 0 ]; then
+    echo "nvsidecar: nvnice=0, leaving the server to vendor.nvsidecar_nonice"
+    exit 0
+fi
 echo "nvsidecar: $(cat $R/VERSION | tr '\n' ';')"
+# CapEff bit 23 (0x800000) is SYS_NICE: with it NVIDIA grants the HIGH/REALTIME global queue
+# priorities that SurfaceFlinger and HWUI ask for; without it they fall back to MEDIUM.
+echo "nvsidecar: instance ${1:-nice}, $(grep CapEff /proc/self/status)"
 if [ ! -c /dev/nvidiactl ]; then
     echo "nvsidecar: no /dev/nvidiactl (no NVIDIA GPU, or nvidia.ko did not load): not starting"
     exit 0

@@ -22,6 +22,8 @@ type nvsidecar_data_file, file_type, data_file_type;
 allow nvsidecar vendor_shell_exec:file rx_file_perms;
 allow nvsidecar vendor_toolbox_exec:file rx_file_perms;
 allow nvsidecar kmsg_device:chr_file { getattr write };
+# ro.boot.android_pc.nvnice (the SYS_NICE A/B)
+get_prop(nvsidecar, bootloader_prop)
 allow nvsidecar nvsidecar_file:dir r_dir_perms;
 allow nvsidecar nvsidecar_file:file { rx_file_perms execute_no_trans };
 allow nvsidecar self:process { fork sigchld signal sigkill setsched getsched };
