@@ -13,8 +13,8 @@
 #
 # The host must not be using the card (docs/nvidia-native.md, "VFIO in QEMU"):
 #   - IOMMU on: VT-d in the firmware, intel_iommu=on iommu=pt on the kernel command line;
-#   - Hyprland on the iGPU (~/.config/hypr/scripts/gpu-mode igpu, monitor cable on the
-#     motherboard, log in again), no process with /dev/nvidia* or the card's DRM nodes open.
+#   - Hyprland and SDDM's Xorg on the iGPU (~/.config/hypr/scripts/gpu-mode igpu, monitor
+#     cable on the motherboard, reboot), no process with /dev/nvidia* or the card's DRM nodes open.
 # The script asks for the password (sudo) to unload the nvidia modules and bind the card's
 # functions to vfio-pci, and gives them back to nvidia / snd_hda_intel when QEMU exits.
 # A card the guest left in a bad state (Xid) may need a host reboot to be usable again.
@@ -53,6 +53,11 @@ for f in "${fns[@]}"; do host_driver[$f]=$(driver_of "$f"); done
 bind_vfio() {
     sudo -v
     sudo modprobe vfio-pci
+    # Root processes too (SDDM's greeter Xorg: ~/.config/hypr/scripts/gpu-mode igpu moves it).
+    local root_holders
+    root_holders=$(sudo fuser "${nodes[@]}" 2>/dev/null | tr -s ' ' '\n' | sort -un | xargs -r -I{} ps -o pid=,user=,comm= -p {} || true)
+    [[ -z $root_holders ]] || die "the RTX 4070 is in use:
+$root_holders"
     if [[ ${host_driver[$gpu]} == nvidia ]]; then
         sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia ||
             die "could not unload the nvidia modules (something still uses them: lsmod | grep nvidia)"

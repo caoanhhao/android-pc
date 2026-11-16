@@ -359,10 +359,14 @@ The host must leave the card alone first:
 
 1. VT-d on in the firmware; `intel_iommu=on iommu=pt` added to `GRUB_CMDLINE_LINUX_DEFAULT`
    in `/etc/default/grub`, `grub-mkconfig -o /boot/grub/grub.cfg`, reboot.
-2. Hyprland on the iGPU: `~/.config/hypr/scripts/gpu-mode igpu` (links
-   `~/.config/hypr/gpu/igpu.lua` into `config/custom/`: `AQ_DRM_DEVICES` = the iGPU only, Mesa
-   EGL/GLX/GBM/Vulkan/VA-API so no app opens `/dev/nvidia*`), monitor cable on a motherboard
-   port, log out and back in. `gpu-mode nvidia` and the cable back undo it.
+2. Hyprland on the iGPU: `~/.config/hypr/scripts/gpu-mode igpu` (points
+   `config/custom/gpu.lua` at `~/.config/hypr/gpu/igpu.lua` instead of `gpu/nvidia.lua`:
+   `AQ_DRM_DEVICES` = the iGPU only, Mesa EGL/GLX/GBM/Vulkan/VA-API for Hyprland, its apps and
+   the systemd user services, so nothing opens `/dev/nvidia*`; it also installs
+   `/etc/X11/xorg.conf.d/10-android-pc-igpu-only.conf`, because SDDM keeps its greeter's root
+   Xorg running for the whole session and that Xorg otherwise holds the card), monitor on a
+   motherboard port, reboot (this board's iGPU ports are only probed at boot). Without a
+   monitor on the iGPU, `igpu.lua` falls back to `nvidia.lua`. `gpu-mode nvidia` undoes it.
 3. The launcher refuses to start while the IOMMU is off, while the card's IOMMU group holds
    another device that is not a bridge, or while a process holds `/dev/nvidia*` or the card's
    DRM nodes (it lists them). It asks for the password, unloads the nvidia modules, binds the
