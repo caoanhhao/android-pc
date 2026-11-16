@@ -346,3 +346,29 @@ Left as they are (nvglibc log lines, harmless): `undefined symbol: ErrorF` (an X
 NVIDIA's GLX code looks up optionally), `libnvtegrahv.so` and `libdbus-1.so.3` not provided (the
 driver goes on without them), and `Could not initialize protected content Vulkan RenderEngine`
 (NVIDIA has no protected memory; SurfaceFlinger runs without a protected context).
+
+## VFIO in QEMU: the NVIDIA entries on the real card in a VM
+
+`tools/run-qemu-aosp17-vfio.sh [IMAGE]` boots an image like `tools/run-qemu-aosp17-usb.sh`
+(same lock, E-cores, 4 vCPUs, 4 GB) with the RTX 4070's PCI functions (GPU and HDMI audio)
+passed through, so the NVIDIA entries can be tested without writing the stick and rebooting
+the PC. Pick the NVIDIA entry in the QEMU window's menu; Android's picture then comes out of
+the RTX 4070's own ports, the QEMU window keeps the std VGA.
+
+The host must leave the card alone first:
+
+1. VT-d on in the firmware; `intel_iommu=on iommu=pt` added to `GRUB_CMDLINE_LINUX_DEFAULT`
+   in `/etc/default/grub`, `grub-mkconfig -o /boot/grub/grub.cfg`, reboot.
+2. Hyprland on the iGPU: `~/.config/hypr/scripts/gpu-mode igpu` (links
+   `~/.config/hypr/gpu/igpu.lua` into `config/custom/`: `AQ_DRM_DEVICES` = the iGPU only, Mesa
+   EGL/GLX/GBM/Vulkan/VA-API so no app opens `/dev/nvidia*`), monitor cable on a motherboard
+   port, log out and back in. `gpu-mode nvidia` and the cable back undo it.
+3. The launcher refuses to start while the IOMMU is off, while the card's IOMMU group holds
+   another device that is not a bridge, or while a process holds `/dev/nvidia*` or the card's
+   DRM nodes (it lists them). It asks for the password, unloads the nvidia modules, binds the
+   functions to `vfio-pci` (`driver_override`), raises its locked-memory limit (VFIO pins all
+   guest RAM), and gives the card back to `nvidia` / `snd_hda_intel` when QEMU exits.
+
+A stick image made with `--disk` does not boot in QEMU: its userdata partition is sized for
+the stick, so inside the shorter file `/data` is 62 MB and system_server loops on ENOSPC.
+Use an image made without `--disk` (default `out/aosp17-usb.img`, 4 GB userdata).
