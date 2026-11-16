@@ -308,6 +308,19 @@ at MEDIUM because Phase K's Xid 51 came right after a high-priority channel star
     module list check; `com.android.bluetooth`: no Bluetooth controller in QEMU) touch nothing
     of L3.
 
+### L3c: AHB size and the first full boot on the RTX 4070 (VFIO, 2026-11-17)
+
+In the VFIO VM (below) the NVIDIA entry got the GPU, the ICD started, and SurfaceFlinger then
+aborted in a loop: `Failed to create a valid texture ... [24,24] format:5`, after
+`E vulkan.nvidia: dma-buf import failed: -2 (size 15468, ...)`. minigbm's handle `total_size`
+counts the metadata region too (`cros_gralloc_driver.cc`: `reserved_region_size` + the bo's
+size), which lives in its own fd; the HAL took 15468 (4096 of buffer + 11372 of metadata) as
+the dma-buf's size and NVIDIA refused the import. The host test goes through gbm, whose
+buffers have no metadata region, so it never saw it. `ReadGrallocHandle` now subtracts
+`reserved_region_size`. Build `eng.caoanh.20261117.0020` in the VFIO VM: `sys.boot_completed=1`,
+SurfaceFlinger `RE Vulkan (Ganesh)`, SystemUI `Pipeline=Skia (Vulkan)`, the desktop in
+`screencap`, no Xid (`out/vfio-l3c/`).
+
 ### L3b: zygote must not hold NVIDIA's device fds (2026-11-16)
 
 First real-PC boot of the entry (build `eng.caoanh.20261116.1950`, out/pclog-l1b/boot-28):

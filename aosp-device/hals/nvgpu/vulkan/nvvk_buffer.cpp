@@ -58,7 +58,9 @@ bool ReadGrallocHandle(const native_handle* handle, GrallocBuffer* out) {
     out->width = h->width;
     out->height = h->height;
     out->modifier = h->format_modifier;
-    out->size = h->total_size;
+    // total_size also counts the metadata region, which lives in its own fd
+    // (cros_gralloc_driver.cc: total_size = reserved_region_size + the bo's size).
+    out->size = h->total_size - h->reserved_region_size;
     out->droid_format = h->droid_format;
     out->usage = static_cast<uint64_t>(h->usage);
     return true;

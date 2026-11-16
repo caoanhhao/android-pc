@@ -834,6 +834,10 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   vkCreateInstance (opening the module opens no device), and the entry disables the zygote
   preload. QEMU: a preloading zygote holds no /dev/nvidia* fd and forks system_server. Image
   `out/aosp17-usb-l3b.img`.
+  **L3c (2026-11-17):** with the RTX 4070 passed to QEMU (tools/run-qemu-aosp17-vfio.sh) the
+  entry boots to the desktop on NVIDIA's Vulkan (SurfaceFlinger and HWUI), after a HAL fix: it
+  imported minigbm buffers with the handle's total_size, which includes the separate metadata
+  region. Image `out/aosp17-usb-l3c.img`.
 - **L4 — GLES, features, games.** ANGLE on the native Vulkan (ES 3.2 + AEP), feature
   declarations, arm64 apps through the native bridge, Where Winds Meet / Genshin / Delta Force
   frame rates; then the NVIDIA entry may become the default.
