@@ -106,6 +106,10 @@ for s in $STEPS; do case $s in
     cp "$D"/pc_x86_64/dist/*.ko "$DEST.new/vendor/" || exit 1
     # NVIDIA's modules (Phase K1), when tools/nvidia-build.sh has built them.
     if ls "$D"/nvidia/dist/*.ko >/dev/null 2>&1; then cp "$D"/nvidia/dist/*.ko "$DEST.new/vendor/" || exit 1; fi
+    # K1d A/B: the gcc-built RM variant, for /vendor/lib/nvidia-gcc (aosp-device/pc/pc.mk).
+    if ls "$D"/nvidia/dist-gcc/*.ko >/dev/null 2>&1; then
+      mkdir -p "$DEST.new/nvidia-gcc" && cp "$D"/nvidia/dist-gcc/*.ko "$DEST.new/nvidia-gcc/" || exit 1
+    fi
     rm -rf "$DEST" && mv "$DEST.new" "$DEST"
     echo "installed into $DEST: $(ls "$DEST/system_dlkm" | wc -l) system_dlkm, $(ls "$DEST/vendor" | wc -l) vendor modules"
     strings "$DEST/kernel-6.18" | grep -m1 '^6\.18\.' ;;

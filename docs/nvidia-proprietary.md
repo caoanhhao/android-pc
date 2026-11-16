@@ -338,6 +338,96 @@ On the PC (Limine remembers the last entry: pick each one by hand):
    `CFI failure` and, if the IOMMU was the cause, **no** `Xid`; check `== nvidia modules`,
    `== /proc/driver/nvidia`, `== drm cards`; in later boots `pstore/` if one rebooted itself.
 
+### K1d. Xid 51 trigger, A/B entries, debug entry removed (2026-11-16)
+
+**K1c real-PC result** (build `eng.caoanh.20261115.2345`, `out/pclog-k1c/boot-22`): no
+`CFI failure` any more, all modules load, sound from the monitor works; but Xid 51 (`BAD_TSG ...
+error code: 4`) and Xid 154 (PF FLR) are still there at 57 s with `intel_iommu=off`, so the
+IOMMU was not the cause. After it every GPFIFO allocation fails with `NV_ERR_RESET_REQUIRED`,
+every `vkCreateDevice` fails, and 100 apps abort in HWUI's `VulkanManager::initialize`. The
+debug entry froze hard (no pclog directory at all).
+
+**The trigger.** logcat carries the kernel lines with their own timestamps, so the Xid lines up
+exactly: at 06:09:29.609, 0.07 s after microG's DroidGuard
+(`com.google.android.gms.unstable`) started a second ANGLE/Vulkan display on another thread while
+the first one (29.394) was still alive, to fingerprint the GPU for the Play Store and Gmail. The
+K1b boot's Xid lines up the same way (DroidGuard `dcs_get_verdict` for Gmail, 2 s after boot).
+SurfaceFlinger, SystemUI (which asks for a HIGH-priority GPU context) and the launcher had
+been drawing through Venus on the RTX 4070 for 20-30 s before. So the GPU dies on a
+particular client pattern, not at the first channel. The `BAD_TSG` message and its code come
+from GSP firmware.
+
+**Offline checks (2026-11-16).**
+
+- Data layout: four RM translation units that hold the RPC, channel, TSG and GSP code
+  (`rpc.c`, `kernel_channel.c`, `kernel_channel_group.c`, `kernel_gsp.c`) were compiled with
+  clang and with the host's gcc 16, both with full debug info, and compared with pahole. All
+  3,300+ structures have the same size and all ~14,000 member offsets are the same. So the
+  kernel RM sends GSP exactly the layout a gcc build sends; an ABI mismatch is ruled out.
+- kCFI: K1c's boot logged no `CFI failure`, so it is no longer on the path.
+- Queue priority: waydroid-nvidia's notes (`venus/notes-vkcreatedevice.md`) say that on the build
+  host `virgl_render_server` has no `CAP_SYS_NICE`, so NVIDIA refuses HIGH/REALTIME global
+  priority. Venus patch 0002 then drops the request (Launcher3, SystemUI and SurfaceFlinger all
+  ask for it). So the host, where this driver version runs Android with the Play Store (and so
+  DroidGuard) and games, has **never created a high-priority channel or TSG**. On the stick, K2's
+  server keeps `CAP_SYS_NICE`, so NVIDIA grants the priorities. This is the combination that
+  is new here, and the strongest candidate for the `BAD_TSG`.
+
+The K1d A/B entries planned here were not built; Phase L1 (next section) replaced them with
+test entries that need no Phase K client at all.
+
+**Debug entry removed.** Both of its freezes came from writing to the UEFI framebuffer after
+nvidia.ko owned the GPU: pcfb keeps drawing Android there and earlycon keeps printing the
+kernel log there. In K1b the CPU sat for 22 s in `console_flush_all`, each framebuffer write
+stalled. Showing the log beside the UI would need the log off that framebuffer (an Android
+window instead of the kernel console), which does not help with a freeze. The main entry's
+pclog and efi-pstore now cover what the debug entry was for.
+
+### L1. Isolating the Xid 51: test client, no Phase K clients, log strip (2026-11-16)
+
+PLAN.md Phase L: NVIDIA's driver becomes the device's native GPU driver; the sidecar/Venus route
+is superseded and no CPU fallback is wanted. L1 is the kernel side: find and fix the Xid 51.
+
+**Test entries.** "Android 17, NVIDIA L1 test: driver + test client (log strip)" boots with
+`androidboot.android_pc.gpu=nvidia-l1`. `init.pc.rc` loads the same modules (`pcnvidia.sh load`),
+but none of Phase K's GPU clients start: K2's sidecar, K3's Venus and K4's pcnvdisplay all key on
+`gpu=nvidia`. Android shows its desktop through drm_hwcomposer on nvidia-drm (card0) with minigbm
+dumb buffers, without the GPU. The entry tests the driver, not the desktop. The only Vulkan
+client is **pcnvtest**. "…RM built by gcc (cfi=off)" is the same with
+`androidboot.android_pc.nvidia_rm=gcc`: the RM cores built by the host's gcc 16 as distributions
+build them (`tools/nvidia-build.sh` step 4, `/vendor/lib/nvidia-gcc`, `insmod`), `cfi=off`.
+
+**pcnvtest** (`aosp-device/pc/nvtest/pcnvtest.c`, built for glibc by `tools/nvtest-build.sh`,
+run through the sidecar's glibc root, which ships on every entry): each test creates its own
+VkDevice, so its own channels and TSG. It fills a 16 MiB VRAM buffer (`vkCmdFillBuffer`), copies
+it to a host-visible one (`vkCmdCopyBuffer`), runs a compute shader over it, waits on a fence
+(5 s timeout) and checks every word. Modes: `info`, `copy [default|low|medium|high|realtime]`,
+`pair N` (two threads creating devices at once, DroidGuard's pattern), `many N`. On the build
+host's RTX 4070 `copy`, `pair` and `many` pass; `copy high` fails with
+`VK_ERROR_NOT_PERMITTED` there (no `CAP_SYS_NICE`), which confirms the host never used high
+priority.
+
+**Schedule** (`pcnvtest.sh`, from 20 s after `sys.boot_completed`, as root, so with
+`CAP_SYS_NICE`): `nvidia-smi -L` and `-q`, `info`, `copy`, `pair 5`, `many 16`; then every
+30 s `copy` + `pair 1`; at 10 min `copy high`, `copy realtime`, `copy`; soak to 30 min. After
+every step it checks the kernel log for a new `NVRM: Xid` and logs `XID after step <name>`.
+Lines go to the kernel log (`pcnvtest:`), to `/data/vendor/pcgpu/nvtest.txt` and into pclog's
+`== pcnvtest` section.
+
+| Result on the PC | Meaning |
+|---|---|
+| Xid during `copy`/`pair`/`many` in the first minute | any channel creation wedges the GPU: kernel module, GKI or firmware side; compare with the gcc entry |
+| no Xid until `copy high`/`copy realtime`, then Xid | high-priority TSGs (what `CAP_SYS_NICE` unlocked for K2's server) |
+| no Xid in 30 min | the driver is stable on its own; the Xid came from the Venus server's use (next: replay its pattern) |
+| clang entry fails, gcc entry passes | clang code generation of the RM |
+
+**Log strip.** On these entries `pclogstrip.sh` follows the kernel log, keeps the driver's and the
+tests' lines (NVRM, nvidia, GSP, Xid, CFI, pcnvidia, pcnvtest, oopses) in
+`/data/local/tmp/logstrip.txt`, and starts **PcLogStrip** (`aosp-device/pc/logstrip`, a
+platform-signed system app). PcLogStrip shows the file's tail in a semi-transparent overlay on
+the right 30% of the screen. The overlay never takes focus or touches, so the UI under and
+beside it keeps working, and the kernel console stays off the framebuffer.
+
 ## K2. glibc sidecar: NVIDIA's userspace and the vtest server
 
 NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its

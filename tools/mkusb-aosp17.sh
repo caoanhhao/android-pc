@@ -238,14 +238,20 @@ if [[ $menu == 1 ]]; then
         nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
         entry "Android 17, NVIDIA (proprietary, Venus)" "$nvp $venus $drm" "$sound"
-        # K1b: the same modules on pcfb with the kernel log on the screen; pcnvidia.sh loads them
-        # one at a time after boot (nvidia, nvidia-uvm, nvidia-modeset, nvidia-drm without and
-        # then with KMS), so the screen shows where it stops. K1c: loglevel=5 (errors, warnings and
-        # pcnvidia's markers; not the info and audit flood) and no lockup panics: at loglevel=7 the
-        # earlycon framebuffer console was so slow that printk held a CPU for 22 s and
-        # softlockup_panic killed the boot.
-        entry "Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)" \
-            "androidboot.selinux=permissive androidboot.android_pc.gpu=nvidia-debug earlycon=efifb keep_bootcon loglevel=5 $nvbase"
+        # Phase L1: the Xid 51 (BAD_TSG) hunt. The debug entry (pcfb plus the kernel log on the
+        # screen, driver loaded after boot) is gone: pcfb and earlycon kept writing to the UEFI
+        # framebuffer after nvidia.ko owned the GPU, which froze the PC both times. The L1 test
+        # entries load the same driver but start none of Phase K's GPU clients (gpu=nvidia-l1):
+        # pcnvtest.sh is the only Vulkan client, at fixed times (one device, two at once, many,
+        # then HIGH/REALTIME queue priority at 10 min, soak to 30 min), and the driver's kernel
+        # log shows in a strip on the right of the screen (PcLogStrip). Android itself draws on
+        # nvidia-drm without the GPU here: this entry tests the driver, not the desktop.
+        # The second one has the RM cores built by gcc as on the build host (cfi=off: gcc emits
+        # no kCFI hashes).
+        l1="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia-l1 androidboot.android_pc.nvtest=1 androidboot.android_pc.logstrip=1"
+        entry "Android 17, NVIDIA L1 test: driver + test client (log strip)" "$l1 $nvdiag $drm" "$sound"
+        entry "Android 17, NVIDIA L1 test: RM built by gcc (cfi=off)" \
+            "$l1 androidboot.android_pc.nvidia_rm=gcc cfi=off intel_iommu=off module_blacklist=nouveau,nova_core,nova softlockup_panic=1 nmi_watchdog=panic $drm" "$sound"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"

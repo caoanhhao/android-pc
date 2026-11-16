@@ -133,13 +133,30 @@ service vendor.pcnova /vendor/bin/pcnova.sh
 on post-fs && property:ro.boot.android_pc.gpu=nvidia
     exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh load
 
-# K1b debug entry (androidboot.android_pc.gpu=nvidia-debug): Android on pcfb with the kernel
-# log on the screen (earlycon=efifb); the modules are loaded step by step once Android has
-# booted and pclog is running (pcnvidia.sh debug).
-on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nvidia-debug
-    start vendor.pcnvidia_debug
+# Phase L1 test entries (androidboot.android_pc.gpu=nvidia-l1): the same driver, but none of
+# Phase K's GPU clients (K2's sidecar, K3's Venus and K4's pcnvdisplay key on gpu=nvidia).
+# Android draws on its own (drm_hwcomposer on nvidia-drm's card0, minigbm dumb buffers), and
+# pcnvtest.sh is the only client of NVIDIA's Vulkan driver, at fixed times after boot.
+# pclogstrip.sh shows the driver's kernel log in a strip on the right of the screen.
+on post-fs && property:ro.boot.android_pc.gpu=nvidia-l1
+    exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh load
 
-service vendor.pcnvidia_debug /vendor/bin/pcnvidia.sh debug
+on early-init && property:ro.boot.android_pc.gpu=nvidia-l1
+    setprop ro.vendor.hwc.use_overlay_planes 0
+
+on property:sys.boot_completed=1 && property:ro.boot.android_pc.logstrip=1
+    start vendor.logstrip
+
+on property:sys.boot_completed=1 && property:ro.boot.android_pc.nvtest=1
+    start vendor.pcnvtest
+
+service vendor.logstrip /vendor/bin/pclogstrip.sh
+    user root
+    group root log
+    seclabel u:r:su:s0
+    disabled
+
+service vendor.pcnvtest /vendor/bin/pcnvtest.sh
     user root
     group root graphics
     seclabel u:r:su:s0

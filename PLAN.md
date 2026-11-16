@@ -705,8 +705,9 @@ not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K 
   (`nvidia-open-kcfi.patch`), `intel_iommu=off` on the NVIDIA entries (the host runs without the
   IOMMU), safe debug entry. Image `out/aosp17-usb-k1c.img`; real-PC test pending.
   **K1d (2026-11-16):** kCFI fixed for real (no CFI failure), Xid 51 stays with the IOMMU off; its
-  trigger is microG DroidGuard opening two ANGLE/Vulkan displays at once. A/B entries: driver
-  only (no Venus), sidecar without SYS_NICE (K2), RM built by gcc (cfi=off); debug entry removed.
+  trigger is microG DroidGuard opening two ANGLE/Vulkan displays at once. clang and gcc builds
+  give GSP identical structure layouts; the host never had high-priority queues (no SYS_NICE),
+  the stick does; debug entry removed. Superseded by Phase L1.
 - **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
   NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
   read-only in the vendor partition (or its own partition if `super` is too small), started
@@ -787,6 +788,9 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   → `NV_ERR_RESET_REQUIRED` seen ~45-57 s after boot on the NVIDIA entry (pclog-k1b, pclog-k1c),
   with the same 620.70.06 userspace that works on the build host. Done when a real-PC boot runs
   for 30 minutes with no Xid while a test client creates channels and renders.
+  **Status (2026-11-16):** test entries without Phase K clients (`gpu=nvidia-l1`, clang and
+  gcc-built RM), pcnvtest (channels, copy, compute, two devices at once, HIGH/REALTIME priority,
+  30-min soak), on-screen log strip; image `out/aosp17-usb-l1.img`, real-PC run pending.
 - **L2 — nvglibc: NVIDIA's glibc libraries inside bionic processes.** A loader + glibc-ABI shim
   (symbol versions `GLIBC_2.x`, `__libc_*`, `errno`/TLS layout, `dl*`, `pthread_*`, `stat`
   structs, `fopen`/stdio, `getauxval`, `__cxa_*`) so `dlopen` of NVIDIA's ICD from a bionic

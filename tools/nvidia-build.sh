@@ -82,16 +82,32 @@ if [ "$(cat "$GKI/out/nvidia/kflags" 2>/dev/null)" != "$KFLAGS" ]; then
 fi
 "$LB" "${NVMAKE[@]}" -C "$NV/src/nvidia" EXTRA_CFLAGS="$KFLAGS"
 "$LB" "${NVMAKE[@]}" -C "$NV/src/nvidia-modeset" EXTRA_CFLAGS="$KFLAGS"
-ln -sf ../../src/nvidia/_out/Linux_x86_64/nv-kernel.o "$NV/kernel-open/nvidia/nv-kernel.o_binary"
-ln -sf ../../src/nvidia-modeset/_out/Linux_x86_64/nv-modeset-kernel.o "$NV/kernel-open/nvidia-modeset/nv-modeset-kernel.o_binary"
+# 3. kernel-open with kbuild against the prepared directory, linked with one build of the cores.
+# kbuild relinks nvidia.ko/nvidia-modeset.ko only when the core object is newer, so the linked
+# objects are removed first (switching between the two core builds below).
+link_modules() {   # link_modules CORE-OUTPUTDIR DIST
+  ln -sf ../../src/nvidia/$1/nv-kernel.o "$NV/kernel-open/nvidia/nv-kernel.o_binary"
+  ln -sf ../../src/nvidia-modeset/$1/nv-modeset-kernel.o "$NV/kernel-open/nvidia-modeset/nv-modeset-kernel.o_binary"
+  /usr/bin/rm -f "$NV"/kernel-open/{nvidia,nvidia-modeset}.{o,ko}
+  "$LB" make -C "$NV/kernel-open" SYSSRC="$GKI/common" SYSOUT="$KO" ARCH=x86_64 LLVM=1 LLVM_IAS=1 \
+    CC=clang LD=ld.lld -j8 modules || return 1
+  mkdir -p "$2" && /usr/bin/rm -f "$2"/*.ko
+  for m in nvidia nvidia-modeset nvidia-drm nvidia-uvm; do
+    llvm-strip --strip-debug -o "$2/$m.ko" "$NV/kernel-open/$m.ko" || return 1
+  done
+  echo "nvidia $NV_VERSION modules in $2:"; ls -la "$2"
+}
 
-# 3. kernel-open with kbuild against the prepared directory.
-"$LB" make -C "$NV/kernel-open" SYSSRC="$GKI/common" SYSOUT="$KO" ARCH=x86_64 LLVM=1 LLVM_IAS=1 \
-  CC=clang LD=ld.lld -j8 modules
-
-mkdir -p "$OUT" && /usr/bin/rm -f "$OUT"/*.ko
-for m in nvidia nvidia-modeset nvidia-drm nvidia-uvm; do
-  llvm-strip --strip-debug -o "$OUT/$m.ko" "$NV/kernel-open/$m.ko"
-done
-echo "nvidia $NV_VERSION modules in $OUT:"; ls -la "$OUT"
+# 4. K1d A/B (docs/nvidia-proprietary.md): the same modules with the cores built by the host's
+# gcc and nvidia's own flags only, the way distributions (and the build host, where this driver
+# runs fine) build them, into gki/out/nvidia/dist-gcc. No kCFI preambles in the cores, so the
+# boot entry that loads them runs with cfi=off.
+if [ "${NV_GCC:-1}" = 1 ]; then
+  GMAKE=(make CC=gcc CXX=g++ LD=ld AR=ar OBJCOPY=objcopy TARGET_ARCH=x86_64 OUTPUTDIR=_out-gcc/Linux_x86_64 -j8)
+  "$LB" "${GMAKE[@]}" -C "$NV/src/nvidia"
+  "$LB" "${GMAKE[@]}" -C "$NV/src/nvidia-modeset"
+  link_modules _out-gcc/Linux_x86_64 "$GKI/out/nvidia/dist-gcc" || exit 1
+fi
+# The clang build last, so kernel-open/ is left linked against it.
+link_modules _out/Linux_x86_64 "$OUT" || exit 1
 echo NVIDIA_BUILD_OK

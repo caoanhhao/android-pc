@@ -6,19 +6,29 @@
 #   /dev/nvidia-uvm and /dev/nvidia-uvm-tools (minors 0, 1), /dev/nvidia-caps/nvidia-capN,
 # mode 0666, group graphics, as on desktop Linux; the K2 sidecar opens them.
 #
-#   pcnvidia.sh load    the nvidia entry (init.pc.rc, post-fs): waits until pclog writes the
+#   pcnvidia.sh load    the nvidia entries (init.pc.rc, post-fs): waits until pclog writes the
 #                       kernel log to the stick, then loads nvidia, nvidia-modeset,
 #                       nvidia-drm modeset=1 and nvidia-uvm one at a time, with a kernel log
 #                       marker and a sync before each, so a crash or hang leaves the last
 #                       step on the stick. vkms is moved off card0 first (Phase I1).
-#   pcnvidia.sh debug   the nvidia debug entry (after boot, Android on pcfb, kernel log on the
-#                       screen through earlycon): the same modules step by step with pauses,
-#                       nvidia-drm first without KMS (modeset=0), then again with modeset=1,
-#                       which takes the monitor over from pcfb. Report in
-#                       /data/vendor/pcgpu/nvidia.txt (pclog copies it).
+#                       With androidboot.android_pc.nvidia_rm=gcc (K1d A/B entry) the modules
+#                       come from /vendor/lib/nvidia-gcc instead: the same build with the RM
+#                       cores compiled by gcc (tools/nvidia-build.sh step 4), loaded by path.
 export PATH=/system/bin:/vendor/bin:$PATH
-k() { echo "<4>pcnvidia: $*" > /dev/kmsg; }   # warning level: shown at the debug entry's loglevel=5
-mp() { modprobe -d /vendor/lib/modules "$@"; }
+k() { echo "<4>pcnvidia: $*" > /dev/kmsg; }
+if [ "$(getprop ro.boot.android_pc.nvidia_rm)" = gcc ]; then
+    # Same module names as the vendor_dlkm set, so not through modprobe: insmod by path, in
+    # dependency order (nvidia, nvidia-modeset, nvidia-drm; nvidia-uvm needs only nvidia).
+    mp() {
+        case "$1" in
+        -r) modprobe -r -d /vendor/lib/modules "$2" ;;
+        nvidia*) local m=$1; shift; insmod /vendor/lib/nvidia-gcc/$m "$@" ;;
+        *) modprobe -d /vendor/lib/modules "$@" ;;
+        esac
+    }
+else
+    mp() { modprobe -d /vendor/lib/modules "$@"; }
+fi
 step() {   # step PAUSE COMMAND...: marker, sync, pause, run, result, sync
     local pause=$1; shift
     k "step: $* (uptime $(cut -d' ' -f1 /proc/uptime))"
@@ -74,6 +84,7 @@ load)
     # (at most 15 s) so the steps below are on the stick even if the kernel dies in one.
     for i in $(seq 1 30); do grep -q ' /mnt/vendor/pclog ' /proc/mounts && break; sleep 0.5; done
     grep -q ' /mnt/vendor/pclog ' /proc/mounts || k "pclog is not mounted, loading anyway"
+    k "modules: $( [ "$(getprop ro.boot.android_pc.nvidia_rm)" = gcc ] && echo /vendor/lib/nvidia-gcc '(RM built by gcc)' || echo /vendor/lib/modules)"
     step 1 mp -r vkms.ko
     step 1 mp nvidia.ko && step 1 mp nvidia-modeset.ko && step 1 mp nvidia-drm.ko modeset=1
     step 1 mp nvidia-uvm.ko
@@ -81,32 +92,6 @@ load)
     nodes
     cards
     ;;
-debug)
-    out=/data/vendor/pcgpu
-    mkdir -p $out
-    sleep 30
-    step 10 mp nvidia.ko && nodes
-    step 10 mp nvidia-uvm.ko && nodes
-    step 10 mp nvidia-modeset.ko && nodes
-    step 10 mp nvidia-drm.ko modeset=0
-    cards
-    {
-        echo "== lsmod"; grep -E '^nvidia' /proc/modules
-        for f in /proc/driver/nvidia/version /proc/driver/nvidia/gpus/*/information; do
-            [ -f "$f" ] && { echo "-- $f"; cat "$f"; }
-        done
-        echo "== /dev/nvidia*"; ls -l /dev/nvidia* 2>&1
-        echo "== dmesg"; dmesg | grep -iE 'nvrm|nvidia|nvkms|pcnvidia|cfi failure' | head -n 300
-    } > $out/nvidia.txt 2>&1
-    sync
-    # KMS last: nvidia-drm takes the monitor over from pcfb (the screen shows whatever
-    # nvidia-drm scans out, usually nothing, from here on).
-    step 20 rmmod nvidia_drm
-    step 5 mp nvidia-drm.ko modeset=1
-    cards
-    dmesg | grep -iE 'nvrm|nvidia|nvkms|pcnvidia|cfi failure' | tail -n 100 >> $out/nvidia.txt 2>&1
-    sync
-    ;;
 *)
-    echo "usage: pcnvidia.sh load|debug" >&2; exit 2 ;;
+    echo "usage: pcnvidia.sh load" >&2; exit 2 ;;
 esac

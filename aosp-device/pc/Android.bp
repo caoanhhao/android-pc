@@ -102,3 +102,19 @@ sh_binary {
     vendor: true,
     visibility: ["//visibility:public"],
 }
+
+// Phase L1: the NVIDIA test client's schedule (pcnvtest.sh runs the glibc pcnvtest through the
+// sidecar's root) and the on-screen log strip's feeder, on the L1 test entries (init.pc.rc).
+sh_binary {
+    name: "pcnvtest.sh",
+    src: "pcnvtest.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "pclogstrip.sh",
+    src: "pclogstrip.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
