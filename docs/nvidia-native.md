@@ -378,6 +378,9 @@ Result: the world renders fully (bamboo forest, fog, shadows, the character, eve
 `out/vfio-l4/wwm-world.png`; ~30 fps at 2560x1080 (33.4 ms per frame from SurfaceFlinger's
 latency, the game's default cap), no Xid. Open: the RGBA4 copies are skipped (no visible
 effect seen yet); ASTC decode costs CPU on texture upload.
+Build `eng.caoanh.20261117.0224` (the patch in the full image set) boots the NVIDIA entry in the
+VFIO VM with the same `libGLESv2_angle.so` (md5 `99d86416…`) as the WWM run; QEMU image
+`out/aosp17-usb-l4a-qemu-nv.img` (the WWM run itself used `out/aosp17-usb-l4-qemu-nv.img`).
 
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
