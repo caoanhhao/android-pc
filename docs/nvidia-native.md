@@ -441,6 +441,41 @@ entry points an app polls or blocks in (fence/event/query/semaphore status, acqu
 submit), their time and their `VK_NOT_READY`/`VK_TIMEOUT` answers. Some red/iridescent speckles
 on the ground remain (not traced yet).
 
+The game process in the world on Vulkan (`grep -i -E 'vulkan|gles|egl|angle' /proc/<pid>/maps`,
+S26 identity, 8 vCPUs):
+  - `/system/lib64/arm64/libEGL.so`
+  - `/system/lib64/arm64/libGLESv2.so`
+  - `/system/lib64/arm64/libGLESv3.so`
+  - `/system/lib64/arm64/libvulkan.so`
+  - `/system/lib64/libEGL.so`
+  - `/system/lib64/libEGL_angle.so`
+  - `/system/lib64/libGLESv1_CM.so`
+  - `/system/lib64/libGLESv1_CM_angle.so`
+  - `/system/lib64/libGLESv2.so`
+  - `/system/lib64/libGLESv2_angle.so`
+  - `/system/lib64/libGLESv3.so`
+  - `/system/lib64/libegl_flags.so`
+  - `/system/lib64/libproxy_arm64_to_x86_64_libEGL.so`
+  - `/system/lib64/libproxy_arm64_to_x86_64_libGLESv2.so`
+  - `/system/lib64/libproxy_arm64_to_x86_64_libGLESv3.so`
+  - `/system/lib64/libproxy_arm64_to_x86_64_libvulkan.so`
+  - `/system/lib64/libvulkan.so`
+  - `/vendor/lib64/hw/vulkan.nvidia.so`
+  - `/vendor/lib64/nvidia/libEGL.so.1`
+  - `/vendor/lib64/nvidia/libEGL_nvidia.so.0`
+  - `/vendor/lib64/nvidia/libnvidia-eglcore.so.620.70.06`
+
+The arm64 `libvulkan` with its proxy and `vulkan.nvidia` render the game. ANGLE
+(`libEGL_angle`, `libGLESv2_angle`, `libGLESv1_CM_angle`, and NVIDIA's EGL libraries ANGLE's
+Vulkan back end pulls in) is loaded too, by two EGL users that do not draw the game: the device
+detection SDK on the UI thread at start-up (log tag `trace`, the same as its `JNI [detectCpu]`:
+`chooseConfig mEGLConfigs size :20`, right after `ANGLE ... Renderer (Vulkan 1.4.357 (NVIDIA ...))`)
+and the Messiah engine's main thread, which opens a GL context once to read `GL_RENDERER` for the
+patcher's device check (`gpuid: GL_RENDERER is Adreno (TM) 840 for this app`). `libGame.so` links
+`libEGL` directly. The libraries stay mapped once loaded; avoiding them would mean changing the
+game (its SDK and its device check), so they stay. The splash video does not use GL on Vulkan
+(`StartLiveWithLocalVideo Not OES` / `Use Raw Data`).
+
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
 process). The game never loads the arm64 `libvulkan` (`/proc/<pid>/maps` has only the arm64
