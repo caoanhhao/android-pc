@@ -7,11 +7,10 @@
 #                                            its userdata does not fit in the file)
 #   tools/run-qemu-aosp17-vfio.sh --release  give the card back to nvidia / snd_hda_intel
 #
-# The image must boot the NVIDIA entry: an image made without --menu has a single entry, so
-# give it the entry's words with mkusb-aosp17.sh --append (docs/nvidia-native.md, "VFIO in
-# QEMU"). Android's picture comes out of the
+# Every mkusb-aosp17.sh image boots the NVIDIA entry by default (the single entry, or entry 1
+# of --menu; docs/nvidia-native.md, "VFIO in QEMU"). Android's picture comes out of the
 # RTX 4070's own ports (the monitor's input on that card); the QEMU window keeps the std VGA
-# (boot menu, pcfb on the other entries). Everything else is tools/run-qemu-aosp17-usb.sh
+# (boot menu, pcfb on the fallback entries). Everything else is tools/run-qemu-aosp17-usb.sh
 # (same VM limits, lock, adb, QEMU_EXTRA, WRITABLE, NO_WINDOW, ...).
 #
 # The host must not be using the card (docs/nvidia-native.md, "VFIO in QEMU"):

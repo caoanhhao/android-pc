@@ -141,8 +141,9 @@ tools/mkusb-aosp17.sh --menu --disk /dev/sdX out/aosp17-usb.img
 `--disk` sizes `userdata` to fill that stick (no root needed; it refuses disks that are not on
 USB). The script prints the commands that write the image to the stick. Other options:
 `--resolution WxH` (default 2560x1080), `--density N` (default 160), `--enforcing`,
-`--append "WORDS"`; `--menu` adds Limine entries for SELinux enforcing, the kernel log on
-screen and the GPU variants. Partition layout: [docs/usb-boot-aosp17.md §5](docs/usb-boot-aosp17.md#5-the-stick-image).
+`--append "WORDS"`. Every image boots the RTX 4070 on NVIDIA's driver; `--menu` adds
+fallback Limine entries without a GPU driver (UEFI framebuffer: SELinux permissive or
+enforcing, the kernel log on screen, no display driver). Partition layout: [docs/usb-boot-aosp17.md §5](docs/usb-boot-aosp17.md#5-the-stick-image).
 
 ### 7. Update a stick without losing data
 

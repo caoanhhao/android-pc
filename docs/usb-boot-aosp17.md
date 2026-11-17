@@ -324,15 +324,16 @@ GPT layout (for the 57.3 GiB SanDisk of the tests):
 | `super` | 8 GiB | `super.img` |
 | `userdata` | the rest (48.6 GiB) | zero (fs_mgr formats a wiped formattable partition) |
 
-Limine: one entry, "Android 17", no menu (`timeout: 0`). `--menu` gives a 5 s menu with
-**SELinux permissive**, **SELinux enforcing**, **kernel log on screen**
+Limine: one entry, "Android 17", no menu (`timeout: 0`): the RTX 4070 on NVIDIA's own driver
+(Phase L, `docs/nvidia-native.md`). `--menu` gives a 5 s menu whose first entry, the default,
+is that same "Android 17", followed by fallbacks without a GPU driver (pcfb on the UEFI
+framebuffer): **SELinux permissive**, **SELinux enforcing**, **kernel log on screen**
 (`earlycon=efifb keep_bootcon`, slow, for boots that stop before Android draws) and
-**no pcfb** (to tell a display problem from the rest).
-Since H1 the menu remembers the entry booted last (`remember_last_entry: yes`; the
-default entry applies until one is picked) and shows a comment under each entry: the pcfb
-entries cannot send sound to a monitor on the NVIDIA card, the NVIDIA (proprietary) entry can
-(`docs/rust-hals.md`, "NVIDIA without a GPU driver"; H1 pointed to the nouveau entries, now on
-branch `gpu-alternatives`).
+**no display driver at all** (to tell a display problem from the rest).
+The menu does not remember the last entry (H1 did, `remember_last_entry: yes`, while the GPU
+had several entries): a fallback picked once for debugging does not stay the default. Each
+entry has a comment: the fallbacks cannot send sound to a monitor on the NVIDIA card, the
+NVIDIA entry can (`docs/rust-hals.md`, "NVIDIA without a GPU driver").
 
 A stick that already runs Android is updated with `tools/update-usb-aosp17.sh` instead,
 which keeps apps, accounts and data (§10). The `dd` commands below are only for a new,

@@ -30,9 +30,11 @@
 #                          UI for mouse and keyboard; 240 is the earlier, touch-sized one)
 #          --append "WORDS" extra kernel command line for every entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
-#          --menu          a Limine menu with debug entries (default: one entry, no menu):
-#                          permissive, enforcing, kernel log on screen, no pcfb, and
-#                          NVIDIA (proprietary): the RTX 4070 on NVIDIA's own driver (Phase L)
+#          --menu          a Limine menu with fallback entries (default: one entry, no menu).
+#                          Every image boots the RTX 4070 on NVIDIA's own driver (Phase L) by
+#                          default; the menu adds entries without a GPU driver (UEFI
+#                          framebuffer, pcfb): permissive, enforcing, kernel log on screen,
+#                          and no display driver at all
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,7 +51,7 @@ while [[ $# -gt 0 ]]; do
         --enforcing) enforcing=1 ;;
         --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -169,53 +171,54 @@ $([[ $resolution != auto ]] && echo "    resolution: ${resolution}x32")
 EOF
 }
 permissive=androidboot.selinux=permissive; [[ $enforcing == 1 ]] && permissive=
+drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
+# Phase K (docs/nvidia-proprietary.md): NVIDIA's own driver. K1: the open kernel modules
+# (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), pcfb
+# off. cfi=kcfi: the DisplayPort library in nvidia-modeset is C++, whose virtual
+# calls clang does not kCFI-check; FineIBT (the default on this CPU) removes the ENDBR they
+# land on. K4: drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
+# K1b: the first real-PC boot of this entry hung with no log. ",warn": NVIDIA's code has
+# never run under kCFI (distribution kernels build it with gcc), so a kCFI type mismatch
+# is logged with a backtrace instead of killing the kernel; softlockup_panic and
+# nmi_watchdog=panic turn a kernel lockup into a panic, which efi-pstore saves for
+# pclog on the next boot (panic=10 reboots).
+# K1c: the kCFI mismatches the first boots hit are fixed in the module; ",warn" stays until
+# a real-PC boot logs no "CFI failure" at all. intel_iommu=off: the GKI image turns the
+# Intel IOMMU on by default (INTEL_IOMMU_DEFAULT_ON) and the RTX 4070 then sits behind DMA
+# remapping; the build host, where this driver version runs fine, has it off. Tried
+# against the Xid 51 (BAD_TSG) of the K1b boot.
+nvbase="cfi=kcfi,warn intel_iommu=off"
+nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
+nvp="pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
+# Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver
+# (vulkan.nvidia through nvglibc), HWUI and SurfaceFlinger on Skia/Vulkan, ANGLE for GLES,
+# minigbm's "nvidia" backend. No CPU fallback.
+# No graphics driver preload in zygote (ro.zygote.disable_gl_preload): every fd zygote holds
+# at fork must be on its allowlist, and NVIDIA's driver keeps /dev/nvidia* open once it
+# starts (vulkan.nvidia only starts it at vkCreateInstance now, docs/nvidia-native.md).
+nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true"
+nvidia="$permissive $nvp $nvl3 $drm"
 if [[ $menu == 1 ]]; then
     {
+        # The NVIDIA entry is the default and boots every time unless another one is picked
+        # in the 5 s menu: no remember_last_entry, so a fallback picked once (to debug) does
+        # not stay the default.
         echo "timeout: 5"
-        echo "default_entry: $(( enforcing + 1 ))"
-        # H1: the entry picked last boots again (an EFI variable; default_entry until then),
-        # so a user who wants the GPU and the monitor's speakers picks the NVIDIA entry once.
-        echo "remember_last_entry: yes"
+        echo "default_entry: 1"
         echo
         # The RTX 4070 sends audio over HDMI/DP only when its driver (NVIDIA's, through
         # GSP-RM) enables it with the mode; on pcfb (the GOP framebuffer) the codec never
         # sees the monitor (docs/rust-hals.md, "NVIDIA without a GPU driver").
-        nosound="Display on the UEFI framebuffer: no sound from a monitor on the NVIDIA card (pick the NVIDIA (proprietary) entry for that)"
+        nosound="Fallback, UEFI framebuffer: no GPU driver, no sound from a monitor on the NVIDIA card"
         sound="NVIDIA driver: sound plays on the monitor (HDMI/DP) when one is connected"
-        entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive" "$nosound"
-        entry "Android 17 (SELinux enforcing)" "" "$nosound"
-        entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
-        entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
-        drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
-        # Phase K (docs/nvidia-proprietary.md): NVIDIA's own driver. K1: the open kernel modules
-        # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), pcfb
-        # off. cfi=kcfi: the DisplayPort library in nvidia-modeset is C++, whose virtual
-        # calls clang does not kCFI-check; FineIBT (the default on this CPU) removes the ENDBR they
-        # land on. K4: drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
-        # K1b: the first real-PC boot of this entry hung with no log. ",warn": NVIDIA's code has
-        # never run under kCFI (distribution kernels build it with gcc), so a kCFI type mismatch
-        # is logged with a backtrace instead of killing the kernel; softlockup_panic and
-        # nmi_watchdog=panic turn a kernel lockup into a panic, which efi-pstore saves for
-        # pclog on the next boot (panic=10 reboots).
-        # K1c: the kCFI mismatches the first boots hit are fixed in the module; ",warn" stays until
-        # a real-PC boot logs no "CFI failure" at all. intel_iommu=off: the GKI image turns the
-        # Intel IOMMU on by default (INTEL_IOMMU_DEFAULT_ON) and the RTX 4070 then sits behind DMA
-        # remapping; the build host, where this driver version runs fine, has it off. Tried
-        # against the Xid 51 (BAD_TSG) of the K1b boot.
-        nvbase="cfi=kcfi,warn intel_iommu=off"
-        nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
-        nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
-        # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver
-        # (vulkan.nvidia through nvglibc), HWUI and SurfaceFlinger on Skia/Vulkan, ANGLE for GLES,
-        # minigbm's "nvidia" backend. No CPU fallback.
-        # No graphics driver preload in zygote (ro.zygote.disable_gl_preload): every fd zygote holds
-        # at fork must be on its allowlist, and NVIDIA's driver keeps /dev/nvidia* open once it
-        # starts (vulkan.nvidia only starts it at vkCreateInstance now, docs/nvidia-native.md).
-        nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true"
-        entry "Android 17, NVIDIA (proprietary)" "$nvp $nvl3 $drm" "$sound"
+        entry "Android 17" "$nvidia" "$sound"
+        entry "Android 17, no GPU driver (SELinux permissive)" "androidboot.selinux=permissive" "$nosound"
+        entry "Android 17, no GPU driver (SELinux enforcing)" "" "$nosound"
+        entry "Android 17, no GPU driver, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
+        entry "Android 17, no display driver at all (debug)" "androidboot.selinux=permissive pcfb.enable=0"
     } > "$work/limine.conf"
 else
-    { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"
+    { echo "timeout: 0"; echo; entry "Android 17" "$nvidia"; } > "$work/limine.conf"
 fi
 
 # --- partitions -------------------------------------------------------------------------
