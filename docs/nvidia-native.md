@@ -429,14 +429,17 @@ Result in the VFIO VM (S26 identity, `vulkan.tag`): `checker choose Vulkan`, the
 `ASTC textures are decoded on the CPU`, the game process maps the arm64 `libvulkan` and
 `libproxy_arm64_to_x86_64_libvulkan.so` with `vulkan.nvidia` behind them, and the world renders
 with its textures (bamboo forest, grass, character, HUD): `out/vfio-l4/vk/wwm-vulkan-world.png`.
-Open: 3-5 fps in the world (a steady 313-333 ms per frame; 48 fps, the game's own cap, on its
-menus), with the process nearly idle (0.9 s of CPU in 5 s) and each frame ready on the GPU ~2 ms
-after it is queued. The HAL's slow-call log (any `vkWaitForFences`, `vkWaitSemaphores`,
-`vkQueueWaitIdle`, `vkDeviceWaitIdle` or `vkQueueSubmit` over 50 ms) shows none, only the ASTC
-decode at load (150-260 ms). simpleperf `--trace-offcpu` (perf events, no ptrace) puts the game's
-render thread in a futex wait issued by its own arm64 code (berberis `RunGuestSyscallImpl`), not
-in Vulkan or NVIDIA code: the game waits for one of its own threads, which all sleep too. Some
-iridescent noise patches on the ground remain.
+Frame rate (8 vCPUs, 12 GB): 44-48 fps in the world while the player acts (camera swipes; 48 Hz
+is the game's own cap, `frameRateOverride` 47.98 Hz), 48 fps on the menus. Left alone in the
+world the game drops to 3-5 fps by itself (a power-saving idle mode): the process is then nearly
+idle and submits ~3 frames a second, every Vulkan call it makes is fast, and simpleperf
+`--trace-offcpu` puts its render thread in a futex wait of its own arm64 code. Tools for this,
+kept in the HAL: any `vkWaitForFences`, `vkWaitSemaphores`, `vkQueueWaitIdle`,
+`vkDeviceWaitIdle` or `vkQueueSubmit` over 50 ms is logged (`slow ...`), and with
+`setprop debug.nvvk.stats 1` (`astc/probe.rs`) each process logs every 2 s how often it called the
+entry points an app polls or blocks in (fence/event/query/semaphore status, acquire/release,
+submit), their time and their `VK_NOT_READY`/`VK_TIMEOUT` answers. Some red/iridescent speckles
+on the ground remain (not traced yet).
 
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the

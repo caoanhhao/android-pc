@@ -24,6 +24,8 @@
 //! The C++ HAL (nvvk_hal.cpp) asks `nvvk_astc_proc` first in its vkGet*ProcAddr; the functions
 //! here call the HAL's own entry points (or NVIDIA's) below them through `nvvk_next_*_proc`.
 
+mod probe;
+
 use ash::vk;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -38,7 +40,7 @@ extern "C" {
     /// The same for an instance or physical-device function.
     fn nvvk_next_instance_proc(name: *const c_char) -> *const c_void;
     /// The device of a queue the HAL has seen, or null.
-    fn nvvk_queue_device(queue: vk::Queue) -> vk::Device;
+    pub(crate) fn nvvk_queue_device(queue: vk::Queue) -> vk::Device;
     fn nvvk_device_memory_properties(
         device: vk::Device,
         props: *mut vk::PhysicalDeviceMemoryProperties,
@@ -47,7 +49,7 @@ extern "C" {
     fn nvvk_log(level: i32, msg: *const c_char);
 }
 
-fn log(level: i32, msg: &str) {
+pub(crate) fn log(level: i32, msg: &str) {
     if let Ok(s) = CString::new(msg) {
         // SAFETY: s is a valid C string for the call.
         unsafe { nvvk_log(level, s.as_ptr()) };
@@ -245,14 +247,14 @@ struct DeviceFns {
 ///
 /// # Safety
 /// `p` is the address of a function whose signature is `T`.
-unsafe fn fn_ptr<T: Copy>(p: usize) -> T {
+pub(crate) unsafe fn fn_ptr<T: Copy>(p: usize) -> T {
     debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<usize>());
     // SAFETY: T is a function pointer type of the same size as usize, and p is such a function
     // (the caller's contract).
     unsafe { std::mem::transmute_copy::<usize, T>(&p) }
 }
 
-fn resolve(device: vk::Device, names: &[&str]) -> usize {
+pub(crate) fn resolve(device: vk::Device, names: &[&str]) -> usize {
     for name in names {
         let c = CString::new(*name).unwrap();
         // SAFETY: a valid C string; the HAL returns null for an unknown name.
@@ -1351,9 +1353,12 @@ unsafe extern "system" fn queue_submit(
                 }
             }
         });
-        timed("vkQueueSubmit", || {
+        let start = std::time::Instant::now();
+        let r = timed("vkQueueSubmit", || {
             (f.queue_submit)(queue, count, submits, fence)
-        })
+        });
+        probe::record(probe::SUBMIT, start, r);
+        r
     }
 }
 
@@ -1455,6 +1460,10 @@ pub unsafe extern "C" fn nvvk_astc_proc(name: *const c_char) -> *const c_void {
     let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
         return std::ptr::null();
     };
+    let p = probe::proc(name);
+    if !p.is_null() {
+        return p;
+    }
     macro_rules! table {
         ($($n:literal => $f:expr),+ $(,)?) => {
             match name { $($n => $f as *const c_void,)+ _ => std::ptr::null() }

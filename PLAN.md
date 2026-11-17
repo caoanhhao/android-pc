@@ -850,8 +850,8 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   Native Vulkan for WWM: its launcher script picks Vulkan when `LocalData/vulkan.tag` (or
   `EnableVulkan.tag`) exists; the server then sends a `vlk` shader package and the game loads the
   arm64 libvulkan. vulkan.nvidia emulates ASTC (Rust, decoded on the CPU at submit), and the world
-  renders with its textures on Vulkan; 3-5 fps in the world so far (the game waits ~320 ms per
-  frame on one of its own threads, CPU idle), next to find (docs/nvidia-native.md, L4).
+  renders with its textures on Vulkan at 44-48 fps in the VFIO VM (48 Hz is the game's cap; it idles
+  at 3-5 fps by itself when left alone) (docs/nvidia-native.md, L4).
 
 Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
 removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm
