@@ -417,10 +417,30 @@ uint64_t AhbUsageFor(VkImageUsageFlags usage, VkImageCreateFlags flags) {
 
 // ---- physical device ----
 
+// The Vulkan version the platform's loader knows: NVIDIA reports 1.4, which Android loaders before
+// Android 16 (API 36) do not, and Android 13's vkjson (`cmd gpu vkjson`) then prints an empty
+// device (Waydroid, docs/waydroid-nvidia.md).
+static uint32_t ClampApiVersion(uint32_t version) {
+    static const uint32_t max = GetPropertyInt("ro.build.version.sdk", 36) < 36
+                                        ? VK_API_VERSION_1_3
+                                        : ~0u;
+    if (VK_API_VERSION_MAJOR(version) * 1000 + VK_API_VERSION_MINOR(version) <=
+        VK_API_VERSION_MAJOR(max) * 1000 + VK_API_VERSION_MINOR(max))
+        return version;
+    return max | VK_API_VERSION_PATCH(version);
+}
+
+VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice physical,
+                                                       VkPhysicalDeviceProperties* props) {
+    g_inst.GetPhysicalDeviceProperties(physical, props);
+    props->apiVersion = ClampApiVersion(props->apiVersion);
+}
+
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice physical,
                                                         VkPhysicalDeviceProperties2* props) {
     Unlink presentation(props, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENTATION_PROPERTIES_ANDROID);
     g_inst.GetPhysicalDeviceProperties2(physical, props);
+    props->properties.apiVersion = ClampApiVersion(props->properties.apiVersion);
     if (auto* p = static_cast<VkPhysicalDevicePresentationPropertiesANDROID*>(presentation.removed()))
         p->sharedImage = VK_FALSE;  // no front-buffer rendering
 }

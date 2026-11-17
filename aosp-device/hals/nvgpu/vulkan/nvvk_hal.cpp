@@ -592,6 +592,7 @@ const Hook kInstanceHooks[] = {
     NVVK_HOOK(CreateInstance, CreateInstance),
     NVVK_HOOK(EnumerateDeviceExtensionProperties, EnumerateDeviceExtensionProperties),
     NVVK_HOOK(CreateDevice, CreateDevice),
+    NVVK_HOOK(GetPhysicalDeviceProperties, GetPhysicalDeviceProperties),
     NVVK_HOOK(GetPhysicalDeviceProperties2, GetPhysicalDeviceProperties2),
     NVVK_HOOK(GetPhysicalDeviceProperties2KHR, GetPhysicalDeviceProperties2),
     NVVK_HOOK(GetPhysicalDeviceImageFormatProperties2, GetPhysicalDeviceImageFormatProperties2),

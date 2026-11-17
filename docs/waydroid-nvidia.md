@@ -115,6 +115,7 @@ All in `hals/nvgpu/vulkan`, and harmless on android-pc:
 |---|---|---|
 | every app: `Assertion failed: mCreateDevice(...)` on HWUI's RenderThread, `NVIDIA vkCreateDevice failed: -3` | Android 13's HWUI enables every device extension listed; NVIDIA's ray tracing, CUDA kernel launch, optical flow and binary import extensions need `libcuda.so.1`, which nvglibc does not load (`libcuda.so.1: not provided`), and each fails `vkCreateDevice` alone | those extensions are hidden unless `libcuda.so.1` is in the driver directory (`kCudaDeviceExtensions`); a failed `vkCreateDevice` logs the extensions, `pNext` chain and queues |
 | SurfaceFlinger: `Could not create EGL image, err = (0x300c)`, `Unable to generate SkSurface` (a SystemUI screenshot buffer, CPU-readable) | ANGLE binds an AHB image only to a `DEVICE_LOCAL` memory type; NVIDIA imports udmabuf system memory only into type 0, which is not | `vkGetAndroidHardwareBufferPropertiesANDROID` also offers the device-local image types for such buffers, and the import takes a type NVIDIA accepts for the dma-buf |
+| `cmd gpu vkjson`: `"devices": [{}]` | Android 13's vkjson serialises a device only for the API versions it knows; NVIDIA reports 1.4 | the reported `apiVersion` is clamped to 1.3 below Android 16 (API 36), whose loader is the first with 1.4 (`vkGetPhysicalDeviceProperties(2)`) |
 | SystemUI: `SIGFPE` in `BlobCache::clean()` from `ShaderCache::store` ← `storePipelineCacheData` | Android 13's HWUI blob cache breaks on a pipeline cache larger than half of it (AOSP fixed it later: `static_assert(maxKeySize + maxValueSize < maxTotalSize)`); NVIDIA's is | `debug.nvvk.pipeline_cache_max` (bytes, 0 = no cap; 262144 in Waydroid): a larger pipeline cache is reported empty, so HWUI stores none. Caches already on disk must go (`com.android.skia.shaders_cache` under `/data/user_de/0/*/code_cache`) |
 
 ## Device nodes
@@ -185,6 +186,8 @@ Reading Android's logs needs root: `sudo waydroid logcat`, or a script piped int
 After `tools/waydroid/nvidia-install.sh` and a session start, Android boots and stays up (no
 tombstone in 5+ minutes; `sys.boot_completed=1`):
 
+- `cmd gpu vkjson`: `"deviceName" : "NVIDIA GeForce RTX 4070"`, `"deviceID" : 10118` (0x2786),
+  `"driverName" : "NVIDIA"`, `"driverInfo" : "620.70.06"`, `"apiVersion" : 4206949` (1.3.357).
 - `dumpsys SurfaceFlinger`: `GLES: Google Inc. (NVIDIA), ANGLE (NVIDIA, Vulkan 1.4.357 (NVIDIA NVIDIA
   GeForce RTX 4070 (0x00002786)), NVIDIA-620.70.6.0), OpenGL ES 3.2.0 (ANGLE 2.1.20440 ...)`;
   `/proc/<surfaceflinger>/maps` has `vulkan.nvidia.so`.
@@ -200,9 +203,6 @@ Open:
   Waydroid window was not opened. With Hyprland on the RTX 4070 (`~/.config/hypr/scripts/gpu-mode
   nvidia`, then log in again), `waydroid show-full-ui` should show the frames without a copy:
   to be checked.
-- **`cmd gpu vkjson`** prints `"devices": [{}]`: Android 13's vkjson serialises a device only for
-  the API versions it knows, and NVIDIA reports 1.4. Clamping the reported `apiVersion` to 1.3 on
-  Android 13 would fix it.
 - **YUV** (video frames, camera) stays linear on the Intel iGPU, which `vulkan.nvidia` does not
   image.
 - `tools/nvgpu-hosttest.sh` no longer links (`nvvk_astc_proc` undefined: the L4 ASTC module is
