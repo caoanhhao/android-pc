@@ -60,7 +60,9 @@ for f in "${fns[@]}"; do host_driver[$f]=$(driver_of "$f"); done
 
 bind_vfio() {
     sudo -v
-    sudo modprobe vfio-pci
+    # Already loaded after an earlier run; modprobe would fail anyway once a kernel update has
+    # removed the running kernel's /lib/modules.
+    [[ -d /sys/bus/pci/drivers/vfio-pci ]] || sudo modprobe vfio-pci
     # Root processes too (SDDM's greeter Xorg: ~/.config/hypr/scripts/gpu-mode igpu moves it).
     local root_holders
     root_holders=$(sudo fuser "${nodes[@]}" 2>/dev/null | tr -s ' ' '\n' | sort -un | xargs -r -I{} ps -o pid=,user=,comm= -p {} || true)
@@ -81,28 +83,34 @@ $root_holders"
         [[ -e /sys/bus/pci/devices/$f/driver ]] && echo "$f" | sudo tee "/sys/bus/pci/devices/$f/driver/unbind" >/dev/null
         echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null
         [[ $(driver_of "$f") == vfio-pci ]] || die "$f did not bind to vfio-pci"
+        bound_now+=("$f")
     done
     sudo chown "$(id -u)" "/dev/vfio/$group"
     # VFIO pins all guest RAM: QEMU (a child of this shell) needs that much locked memory.
     sudo prlimit --pid $$ --memlock=unlimited:unlimited
 }
 
-give_back() {
+bound_now=()
+give_back() {   # give_back [FUNCTION...]: default all of the card's functions
+    local give=("$@")
+    (( ${#give[@]} )) || give=("${fns[@]}")
     echo "run-qemu-aosp17-vfio.sh: giving the card back to the host"
-    for f in "${fns[@]}"; do
+    for f in "${give[@]}"; do
         echo | sudo tee "/sys/bus/pci/devices/$f/driver_override" >/dev/null || true
         [[ $(driver_of "$f") == vfio-pci ]] && echo "$f" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true
     done
     sudo modprobe nvidia_drm || true   # a no-op unless an older run unloaded it
-    for f in "${fns[@]}"; do echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null || true; done
-    for f in "${fns[@]}"; do echo "  $f: $(driver_of "$f")"; done
+    for f in "${give[@]}"; do echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null || true; done
+    for f in "${give[@]}"; do echo "  $f: $(driver_of "$f")"; done
 }
 
 if [[ -n $release ]]; then
     give_back
     exit
 fi
-trap give_back EXIT   # only if binding fails: once QEMU starts the card stays on vfio-pci
+# Only if binding fails, and only what this run moved: a function already on vfio-pci stays there
+# (given back, Hyprland would open its new DRM node). Once QEMU starts the card stays on vfio-pci.
+trap '(( ${#bound_now[@]} == 0 )) || give_back "${bound_now[@]}"' EXIT
 bind_vfio
 trap - EXIT
 extra=""
