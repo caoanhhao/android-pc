@@ -429,9 +429,14 @@ Result in the VFIO VM (S26 identity, `vulkan.tag`): `checker choose Vulkan`, the
 `ASTC textures are decoded on the CPU`, the game process maps the arm64 `libvulkan` and
 `libproxy_arm64_to_x86_64_libvulkan.so` with `vulkan.nvidia` behind them, and the world renders
 with its textures (bamboo forest, grass, character, HUD): `out/vfio-l4/vk/wwm-vulkan-world.png`.
-Open: 3 fps, a steady 333 ms per frame with the process nearly idle (0.9 s of CPU in 5 s) and
-each frame ready on the GPU ~2 ms after it is queued, so the game waits on something with a
-timeout every frame; and some iridescent noise patches on the ground.
+Open: 3-5 fps in the world (a steady 313-333 ms per frame; 48 fps, the game's own cap, on its
+menus), with the process nearly idle (0.9 s of CPU in 5 s) and each frame ready on the GPU ~2 ms
+after it is queued. The HAL's slow-call log (any `vkWaitForFences`, `vkWaitSemaphores`,
+`vkQueueWaitIdle`, `vkDeviceWaitIdle` or `vkQueueSubmit` over 50 ms) shows none, only the ASTC
+decode at load (150-260 ms). simpleperf `--trace-offcpu` (perf events, no ptrace) puts the game's
+render thread in a futex wait issued by its own arm64 code (berberis `RunGuestSyscallImpl`), not
+in Vulkan or NVIDIA code: the game waits for one of its own threads, which all sleep too. Some
+iridescent noise patches on the ground remain.
 
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the

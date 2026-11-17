@@ -234,6 +234,10 @@ struct DeviceFns {
     cmd_copy_buffer_to_image2: Option<vk::PFN_vkCmdCopyBufferToImage2>,
     queue_submit: vk::PFN_vkQueueSubmit,
     queue_submit2: Option<vk::PFN_vkQueueSubmit2>,
+    wait_for_fences: vk::PFN_vkWaitForFences,
+    wait_semaphores: Option<vk::PFN_vkWaitSemaphores>,
+    queue_wait_idle: vk::PFN_vkQueueWaitIdle,
+    device_wait_idle: vk::PFN_vkDeviceWaitIdle,
     memory_props: vk::PhysicalDeviceMemoryProperties,
 }
 
@@ -317,6 +321,10 @@ impl DeviceFns {
             ),
             queue_submit: req!("vkQueueSubmit"),
             queue_submit2: opt!("vkQueueSubmit2", "vkQueueSubmit2KHR"),
+            wait_for_fences: req!("vkWaitForFences"),
+            wait_semaphores: opt!("vkWaitSemaphores", "vkWaitSemaphoresKHR"),
+            queue_wait_idle: req!("vkQueueWaitIdle"),
+            device_wait_idle: req!("vkDeviceWaitIdle"),
             memory_props,
         })
     }
@@ -677,6 +685,19 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
             }
         }
     }
+}
+
+// ---- slow-call log ----
+
+/// Calls `f` and logs it when it takes over 50 ms (a wait that times out, a long decode).
+fn timed<R: std::fmt::Debug>(what: &str, f: impl FnOnce() -> R) -> R {
+    let start = std::time::Instant::now();
+    let r = f();
+    let ms = start.elapsed().as_millis();
+    if ms > 50 {
+        log(1, &format!("slow {what}: {ms} ms -> {r:?}"));
+    }
+    r
 }
 
 // ---- instance entry points ----
@@ -1317,18 +1338,22 @@ unsafe extern "system" fn queue_submit(
         let Some(f) = device_fns(device) else {
             return vk::Result::ERROR_DEVICE_LOST;
         };
-        for s in std::slice::from_raw_parts(submits, count as usize) {
-            if s.command_buffer_count > 0 {
-                run_uploads(
-                    device,
-                    std::slice::from_raw_parts(
-                        s.p_command_buffers,
-                        s.command_buffer_count as usize,
-                    ),
-                );
+        timed("ASTC decode at vkQueueSubmit", || {
+            for s in std::slice::from_raw_parts(submits, count as usize) {
+                if s.command_buffer_count > 0 {
+                    run_uploads(
+                        device,
+                        std::slice::from_raw_parts(
+                            s.p_command_buffers,
+                            s.command_buffer_count as usize,
+                        ),
+                    );
+                }
             }
-        }
-        (f.queue_submit)(queue, count, submits, fence)
+        });
+        timed("vkQueueSubmit", || {
+            (f.queue_submit)(queue, count, submits, fence)
+        })
     }
 }
 
@@ -1359,6 +1384,59 @@ unsafe extern "system" fn queue_submit2(
         }
         next(queue, count, submits, fence)
     }
+}
+
+unsafe extern "system" fn wait_for_fences(
+    device: vk::Device,
+    count: u32,
+    fences: *const vk::Fence,
+    wait_all: vk::Bool32,
+    timeout: u64,
+) -> vk::Result {
+    let Some(f) = device_fns(device) else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    timed(
+        &format!("vkWaitForFences({count} fences, timeout {timeout} ns)"),
+        || {
+            // SAFETY: the app's call, passed on unchanged.
+            unsafe { (f.wait_for_fences)(device, count, fences, wait_all, timeout) }
+        },
+    )
+}
+
+unsafe extern "system" fn wait_semaphores(
+    device: vk::Device,
+    info: *const vk::SemaphoreWaitInfo,
+    timeout: u64,
+) -> vk::Result {
+    let Some(next) = device_fns(device).and_then(|f| f.wait_semaphores) else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    timed(&format!("vkWaitSemaphores(timeout {timeout} ns)"), || {
+        // SAFETY: the app's call, passed on unchanged.
+        unsafe { next(device, info, timeout) }
+    })
+}
+
+unsafe extern "system" fn queue_wait_idle(queue: vk::Queue) -> vk::Result {
+    // SAFETY: a queue the HAL has seen.
+    let device = unsafe { nvvk_queue_device(queue) };
+    let Some(f) = device_fns(device) else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    // SAFETY: the app's call, passed on unchanged.
+    timed("vkQueueWaitIdle", || unsafe { (f.queue_wait_idle)(queue) })
+}
+
+unsafe extern "system" fn device_wait_idle(device: vk::Device) -> vk::Result {
+    let Some(f) = device_fns(device) else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    // SAFETY: the app's call, passed on unchanged.
+    timed("vkDeviceWaitIdle", || unsafe {
+        (f.device_wait_idle)(device)
+    })
 }
 
 // ---- lookup ----
@@ -1417,5 +1495,10 @@ pub unsafe extern "C" fn nvvk_astc_proc(name: *const c_char) -> *const c_void {
         "vkQueueSubmit" => queue_submit as vk::PFN_vkQueueSubmit,
         "vkQueueSubmit2" => queue_submit2 as vk::PFN_vkQueueSubmit2,
         "vkQueueSubmit2KHR" => queue_submit2 as vk::PFN_vkQueueSubmit2,
+        "vkWaitForFences" => wait_for_fences as vk::PFN_vkWaitForFences,
+        "vkWaitSemaphores" => wait_semaphores as vk::PFN_vkWaitSemaphores,
+        "vkWaitSemaphoresKHR" => wait_semaphores as vk::PFN_vkWaitSemaphores,
+        "vkQueueWaitIdle" => queue_wait_idle as vk::PFN_vkQueueWaitIdle,
+        "vkDeviceWaitIdle" => device_wait_idle as vk::PFN_vkDeviceWaitIdle,
     }
 }
