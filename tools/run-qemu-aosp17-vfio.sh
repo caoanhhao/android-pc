@@ -18,7 +18,7 @@
 #   - IOMMU on: VT-d in the firmware, intel_iommu=on iommu=pt on the kernel command line;
 #   - Hyprland and SDDM's Xorg on the iGPU (~/.config/hypr/scripts/gpu-mode igpu, monitor
 #     cable on the motherboard, reboot), no process with /dev/nvidia* or the card's DRM nodes open.
-# The script asks for the password (sudo) to unload the nvidia modules and bind the card's
+# The script asks for the password (sudo) to unbind the card from nvidia and bind its
 # functions to vfio-pci. They stay there when QEMU exits, ready for the next run: given back,
 # the card's new DRM node would be opened by Hyprland's hotplug handling (AQ_DRM_DEVICES
 # covers only the devices present at its start), so it could not be passed again until the
@@ -66,9 +66,14 @@ bind_vfio() {
     root_holders=$(sudo fuser "${nodes[@]}" 2>/dev/null | tr -s ' ' '\n' | sort -un | xargs -r -I{} ps -o pid=,user=,comm= -p {} || true)
     [[ -z $root_holders ]] || die "the RTX 4070 is in use:
 $root_holders"
-    if [[ ${host_driver[$gpu]} == nvidia ]]; then
-        sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia ||
-            die "could not unload the nvidia modules (something still uses them: lsmod | grep nvidia)"
+    # The nvidia modules stay loaded: the card is only unbound from them below (the open driver
+    # supports that). Unloading them failed with "Module nvidia is in use" with no user left, and
+    # the reload after the failure gave Hyprland a new card node to open.
+    if [[ ${host_driver[$gpu]} == nvidia ]] && grep -q nvidia-drm /proc/fb; then
+        # nvidia_drm's fbdev (on by default): take the framebuffer console off it first.
+        for v in /sys/class/vtconsole/vtcon*; do
+            grep -q 'frame buffer' "$v/name" && echo 0 | sudo tee "$v/bind" >/dev/null
+        done
     fi
     for f in "${fns[@]}"; do
         [[ ${host_driver[$f]} == vfio-pci ]] && continue   # still bound from an earlier run
@@ -88,7 +93,7 @@ give_back() {
         echo | sudo tee "/sys/bus/pci/devices/$f/driver_override" >/dev/null || true
         [[ $(driver_of "$f") == vfio-pci ]] && echo "$f" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true
     done
-    sudo modprobe nvidia_drm || true
+    sudo modprobe nvidia_drm || true   # a no-op unless an older run unloaded it
     for f in "${fns[@]}"; do echo "$f" | sudo tee /sys/bus/pci/drivers_probe >/dev/null || true; done
     for f in "${fns[@]}"; do echo "  $f: $(driver_of "$f")"; done
 }

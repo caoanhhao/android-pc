@@ -384,6 +384,27 @@ VFIO VM with the same `libGLESv2_angle.so` (md5 `99d86416…`) as the WWM run; Q
 Stick update image `out/aosp17-usb-l4a.img` (`tools/mkusb-aosp17.sh --menu --userdata 64`, same
 build); on the real PC WWM runs on the "Android 17, NVIDIA (proprietary)" entry.
 
+**Native Vulkan (2026-11-17): not reachable from the device side.** The goal was WWM's own Vulkan
+backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
+process). The game never loads the arm64 `libvulkan`, so the proxy is not the blocker. What decides:
+- The patcher's checker (encrypted Lua) writes `enter check` / `checker choose ES3` /
+  `checker:shader_prereg skip reason=disabled by toggle` at once, with no Vulkan probe, then
+  `last_graphics_api.tag` = `es3`; `Driver:check_prefer_driver res=nil`.
+- It stays ES3 with the Vulkan features declared (`android.hardware.vulkan.version` 1.3, level 1,
+  from the cf.vulkan APEX), with GL_RENDERER faked to `Adreno (TM) 750` (gpuid.conf: the device
+  check reports `SUCC_adreno (tm) 750`), and with a Galaxy S24 Ultra identity (ro.product.* samsung
+  SM-S9280, ro.soc.model SM8650: the patch log's `device_model` shows it).
+- The server's package list (`patch_conf.json` `known_list`) has a GLES shader package (`es3`) and
+  no Vulkan one: this Android release gets no Vulkan shaders, so a forced Vulkan backend would have
+  nothing to run. Changing the choice means editing the game's encrypted scripts (anti-tamper,
+  account risk), which this project does not do.
+The GLES path (ANGLE on vulkan.nvidia) stays. The real-PC crash on it (pclog boot-30
+tombstone_14: SIGSEGV at 0x1cd in libnvidia-eglcore under ANGLE
+`UpdateDescriptorSetsBuilder::flushDescriptorSetUpdates` <- `glDrawArrays`, after 4 min; the next run
+went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` still has the
+S24 identity in its /product overlay (`/data/local/tmp/product-build.prop.orig` restores it) and the
+Adreno line in /vendor/etc/gpuid.conf.
+
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
 `tools/run-qemu-aosp17-vfio.sh [IMAGE]` boots an image like `tools/run-qemu-aosp17-usb.sh`
