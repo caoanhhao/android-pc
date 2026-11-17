@@ -453,6 +453,27 @@ compute, `android.software.vulkan.deqp.level`, from the cf.vulkan APEX). Inputs 
 Vulkan (`Engine/Config/Platform.bin`: `EnableVulkan` default True, with a windows-only rule;
 GlobalOptions has Vulkan PSO options), so the choice is the checker's.
 
+When the checker decides, and what it could read (2026-11-17, S26 identity):
+- It runs in the launcher stage, before the engine has a GL context: its log (`enter check`,
+  `checker choose ES3`, then `PatchPatcher:start`) is written before the patcher's
+  `patch main init` / `waiting for device check...` / `on device checked...` (the GL_RENDERER
+  check). So GL strings cannot be among its inputs; a faked `GL_VERSION` with an Adreno driver
+  version (`debug.angle.gl_version` = `OpenGL ES 3.2 V@0846.21 ...`) changed nothing either.
+- The game never calls Vulkan: the only Vulkan instance in its process is HWUI's (skiavk, the
+  app's UI; one `vulkan: searching for layers ...` / `vulkan.nvidia: device NVIDIA GeForce RTX 4070`
+  pair at start-up), no arm64 `libvulkan` is loaded, so no Vulkan property (vendorID,
+  driverVersion, extensions, features) reaches it.
+- Static read: the Java code (8 dex files) has no render-API selection (its only Vulkan strings are
+  a video-capture SDK's); `libGame.so` (149 MB, the engine) is packed (no readable dynamic section,
+  encrypted strings: only `Vulkan(MT)`), and the other native libraries reference Vulkan only for
+  video/live streaming (`libnative-mvd-render`, `libshared-texture`).
+- Tracing the process with strace makes it exit at once (anti-debug); not used further.
+- The game's own settings (lobby and in-world, searched for "Vulkan", "OpenGL", "Render") have no
+  render-API option.
+- No patcher log, for any identity, names a Vulkan/SPIR-V file or package.
+So there is no Vulkan API or feature the device lacks for this choice: the checker does not look
+at the device's Vulkan at all, and the server offers only `es3` shaders to Android.
+
 Conclusion (with every device-side tell above hidden, 8 CPUs included): the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
 scripts, before any Vulkan call; the identity and GPU name a real Vulkan-capable phone reports do
 not change it, and the server gives this Android release GLES shaders only, so a forced Vulkan
