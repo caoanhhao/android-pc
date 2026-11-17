@@ -468,6 +468,13 @@ When the checker decides, and what it could read (2026-11-17, S26 identity):
   encrypted strings: only `Vulkan(MT)`), and the other native libraries reference Vulkan only for
   video/live streaming (`libnative-mvd-render`, `libshared-texture`).
 - Tracing the process with strace makes it exit at once (anti-debug); not used further.
+- Without the game's GLES shader caches (`LocalData/Cache/GLES.cache`, `ShaderProfiles`,
+  `Patch/Shader/*.shader.config` moved away) it still picks ES3, so it is not keeping the API it
+  has caches for.
+- Vulkan-side gaps of this device versus a phone (the NVIDIA driver reports no ETC2/ASTC_LDR
+  texture compression, vendorID 0x10DE, a discrete deviceType, NVIDIA's driverVersion packing)
+  cannot be what the checker rejects: nothing in the game queries Vulkan before the choice, so
+  emulating ASTC/ETC2 or reporting Qualcomm values in the HAL would not reach it.
 - The game's own settings (lobby and in-world, searched for "Vulkan", "OpenGL", "Render") have no
   render-API option.
 - No patcher log, for any identity, names a Vulkan/SPIR-V file or package.
