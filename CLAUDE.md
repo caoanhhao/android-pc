@@ -30,7 +30,8 @@ earlier Rust kernel lives on the `aosp-16` branch).
   both source `tools/vm-wait.sh`, which takes a lock and waits until no
   `qemu-system`/`crosvm`/`run_cvd` process is left. A new launcher must source it too.
 - VMs run pinned to E-cores 12-15 with a memory cap (both launchers do it; keep it in
-  any new launcher). Use at most 4 vCPUs and 4 GB guest RAM.
+  any new launcher). Use at most 8 vCPUs and 4 GB guest RAM. More than 4 vCPUs need all
+  8 E-cores (`CPUS=8 VM_CPUS=8-15`), so no build may run at the same time.
 - Stop your VM as soon as the test is done (`cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`,
   or quit QEMU), so the next session can go.
 
