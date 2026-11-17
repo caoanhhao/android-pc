@@ -17,16 +17,16 @@ DEST=$ROOT/aosp/device/android-pc/kernel/6.18
 STEPS=${STEPS:-"gki virt pc nvidia install firmware"}
 # --notrim: export every symbol the GKI image has (vendor modules use more than the KMI
 # symbol lists); --lto=none: much faster and lighter than the release LTO build.
-# --defconfig_fragment (Phase G6, docs/nvidia.md): CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y in the
-# GKI image itself. It is a bool that adds kernel::firmware to the Rust kernel crate, which
+# --defconfig_fragment (Phase G6, docs/nvidia.md on branch gpu-alternatives):
+# CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y in the GKI image itself. It is a bool that adds kernel::firmware to the Rust kernel crate, which
 # lives in vmlinux; nova-core (a vendor module) calls it. Every step must pass the same flag,
 # or the vendor builds would rebuild their base kernel without it.
 FLAGS=(--notrim --lto=none --defconfig_fragment=//android-pc:gki_rust_defconfig ${BAZEL_FLAGS:-})
 [ -d "$GKI/common" ] || { echo "gki-build: no kernel checkout in $GKI (see docs/usb-boot-aosp17.md)"; exit 1; }
 
 # Patches to the kernel tree itself (nouveau is an in-tree module), applied once:
-# - gki-nouveau-gsp-thermal.patch (Phase G5, docs/nvidia.md): GPU temperature as hwmon
-#   temp1_input and a debugfs "perf" entry (GSP-RM's P-state) for GPUs booted with GSP-RM.
+# - gki-nouveau-gsp-thermal.patch (Phase G5, docs/nvidia.md on branch gpu-alternatives): GPU
+#   temperature as hwmon temp1_input and a debugfs "perf" entry (GSP-RM's P-state) for GPUs booted with GSP-RM.
 # - gki-nova-boot-log.patch (Phase G6): nova-core reports VRAM, WPR2 and how far its GSP
 #   boot got at info level (dev_dbg! is compiled out of release kernels).
 # - gki-vrealloc-export.patch (Phase G6): exports vrealloc_node_align_noprof, which Rust modules
@@ -106,10 +106,6 @@ for s in $STEPS; do case $s in
     cp "$D"/pc_x86_64/dist/*.ko "$DEST.new/vendor/" || exit 1
     # NVIDIA's modules (Phase K1), when tools/nvidia-build.sh has built them.
     if ls "$D"/nvidia/dist/*.ko >/dev/null 2>&1; then cp "$D"/nvidia/dist/*.ko "$DEST.new/vendor/" || exit 1; fi
-    # K1d A/B: the gcc-built RM variant, for /vendor/lib/nvidia-gcc (aosp-device/pc/pc.mk).
-    if ls "$D"/nvidia/dist-gcc/*.ko >/dev/null 2>&1; then
-      mkdir -p "$DEST.new/nvidia-gcc" && cp "$D"/nvidia/dist-gcc/*.ko "$DEST.new/nvidia-gcc/" || exit 1
-    fi
     rm -rf "$DEST" && mv "$DEST.new" "$DEST"
     echo "installed into $DEST: $(ls "$DEST/system_dlkm" | wc -l) system_dlkm, $(ls "$DEST/vendor" | wc -l) vendor modules"
     strings "$DEST/kernel-6.18" | grep -m1 '^6\.18\.' ;;

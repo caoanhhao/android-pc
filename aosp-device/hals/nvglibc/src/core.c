@@ -107,14 +107,21 @@ __attribute__((constructor(101))) static void core_init(void) {
             g_stub_dir, g_driver_path);
 
     // Without an X display NVIDIA's Vulkan driver starts through EGL: GLVND's libEGL.so.1 reads
-    // the vendor JSON (library_path libEGL_nvidia.so.0) that sits beside the driver directory.
+    // the vendor JSON (library_path libEGL_nvidia.so.0) in the driver directory (the device's
+    // /vendor/lib64/nvidia) or, in a glibc root, under the directory beside it.
     if (!getenv("__EGL_VENDOR_LIBRARY_FILENAMES") && !getenv("__EGL_VENDOR_LIBRARY_DIRS")) {
+        static const char* const kJsons[] = {"/10_nvidia.json",
+                                             "/../share/glvnd/egl_vendor.d/10_nvidia.json"};
         for (const char* p = g_driver_path; *p;) {
             const char* e = strchr(p, ':');
             size_t len = e ? (size_t)(e - p) : strlen(p);
             char json[PATH_MAX];
-            snprintf(json, sizeof(json), "%.*s/../share/glvnd/egl_vendor.d/10_nvidia.json", (int)len, p);
-            if (access(json, R_OK) == 0) {
+            bool found = false;
+            for (size_t i = 0; i < sizeof(kJsons) / sizeof(kJsons[0]) && !found; ++i) {
+                snprintf(json, sizeof(json), "%.*s%s", (int)len, p, kJsons[i]);
+                found = access(json, R_OK) == 0;
+            }
+            if (found) {
                 setenv("__EGL_VENDOR_LIBRARY_FILENAMES", json, 0);
                 break;
             }

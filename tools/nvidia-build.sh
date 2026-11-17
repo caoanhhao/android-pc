@@ -5,7 +5,7 @@
 # Needs a finished tools/gki-build.sh "gki" step (gki/out/kernel_x86_64/dist: the GKI .config
 # and Module.symvers) and the source in gki/nvidia-open at tag $NV_VERSION:
 #   git clone --depth 1 --branch 620.70.06 https://github.com/NVIDIA/open-gpu-kernel-modules gki/nvidia-open
-# The version must match the NVIDIA userspace of Phase K2 exactly.
+# The version must match the NVIDIA userspace (tools/nvidia-userspace-build.sh) exactly.
 #
 # Not a Kleaf build: nvidia's build is two stages (the OS-agnostic nv-kernel.o and
 # nv-modeset-kernel.o with nvidia's own makefiles, then kernel-open/ with kbuild), so it runs
@@ -82,9 +82,9 @@ if [ "$(cat "$GKI/out/nvidia/kflags" 2>/dev/null)" != "$KFLAGS" ]; then
 fi
 "$LB" "${NVMAKE[@]}" -C "$NV/src/nvidia" EXTRA_CFLAGS="$KFLAGS"
 "$LB" "${NVMAKE[@]}" -C "$NV/src/nvidia-modeset" EXTRA_CFLAGS="$KFLAGS"
-# 3. kernel-open with kbuild against the prepared directory, linked with one build of the cores.
+# 3. kernel-open with kbuild against the prepared directory, linked with the cores.
 # kbuild relinks nvidia.ko/nvidia-modeset.ko only when the core object is newer, so the linked
-# objects are removed first (switching between the two core builds below).
+# objects are removed first.
 link_modules() {   # link_modules CORE-OUTPUTDIR DIST
   ln -sf ../../src/nvidia/$1/nv-kernel.o "$NV/kernel-open/nvidia/nv-kernel.o_binary"
   ln -sf ../../src/nvidia-modeset/$1/nv-modeset-kernel.o "$NV/kernel-open/nvidia-modeset/nv-modeset-kernel.o_binary"
@@ -98,16 +98,5 @@ link_modules() {   # link_modules CORE-OUTPUTDIR DIST
   echo "nvidia $NV_VERSION modules in $2:"; ls -la "$2"
 }
 
-# 4. K1d A/B (docs/nvidia-proprietary.md): the same modules with the cores built by the host's
-# gcc and nvidia's own flags only, the way distributions (and the build host, where this driver
-# runs fine) build them, into gki/out/nvidia/dist-gcc. No kCFI preambles in the cores, so the
-# boot entry that loads them runs with cfi=off.
-if [ "${NV_GCC:-1}" = 1 ]; then
-  GMAKE=(make CC=gcc CXX=g++ LD=ld AR=ar OBJCOPY=objcopy TARGET_ARCH=x86_64 OUTPUTDIR=_out-gcc/Linux_x86_64 -j8)
-  "$LB" "${GMAKE[@]}" -C "$NV/src/nvidia"
-  "$LB" "${GMAKE[@]}" -C "$NV/src/nvidia-modeset"
-  link_modules _out-gcc/Linux_x86_64 "$GKI/out/nvidia/dist-gcc" || exit 1
-fi
-# The clang build last, so kernel-open/ is left linked against it.
 link_modules _out/Linux_x86_64 "$OUT" || exit 1
 echo NVIDIA_BUILD_OK

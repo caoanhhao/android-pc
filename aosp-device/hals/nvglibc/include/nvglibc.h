@@ -20,4 +20,4 @@ const char* nvglibc_dlerror(void);
 
 __END_DECLS
 
-#define NVGLIBC_DEFAULT_DRIVER_PATH "/vendor/lib64/nvidia:/vendor/bin/nvsidecar/lib"
+#define NVGLIBC_DEFAULT_DRIVER_PATH "/vendor/lib64/nvidia"

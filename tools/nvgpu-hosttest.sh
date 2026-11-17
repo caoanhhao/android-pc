@@ -32,7 +32,7 @@ inc=(-I"$N/include" -I"$G" -I"$A/external/vulkan-headers/include"
 drm=($(pkg-config --cflags libdrm))
 pin=(taskset -c 8-15 nice -n 10)
 
-srcs_c=(drv.c drv_helpers.c drv_array_helpers.c dumb_driver.c nvidia.c nouveau.c virtgpu.c
+srcs_c=(drv.c drv_helpers.c drv_array_helpers.c dumb_driver.c nvidia.c virtgpu.c
         virtgpu_cross_domain.c virtgpu_virgl.c backend_mock.c gbm.c gbm_helpers.c)
 objs=()
 for f in "${srcs_c[@]}"; do

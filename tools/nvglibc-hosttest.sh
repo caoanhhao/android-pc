@@ -2,10 +2,9 @@
 # Phase L2 (docs/nvidia-native.md): nvglibc on the build host. Runs the Soong-built (bionic,
 # vendor) nvglibc_vktest against the host's RTX 4070 and NVIDIA driver, in a bwrap sandbox that
 # looks like the device: /system and /vendor/lib64 from the product out directory (bionic: the
-# bootstrap linker and libc, which carry tools/patches/aosp17-bionic-static-tls-surplus.patch)
-# and K2's glibc root (tools/nvsidecar-build.sh) at /vendor/bin/nvsidecar, where nvglibc finds
-# the NVIDIA driver and its EGL vendor JSON by default. HOSTLIB=1 uses the host's /usr/lib
-# instead. Then the same test source built for glibc, as the baseline. The host driver is only
+# bootstrap linker and libc, which carry tools/patches/aosp17-bionic-static-tls-surplus.patch),
+# with NVIDIA's driver and its EGL vendor JSON in /vendor/lib64/nvidia (hals/nvgpu/hal.mk), where
+# nvglibc finds them by default. HOSTLIB=1 uses the host's /usr/lib instead. Then the same test source built for glibc, as the baseline. The host driver is only
 # read.
 # Needs: m libnvglibc libnvglibc_{c,dl,gcc_s,ld,m,pthread,rt,x11,xext} nvglibc_vktest
 #        $P/system/bin/bootstrap/linker64 $P/system/lib64/bootstrap/libc.so
@@ -19,9 +18,8 @@ mkdir -p "$TMP/linkerconfig" "$TMP/home"
 : > "$TMP/linkerconfig/ld.config.txt"   # no namespaces: bionic's default search paths
 
 devs=(); for d in /dev/nvidia* /dev/dri; do [ -e "$d" ] && devs+=(--dev-bind "$d" "$d"); done
-SIDECAR=$ROOT/aosp/device/android-pc/nvsidecar
-if [ -z "${HOSTLIB:-}" ] && [ -f "$SIDECAR/VERSION" ]; then
-    driver=(--ro-bind "$SIDECAR" /vendor/bin/nvsidecar)
+if [ -z "${HOSTLIB:-}" ] && [ -f "$P/vendor/lib64/nvidia/libGLX_nvidia.so.0" ]; then
+    driver=()
 else
     driver=(--ro-bind /usr/lib /hostlib --ro-bind /usr/share/glvnd /share/glvnd
             --setenv NVGLIBC_DRIVER_PATH /hostlib)
