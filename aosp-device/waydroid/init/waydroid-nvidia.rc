@@ -1,3 +1,9 @@
 # Waydroid: NVIDIA's device nodes before anything opens the GPU (docs/waydroid-nvidia.md).
 on early-init
     exec - root root -- /system/bin/sh /vendor/bin/waydroid-nvidia-nodes.sh
+
+# Where Winds Meet on its Vulkan renderer: hals/nvgpu/pcwwmvk.sh creates the game's empty
+# LocalData/vulkan.tag (without it the game takes ES3 through ANGLE, whose copyImageBits divides
+# by zero on the emulated ASTC formats). persist.vendor.android_pc.wwm_vulkan=0 turns it off.
+on property:sys.user.0.ce_available=true
+    exec - root media_rw -- /system/bin/sh /vendor/bin/pcwwmvk.sh

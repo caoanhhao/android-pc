@@ -149,6 +149,20 @@ start. libnativewindow is the earlier Venus project's fix (`~/projects/waydroid-
 wrapper. Checked 2026-11-18: the composer's maps have `libnvglibc_tls.so` and `libGLX_nvidia.so.0`,
 its EGL calls all return `EGL_SUCCESS`, and the Android pointer shows over the Waydroid window.
 
+## Where Winds Meet
+
+The game (arm64, through libhoudini) picks its renderer from `LocalData/vulkan.tag` like on the
+stick (`docs/nvidia-native.md` L4). Without the tag it takes ES3 through Waydroid's ANGLE on
+`vulkan.nvidia`, and crashed about two minutes in with SIGFPE (2026-11-18). A kprobe on
+`force_sig_fault` (`sig==8`, user stack trace on) caught it: `FPE_INTDIV` at
+`libGLESv2_angle.so+0x4abcd2`, a `div` in `rx::UtilsVk::copyImageBits` (ANGLE 2.1.20440), whose
+block-size arithmetic reaches zero for the ASTC formats ANGLE emulates because `vulkan.nvidia`
+reports no ASTC. The game's own crash handler swallows the signal (an empty minidump, no tombstone).
+
+`waydroid-nvidia.rc` runs `hals/nvgpu/pcwwmvk.sh` once user 0's storage is unlocked, which creates
+the empty tag (the game must have run once; `persist.vendor.android_pc.wwm_vulkan=0` turns it off).
+With it `last_graphics_api.tag` reads `vlk` and the game renders on `vulkan.nvidia`.
+
 ## Build and install
 
 ```bash

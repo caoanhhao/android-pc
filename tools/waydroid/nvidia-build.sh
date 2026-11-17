@@ -67,6 +67,7 @@ cp "$ROOT/aosp-device/hals/nvgpu/10_nvidia.json" "$OV/vendor/lib64/nvidia/"
 # NVIDIA's device nodes, made inside the container at early-init
 mkdir -p "$OV/vendor/etc/init"
 cp "$ROOT/aosp-device/waydroid/init/waydroid-nvidia-nodes.sh" "$OV/vendor/bin/"
+cp "$ROOT/aosp-device/hals/nvgpu/pcwwmvk.sh" "$OV/vendor/bin/"
 cp "$ROOT/aosp-device/waydroid/init/waydroid-nvidia.rc" "$OV/vendor/etc/init/"
 
 # 4: libvulkan.so and libEGL.so load libnvglibc_tls.so at process start (libEGL for processes
