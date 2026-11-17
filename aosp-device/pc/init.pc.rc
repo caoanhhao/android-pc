@@ -51,8 +51,7 @@ service vendor.pclog /vendor/bin/pclog.sh
 
 # NVIDIA's own driver (Phase K1, docs/nvidia-proprietary.md; the device's GPU driver since Phase L,
 # docs/nvidia-native.md), only on the Limine entry with androidboot.android_pc.gpu=nvidia
-# (pcfb.enable=0; nouveau and Nova are kept out by the entry's module_blacklist). The
-# open-gpu-kernel-modules are in modules.blocklist for every other entry. pcnvidia.sh loads
+# (pcfb.enable=0). The open-gpu-kernel-modules are in modules.blocklist for every other entry. pcnvidia.sh loads
 # nvidia, nvidia-modeset, nvidia-drm modeset=1 (KMS and its render node; toybox modprobe does not
 # read module options from the kernel command line; no fbdev=1, the GKI image has no fbdev
 # emulation) and nvidia-uvm one at a time, moving vkms off card0 first so nvidia-drm gets card0

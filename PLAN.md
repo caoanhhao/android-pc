@@ -380,8 +380,8 @@ composition (G4), GSP power/thermal and suspend (G5), and NVIDIA's Rust drivers 
 HDMI audio and suspend worked; NVK on Ada stayed unreliable and Nova has no 3D, so Phase K/L
 replaced them. The code (nouveau/NVK/Nova entries, `pcgpu.sh`, `pcwake.sh`, `pcnova.sh`,
 `vktest/`, `pcvkprobe`, the Mesa/minigbm/Cuttlefish/dEQP patches, the VTS entry) and
-`docs/nvidia.md` live on branch `gpu-alternatives`. The kernel config still builds nouveau and
-Nova (blocklisted, never loaded on `main`).
+`docs/nvidia.md` live on branch `gpu-alternatives`, as do the kernel config, GKI patches and
+firmware for nouveau and Nova (`main`'s GKI build has neither).
 
 ## Phase H — real-PC fixes
 
@@ -594,9 +594,8 @@ Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 and live o
 stay. NVIDIA's userspace libraries for `/vendor/lib64/nvidia` come from
 `tools/nvidia-userspace-build.sh` (the build host's 620.70.06).
 
-**Open cleanup:** the GKI build (`aosp-device/kernel`, `tools/gki-build.sh`) still builds nouveau
-and Nova with their kernel patches and nouveau's GSP firmware; dropping them needs a full GKI +
-nvidia-open rebuild and a real-PC check.
+The GKI build on `main` no longer has nouveau, Nova, their kernel patches or nouveau's GSP
+firmware (checked in the VFIO VM; real-PC check pending).
 
 ## Risks
 

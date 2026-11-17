@@ -188,8 +188,8 @@ if [[ $menu == 1 ]]; then
         entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
         # Phase K (docs/nvidia-proprietary.md): NVIDIA's own driver. K1: the open kernel modules
-        # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), nouveau and Nova blacklisted,
-        # pcfb off. cfi=kcfi: the DisplayPort library in nvidia-modeset is C++, whose virtual
+        # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), pcfb
+        # off. cfi=kcfi: the DisplayPort library in nvidia-modeset is C++, whose virtual
         # calls clang does not kCFI-check; FineIBT (the default on this CPU) removes the ENDBR they
         # land on. K4: drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
         # K1b: the first real-PC boot of this entry hung with no log. ",warn": NVIDIA's code has
@@ -202,7 +202,7 @@ if [[ $menu == 1 ]]; then
         # Intel IOMMU on by default (INTEL_IOMMU_DEFAULT_ON) and the RTX 4070 then sits behind DMA
         # remapping; the build host, where this driver version runs fine, has it off. Tried
         # against the Xid 51 (BAD_TSG) of the K1b boot.
-        nvbase="cfi=kcfi,warn intel_iommu=off module_blacklist=nouveau,nova_core,nova"
+        nvbase="cfi=kcfi,warn intel_iommu=off"
         nvdiag="$nvbase softlockup_panic=1 nmi_watchdog=panic"
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
         # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver

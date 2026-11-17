@@ -5,12 +5,6 @@ blocklist vkms.ko
 blocklist snd-aloop.ko
 blocklist vivid.ko
 
-# nouveau (Phase G) and NVIDIA's Rust drivers Nova (G6): their boot entries are on branch
-# gpu-alternatives, but aosp-device/kernel still builds the modules; they must never load.
-blocklist nouveau.ko
-blocklist nova.ko
-blocklist nova_core.ko
-
 # Phase K1: NVIDIA's own kernel modules load only on the NVIDIA (proprietary) entry (init.pc.rc).
 blocklist nvidia.ko
 blocklist nvidia-modeset.ko

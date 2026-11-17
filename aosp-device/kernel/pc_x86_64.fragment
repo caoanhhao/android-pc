@@ -2,7 +2,7 @@
 # Applied on top of the GKI gki_defconfig plus the virtual-device fragments (copied next to
 # this file by tools/gki-build.sh), so the modules both builds share get the same config.
 # Only tristate options set to =m and driver-local bools: nothing here may change vmlinux,
-# which comes from //common:kernel_x86_64 (plus gki_rust_defconfig, see there).
+# which comes from //common:kernel_x86_64.
 #
 # Already built into the GKI image: NVMe, xHCI, usb-storage + UAS, USB HID + hid-generic,
 # evdev, uvcvideo, snd-usb-audio, ACPI button, RTC CMOS, intel_pstate, intel_idle, VFAT.
@@ -45,19 +45,3 @@ CONFIG_ACPI_FAN=m
 CONFIG_ACPI_AC=m
 CONFIG_ACPI_BATTERY=m
 
-# NVIDIA RTX 4070 (AD104) through nouveau with GSP-RM (Phase G1, docs/nvidia.md). Loaded only
-# on the Limine entry with androidboot.android_pc.gpu=nouveau (init.pc.rc); the GKI image
-# already has DRM, KMS helpers and TTM built in. Selected as modules: drm_display_helper,
-# drm_exec, drm_gpuvm, drm_ttm_helper, gpu-sched, i2c-algo-bit, ACPI video, WMI, MXM-WMI.
-# FW_CACHE (selected too) only touches vmlinux code and so stays off in the real kernel.
-CONFIG_DRM_NOUVEAU=m
-# CONFIG_DRM_NOUVEAU_CH7006 is not set
-# CONFIG_DRM_NOUVEAU_SIL164 is not set
-# CONFIG_WMI_BMOF is not set
-
-# NVIDIA's Rust driver Nova (Phase G6, docs/nvidia.md): nova-core (GSP boot) and the nova DRM
-# driver, loaded only on the Limine entry with androidboot.android_pc.gpu=nova. NOVA_CORE
-# selects RUST_FW_LOADER_ABSTRACTIONS, a vmlinux bool: gki_rust_defconfig sets it in the GKI
-# image too, so both configs agree.
-CONFIG_NOVA_CORE=m
-CONFIG_DRM_NOVA=m

@@ -17,24 +17,8 @@ DEST=$ROOT/aosp/device/android-pc/kernel/6.18
 STEPS=${STEPS:-"gki virt pc nvidia install firmware"}
 # --notrim: export every symbol the GKI image has (vendor modules use more than the KMI
 # symbol lists); --lto=none: much faster and lighter than the release LTO build.
-# --defconfig_fragment (Phase G6, docs/nvidia.md on branch gpu-alternatives):
-# CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y in the GKI image itself. It is a bool that adds kernel::firmware to the Rust kernel crate, which
-# lives in vmlinux; nova-core (a vendor module) calls it. Every step must pass the same flag,
-# or the vendor builds would rebuild their base kernel without it.
-FLAGS=(--notrim --lto=none --defconfig_fragment=//android-pc:gki_rust_defconfig ${BAZEL_FLAGS:-})
+FLAGS=(--notrim --lto=none ${BAZEL_FLAGS:-})
 [ -d "$GKI/common" ] || { echo "gki-build: no kernel checkout in $GKI (see docs/usb-boot-aosp17.md)"; exit 1; }
-
-# Patches to the kernel tree itself (nouveau is an in-tree module), applied once:
-# - gki-nouveau-gsp-thermal.patch (Phase G5, docs/nvidia.md on branch gpu-alternatives): GPU
-#   temperature as hwmon temp1_input and a debugfs "perf" entry (GSP-RM's P-state) for GPUs booted with GSP-RM.
-# - gki-nova-boot-log.patch (Phase G6): nova-core reports VRAM, WPR2 and how far its GSP
-#   boot got at info level (dev_dbg! is compiled out of release kernels).
-# - gki-vrealloc-export.patch (Phase G6): exports vrealloc_node_align_noprof, which Rust modules
-#   using VVec/KVVec call directly because RUST_INLINE_HELPERS inlines the Rust helpers.
-for p in gki-nouveau-gsp-thermal.patch gki-nova-boot-log.patch gki-vrealloc-export.patch; do
-  git -C "$GKI/common" apply --reverse --check "$ROOT/tools/patches/$p" 2>/dev/null && continue
-  git -C "$GKI/common" apply "$ROOT/tools/patches/$p" || { echo "gki-build: $p does not apply"; exit 1; }
-done
 
 # Our Kleaf package: this repo's aosp-device/kernel plus generated files.
 rsync -a --delete --exclude pcfb/gen "$ROOT/aosp-device/kernel/" "$PKG/"
@@ -72,7 +56,9 @@ check efidrm_impl.h '"virtio_gpu"'; check efidrm_impl.h 'ret = 0;'; check efidrm
 check drm_sysfb_helper.h '+ 4)'; check drm_sysfb_modeset.c 'DRM_FORMAT_ABGR8888,'
 check drm_sysfb_modeset.c 'pcfb_blit(&dst'; check drm_sysfb_modeset.c $'\tret = 0;'; check drm_sysfb_modeset.c '#include "../pcfb.h"'
 
-bazel_run() {   # bazel_run TARGET: build and install a dist target, with retries
+bazel_run() {   # bazel_run TARGET DIST: build and install a dist target, with retries
+  # pkg_install only adds files: clear DIST first, or modules dropped from the config stay there.
+  rm -rf "$GKI/out/$2/dist"
   for try in 1 2 3; do
     while pgrep -x 'soong_ui|soong_build|siso|ninja|cargo|rustc' >/dev/null || pgrep -f GradleDaemon >/dev/null; do
       echo "other build running, waiting"; sleep 60; done
@@ -84,9 +70,9 @@ bazel_run() {   # bazel_run TARGET: build and install a dist target, with retrie
 }
 
 for s in $STEPS; do case $s in
-  gki)  bazel_run //common:kernel_x86_64_dist ;;
-  virt) bazel_run //common-modules/virtual-device:virtual_device_x86_64_dist ;;
-  pc)   bazel_run //android-pc:pc_x86_64_dist ;;
+  gki)  bazel_run //common:kernel_x86_64_dist kernel_x86_64 ;;
+  virt) bazel_run //common-modules/virtual-device:virtual_device_x86_64_dist virtual_device_x86_64 ;;
+  pc)   bazel_run //android-pc:pc_x86_64_dist pc_x86_64 ;;
   # Phase K1 (docs/nvidia-proprietary.md): NVIDIA's open kernel modules, built outside Kleaf
   # against the GKI image; skipped (with a note) when gki/nvidia-open is not checked out.
   nvidia)
@@ -119,13 +105,6 @@ for s in $STEPS; do case $s in
     for f in "$FW"/rtl_nic/rtl8125*.fw.zst "$FW"/intel/ibt-1040-0041.{sfi,ddc}.zst; do
       rel=${f#$FW/}
       zstd -q -d -f "$f" -o "$FWD/${rel%.zst}" || exit 1
-    done
-    # RTX 4070 (AD104) for nouveau (Phase G1): the GSP-RM 570.144 set nouveau asks for
-    # (nvkm/subdev/gsp/ad102.c). ad104 is a symlink to ad102 in linux-firmware, and gsp-*.bin
-    # a symlink to ga102's; zstd follows both, so real files land under nvidia/ad104/gsp.
-    mkdir -p "$FWD/nvidia/ad104/gsp" || exit 1
-    for n in booter_load booter_unload bootloader gsp; do
-      zstd -q -d -f "$FW/nvidia/ad104/gsp/$n-570.144.bin.zst" -o "$FWD/nvidia/ad104/gsp/$n-570.144.bin" || exit 1
     done
     # NVIDIA's own driver (Phase K1): GSP-RM and its ucode bundle for Ampere/Ada (ga10x: the
     # RTX 4070), from the host's nvidia-utils, at the version of tools/nvidia-build.sh (nvidia.ko
