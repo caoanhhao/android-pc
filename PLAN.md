@@ -848,8 +848,8 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   Build `eng.caoanh.20261117.0224`, stick image `out/aosp17-usb-l4a.img` (entry "Android 17,
   NVIDIA (proprietary)"). Details in docs/nvidia-native.md, L4. Real-PC check pending.
   Native Vulkan for WWM (no ANGLE): not reachable. The game's checker picks ES3 without probing,
-  even with a faked Adreno 750 GPU name and a Galaxy S24 Ultra identity, and the server gives this
-  Android release only GLES shaders (docs/nvidia-native.md, L4).
+  even with a faked Adreno 750/840 GPU name and a Galaxy S24/S26 Ultra identity, and the server
+  gives this Android release only GLES shaders (docs/nvidia-native.md, L4).
 
 Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
 removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm

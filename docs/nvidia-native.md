@@ -386,24 +386,64 @@ build); on the real PC WWM runs on the "Android 17, NVIDIA (proprietary)" entry.
 
 **Native Vulkan (2026-11-17): not reachable from the device side.** The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
-process). The game never loads the arm64 `libvulkan`, so the proxy is not the blocker. What decides:
-- The patcher's checker (encrypted Lua) writes `enter check` / `checker choose ES3` /
-  `checker:shader_prereg skip reason=disabled by toggle` at once, with no Vulkan probe, then
-  `last_graphics_api.tag` = `es3`; `Driver:check_prefer_driver res=nil`.
-- It stays ES3 with the Vulkan features declared (`android.hardware.vulkan.version` 1.3, level 1,
-  from the cf.vulkan APEX), with GL_RENDERER faked to `Adreno (TM) 750` (gpuid.conf: the device
-  check reports `SUCC_adreno (tm) 750`), and with a Galaxy S24 Ultra identity (ro.product.* samsung
-  SM-S9280, ro.soc.model SM8650: the patch log's `device_model` shows it).
-- The server's package list (`patch_conf.json` `known_list`) has a GLES shader package (`es3`) and
-  no Vulkan one: this Android release gets no Vulkan shaders, so a forced Vulkan backend would have
-  nothing to run. Changing the choice means editing the game's encrypted scripts (anti-tamper,
-  account risk), which this project does not do.
+process). The game never loads the arm64 `libvulkan` (`/proc/<pid>/maps` has only the arm64
+`libEGL`/`libGLESv2`/`libGLESv3` proxies; the x86 `libvulkan`/`vulkan.nvidia` there are ANGLE's), so
+the proxy is not the blocker: nothing asks it for Vulkan.
+
+What the game's start-up logs show (`LocalData/patch_log/*.txt` in
+`/sdcard/Android/data/com.netease.yyvn/files`; the patcher and its checker are encrypted Lua):
+
+1. The checker runs first and decides at once, with no Vulkan probe in between:
+   ```
+   enter check
+   checker choose ES3
+   checker:shader_prereg skip reason=disabled by toggle
+   checker after check
+   ```
+   It writes `LocalData/last_graphics_api.tag` = `es3` (and `Patch/driver.tag` = `es3`).
+2. The patcher then logs the inputs it reports, and its own driver choice:
+   ```
+   {..."device_model":"samsung#SM-S9480#0#4#2#","gpu":"Adreno (TM) 840",...}
+   ------> on device checked...: valid=true reason=SUCC_adreno (tm) 840
+   Driver:check_prefer_driver start
+   Driver:check_prefer_driver res=nil
+   StagePatchList:collect_known_fenbaos package=[kaifeng, es3, waiguan, ..., pkg, pvp] es3
+   StagePatchList:fetch_patchlist res=ok from=fetched patchlist=patchlist_mid_es3.txt
+   ```
+   `device_model` is `ro.product.manufacturer#ro.product.model#?#CPU count#?`; `gpu` is GL_RENDERER
+   from a GLES context (ANGLE, so gpuid.conf can change it). `check_prefer_driver res=nil`: no
+   preferred driver for this device, so the default stays.
+3. The package list comes from one file per platform and channel
+   (`patchmd5_global_publish_android_formal_o_fenbao.txt`, not per device). Its graphics package is
+   `es3` (shader cache `Patch/Shader/es3.shader.config`); there is no Vulkan (`vk`/`vulkan`) package.
+
+Tried, each with the checker's cache cleared first (`last_graphics_api.tag`, `patch_conf.json*`,
+`Patch/driver.tag`, `engine_features_*.txt`; account kept) and the result checked in a new log:
+
+| Identity (ro.product.*, ro.soc.*) | GL_RENDERER (gpuid.conf) | Checker | Packages |
+|---|---|---|---|
+| android-pc x86_64, vsoc_x86_64_only | ANGLE (NVIDIA, Vulkan 1.4.357 ...) | ES3 | es3 |
+| samsung SM-S9280 (Galaxy S24 Ultra), SM8650 | Adreno (TM) 750 | ES3 | es3 |
+| samsung SM-S9480 (Galaxy S26 Ultra), SM8850, ro.board.platform canoe | Adreno (TM) 840 | ES3 | es3, fetched fresh from the server |
+
+Android declares Vulkan in all three (`android.hardware.vulkan.version` 1.3 = 4206592, level 1,
+compute, `android.software.vulkan.deqp.level`, from the cf.vulkan APEX). Inputs not changed:
+`ro.hardware` (`cutf_cvm`, from the kernel command line), the 4 vCPUs (the VM cap; a real S26 has
+8 cores), the ABI list (`x86_64,arm64-v8a`: the game runs translated). The engine's configs allow
+Vulkan (`Engine/Config/Platform.bin`: `EnableVulkan` default True, with a windows-only rule;
+GlobalOptions has Vulkan PSO options), so the choice is the checker's.
+
+Conclusion: the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
+scripts, before any Vulkan call; the identity and GPU name a real Vulkan-capable phone reports do
+not change it, and the server gives this Android release GLES shaders only, so a forced Vulkan
+backend would have no shaders to run. Changing it means editing the game's scripts or APK
+(anti-tamper, account risk), which this project does not do.
+
 The GLES path (ANGLE on vulkan.nvidia) stays. The real-PC crash on it (pclog boot-30
 tombstone_14: SIGSEGV at 0x1cd in libnvidia-eglcore under ANGLE
 `UpdateDescriptorSetsBuilder::flushDescriptorSetUpdates` <- `glDrawArrays`, after 4 min; the next run
-went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` still has the
-S24 identity in its /product overlay (`/data/local/tmp/product-build.prop.orig` restores it) and the
-Adreno line in /vendor/etc/gpuid.conf.
+went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` is back to
+the PC identity (the S26 run's logs: `out/vfio-l4/vk/s26-patch-logs.txt`).
 
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
