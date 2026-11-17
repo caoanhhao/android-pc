@@ -307,7 +307,7 @@ Limine uses another mode if the monitor lacks it; `auto` lets Limine pick the mo
 preferred mode from its EDID, which gave 1920x1080 on the first boot), `--density N`
 (default 160 since H4, 240 before; see `docs/desktop-mode.md`), `--append "WORDS"`,
 `--enforcing` (SELinux enforcing;
-default permissive so `pclog.sh` runs), `--menu`, `--product DIR`. The build's `super.img`
+default permissive so `pclog.sh` runs), `--product DIR`. The build's `super.img`
 is an Android sparse image (Cuttlefish unsparses it in place when it runs, so it may also
 be raw): the script handles both.
 
@@ -325,15 +325,10 @@ GPT layout (for the 57.3 GiB SanDisk of the tests):
 | `userdata` | the rest (48.6 GiB) | zero (fs_mgr formats a wiped formattable partition) |
 
 Limine: one entry, "Android 17", no menu (`timeout: 0`): the RTX 4070 on NVIDIA's own driver
-(Phase L, `docs/nvidia-native.md`). `--menu` gives a 5 s menu whose first entry, the default,
-is that same "Android 17", followed by fallbacks without a GPU driver (pcfb on the UEFI
-framebuffer): **SELinux permissive**, **SELinux enforcing**, **kernel log on screen**
-(`earlycon=efifb keep_bootcon`, slow, for boots that stop before Android draws) and
-**no display driver at all** (to tell a display problem from the rest).
-The menu does not remember the last entry (H1 did, `remember_last_entry: yes`, while the GPU
-had several entries): a fallback picked once for debugging does not stay the default. Each
-entry has a comment: the fallbacks cannot send sound to a monitor on the NVIDIA card, the
-NVIDIA entry can (`docs/rust-hals.md`, "NVIDIA without a GPU driver").
+(Phase L, `docs/nvidia-native.md`), which also sends sound to a monitor on the card
+(`docs/rust-hals.md`, "NVIDIA without a GPU driver"). The earlier `--menu` (pcfb entries for
+SELinux enforcing, the kernel log on screen, no pcfb, and the other GPU paths) is on branch
+`gpu-alternatives`; `--append` adds words for a one-off debug image.
 
 A stick that already runs Android is updated with `tools/update-usb-aosp17.sh` instead,
 which keeps apps, accounts and data (§10). The `dd` commands below are only for a new,

@@ -391,7 +391,7 @@ one session each, one build at a time (H1 first).
 - **H1 — no sound from the monitor** (RTX 4070 HDMI/DP). The NVIDIA codec sends audio only once
   a GPU driver enables it with the mode, which pcfb never does; the Limine menu says so on each
   entry (`comment:`). The nouveau entry it pointed to is on branch `gpu-alternatives`; on `main`
-  the default entry runs NVIDIA's driver and gives the monitor's sound (`docs/rust-hals.md`, "NVIDIA without a GPU driver").
+  the only entry runs NVIDIA's driver and gives the monitor's sound (`docs/rust-hals.md`, "NVIDIA without a GPU driver").
 - **H2 — TikTok's passkey button does nothing** (after Google sign-in, identity check
   page). Status (2026-11-15): fix done, real-PC check pending. TikTok asks Credential
   Manager for a passkey; microG's `RemoteService` answers with only a remote (hybrid)
@@ -600,7 +600,7 @@ firmware (checked in the VFIO VM; real-PC check pending).
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
 - The host CPU is flaky under build load (see `docs/aosp-build.md`, "Flaky host").
-- The RTX 4070 renders on the default "Android 17" entry, on NVIDIA's binary userspace
-  (620.70.06, personal use only); the `--menu` fallback entries run on the UEFI GOP framebuffer
-  (`pcfb`) with SwiftShader. NVIDIA tests run in the VFIO VM (`tools/run-qemu-aosp17-vfio.sh`) before
+- The RTX 4070 renders on the stick's only boot entry, on NVIDIA's binary userspace
+  (620.70.06, personal use only); there is no pcfb fallback entry on `main` (it is on branch
+  `gpu-alternatives`, with `--menu`). NVIDIA tests run in the VFIO VM (`tools/run-qemu-aosp17-vfio.sh`) before
   the real PC.

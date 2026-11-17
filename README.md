@@ -135,15 +135,13 @@ First install on a new stick (the only time the whole stick is written):
 
 ```bash
 lsblk -o NAME,SIZE,MODEL,TRAN
-tools/mkusb-aosp17.sh --menu --disk /dev/sdX out/aosp17-usb.img
+tools/mkusb-aosp17.sh --disk /dev/sdX out/aosp17-usb.img
 ```
 
 `--disk` sizes `userdata` to fill that stick (no root needed; it refuses disks that are not on
 USB). The script prints the commands that write the image to the stick. Other options:
 `--resolution WxH` (default 2560x1080), `--density N` (default 160), `--enforcing`,
-`--append "WORDS"`. Every image boots the RTX 4070 on NVIDIA's driver; `--menu` adds
-fallback Limine entries without a GPU driver (UEFI framebuffer: SELinux permissive or
-enforcing, the kernel log on screen, no display driver). Partition layout: [docs/usb-boot-aosp17.md §5](docs/usb-boot-aosp17.md#5-the-stick-image).
+`--append "WORDS"`. The image has one boot entry, no menu: the RTX 4070 on NVIDIA's driver. Partition layout: [docs/usb-boot-aosp17.md §5](docs/usb-boot-aosp17.md#5-the-stick-image).
 
 ### 7. Update a stick without losing data
 
@@ -152,7 +150,7 @@ Every later build goes onto the stick **in place**: only the OS partitions (ESP,
 `userdata` stay. Make the image with the same options as the stick, without `--disk`:
 
 ```bash
-tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-new.img
+tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-new.img
 tools/update-usb-aosp17.sh --dry-run out/aosp17-usb-new.img /dev/sdX
 tools/update-usb-aosp17.sh out/aosp17-usb-new.img /dev/sdX
 ```

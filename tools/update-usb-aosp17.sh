@@ -5,7 +5,7 @@
 #   tools/update-usb-aosp17.sh [options] NEW.img TARGET
 #
 # NEW.img: an image made by tools/mkusb-aosp17.sh from the new build (any userdata size,
-#          e.g. `tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-f9.img`).
+#          e.g. `tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-f9.img`).
 # TARGET:  the stick (/dev/sdX, whole disk) or a stick image file.
 #
 # Run it as yourself, not with sudo: for a stick it asks for the sudo password once, at the

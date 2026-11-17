@@ -959,7 +959,7 @@ tessellation shaders, ASTC LDR, sample shading, texture buffers, and the rest.
   ES 3.2, which contains AEP. `ro.opengles.version` there still says 3.1 on purpose
   (`docs/nvidia.md` on branch `gpu-alternatives`, G4: raise it per entry once
   dEQP-GLES31/32 passes on NVK). The NVK entry is on that branch now; on `main` the GPU entry
-  is the default "Android 17" (ANGLE on vulkan.nvidia, `docs/nvidia-native.md`, L4).
+  is the only one, "Android 17" (ANGLE on vulkan.nvidia, `docs/nvidia-native.md`, L4).
 
 So the device-side fix is AEP and ES 3.2 on the GPU entry only: a per-entry feature file
 (for example bind-mounted by `init.pc.rc` on that entry before `system_server` starts) and

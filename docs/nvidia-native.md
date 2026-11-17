@@ -204,8 +204,8 @@ and bootstrap linker/libc, i.e. the system image) and the vendor image, built by
 ## L3. Android Vulkan HAL and gralloc on NVIDIA's own driver
 
 Goal: SurfaceFlinger, HWUI and every app draw with NVIDIA's own Vulkan driver, loaded in-process,
-on the default "Android 17" boot entry (named "Android 17, NVIDIA (proprietary)" until it became
-the default, 2026-11-17). No CPU rendering path on that entry: if
+on the "Android 17" boot entry, the stick's only one (named "Android 17, NVIDIA (proprietary)"
+in the menu before 2026-11-17). No CPU rendering path on that entry: if
 the driver fails, SurfaceFlinger fails and logcat says why.
 
 ```
@@ -627,8 +627,7 @@ saved `out/vfio-l4/vk/initrd.img.pc-orig` (bootconfig with cutf_cvm), restore th
 `tools/run-qemu-aosp17-vfio.sh [IMAGE]` boots an image like `tools/run-qemu-aosp17-usb.sh`
 (same lock, E-cores, 4 vCPUs, 4 GB) with the RTX 4070's PCI functions (GPU and HDMI audio)
 passed through, so the NVIDIA entries can be tested without writing the stick and rebooting
-the PC. Since 2026-11-17 every image boots the NVIDIA entry by default (the single entry, or entry 1
-of `--menu`), so any image works. Before that the single entry was pcfb and the NVIDIA
+the PC. Since 2026-11-17 every image has a single entry, NVIDIA's, so any image works. Before that the single entry was pcfb and the NVIDIA
 entry's words went in with `--append` (the entry's own words override the defaults):
 
 ```

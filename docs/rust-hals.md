@@ -531,11 +531,10 @@ still the pcfb entry. On the nouveau entries the sound follows the screen: when 
 turns the screen off, drm_hwcomposer disables the CRTC, nouveau turns the output's audio
 off, the jack goes off, and media moves to the onboard codec until the screen is back.
 
-On `main` today the nouveau entries are on branch `gpu-alternatives`; the default entry,
+On `main` today the nouveau entries are on branch `gpu-alternatives`; the only entry,
 "Android 17" (NVIDIA's driver, formerly "Android 17, NVIDIA (proprietary)"), gives the codec
 its ELD the same way, through nvidia-drm's modeset (`docs/nvidia-proprietary.md`, K4), and
-the checks below apply to it. The menu no longer remembers the last entry: with the GPU on
-the default entry, a pcfb fallback picked once must not stay the default.
+the checks below apply to it. The stick now has only that entry, no menu.
 
 What to check on the real PC (nouveau entry, monitor on the RTX 4070): `state-*.txt`
 `== hdmi eld` shows `monitor_present 1`, `eld_valid 1` on one pin with the monitor's name,

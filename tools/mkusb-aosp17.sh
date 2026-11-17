@@ -28,19 +28,16 @@
 #                          monitor lacks it); "auto": Limine picks the EDID preferred mode
 #          --density N     androidboot.lcd_density (default 160: 1 dp = 1 px, a desktop-sized
 #                          UI for mouse and keyboard; 240 is the earlier, touch-sized one)
-#          --append "WORDS" extra kernel command line for every entry
+#          --append "WORDS" extra kernel command line for the boot entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
-#          --menu          a Limine menu with fallback entries (default: one entry, no menu).
-#                          Every image boots the RTX 4070 on NVIDIA's own driver (Phase L) by
-#                          default; the menu adds entries without a GPU driver (UEFI
-#                          framebuffer, pcfb): permissive, enforcing, kernel log on screen,
-#                          and no display driver at all
+# Limine boots one entry, no menu: the RTX 4070 on NVIDIA's own driver (Phase L). The menu
+# with other GPU paths and pcfb fallbacks is on branch gpu-alternatives.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
-userdata_mib=4096 resolution=2560x1080 density=160 extra="" enforcing=0 menu=0 disk="" out=""
+userdata_mib=4096 resolution=2560x1080 density=160 extra="" enforcing=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --product) product="$2"; shift ;;
@@ -49,9 +46,8 @@ while [[ $# -gt 0 ]]; do
         --density) density="$2"; shift ;;
         --append) extra="$2"; shift ;;
         --enforcing) enforcing=1 ;;
-        --menu) menu=1 ;;
         --disk) disk="$2"; shift ;;
-        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         -*) echo "mkusb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) out="$1" ;;
     esac
@@ -149,7 +145,7 @@ pc_cmdline=$(echo $pc_cmdline)   # squeeze spaces
 # are per entry (on the command line, not in the shared bootconfig, which would win): ranchu
 # with finder "drm" (pcfb) and SwiftShader's Vulkan ("pastel") unless the entry sets its own.
 composer_apex=androidboot.vendor.apex.com.android.hardware.graphics.composer
-entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
+entry() {   # entry NAME EXTRA-CMDLINE
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
     local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
     local vulkan=androidboot.hardware.vulkan=pastel
@@ -161,7 +157,6 @@ entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
     [[ $own == *androidboot.opengles.version=* ]] && gles=
     cat <<EOF
 /$1
-$([[ -n ${3:-} ]] && echo "    comment: $3")
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
@@ -198,28 +193,7 @@ nvp="pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
 # starts (vulkan.nvidia only starts it at vkCreateInstance now, docs/nvidia-native.md).
 nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true"
 nvidia="$permissive $nvp $nvl3 $drm"
-if [[ $menu == 1 ]]; then
-    {
-        # The NVIDIA entry is the default and boots every time unless another one is picked
-        # in the 5 s menu: no remember_last_entry, so a fallback picked once (to debug) does
-        # not stay the default.
-        echo "timeout: 5"
-        echo "default_entry: 1"
-        echo
-        # The RTX 4070 sends audio over HDMI/DP only when its driver (NVIDIA's, through
-        # GSP-RM) enables it with the mode; on pcfb (the GOP framebuffer) the codec never
-        # sees the monitor (docs/rust-hals.md, "NVIDIA without a GPU driver").
-        nosound="Fallback, UEFI framebuffer: no GPU driver, no sound from a monitor on the NVIDIA card"
-        sound="NVIDIA driver: sound plays on the monitor (HDMI/DP) when one is connected"
-        entry "Android 17" "$nvidia" "$sound"
-        entry "Android 17, no GPU driver (SELinux permissive)" "androidboot.selinux=permissive" "$nosound"
-        entry "Android 17, no GPU driver (SELinux enforcing)" "" "$nosound"
-        entry "Android 17, no GPU driver, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
-        entry "Android 17, no display driver at all (debug)" "androidboot.selinux=permissive pcfb.enable=0"
-    } > "$work/limine.conf"
-else
-    { echo "timeout: 0"; echo; entry "Android 17" "$nvidia"; } > "$work/limine.conf"
-fi
+{ echo "timeout: 0"; echo; entry "Android 17" "$nvidia"; } > "$work/limine.conf"
 
 # --- partitions -------------------------------------------------------------------------
 # name size(MiB) type source   (source: file to copy, "fat:LABEL", or "zero")

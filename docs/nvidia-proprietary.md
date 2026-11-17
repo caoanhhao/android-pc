@@ -17,7 +17,7 @@ vtest server (K2), Mesa Venus, the minigbm `vtest` gralloc and ANGLE's gpuid (K3
 test entries are on branch `gpu-alternatives`, with this document's full version. The sections
 below are a dated log: where they mention Venus, the sidecar, the "NVIDIA (proprietary, Venus)"
 entry name, or the nouveau and Nova entries, they describe the stick at that date; today the
-default entry, "Android 17", runs NVIDIA's driver with Phase L's graphics stack.
+only entry, "Android 17", runs NVIDIA's driver with Phase L's graphics stack.
 
 ## K1. nvidia-open kernel modules on GKI android17-6.18
 
@@ -32,7 +32,7 @@ default entry, "Android 17", runs NVIDIA's driver with Phase L's graphics stack.
 | Blocklist | `aosp-device/pc/modules.blocklist` | the four modules, so the boot-time module load skips them on every entry |
 | Init | `aosp-device/pc/init.pc.rc`, `pcnvidia.sh` | on `ro.boot.android_pc.gpu=nvidia`: modprobe, device nodes, composer settings |
 | gralloc | `tools/patches/aosp17-minigbm-nvidia.patch` (Phase L3; K1 used dumb buffers) | minigbm's `nvidia` backend for the DRM driver `nvidia-drm` |
-| Boot entry | `tools/mkusb-aosp17.sh --menu` | **"Android 17, NVIDIA (proprietary)"** (K1 named it "..., Venus") |
+| Boot entry | `tools/mkusb-aosp17.sh` | **"Android 17"**, the only entry (was "Android 17, NVIDIA (proprietary)" in `--menu`; K1 named it "..., Venus") |
 | Logs | `aosp-device/pc/pclog.sh` | `== nvidia modules`, `== nvidia dmesg`, `== /proc/driver/nvidia`, `== /dev/nvidia*`, `== drm cards`, `== modetest -c nvidia-drm` |
 
 ### Building against the GKI image
