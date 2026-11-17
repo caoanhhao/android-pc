@@ -194,6 +194,14 @@ stick in use: that wipes `userdata`.
 | `tools/vm-wait.sh` | Sourced by every VM launcher: takes a lock and waits until no other QEMU/Cuttlefish runs |
 | `tools/mk-test-disks.sh [DIR]` | Creates virtual NVMe/SATA/USB disks for the external-storage test and prints the `QEMU_EXTRA` line |
 
+### Waydroid ([tools/waydroid/README.md](tools/waydroid/README.md))
+
+| Tool | What it does |
+|---|---|
+| `tools/waydroid/nvidia-build.sh [--no-aosp]` | Builds the overlay with NVIDIA's own Vulkan driver for Waydroid's Android 13 |
+| `tools/waydroid/nvidia-install.sh [--uninstall]` | Installs it into Waydroid (backup first), or restores the backup |
+| `tools/waydroid/nvidia-hosttest.sh` | Runs the Vulkan test on Waydroid's own linker and libc against the host GPU |
+
 ### Tests and checks
 
 | Tool | What it does |
@@ -215,6 +223,7 @@ stick in use: that wipes `userdata`.
 | [docs/arm-translation.md](docs/arm-translation.md) | ARM64 apps, microG, Play Store, games |
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`) |
+| [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
 
 ## Licensing note
 

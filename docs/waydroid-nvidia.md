@@ -237,4 +237,5 @@ Open:
   iGPU compositor cannot show NVIDIA block-linear video memory.
 - **YUV** (video frames, camera) stays linear on the Intel iGPU, which `vulkan.nvidia` does not
   image.
-- 32-bit and arm (libhoudini) apps have no NVIDIA driver (NVIDIA's userspace here is x86_64 only).
+- 32-bit apps have no NVIDIA driver (NVIDIA's userspace here is x86_64 only); arm64 apps reach
+  it through libhoudini's native bridge (Where Winds Meet, above).
