@@ -17,6 +17,16 @@ on early-init && property:ro.boot.hardware.vulkan=nvidia
     setprop ro.vulkan.apex ""
     setprop debug.renderengine.backend skiavkthreaded
 
+# pcnvidia.sh (init.pc.rc, post-fs) creates /dev/nvidia* as su, so they carry /dev's label until
+# relabelled here (sepolicy/file_contexts), before class core and hal start at boot.
+on late-fs && property:ro.boot.android_pc.gpu=nvidia
+    restorecon /dev/nvidiactl
+    restorecon /dev/nvidia-modeset
+    restorecon /dev/nvidia0
+    restorecon /dev/nvidia-uvm
+    restorecon /dev/nvidia-uvm-tools
+    restorecon_recursive /dev/nvidia-caps
+
 # Phase L4: Where Winds Meet on its Vulkan renderer (pcwwmvk.sh creates the game's empty
 # LocalData/vulkan.tag; persist.vendor.android_pc.wwm_vulkan=0 turns it off). When user 0's
 # credential-encrypted storage is unlocked, not at boot_completed: /data/media/0 is CE, and with a

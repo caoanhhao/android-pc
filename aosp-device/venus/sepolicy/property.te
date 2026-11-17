@@ -1,4 +1,0 @@
-# Set by pcvenusprobe.sh (init.venus.rc, su on the permissive entry) and K4's pcnvdisplay; read by apps (Venus, the gralloc mapper).
-vendor_public_prop(vendor_venus_prop)
-set_prop(vendor_init, vendor_venus_prop)
-get_prop(domain, vendor_venus_prop)

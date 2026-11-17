@@ -31,15 +31,13 @@
 #          --append "WORDS" extra kernel command line for every entry
 #          --enforcing     boot with SELinux enforcing (default: permissive, so pclog.sh runs)
 #          --menu          a Limine menu with debug entries (default: one entry, no menu):
-#                          permissive, enforcing, kernel log on screen, no pcfb, NVIDIA
-#                          nouveau (Phase G: KMS desktop, VTS run), Nova (G6), NVIDIA (K)
+#                          permissive, enforcing, kernel log on screen, no pcfb, and
+#                          NVIDIA (proprietary): the RTX 4070 on NVIDIA's own driver (Phase L)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
-# Graphics VTS (Phase G2), copied to the ESP when built (m -j12 $vts_tests).
-vts_tests="VtsHalGraphicsComposer3_TargetTest VtsHalGraphicsAllocatorAidl_TargetTest VtsHalGraphicsMapperStableC_TargetTest"
 userdata_mib=4096 resolution=2560x1080 density=160 extra="" enforcing=0 menu=0 disk="" out=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -153,17 +151,15 @@ entry() {   # entry NAME EXTRA-CMDLINE [COMMENT]
     local finder=androidboot.hardware.hwcomposer.display_finder_mode=drm
     local composer=$composer_apex=com.android.hardware.graphics.composer.ranchu
     local vulkan=androidboot.hardware.vulkan=pastel
-    local gles=androidboot.opengles.version=196609   # ES 3.1 (the Venus probe sets its own, K3)
+    local gles=androidboot.opengles.version=196609   # ES 3.1
     local own="$2 $extra"   # the entry's words and --append's: either overrides a default
     [[ $own == *display_finder_mode=* ]] && finder=
     [[ $own == *$composer_apex=* ]] && composer=
     [[ $own == *androidboot.hardware.vulkan=* ]] && vulkan=
-    [[ $own == *androidboot.android_pc.vulkan=* ]] && vulkan=   # pcvkprobe chooses (J1)
     [[ $own == *androidboot.opengles.version=* ]] && gles=
-    [[ $own == *androidboot.android_pc.vulkan=venus* ]] && gles=   # pcvenusprobe chooses (K3)
     cat <<EOF
 /$1
-$([[ -n $3 ]] && echo "    comment: $3")
+$([[ -n ${3:-} ]] && echo "    comment: $3")
     protocol: linux
     path: boot():/android/kernel
     module_path: boot():/android/initrd.img
@@ -178,52 +174,24 @@ if [[ $menu == 1 ]]; then
         echo "timeout: 5"
         echo "default_entry: $(( enforcing + 1 ))"
         # H1: the entry picked last boots again (an EFI variable; default_entry until then),
-        # so a user who wants the monitor's speakers picks a nouveau entry once.
+        # so a user who wants the GPU and the monitor's speakers picks the NVIDIA entry once.
         echo "remember_last_entry: yes"
         echo
-        # The RTX 4070 sends audio over HDMI/DP only when its driver (nouveau, through
+        # The RTX 4070 sends audio over HDMI/DP only when its driver (NVIDIA's, through
         # GSP-RM) enables it with the mode; on pcfb (the GOP framebuffer) the codec never
         # sees the monitor (docs/rust-hals.md, "NVIDIA without a GPU driver").
-        nosound="Display on the UEFI framebuffer: no sound from a monitor on the NVIDIA card (pick an NVIDIA nouveau entry for that)"
+        nosound="Display on the UEFI framebuffer: no sound from a monitor on the NVIDIA card (pick the NVIDIA (proprietary) entry for that)"
         sound="NVIDIA driver: sound plays on the monitor (HDMI/DP) when one is connected"
         entry "Android 17 (SELinux permissive)" "androidboot.selinux=permissive" "$nosound"
         entry "Android 17 (SELinux enforcing)" "" "$nosound"
         entry "Android 17, kernel log on screen (slow)" "androidboot.selinux=permissive earlycon=efifb keep_bootcon loglevel=7"
         entry "Android 17, no pcfb display driver" "androidboot.selinux=permissive pcfb.enable=0"
-        # Phase G (docs/nvidia.md): the RTX 4070 through nouveau + GSP; pcfb stays off and
-        # init.pc.rc loads nouveau. G2: Android on drm_hwcomposer (KMS, native mode, hotplug).
-        nv="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nouveau"
         drm="$composer_apex=com.android.hardware.graphics.composer.drm_hwcomposer"
-        # K3 (docs/nvidia-proprietary.md): the graphics half of the NVIDIA proprietary entry, for
-        # its command line next to K1's modules and K4's composer: Vulkan is Venus over K2's vtest
-        # socket, GLES is ANGLE on it with ES 3.2 and the Android Extension Pack, HWUI is Skia on
-        # Vulkan. pcvenusprobe.sh (init.venus.rc) sets ro.hardware.vulkan and ro.opengles.version;
-        # no CPU fallback: without the sidecar's socket (QEMU) nothing draws.
-        venus="androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"
-        entry "Android 17, NVIDIA nouveau" "$nv $drm" "$sound"
-        # G3/G4: the whole graphics stack on the GPU. Vulkan is NVK (vulkan.nouveau in the
-        # com.google.cf.vulkan APEX) and GLES is ANGLE (androidboot.hardware.egl=angle) on it, so
-        # SurfaceFlinger's client composition for drm_hwcomposer, HWUI, Chromium and games all
-        # draw on the RTX 4070; SwiftShader (pastel) is not loaded on this entry. The entry
-        # above keeps SwiftShader on KMS as the fallback. pcvktest.sh runs vkjson and the
-        # dEQP-VK and dEQP-GLES3 smoke groups here once per build (pclog boot-N/vk/, gles/).
-        # J1: the entry asks for NVK with androidboot.android_pc.vulkan; pcvkprobe (init.pc.rc,
-        # post-fs-data) sets ro.hardware.vulkan to nouveau when NVK creates a device, else to
-        # pastel, so the entry falls back to SwiftShader instead of a SurfaceFlinger crash loop.
-        entry "Android 17, NVIDIA GPU (NVK + ANGLE)" "$nv $drm androidboot.android_pc.vulkan=nouveau" "$sound"
-        # G2 check: the VTS composer/allocator/mapper subsets from the ESP (pclog.sh; Android
-        # restarts during the composer test). G1's "modetest only" entry passed and was removed
-        # in I4; --append "androidboot.android_pc.kms=modetest ..." still starts pcgpu.sh.
-        entry "Android 17, NVIDIA nouveau, VTS run" "$nv $drm androidboot.android_pc.vts=1"
-        # G6: NVIDIA's Rust drivers Nova (nova-core + nova DRM), an experiment: Android stays on
-        # pcfb (Nova has no display yet), nouveau is not loaded, pcnova.sh loads Nova after boot.
-        entry "Android 17, NVIDIA Nova (Rust driver experiment)" "androidboot.selinux=permissive androidboot.android_pc.gpu=nova"
         # Phase K (docs/nvidia-proprietary.md): NVIDIA's own driver. K1: the open kernel modules
         # (init.pc.rc loads nvidia-drm modeset=1 and nvidia-uvm), nouveau and Nova blacklisted,
-        # pcfb off, drm_hwcomposer on nvidia-drm with SwiftShader until K3/K4. cfi=kcfi: the
-        # DisplayPort library in nvidia-modeset is C++, whose virtual calls clang does not kCFI-check;
-        # FineIBT (the default on this CPU) removes the ENDBR they land on. K4: $venus (K3's
-        # graphics on K2's sidecar) and drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
+        # pcfb off. cfi=kcfi: the DisplayPort library in nvidia-modeset is C++, whose virtual
+        # calls clang does not kCFI-check; FineIBT (the default on this CPU) removes the ENDBR they
+        # land on. K4: drm_hwcomposer on the nvidia-drm card pcnvdisplay finds.
         # K1b: the first real-PC boot of this entry hung with no log. ",warn": NVIDIA's code has
         # never run under kCFI (distribution kernels build it with gcc), so a kCFI type mismatch
         # is logged with a backtrace instead of killing the kernel; softlockup_panic and
@@ -239,26 +207,12 @@ if [[ $menu == 1 ]]; then
         nvp="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia $nvdiag"
         # Phase L3 (docs/nvidia-native.md): NVIDIA's Vulkan driver as the device's own driver
         # (vulkan.nvidia through nvglibc), HWUI and SurfaceFlinger on Skia/Vulkan, ANGLE for GLES,
-        # minigbm's "nvidia" backend. No Venus, no sidecar, no CPU fallback.
+        # minigbm's "nvidia" backend. No CPU fallback.
         # No graphics driver preload in zygote (ro.zygote.disable_gl_preload): every fd zygote holds
         # at fork must be on its allowlist, and NVIDIA's driver keeps /dev/nvidia* open once it
         # starts (vulkan.nvidia only starts it at vkCreateInstance now, docs/nvidia-native.md).
         nvl3="androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk androidboot.hardware.guest_disable_renderer_preload=true"
         entry "Android 17, NVIDIA (proprietary)" "$nvp $nvl3 $drm" "$sound"
-        # Phase L1: the Xid 51 (BAD_TSG) hunt. The debug entry (pcfb plus the kernel log on the
-        # screen, driver loaded after boot) is gone: pcfb and earlycon kept writing to the UEFI
-        # framebuffer after nvidia.ko owned the GPU, which froze the PC both times. The L1 test
-        # entries load the same driver but start none of Phase K's GPU clients (gpu=nvidia-l1):
-        # pcnvtest.sh is the only Vulkan client, at fixed times (one device, two at once, many,
-        # then HIGH/REALTIME queue priority at 10 min, soak to 30 min), and the driver's kernel
-        # log shows in a strip on the right of the screen (PcLogStrip). Android itself draws on
-        # nvidia-drm without the GPU here: this entry tests the driver, not the desktop.
-        # The second one has the RM cores built by gcc as on the build host (cfi=off: gcc emits
-        # no kCFI hashes).
-        l1="androidboot.selinux=permissive pcfb.enable=0 androidboot.android_pc.gpu=nvidia-l1 androidboot.android_pc.nvtest=1 androidboot.android_pc.logstrip=1"
-        entry "Android 17, NVIDIA L1 test: driver + test client (log strip)" "$l1 $nvdiag $drm" "$sound"
-        entry "Android 17, NVIDIA L1 test: RM built by gcc (cfi=off)" \
-            "$l1 androidboot.android_pc.nvidia_rm=gcc cfi=off intel_iommu=off module_blacklist=nouveau,nova_core,nova softlockup_panic=1 nmi_watchdog=panic $drm" "$sound"
     } > "$work/limine.conf"
 else
     { echo "timeout: 0"; echo; entry "Android 17" "$permissive"; } > "$work/limine.conf"
@@ -344,13 +298,6 @@ for p in "${parts[@]}"; do
                 "$host/mcopy" -i "$fat" "$work/initrd.img" ::/android/initrd.img
                 "$host/mcopy" -i "$fat" "$work/bootconfig.txt" ::/android/bootconfig.txt
                 "$host/mcopy" -i "$fat" "$work/build.txt" ::/android/build.txt
-                # Phase G2: the graphics VTS binaries, run by pclog.sh on the "VTS run" entry
-                # (the ESP is rewritten by every update, unlike pclog).
-                vts=$(for t in $vts_tests; do ls "$product"/data/nativetest64/$t/$t 2>/dev/null; done)
-                if [[ -n $vts ]]; then
-                    "$host/mmd" -i "$fat" ::/android/vts
-                    for t in $vts; do "$host/mcopy" -i "$fat" "$t" ::/android/vts/; done
-                fi
             fi
             dd if="$fat" of="$out" bs=1M seek="$off" conv=notrunc,sparse status=none ;;
         zero) ;;   # the image file is sparse zeros already

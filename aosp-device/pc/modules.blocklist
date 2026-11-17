@@ -5,10 +5,9 @@ blocklist vkms.ko
 blocklist snd-aloop.ko
 blocklist vivid.ko
 
-# Phase G1: nouveau loads only on the nouveau boot entry (init.pc.rc), never at boot-time load.
+# nouveau (Phase G) and NVIDIA's Rust drivers Nova (G6): their boot entries are on branch
+# gpu-alternatives, but aosp-device/kernel still builds the modules; they must never load.
 blocklist nouveau.ko
-
-# Phase G6: NVIDIA's Rust drivers Nova load only on the nova boot entry (init.pc.rc, pcnova.sh).
 blocklist nova.ko
 blocklist nova_core.ko
 

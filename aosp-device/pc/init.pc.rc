@@ -49,137 +49,24 @@ service vendor.pclog /vendor/bin/pclog.sh
     disabled
     oneshot
 
-# NVIDIA RTX 4070 through nouveau (Phase G1, docs/nvidia.md), only on the Limine entry with
-# androidboot.android_pc.gpu=nouveau (pcfb.enable=0 there, so nothing touches the GOP
-# framebuffer nouveau takes over). nouveau.ko is in modules.blocklist, so the boot-time
-# module load skips it on every other entry; modprobe named explicitly ignores the list.
-# Card order (Phase I1): Cuttlefish's init.vendor.rc (init.cutf_cvm.rc) waits 5 s for a card0
-# and then loads vkms anyway. On this entry nothing has a card yet at that point (pcfb is off,
-# nouveau is loaded here, after it), so vkms took card0, nouveau card1, and drm_hwcomposer
-# (vendor.hwc.drm.device=/dev/dri/card0) drove vkms's virtual connector: no picture on the
-# monitor. vkms is unloaded first so nouveau gets card0 (DRM takes the lowest free minor),
-# then loaded again as card1 (unused on the PC; in QEMU, without the GPU, it is card0 and the
-# entry still runs on it).
-# atomic=1 (Phase J1): nouveau sets DRIVER_ATOMIC only with this module option (default off in
-# 6.18). Without it DRM_CLIENT_CAP_ATOMIC fails, drm_hwcomposer finds no pipeline and runs a
-# headless null display: the monitor stays black. Toybox modprobe does not read module options
-# from the kernel command line, so the option is given here.
-on early-init && property:ro.boot.android_pc.gpu=nouveau
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -r -d /vendor/lib/modules vkms.ko
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules nouveau.ko atomic=1
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -d /vendor/lib/modules vkms.ko
-
-# Android on KMS (Phase G2): drm_hwcomposer (picked by the entry's vendor APEX choice) drives
-# nouveau's card, at each monitor's preferred mode, with hotplug and a second monitor as an
-# external display; client composition stays on SwiftShader. minigbm allocates dumb buffers
-# through its "nouveau" backend on nouveau's render node (DRM_IOCTL_MODE_CREATE_DUMB is
-# DRM_RENDER_ALLOW in 6.18). Overlay planes are off: every layer goes through client
-# composition onto the primary plane, the one plane path known to work on every KMS driver.
-# Cuttlefish's vendor.hwc.drm.device=/dev/dri/card0 is nouveau's card here: pcfb is off and
-# vkms is reloaded after nouveau (see above).
-on early-init && property:ro.boot.android_pc.gpu=nouveau
-    setprop ro.vendor.hwc.use_overlay_planes 0
-
-# NVK entry (Phase J1): androidboot.android_pc.vulkan=nouveau leaves ro.hardware.vulkan unset in
-# early-init; pcvkprobe sets it before SurfaceFlinger and gpuservice start (class core, at
-# boot): "nouveau" when NVK creates a device on the GPU, "pastel" (SwiftShader) otherwise, so a
-# failing NVK costs the GPU speed, not the picture. The setprop after it is the fallback for a
-# probe that never set it (a ro property keeps its first value, so it does nothing otherwise).
-on post-fs-data && property:ro.boot.android_pc.vulkan=nouveau
-    exec u:r:su:s0 root graphics -- /system_ext/bin/pcvkprobe
-    setprop ro.hardware.vulkan pastel
-
-# G1's test (the entry with androidboot.android_pc.kms=modetest, on the composer's no-op
-# display): lights the monitor with a modetest pattern, the preferred mode on every connected
-# connector, so the GPU drives the HDMI/DP link and the HD Audio codec gets the monitor's ELD.
-# modetest holds DRM master, so never together with drm_hwcomposer.
-on post-fs-data && property:ro.boot.android_pc.kms=modetest
-    start vendor.pcgpu
-
-service vendor.pcgpu /vendor/bin/pcgpu.sh
-    user root
-    group root graphics
-    seclabel u:r:su:s0
-    disabled
-
-# NVIDIA's Rust drivers Nova (Phase G6, docs/nvidia.md), only on the Limine entry with
-# androidboot.android_pc.gpu=nova; nouveau is never loaded there. Nova has no display support
-# yet, so Android keeps pcfb (Nova maps only BAR0 and leaves the GOP framebuffer alone), and
-# pcnova.sh loads nova_core.ko and nova.ko once the system has booted, so that pclog is already
-# saving dmesg if the GPU hangs. Both are in modules.blocklist for every other entry.
-on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nova
-    start vendor.pcnova
-
-service vendor.pcnova /vendor/bin/pcnova.sh
-    user root
-    group root graphics
-    seclabel u:r:su:s0
-    oneshot
-    disabled
-
-# NVIDIA's own driver (Phase K1, docs/nvidia-proprietary.md), only on the Limine entry with
-# androidboot.android_pc.gpu=nvidia (pcfb.enable=0; nouveau and Nova are kept out by the
-# entry's module_blacklist). The open-gpu-kernel-modules are in modules.blocklist for every
-# other entry. pcnvidia.sh loads nvidia, nvidia-modeset, nvidia-drm modeset=1 (KMS and its
-# render node; toybox modprobe does not read module options from the kernel command line;
-# no fbdev=1, the GKI image has no fbdev emulation) and nvidia-uvm one at a time, moving vkms
-# off card0 first so nvidia-drm gets card0 (as on the nouveau entry, Phase I1; in QEMU,
-# without the GPU, nvidia.ko refuses to load and vkms is card0 again), then creates
-# /dev/nvidia*.
+# NVIDIA's own driver (Phase K1, docs/nvidia-proprietary.md; the device's GPU driver since Phase L,
+# docs/nvidia-native.md), only on the Limine entry with androidboot.android_pc.gpu=nvidia
+# (pcfb.enable=0; nouveau and Nova are kept out by the entry's module_blacklist). The
+# open-gpu-kernel-modules are in modules.blocklist for every other entry. pcnvidia.sh loads
+# nvidia, nvidia-modeset, nvidia-drm modeset=1 (KMS and its render node; toybox modprobe does not
+# read module options from the kernel command line; no fbdev=1, the GKI image has no fbdev
+# emulation) and nvidia-uvm one at a time, moving vkms off card0 first so nvidia-drm gets card0
+# (Cuttlefish's init.vendor.rc loads vkms in early-init, before any GPU driver has a card; in QEMU,
+# without the GPU, nvidia.ko refuses to load and vkms is card0 again), then creates /dev/nvidia*.
 # K1b: at post-fs, not early-init. In early-init nothing saves the kernel log yet (pclog
 # starts at init), and the first real-PC boot hung there with no log at all. post-fs is
-# still before K2's sidecar (late-fs) and K4's pcnvdisplay (post-fs-data); pcnvidia.sh waits
-# for pclog's mount and syncs between the steps.
+# still before init.nvgpu.rc relabels /dev/nvidia* (late-fs) and pcnvdisplay (post-fs-data);
+# pcnvidia.sh waits for pclog's mount and syncs between the steps.
 on post-fs && property:ro.boot.android_pc.gpu=nvidia
     exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh load
 
-# Phase L1 test entries (androidboot.android_pc.gpu=nvidia-l1): the same driver, but none of
-# Phase K's GPU clients (K2's sidecar, K3's Venus and K4's pcnvdisplay key on gpu=nvidia).
-# Android draws on its own (drm_hwcomposer on nvidia-drm's card0, minigbm dumb buffers), and
-# pcnvtest.sh is the only client of NVIDIA's Vulkan driver, at fixed times after boot.
-# pclogstrip.sh shows the driver's kernel log in a strip on the right of the screen.
-on post-fs && property:ro.boot.android_pc.gpu=nvidia-l1
-    exec u:r:su:s0 root root -- /vendor/bin/pcnvidia.sh load
-
-on early-init && property:ro.boot.android_pc.gpu=nvidia-l1
-    setprop ro.vendor.hwc.use_overlay_planes 0
-
-on property:sys.boot_completed=1 && property:ro.boot.android_pc.logstrip=1
-    start vendor.logstrip
-
-on property:sys.boot_completed=1 && property:ro.boot.android_pc.nvtest=1
-    start vendor.pcnvtest
-
-service vendor.logstrip /vendor/bin/pclogstrip.sh
-    user root
-    group root log
-    seclabel u:r:su:s0
-    disabled
-
-service vendor.pcnvtest /vendor/bin/pcnvtest.sh
-    user root
-    group root graphics
-    seclabel u:r:su:s0
-    oneshot
-    disabled
-
-# Until K3/K4 replace it: drm_hwcomposer (the entry's composer APEX) on nvidia-drm's card0 with
-# SwiftShader client composition, overlay planes off, minigbm dumb buffers on nvidia-drm's
-# render node (tools/patches/aosp17-minigbm-nvidia-dumb.patch), as G2 did on nouveau.
+# drm_hwcomposer (the entry's composer APEX) on nvidia-drm's card, overlay planes off:
+# SurfaceFlinger composes every layer (Skia on vulkan.nvidia) into its client target, and only
+# that buffer is scanned out on the primary plane.
 on early-init && property:ro.boot.android_pc.gpu=nvidia
     setprop ro.vendor.hwc.use_overlay_planes 0
-
-# Suspend on the nouveau entries (Phase G5, docs/nvidia.md). Cuttlefish's suspend_blocker
-# holds a wakelock forever; without it Android suspends the PC when the screen is off.
-# nouveau saves VRAM and restarts GSP-RM across a suspend; pcfb cannot (the firmware does not
-# set the GOP framebuffer up again on resume), so pcfb entries keep the blocker. pcwake.sh
-# lets keyboards wake the PC and turns the screen on after such a wake.
-on property:sys.boot_completed=1 && property:ro.boot.android_pc.gpu=nouveau
-    stop suspend_blocker
-    start vendor.pcwake
-
-service vendor.pcwake /vendor/bin/pcwake.sh
-    user root
-    group root input
-    seclabel u:r:su:s0
-    disabled

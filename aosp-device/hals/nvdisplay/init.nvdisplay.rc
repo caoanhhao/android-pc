@@ -2,13 +2,10 @@
 #
 # drm_hwcomposer (the entry's composer APEX) drives nvidia-drm (modeset=1): atomic commits,
 # the monitor's preferred mode, hotplug through DRM uevents, vsync from nvidia-drm's vblank
-# events, present fences from OUT_FENCE_PTR, and the client target's acquire fence (a Venus
-# sync_file from the vtest server, or -1) as the plane's IN_FENCE_FD, which nvidia-drm waits
-# for before the flip. Overlay planes stay off as on the nouveau entries
-# (ro.vendor.hwc.use_overlay_planes=0, set by K1's block in init.pc.rc): SurfaceFlinger
-# composes every layer (ANGLE on Venus, i.e. NVIDIA's Vulkan in the sidecar) into its client
-# target, and only that buffer is scanned out; pcnvdisplay makes sure its modifier is one the
-# primary plane takes.
+# events, present fences from OUT_FENCE_PTR, and the client target's acquire fence as the
+# plane's IN_FENCE_FD, which nvidia-drm waits for before the flip. Overlay planes stay off
+# (ro.vendor.hwc.use_overlay_planes=0, init.pc.rc): SurfaceFlinger composes every layer (Skia on
+# vulkan.nvidia) into its client target, and only that buffer is scanned out.
 #
 # Runs before class hal (composer, allocator) starts at boot. Waits up to 30 s for nvidia-drm's
 # card when an NVIDIA GPU is on the PCI bus, returns at once otherwise (QEMU).

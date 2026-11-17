@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Boot a tools/mkusb-aosp17.sh image in QEMU with the host's RTX 4070 passed through (VFIO),
-# so the NVIDIA boot entries (L1/L3: NVIDIA's own driver, nouveau) run on the real card in a
-# VM instead of on the PC from the stick.
+# so the NVIDIA (proprietary) boot entry (Phase L: NVIDIA's own driver) runs on the real card
+# in a VM instead of on the PC from the stick.
 #
 #   tools/run-qemu-aosp17-vfio.sh [IMAGE]    default out/aosp17-usb.img (not a --disk stick image:
 #                                            its userdata does not fit in the file)
 #   tools/run-qemu-aosp17-vfio.sh --release  give the card back to nvidia / snd_hda_intel
 #
-# The image must boot an NVIDIA entry: an image made without --menu has a single entry, so
+# The image must boot the NVIDIA entry: an image made without --menu has a single entry, so
 # give it the entry's words with mkusb-aosp17.sh --append (docs/nvidia-native.md, "VFIO in
 # QEMU"). Android's picture comes out of the
 # RTX 4070's own ports (the monitor's input on that card); the QEMU window keeps the std VGA

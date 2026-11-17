@@ -12,8 +12,8 @@ endif
 
 include device/google/cuttlefish/vsoc_x86_64_only/BoardConfig.mk
 
-# Cuttlefish's module blocklist plus nouveau, which init.pc.rc loads only on the nouveau
-# boot entry (Phase G1).
+# Cuttlefish's module blocklist plus the GPU modules: NVIDIA's own, which init.pc.rc loads only on
+# the NVIDIA (proprietary) entry, and nouveau and Nova, which the kernel config still builds.
 BOARD_VENDOR_KERNEL_MODULES_BLOCKLIST_FILE := device/android-pc/pc_x86_64/pc/modules.blocklist
 
 # ndk_translation.mk installs the fetched libndk_translation ELF files with
@@ -33,5 +33,4 @@ endif
 BOARD_VENDOR_SEPOLICY_DIRS += \
     device/android-pc/pc_x86_64/sepolicy/vendor \
     device/android-pc/pc_x86_64/pc/sepolicy \
-    device/android-pc/pc_x86_64/venus/sepolicy \
     $(sort $(wildcard device/android-pc/pc_x86_64/hals/*/sepolicy))

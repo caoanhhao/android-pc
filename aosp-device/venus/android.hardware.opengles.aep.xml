@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- OpenGL ES 3.2 with the Android Extension Pack: ANGLE on Venus on the NVIDIA driver
-     (Phase K3). Mounted over /vendor/etc/permissions/android.hardware.opengles.aep.pc.xml by
-     pcvenusprobe.sh when Venus runs. -->
-<permissions>
-    <feature name="android.hardware.opengles.aep" />
-</permissions>

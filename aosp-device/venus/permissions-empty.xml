@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Placeholder: pcvenusprobe.sh mounts /vendor/etc/venus/android.hardware.opengles.aep.xml over
-     this file when Venus runs, the only stack whose GLES has the Android Extension Pack. -->
-<permissions />

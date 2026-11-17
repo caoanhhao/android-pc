@@ -1,7 +1,17 @@
 # Phase L3 (docs/nvidia-native.md): the same-process Vulkan HAL and what it loads in every
 # process that draws (apps, SurfaceFlinger, system_server): only same_process_hal_file may be
-# mapped executable there. /dev/nvidia* are gpu_device (hals/nvsidecar/sepolicy/file_contexts).
+# mapped executable there.
 /vendor/lib64/hw/vulkan\.nvidia\.so     u:object_r:same_process_hal_file:s0
 /vendor/lib64/libnvglibc\.so            u:object_r:same_process_hal_file:s0
 /vendor/lib64/nvglibc(/.*)?             u:object_r:same_process_hal_file:s0
 /vendor/lib64/nvidia(/.*)?              u:object_r:same_process_hal_file:s0
+
+# NVIDIA's device nodes (pc/pcnvidia.sh creates them, init.nvgpu.rc relabels them): every process
+# that draws opens them (NVIDIA's Vulkan driver runs in-process), and AOSP's policy already gives
+# those processes gpu_device.
+/dev/nvidiactl                 u:object_r:gpu_device:s0
+/dev/nvidia-modeset            u:object_r:gpu_device:s0
+/dev/nvidia-uvm                u:object_r:gpu_device:s0
+/dev/nvidia-uvm-tools          u:object_r:gpu_device:s0
+/dev/nvidia[0-9]+              u:object_r:gpu_device:s0
+/dev/nvidia-caps(/.*)?         u:object_r:gpu_device:s0

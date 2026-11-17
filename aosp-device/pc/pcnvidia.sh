@@ -4,31 +4,17 @@
 # dynamic) without creating any node (on desktop Linux nvidia-modprobe does it):
 #   /dev/nvidiactl 195:255, /dev/nvidia-modeset 195:254, /dev/nvidiaN 195:N per GPU,
 #   /dev/nvidia-uvm and /dev/nvidia-uvm-tools (minors 0, 1), /dev/nvidia-caps/nvidia-capN,
-# mode 0666, group graphics, as on desktop Linux; the K2 sidecar opens them.
+# mode 0666, group graphics, as on desktop Linux; vulkan.nvidia opens them in every process
+# that draws (Phase L3).
 #
-#   pcnvidia.sh load    the nvidia entries (init.pc.rc, post-fs): waits until pclog writes the
+#   pcnvidia.sh load    the NVIDIA entry (init.pc.rc, post-fs): waits until pclog writes the
 #                       kernel log to the stick, then loads nvidia, nvidia-modeset,
 #                       nvidia-drm modeset=1 and nvidia-uvm one at a time, with a kernel log
 #                       marker and a sync before each, so a crash or hang leaves the last
 #                       step on the stick. vkms is moved off card0 first (Phase I1).
-#                       With androidboot.android_pc.nvidia_rm=gcc (K1d A/B entry) the modules
-#                       come from /vendor/lib/nvidia-gcc instead: the same build with the RM
-#                       cores compiled by gcc (tools/nvidia-build.sh step 4), loaded by path.
 export PATH=/system/bin:/vendor/bin:$PATH
 k() { echo "<4>pcnvidia: $*" > /dev/kmsg; }
-if [ "$(getprop ro.boot.android_pc.nvidia_rm)" = gcc ]; then
-    # Same module names as the vendor_dlkm set, so not through modprobe: insmod by path, in
-    # dependency order (nvidia, nvidia-modeset, nvidia-drm; nvidia-uvm needs only nvidia).
-    mp() {
-        case "$1" in
-        -r) modprobe -r -d /vendor/lib/modules "$2" ;;
-        nvidia*) local m=$1; shift; insmod /vendor/lib/nvidia-gcc/$m "$@" ;;
-        *) modprobe -d /vendor/lib/modules "$@" ;;
-        esac
-    }
-else
-    mp() { modprobe -d /vendor/lib/modules "$@"; }
-fi
+mp() { modprobe -d /vendor/lib/modules "$@"; }
 step() {   # step PAUSE COMMAND...: marker, sync, pause, run, result, sync
     local pause=$1; shift
     k "step: $* (uptime $(cut -d' ' -f1 /proc/uptime))"
@@ -84,7 +70,6 @@ load)
     # (at most 15 s) so the steps below are on the stick even if the kernel dies in one.
     for i in $(seq 1 30); do grep -q ' /mnt/vendor/pclog ' /proc/mounts && break; sleep 0.5; done
     grep -q ' /mnt/vendor/pclog ' /proc/mounts || k "pclog is not mounted, loading anyway"
-    k "modules: $( [ "$(getprop ro.boot.android_pc.nvidia_rm)" = gcc ] && echo /vendor/lib/nvidia-gcc '(RM built by gcc)' || echo /vendor/lib/modules)"
     step 1 mp -r vkms.ko
     step 1 mp nvidia.ko && step 1 mp nvidia-modeset.ko && step 1 mp nvidia-drm.ko modeset=1
     step 1 mp nvidia-uvm.ko

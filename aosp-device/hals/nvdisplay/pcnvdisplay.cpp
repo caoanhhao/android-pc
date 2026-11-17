@@ -1,21 +1,17 @@
-// Phase K4 (docs/nvidia-proprietary.md): display setup for the "NVIDIA (proprietary, Venus)"
-// boot entry (androidboot.android_pc.gpu=nvidia), run by init.nvdisplay.rc at post-fs-data,
-// before the composer and the allocator start (class hal, at boot).
+// Phase K4 (docs/nvidia-proprietary.md): display setup for the "NVIDIA (proprietary)" boot entry
+// (androidboot.android_pc.gpu=nvidia), run by init.nvdisplay.rc at post-fs-data, before the
+// composer and the allocator start (class hal, at boot).
 //
 // 1. Finds the nvidia-drm card (modeset=1) and points drm_hwcomposer at it
 //    (vendor.hwc.drm.device), whatever its minor: Cuttlefish loads vkms in early-init, so the
-//    NVIDIA card is not always card0 (Phase I1 had the same problem with nouveau).
-// 2. Reads IN_FORMATS of every primary plane and publishes, per format, the modifiers that all
-//    of them can scan out (vendor.gralloc.vtest.modifiers.<fourcc hex>.<n>, hex values). The
-//    minigbm-vtest gralloc (K3) passes that list to the vtest server (K2), which allocates
-//    NVIDIA block-linear images only with one of these modifiers. SurfaceFlinger's client
-//    target therefore always gets a modifier nvidia-drm can put on the primary plane, and
-//    drm_hwcomposer's drmModeAddFB2WithModifiers cannot fail on it. Overlay planes stay off,
-//    so every layer is composed by SurfaceFlinger (ANGLE on Venus) into that buffer.
+//    NVIDIA card is not always card0.
+// 2. Logs, per format, the modifiers that every primary plane can scan out (IN_FORMATS), next
+//    to the block-linear layouts minigbm's "nvidia" backend gives scanout buffers
+//    (hals/nvgpu/include/nvgr/nvgr_layout.h).
 //
 // Without an NVIDIA GPU (QEMU) or when nvidia-drm never shows up, it changes nothing: the
-// composer keeps Cuttlefish's /dev/dri/card0 and gralloc gets no list (any modifier).
-// vendor.pc.nvdisplay says what happened; the same line goes to the kernel log (pclog).
+// composer keeps Cuttlefish's /dev/dri/card0. vendor.pc.nvdisplay says what happened; the same
+// line goes to the kernel log (pclog).
 
 #define LOG_TAG "pcnvdisplay"
 
@@ -46,10 +42,8 @@ using android::base::StringPrintf;
 namespace {
 
 constexpr int kWaitSeconds = 30;
-constexpr size_t kMaxModifiers = 64;  // minigbm-vtest's MAX_MODIFIERS
-constexpr char kModifierProp[] = "vendor.gralloc.vtest.modifiers";
 
-// The formats the vtest server allocates (waydroid-nvidia vrend-0002, vtest_vk_alloc.c).
+// The formats SurfaceFlinger's client target and the composer may use.
 constexpr uint32_t kFormats[] = {
         DRM_FORMAT_ABGR8888,    DRM_FORMAT_XBGR8888,    DRM_FORMAT_ARGB8888,
         DRM_FORMAT_XRGB8888,    DRM_FORMAT_RGB565,      DRM_FORMAT_ABGR2101010,
@@ -250,13 +244,8 @@ int main() {
         auto it = modifiers.find(format);
         std::vector<uint64_t> mods;
         if (it != modifiers.end()) mods.assign(it->second.begin(), it->second.end());
-        if (mods.size() > kMaxModifiers) mods.resize(kMaxModifiers);
         std::string list;
-        for (size_t i = 0; i < mods.size(); ++i) {
-            SetProperty(StringPrintf("%s.%x.%zu", kModifierProp, format, i),
-                        StringPrintf("%" PRIx64, mods[i]));
-            list += StringPrintf("%s%" PRIx64, list.empty() ? "" : " ", mods[i]);
-        }
+        for (uint64_t mod : mods) list += StringPrintf("%s%" PRIx64, list.empty() ? "" : " ", mod);
         char fourcc[5] = {static_cast<char>(format), static_cast<char>(format >> 8),
                           static_cast<char>(format >> 16), static_cast<char>(format >> 24), 0};
         Log("%s: %zu scanout modifiers on %d primary planes: %s", fourcc, mods.size(), primaries,

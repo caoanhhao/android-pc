@@ -10,11 +10,3 @@
 on property:sys.boot_completed=1 && property:ro.hardware.vulkan=pastel
     write /data/local/tmp/chrome-command-line "_ --disable-features=SkiaGraphite,VulkanFromANGLE"
     chmod 0644 /data/local/tmp/chrome-command-line
-
-# G4 (docs/nvidia.md): on the NVK entry ANGLE runs on the RTX 4070, and Chromium keeps the
-# same path: Ganesh on the system EGL (ANGLE on NVK), so its GPU process draws on the GPU.
-# Dawn/Graphite on NVK is untried; the same flags keep the one route that works on both
-# entries. The file stays on /data across entries, so each entry writes its own.
-on property:sys.boot_completed=1 && property:ro.hardware.vulkan=nouveau
-    write /data/local/tmp/chrome-command-line "_ --disable-features=SkiaGraphite,VulkanFromANGLE"
-    chmod 0644 /data/local/tmp/chrome-command-line

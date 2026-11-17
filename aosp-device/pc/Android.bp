@@ -68,53 +68,10 @@ prebuilt_etc {
     visibility: ["//visibility:public"],
 }
 
-// Phase G1: keeps a mode on the nouveau card's connectors (init.pc.rc, nouveau entry only).
-// It runs libdrm's modetest, which pc.mk installs to /system/bin (see there).
-sh_binary {
-    name: "pcgpu.sh",
-    src: "pcgpu.sh",
-    vendor: true,
-    visibility: ["//visibility:public"],
-}
-
-// Phase G5: suspend on the nouveau entries (init.pc.rc): keyboard wakeup, screen on after a
-// user wake, a wakelock while the G3/G4 tests run.
-sh_binary {
-    name: "pcwake.sh",
-    src: "pcwake.sh",
-    vendor: true,
-    visibility: ["//visibility:public"],
-}
-
-// Phase G6: loads NVIDIA's Rust drivers Nova on the nova entry (init.pc.rc) and records how
-// far they get.
-sh_binary {
-    name: "pcnova.sh",
-    src: "pcnova.sh",
-    vendor: true,
-    visibility: ["//visibility:public"],
-}
-
 // Phase K1: creates /dev/nvidia* for NVIDIA's own driver on the nvidia entry (init.pc.rc).
 sh_binary {
     name: "pcnvidia.sh",
     src: "pcnvidia.sh",
-    vendor: true,
-    visibility: ["//visibility:public"],
-}
-
-// Phase L1: the NVIDIA test client's schedule (pcnvtest.sh runs the glibc pcnvtest through the
-// sidecar's root) and the on-screen log strip's feeder, on the L1 test entries (init.pc.rc).
-sh_binary {
-    name: "pcnvtest.sh",
-    src: "pcnvtest.sh",
-    vendor: true,
-    visibility: ["//visibility:public"],
-}
-
-sh_binary {
-    name: "pclogstrip.sh",
-    src: "pclogstrip.sh",
     vendor: true,
     visibility: ["//visibility:public"],
 }
