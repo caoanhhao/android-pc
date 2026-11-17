@@ -426,6 +426,26 @@ Tried, each with the checker's cache cleared first (`last_graphics_api.tag`, `pa
 | samsung SM-S9280 (Galaxy S24 Ultra), SM8650 | Adreno (TM) 750 | ES3 | es3 |
 | samsung SM-S9480 (Galaxy S26 Ultra), SM8850, ro.board.platform canoe | Adreno (TM) 840 | ES3 | es3, fetched fresh from the server |
 
+Then, on the S26 Ultra identity, the other device-side inputs were hidden one after another
+(cumulative; tool: `out/vfio-l4/vk/wwm-check.sh LABEL`, which clears the cache, launches the game
+and saves the new logs as `out/vfio-l4/vk/LABEL.log`):
+
+| Step | Change | Checker |
+|---|---|---|
+| a | `ro.hardware` / `ro.boot.hardware` = `qcom` (bootconfig in `initrd.img`; the kernel command line loses to it) | ES3 |
+| c1 | `ro.product.board` canoe, `ro.build.type` user, `ro.build.tags` release-keys, retail `ro.build.fingerprint` | ES3 |
+| c2 | `ro.product.cpu.abilist(64)` = `arm64-v8a,x86_64` | ES3 |
+| c3 | arm64 code's `/proc/cpuinfo` (berberis serves `/system/etc/berberis/cpuinfo.arm64.txt`): 8 Qualcomm cores, `Hardware: Qualcomm Technologies, Inc SM8850` | ES3 |
+| c4 | `ro.hardware.virtual_device` 0; retail model/fingerprint on every partition, `ro.build.display.id/description/flavor` | ES3 |
+| c5 | `ro.product.cpu.abi` arm64-v8a, `ro.bionic.arch` arm64 | ES3 |
+| b | 8 vCPUs (`device_model`'s 4th field is the CPU count) | not run: above the 4-vCPU VM cap |
+
+The server side: the fenbao index the game fetches
+(`https://h72naxx2gb-14.update.easebar.com/pl/patchmd5_global_publish_android_formal_o_fenbao.txt`,
+copy in `out/vfio-l4/vk/server/`) is one file for all Android devices; it points at
+`patchlist_dict.txt`, from which the game builds `known_list`, and that list has no `vk`/`vulkan`
+package for any identity above (the S26 run fetched it fresh).
+
 Android declares Vulkan in all three (`android.hardware.vulkan.version` 1.3 = 4206592, level 1,
 compute, `android.software.vulkan.deqp.level`, from the cf.vulkan APEX). Inputs not changed:
 `ro.hardware` (`cutf_cvm`, from the kernel command line), the 4 vCPUs (the VM cap; a real S26 has
@@ -433,7 +453,7 @@ compute, `android.software.vulkan.deqp.level`, from the cf.vulkan APEX). Inputs 
 Vulkan (`Engine/Config/Platform.bin`: `EnableVulkan` default True, with a windows-only rule;
 GlobalOptions has Vulkan PSO options), so the choice is the checker's.
 
-Conclusion: the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
+Conclusion (with every device-side tell above hidden except the CPU count): the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
 scripts, before any Vulkan call; the identity and GPU name a real Vulkan-capable phone reports do
 not change it, and the server gives this Android release GLES shaders only, so a forced Vulkan
 backend would have no shaders to run. Changing it means editing the game's scripts or APK
@@ -442,8 +462,10 @@ backend would have no shaders to run. Changing it means editing the game's scrip
 The GLES path (ANGLE on vulkan.nvidia) stays. The real-PC crash on it (pclog boot-30
 tombstone_14: SIGSEGV at 0x1cd in libnvidia-eglcore under ANGLE
 `UpdateDescriptorSetsBuilder::flushDescriptorSetUpdates` <- `glDrawArrays`, after 4 min; the next run
-went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` is back to
-the PC identity (the S26 run's logs: `out/vfio-l4/vk/s26-patch-logs.txt`).
+went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` keeps the S26
+Ultra identity (/product/etc/build.prop overlay, gpuid.conf `Adreno (TM) 840`) at the user's
+request; `/data/local/tmp/product-build.prop.orig` and `cpuinfo.arm64.txt.orig` there, and the
+saved `initrd.img`, restore the PC identity.
 
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
