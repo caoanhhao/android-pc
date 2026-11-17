@@ -1,9 +1,10 @@
 #!/vendor/bin/sh
 # Phase L4 (docs/nvidia-native.md): Where Winds Meet on its Vulkan renderer. The game's launcher
 # script picks Vulkan when its LocalData/vulkan.tag exists (an empty file) and VulkanBroken.tag
-# does not, and ES3 otherwise. Started by init.nvgpu.rc once the boot completes on the NVIDIA
-# entry, this creates that empty tag in the game's data directory if the directory exists (the
-# game has run once) and the tag is missing; it changes none of the game's own files. A
+# does not, and ES3 otherwise. Started by init.nvgpu.rc on the NVIDIA entry once user 0's
+# credential-encrypted storage is unlocked (sys.user.0.ce_available), this creates that empty
+# tag in the game's data directory if the directory exists (the game has run once) and the tag
+# is missing; it changes none of the game's own files. A
 # VulkanBroken.tag (the game gave up on Vulkan after failed starts) is left alone: deleting it
 # lets the game try Vulkan again. persist.vendor.android_pc.wwm_vulkan=0 turns this off (then
 # delete the tag to go back to ES3).

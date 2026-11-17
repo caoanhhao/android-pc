@@ -18,8 +18,10 @@ on early-init && property:ro.boot.hardware.vulkan=nvidia
     setprop debug.renderengine.backend skiavkthreaded
 
 # Phase L4: Where Winds Meet on its Vulkan renderer (pcwwmvk.sh creates the game's empty
-# LocalData/vulkan.tag; persist.vendor.android_pc.wwm_vulkan=0 turns it off).
-on property:sys.boot_completed=1 && property:ro.boot.hardware.vulkan=nvidia
+# LocalData/vulkan.tag; persist.vendor.android_pc.wwm_vulkan=0 turns it off). When user 0's
+# credential-encrypted storage is unlocked, not at boot_completed: /data/media/0 is CE, and with a
+# lock screen boot completes long before it is unlocked (the real PC: 100 s).
+on property:sys.user.0.ce_available=true && property:ro.boot.hardware.vulkan=nvidia
     start vendor.pcwwmvk
 
 service vendor.pcwwmvk /vendor/bin/pcwwmvk.sh

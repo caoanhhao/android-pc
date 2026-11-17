@@ -480,13 +480,28 @@ game (its SDK and its device check), so they stay. The splash video does not use
 `tools/mkusb-aosp17.sh --menu --userdata 64`, PC identity).** Entry "Android 17, NVIDIA
 (proprietary)". `vulkan.nvidia` has the ASTC emulation; `debug.nvvk.stats` is unset (off). The
 game needs its `LocalData/vulkan.tag`, and the stick's userdata is encrypted, so the image makes
-it: `hals/nvgpu/pcwwmvk.sh`, started by `init.nvgpu.rc` when the boot completes on the NVIDIA
-entry, creates the empty tag in `/data/media/0/Android/data/com.netease.yyvn/files/LocalData`
+it: `hals/nvgpu/pcwwmvk.sh`, started by `init.nvgpu.rc` on the NVIDIA entry when user 0's
+credential-encrypted storage is unlocked (`sys.user.0.ce_available`; at `boot_completed` it ran
+before the real PC's lock screen was unlocked, 100 s later, and found no directory), creates the empty tag in `/data/media/0/Android/data/com.netease.yyvn/files/LocalData`
 (owned like that directory) when the directory exists and the tag does not, and logs to the
 kernel log (`pcwwmvk:`, in pclog). So on the real PC: start the game once (its data directory
 appears), reboot, start it again: it picks Vulkan. If the game gave up on Vulkan after failed
 starts it creates `VulkanBroken.tag` and stays on ES3 until that file is deleted (the script
 leaves it and logs it). `persist.vendor.android_pc.wwm_vulkan=0` turns the script off.
+
+**Firefox on the NVIDIA entry: out of pthread keys (fixed in nvglibc).** On build 1610 Firefox
+aborted right after its GL start (`Gecko: mozalloc_abort: abort() called from libxul.so:4dbfbba`,
+in the VFIO VM too, at its first start). The crash annotations' `StackTraces`, symbolicated with
+Mozilla's symbol server, end in Rust's `std::thread_local::key::racy::LazyKey::lazy_init` ->
+`std::process::abort` under `l10nregistry_get_parent_process_sources`: Rust aborts there when
+`pthread_key_create` fails. nvglibc forwarded glibc's `pthread_key_create`/`getspecific`/
+`setspecific`/`key_delete` straight to bionic, so NVIDIA's libraries, loaded into Firefox's main
+process by ANGLE, used up bionic's per-process keys (`PTHREAD_KEYS_MAX`, 128). nvglibc now keeps
+glibc keys itself (`hals/nvglibc/src/pthread.c`): 256 keys with generations (a deleted and reused
+key does not see old values), all of a thread's values in one array behind a single bionic key,
+destructors run as glibc does (up to 4 rounds). Firefox then starts, loads pages and opens its URL
+bar without crashing; WWM still starts on Vulkan. Stick image `out/aosp17-usb-l4c.img`, build
+`eng.caoanh.20261117.1924`.
 
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the

@@ -4,7 +4,8 @@
 // static initializers (glibc's PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP sets __kind at offset 16,
 // which bionic reads as a normal mutex), and bionic's pthread_mutexattr_t/pthread_condattr_t are
 // 8 bytes where glibc's are 4. So these are implemented here on glibc's layout. The other
-// pthread objects (rwlock, once, key, attr, sem) have compatible layouts and go to bionic.
+// pthread objects (rwlock, once, attr, sem) have compatible layouts and go to bionic. Thread-
+// specific keys are kept here too (below), so NVIDIA's libraries do not use up bionic's.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -14,6 +15,7 @@
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
@@ -317,4 +319,100 @@ int nvg_pthread_getaffinity_np(pthread_t t, size_t size, cpu_set_t* set) {
     pid_t tid = pthread_gettid_np(t);
     if (tid < 0) return ESRCH;
     return sched_getaffinity(tid, size, set) == 0 ? 0 : errno;
+}
+
+// ---- thread-specific keys ----
+//
+// bionic has a fixed number of pthread keys per process (PTHREAD_KEYS_MAX, 128) and NVIDIA's
+// libraries create a good share of them as soon as an app opens EGL or Vulkan: Firefox's Rust
+// code then failed to get one ("out of TLS keys", an abort right after its GL start). glibc's keys
+// for NVIDIA are numbers in a table here instead, and all their values live in one array per
+// thread behind a single bionic key. A key's generation tells a value set before the key was
+// deleted (and its number reused) from a current one, as glibc's sequence numbers do.
+
+#define NVG_KEYS_MAX 256
+#define NVG_DESTRUCTOR_ITERATIONS 4  // glibc's PTHREAD_DESTRUCTOR_ITERATIONS
+
+struct nvg_key {
+    _Atomic unsigned int gen;  // odd: in use
+    void (*_Atomic dtor)(void*);
+};
+struct nvg_value {
+    unsigned int gen;
+    void* value;
+};
+
+static struct nvg_key nvg_keys[NVG_KEYS_MAX];
+static pthread_key_t nvg_values_key;
+static pthread_once_t nvg_values_once = PTHREAD_ONCE_INIT;
+
+static void nvg_values_free(void* p) {
+    struct nvg_value* values = p;
+    for (int round = 0; round < NVG_DESTRUCTOR_ITERATIONS; round++) {
+        int called = 0;
+        for (int k = 0; k < NVG_KEYS_MAX; k++) {
+            unsigned int gen = atomic_load(&nvg_keys[k].gen);
+            void (*dtor)(void*) = atomic_load(&nvg_keys[k].dtor);
+            void* v = values[k].value;
+            if (!v || values[k].gen != gen || !(gen & 1) || !dtor) continue;
+            values[k].value = NULL;
+            dtor(v);
+            called = 1;
+        }
+        if (!called) break;
+    }
+    free(values);
+}
+
+static void nvg_values_init(void) {
+    pthread_key_create(&nvg_values_key, nvg_values_free);
+}
+
+int nvg_pthread_key_create(unsigned int* key, void (*dtor)(void*)) {
+    pthread_once(&nvg_values_once, nvg_values_init);
+    for (int k = 0; k < NVG_KEYS_MAX; k++) {
+        unsigned int gen = atomic_load(&nvg_keys[k].gen);
+        if (gen & 1) continue;
+        atomic_store(&nvg_keys[k].dtor, dtor);
+        if (atomic_compare_exchange_strong(&nvg_keys[k].gen, &gen, gen + 1)) {
+            *key = k;
+            return 0;
+        }
+    }
+    return EAGAIN;
+}
+
+int nvg___pthread_key_create(unsigned int* key, void (*dtor)(void*)) {
+    return nvg_pthread_key_create(key, dtor);
+}
+
+int nvg_pthread_key_delete(unsigned int key) {
+    if (key >= NVG_KEYS_MAX) return EINVAL;
+    unsigned int gen = atomic_load(&nvg_keys[key].gen);
+    if (!(gen & 1) || !atomic_compare_exchange_strong(&nvg_keys[key].gen, &gen, gen + 1))
+        return EINVAL;
+    return 0;
+}
+
+void* nvg_pthread_getspecific(unsigned int key) {
+    if (key >= NVG_KEYS_MAX) return NULL;
+    struct nvg_value* values = pthread_getspecific(nvg_values_key);
+    if (!values || values[key].gen != atomic_load(&nvg_keys[key].gen)) return NULL;
+    return values[key].value;
+}
+
+int nvg_pthread_setspecific(unsigned int key, const void* value) {
+    if (key >= NVG_KEYS_MAX) return EINVAL;
+    unsigned int gen = atomic_load(&nvg_keys[key].gen);
+    if (!(gen & 1)) return EINVAL;
+    struct nvg_value* values = pthread_getspecific(nvg_values_key);
+    if (!values) {
+        if (!value) return 0;
+        values = calloc(NVG_KEYS_MAX, sizeof(*values));
+        if (!values) return ENOMEM;
+        pthread_setspecific(nvg_values_key, values);
+    }
+    values[key].gen = gen;
+    values[key].value = (void*)value;
+    return 0;
 }
