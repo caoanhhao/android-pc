@@ -384,7 +384,38 @@ VFIO VM with the same `libGLESv2_angle.so` (md5 `99d86416…`) as the WWM run; Q
 Stick update image `out/aosp17-usb-l4a.img` (`tools/mkusb-aosp17.sh --menu --userdata 64`, same
 build); on the real PC WWM runs on the "Android 17, NVIDIA (proprietary)" entry.
 
-**Native Vulkan (2026-11-17): not reachable from the device side.** The goal was WWM's own Vulkan
+**Native Vulkan (2026-11-17): the switch is a local tag file.** The game's launcher script
+`checker.lua` (an encrypted patch file; read from a dump of the paused VM's memory, taken from
+the host through the QEMU monitor, the game's pages located through `/proc/<pid>/pagemap`, the
+chunk LZ4-decompressed and listed with `luac5.4 -l` after restoring its header; the opcodes are
+shuffled, the constants and line structure are not) chooses the API in `post_initialize`:
+
+```lua
+-- checker.lua lines 46-90, reconstructed
+local vk = false
+if MPlatform.GetOsName() == "android" then
+  if MPatch.FileExistInSystem("LocalData", "vulkan.tag") then vk = true
+  else vk = MPatch.FileExistInSystem("LocalData", "EnableVulkan.tag") end
+  -- LocalData/VulkanFail.tag counts Vulkan starts that did not finish; past the limit it is
+  -- deleted and LocalData/VulkanBroken.tag is created
+end
+if vk and not MPatch.FileExistInSystem("LocalData", "VulkanBroken.tag") then
+  log("checker choose Vulkan")   -- VulkanFail.tag + 1, ChooseDriver("vlk"), PrepareDevice, ...
+else
+  log("checker choose ES3")      -- ChooseDriver("es3")
+end
+```
+
+With an empty `/sdcard/Android/data/com.netease.yyvn/files/LocalData/vulkan.tag` the log shows
+`checker choose Vulkan`, `last_graphics_api.tag` becomes `vlk`, the server's package list carries a
+`vlk` shader package instead of `es3` (`collect_known_fenbaos package=[..., vlk, ...] vlk`;
+113 MB, then "Preparing shaders"), and the game process maps the arm64 `libvulkan` and
+`libproxy_arm64_to_x86_64_libvulkan.so` (vulkan.nvidia behind it). First result: the launcher UI
+draws its text but every image is black (the NVIDIA driver has no ASTC_LDR or ETC2 texture
+compression, and the game ships ASTC textures), and it downloads the Vulkan variant of the core
+resources again (5.4 GB). Next: ASTC decoding for the game's Vulkan path.
+
+The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
 process). The game never loads the arm64 `libvulkan` (`/proc/<pid>/maps` has only the arm64
 `libEGL`/`libGLESv2`/`libGLESv3` proxies; the x86 `libvulkan`/`vulkan.nvidia` there are ANGLE's), so
@@ -489,14 +520,10 @@ When the checker decides, and what it could read (2026-11-17, S26 identity):
 - The game's own settings (lobby and in-world, searched for "Vulkan", "OpenGL", "Render") have no
   render-API option.
 - No patcher log, for any identity, names a Vulkan/SPIR-V file or package.
-So there is no Vulkan API or feature the device lacks for this choice: the checker does not look
-at the device's Vulkan at all, and the server offers only `es3` shaders to Android.
+The checker indeed does not look at the device's Vulkan: it looks for the tag files above.
 
-Conclusion (with every device-side tell above hidden, 8 CPUs included): the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
-scripts, before any Vulkan call; the identity and GPU name a real Vulkan-capable phone reports do
-not change it, and the server gives this Android release GLES shaders only, so a forced Vulkan
-backend would have no shaders to run. Changing it means editing the game's scripts or APK
-(anti-tamper, account risk), which this project does not do.
+Those device-side changes could not matter: the checker reads no device property, only the
+`LocalData` tag files, and the server's `vlk` package is there once the game asks for it.
 
 The GLES path (ANGLE on vulkan.nvidia) stays. The real-PC crash on it (pclog boot-30
 tombstone_14: SIGSEGV at 0x1cd in libnvidia-eglcore under ANGLE

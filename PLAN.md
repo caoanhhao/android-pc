@@ -847,9 +847,10 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   `glCopyImageSubData` divide-by-zero; the game needs more than the 4 GB guest RAM (12 GB used).
   Build `eng.caoanh.20261117.0224`, stick image `out/aosp17-usb-l4a.img` (entry "Android 17,
   NVIDIA (proprietary)"). Details in docs/nvidia-native.md, L4. Real-PC check pending.
-  Native Vulkan for WWM (no ANGLE): not reachable. The game's checker picks ES3 without probing,
-  even with a faked Adreno 750/840 GPU name and a Galaxy S24/S26 Ultra identity, and the server
-  gives this Android release only GLES shaders (docs/nvidia-native.md, L4).
+  Native Vulkan for WWM: its launcher script picks Vulkan when `LocalData/vulkan.tag` (or
+  `EnableVulkan.tag`) exists; the server then sends a `vlk` shader package and the game loads the
+  arm64 libvulkan. Images come out black so far (no ASTC on the NVIDIA driver): ASTC decoding on
+  the Vulkan path is next (docs/nvidia-native.md, L4).
 
 Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
 removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm
