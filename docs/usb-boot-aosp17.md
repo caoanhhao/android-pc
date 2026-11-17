@@ -330,8 +330,9 @@ Limine: one entry, "Android 17", no menu (`timeout: 0`). `--menu` gives a 5 s me
 **no pcfb** (to tell a display problem from the rest).
 Since H1 the menu remembers the entry booted last (`remember_last_entry: yes`; the
 default entry applies until one is picked) and shows a comment under each entry: the pcfb
-entries cannot send sound to a monitor on the NVIDIA card, the nouveau entries can
-(`docs/rust-hals.md`, "NVIDIA without a GPU driver").
+entries cannot send sound to a monitor on the NVIDIA card, the NVIDIA (proprietary) entry can
+(`docs/rust-hals.md`, "NVIDIA without a GPU driver"; H1 pointed to the nouveau entries, now on
+branch `gpu-alternatives`).
 
 A stick that already runs Android is updated with `tools/update-usb-aosp17.sh` instead,
 which keeps apps, accounts and data (§10). The `dd` commands below are only for a new,

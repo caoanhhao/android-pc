@@ -21,12 +21,21 @@ covers the stock kernel.
 ## Repo layout
 
 ```
-aosp-device/   device tree for aosp_pc_x86_64: product, libpchal, hals/<name>, kernel/ (vendor modules)
-tools/         build, USB image and QEMU scripts (tools/limited-build.sh for every heavy build)
-docs/          aosp-build.md, usb-boot-aosp17.md, rust-hals.md
+aosp-device/   device tree for aosp_pc_x86_64: product, pc/ (real-PC boot: init.pc.rc, pclog,
+               pcnvidia.sh), libpchal, hals/<name> (Rust HALs; nvgpu = vulkan.nvidia, nvglibc,
+               nvdisplay for the NVIDIA GPU), desktop/, microg/, webview/, nbshim/, kernel/
+aosp-device-vendor/  modules that must sit under vendor/ in the AOSP tree
+tools/         build, USB image and QEMU scripts (tools/limited-build.sh for every heavy build);
+               patches/ for AOSP, GKI and nvidia-open
+docs/          aosp-build.md, usb-boot-aosp17.md, rust-hals.md, arm-translation.md,
+               desktop-mode.md, mouse-input.md, nvidia-proprietary.md (kernel side),
+               nvidia-native.md (Phase L)
 aosp/          AOSP checkout (gitignored, very large)
 gki/           GKI kernel checkout (gitignored)
 ```
+
+The GPU approaches that `main` no longer carries (nouveau + NVK, Nova, Venus over a glibc
+sidecar: Phases G, J and parts of H, I, K) are kept on branch `gpu-alternatives`.
 
 ## Phase F — AOSP 17 from source + Rust HALs
 
@@ -361,192 +370,29 @@ Chromium flags. No fallback kept: Cuttlefish's camera APEX is off on the PC, Wi-
 the Rust HAL. Details in `docs/usb-boot-aosp17.md` §7. ARM-only apps and Google services
 are a separate task (no ARM64 native bridge in the image).
 
-## Phase G — NVIDIA RTX 4070 driver stack
+## Phase G — NVIDIA RTX 4070 on open drivers (branch `gpu-alternatives`)
 
-Goal: drive the PC's **RTX 4070 (AD104, `10de:2786`, HDMI audio `10de:22bc`)** from
-Android instead of the UEFI GOP framebuffer (`pcfb`). That gives sound on the monitor
-(HDMI/DP audio needs the GPU driver to light the link; see F9h), native modes and
-refresh rates, more than one monitor, and in the end hardware GPU rendering instead of
-SwiftShader. Decided 2026-11-13.
-
-**Approach.** A GPU driver written from scratch is years of work, so the plan builds on
-the open stacks that already support Ada, adds what Android is missing, and keeps a
-Rust track:
-
-| Layer | Choice | Why |
-|---|---|---|
-| Kernel | **nouveau with GSP-RM** (in `gki/common`, AD102-AD107 supported), vendor module | Mature modesetting and HDMI audio on Ada; GSP does clocks and power |
-| Firmware | `nvidia/ad104/gsp/*-570.144` from linux-firmware into `/vendor/firmware` | Required by nouveau on Ada |
-| Vulkan | **Mesa NVK** (`aosp/external/mesa3d`, Mesa 26.1; its NAK shader compiler is Rust) | The only open Vulkan for Ada |
-| GLES | **ANGLE on Vulkan** (already in AOSP) | Android's own GLES-over-Vulkan path |
-| Buffers / composer | minigbm + drm_hwcomposer (both in `aosp/external`) | Standard for KMS GPUs on Android |
-| Rust track | **Nova** (`nova-core`, `drm/nova`, Rust, in the 6.18 tree) | NVIDIA's future open driver; experimental only |
-
-Rejected: NVIDIA's open-gpu-kernel-modules plus the proprietary userspace (glibc-only,
-no Android build). Still open as the alternative for HDMI audio only (the user has not
-chosen, 2026-11-13): the Intel iGPU through `i915` (no GPU acceleration for games, needs
-the monitor moved to the board's port).
-
-**Testing.** QEMU and Cuttlefish cannot pass the 4070 through (the host's desktop runs
-on it), so every G step ends on the **real PC**: the session builds, checks the image
-in QEMU that it still boots on `pcfb` (nouveau must stay harmless without NVIDIA
-hardware), then hands the user the `tools/update-usb-aosp17.sh` command (CLAUDE.md
-USB rule) and reads the results from the pclog partition afterwards. Each step keeps
-`pcfb` as the fallback: a boot property (`androidpc.gpu=pcfb|nouveau`, chosen from the
-Limine menu) picks the path, so a broken GPU step never leaves the stick unbootable.
-
-- **G1. nouveau + GSP on the GKI kernel (display and HDMI audio).** Enable
-  `DRM_NOUVEAU` (and whatever helpers the GKI image lacks: TTM, display helpers,
-  `drm_gpuvm`, `drm_exec`) as vendor modules in `tools/gki-build.sh`; ship the AD104
-  GSP firmware (decompressed); load nouveau only on the `nouveau` boot entry, with
-  `pcfb` not bound. pclog dumps `dmesg` (GSP boot), `/sys/class/drm/*/status`, EDID
-  and the HDA ELD. Done when: on the real PC nouveau boots GSP, the monitor shows
-  its connected mode in `modetest`, and the F9h Rust audio HAL plays a test tone
-  through the monitor.
-  **Status (2026-11-14): code done, real-PC test pending.** nouveau + 9 helper modules
-  build against the unchanged GKI image, GSP-RM 570.144 ships in
-  `/vendor/firmware/nvidia/ad104/gsp`, the Limine menu has an "NVIDIA nouveau" entry
-  (`androidboot.android_pc.gpu=nouveau`, `pcfb.enable=0`, ranchu composer in no-op
-  mode, `modetest -r` keeps the monitor lit), pclog dumps nouveau/GSP dmesg, connectors,
-  EDID and the 10de:22bc ELD. QEMU: both entries boot, nouveau stays idle without NVIDIA
-  hardware. Image `out/aosp17-usb-g1.img`; checklist and commands in `docs/nvidia.md`.
-- **G2. Android display on KMS.** Composer = drm_hwcomposer on the nouveau card
-  (client composition still on SwiftShader), gralloc = minigbm with dumb buffers (or
-  its nouveau backend), native resolution and refresh rate, hotplug, a second
-  monitor. Rust audio HAL follows HDMI/DP hotplug. VTS composer and gralloc subsets.
-  Done when: the desktop runs on KMS at the monitor's native mode with sound, and
-  the `pcfb` entry still works.
-  **Status (2026-11-14): code done, real-PC test pending.** The composer is a per-entry
-  vendor APEX choice on the command line. "NVIDIA nouveau" runs drm_hwcomposer (overlay
-  planes off, SwiftShader client composition) with minigbm dumb buffers on nouveau's
-  render node. minigbm drops DRM master (new patch). There are "VTS run" and
-  "modetest only" (G1) entries, and pclog runs the VTS from the ESP. QEMU (vkms stands in
-  for nouveau): pcfb unchanged; drm_hwcomposer drives the connector at its preferred mode;
-  VTS allocator 11/11, mapper 63/63, composer 163/163 pass (skips aside). Image
-  `out/aosp17-usb-g2.img`; checklist in `docs/nvidia.md`.
-- **G3. NVK Vulkan on Android.** Build Mesa's NVK (and NAK) through Soong for
-  x86_64 Android, gralloc interop (`AHardwareBuffer`, dma-buf modifiers that NVK
-  and minigbm agree on), `vulkan.nouveau` as the system Vulkan HAL. Done when:
-  `vulkaninfo` shows the RTX 4070 and dEQP-VK smoke groups (api, memory, wsi.android)
-  pass on the real PC.
-  **Status (2026-11-14): code done, real-PC test pending.** NVK, NAK (Rust) and NIL
-  build through hand-written Soong files, since the meson2hermetic config has no nouveau:
-  - Patches: `aosp17-mesa-nvk.patch`, `aosp17-cf-vulkan-nouveau.patch` and
-    `aosp17-deqp-apk-64bit.patch`.
-  - `nil.h` is hand-written (no cbindgen), with layout asserts on both the C and Rust
-    sides.
-  - NVK's CL kernels are built with the host clang's SPIR-V backend
-    (`tools/mesa-nvkcl-spv.sh`).
-  - A new u_gralloc backend reads minigbm handles, so both sides agree on
-    `DRM_FORMAT_MOD_LINEAR`.
-  - NVK gains `VK_ANDROID_external_memory_android_hardware_buffer` and a tiled shadow
-    for linear swapchain images.
-  - `vulkan.nouveau` ships in the `com.google.cf.vulkan` APEX.
-  - `androidboot.hardware.vulkan` is now set per entry. A new entry, "NVIDIA nouveau, NVK
-    Vulkan (test)", runs ANGLE and SurfaceFlinger on NVK too; "NVIDIA nouveau" keeps
-    SwiftShader.
-  - `pcvktest.sh` writes `cmd gpu vkjson` and the dEQP-VK smoke results to pclog.
-
-  QEMU (no NVIDIA GPU): the driver loads and finds no device. pcfb and G2's nouveau entry
-  still boot. Image `out/aosp17-usb-g3.img`; checklist in `docs/nvidia.md`.
-- **G4. GLES through ANGLE, GPU composition.** ANGLE as the system GLES driver on
-  NVK, SurfaceFlinger and HWC client composition on the GPU, SwiftShader removed
-  from that boot entry. Done when: dEQP-GLES3 smoke groups pass, Chromium/WebView
-  and the games from F9 (Delta Force, Genshin's renderer) run GPU-accelerated, and
-  the frame rate beats the `pcfb` entry.
-  **Status (2026-11-14): code done, real-PC test pending.** Android's GLES is already
-  ANGLE on the system Vulkan driver. So G3's NVK entry, renamed **"Android 17, NVIDIA GPU
-  (NVK + ANGLE)"**, runs everything on the GPU:
-  - SurfaceFlinger's client composition for drm_hwcomposer;
-  - HWUI, Chromium/WebView (Ganesh on ANGLE) and the games.
-
-  libvulkan loads only `vulkan.nouveau` there, so SwiftShader is never loaded; pclog's
-  `== swiftshader users` checks this. G4 adds:
-  - `pcvktest.sh` runs the dEQP-GLES3 smoke groups after the VK ones (pclog `gles/`).
-  - A new `pcgfxbench.sh` runs the same benchmark on every entry, so pcfb is the
-    baseline:
-    - the San Angeles demo;
-    - hwuimacro scenes, off screen and on screen (pclog `bench/`).
-  - SurfaceFlinger timestats are on at every boot, for the games' FPS.
-
-  QEMU: the benchmark runs on pcfb and on the SwiftShader nouveau entry. The GPU entry
-  needs the 4070 (no device in QEMU). Image `out/aosp17-usb-g4.img`; checklist in
-  `docs/nvidia.md`.
-- **G5. Power, thermal, stability.** GSP clocks under load, fan and temperature
-  from nouveau's hwmon into the F4 Rust thermal HAL, suspend/resume, a long
-  game-plus-video soak with no GPU faults in pclog. Done when: one hour of play
-  shows no hangs and sane temperatures; then `nouveau` becomes the default entry.
-  **Status (2026-11-14): code done, real-PC soak pending.** On GSP-RM, nouveau has no
-  therm/clk subdev, so it showed no hwmon at all. A kernel patch
-  (`tools/patches/gki-nouveau-gsp-thermal.patch`) adds two things:
-  - the GPU temperature as `temp1_input`, read from the GSP-shared sensor register;
-  - a debugfs `perf` file with GSP-RM's current P-state, read through RM control
-    `PERF_GET_CURRENT_PSTATE`.
-
-  The open headers do not have NVIDIA's clock-domain and fan RM controls, so the clocks
-  are checked as P0 under load against P8 idle. The fan speed has no source. The Rust
-  thermal HAL now does two things:
-  - it gives GPU sensors that have no limits default thresholds: SEVERE at 90 °C;
-  - it reports any hwmon `fanN_input` as a fan cooling device.
-
-  Suspend: the nouveau entries stop Cuttlefish's `suspend_blocker`, so Android suspends
-  (S3) when the screen is off. `pcwake.sh` lets keyboards wake the PC and turns the
-  screen on after a wake that did not come from an alarm. pclog on the nouveau entries
-  adds `gpu-perf.txt` (P-state and temperature every 5 s), a suspend self-test with an RTC
-  wake (`suspend-test.txt`, once per build), and `== gpu faults` / `== suspend` sections.
-  QEMU: S3 self-test, autosuspend and a keyboard-style wake all work on the nouveau entry
-  (vkms). Image `out/aosp17-usb-g5.img`; soak checklist in `docs/nvidia.md`. The default
-  Limine entry stays pcfb until the soak passes.
-- **G6. Nova (Rust) experiment.** Build `NOVA_CORE` and `DRM_NOVA` as modules on
-  a third boot entry, see how far they bring up the 4070 (GSP boot, VRAM), write
-  down what works next to nouveau, and keep our patches upstream-shaped. Never
-  the default until it can drive the display. Done when: a short report in
-  `docs/nvidia.md` with logs from the real PC.
-  **Status (2026-11-14): code done, real-PC test pending.** `nova_core.ko` and `nova.ko`
-  are vendor modules. Nova 6.18 does not start GSP-RM on Ada. It gets as far as:
-  - the chipset;
-  - parsing the VBIOS and loading the GSP firmware;
-  - the VRAM layout;
-  - running FWSEC-FRTS, which creates WPR2;
-  - preparing booter.
-
-  The DRM side has no display, so the new last Limine entry, **"Android 17, NVIDIA Nova
-  (Rust driver experiment)"** (`androidboot.android_pc.gpu=nova`), keeps Android on pcfb.
-  It never loads nouveau. `pcnova.sh` loads Nova 30 s after boot and writes a report to
-  pclog. Getting there took two GKI-side changes, both needed only because of the Android
-  kernel's Rust setup:
-  - `CONFIG_RUST_FW_LOADER_ABSTRACTIONS=y` in the GKI image (`gki_rust_defconfig`);
-  - an upstream-style export of `vrealloc_node_align_noprof`
-    (`tools/patches/gki-vrealloc-export.patch`), since inline Rust helpers call it from
-    modules.
-
-  A third patch prints nova-core's boot progress at info level. QEMU (no NVIDIA GPU): the
-  Nova entry boots, both modules load and stay idle, and the default entry is unchanged.
-  Image `out/aosp17-usb-g6.img`. The checklist and the comparison with nouveau are in
-  `docs/nvidia.md`.
-
-Order: G1 → G2 → G3 → G4 → G5, each in its own sub-session, one build at a time;
-G6 after G5. `docs/nvidia.md` is the running log for the whole phase.
+Decided 2026-11-13: drive the RTX 4070 (AD104, `10de:2786`, HDMI audio `10de:22bc`) from Android
+instead of the UEFI GOP framebuffer (`pcfb`) with the open stacks that support Ada. Tried:
+nouveau with GSP-RM as a vendor module (G1) with drm_hwcomposer on its card (G2), Mesa NVK
+built through Soong in the Cuttlefish Vulkan APEX (G3), ANGLE on NVK for GLES and GPU
+composition (G4), GSP power/thermal and suspend (G5), and NVIDIA's Rust drivers Nova (G6). KMS,
+HDMI audio and suspend worked; NVK on Ada stayed unreliable and Nova has no 3D, so Phase K/L
+replaced them. The code (nouveau/NVK/Nova entries, `pcgpu.sh`, `pcwake.sh`, `pcnova.sh`,
+`vktest/`, `pcvkprobe`, the Mesa/minigbm/Cuttlefish/dEQP patches, the VTS entry) and
+`docs/nvidia.md` live on branch `gpu-alternatives`. The kernel config still builds nouveau and
+Nova (blocklisted, never loaded on `main`).
 
 ## Phase H — real-PC fixes
 
 Bugs the user found on the real PC with build `eng.caoanh.20261114.2338` (the G6 stick),
 one session each, one build at a time (H1 first).
 
-- **H1 — no sound from the monitor** (RTX 4070 HDMI/DP). Status (2026-11-15): menu fix
-  done, real-PC check pending. The pclog of the default (pcfb) entry shows every
-  `card1/eld#*` at `monitor_present 0`, `eld_valid 0` and silent beeps on all four HDMI
-  PCMs: the NVIDIA codec sends audio only once the GPU driver enables it on the output
-  with the mode (nouveau through GSP-RM, `r535_sor_hdmi_audio`/`r535_sor_dp_audio`), which
-  the UEFI framebuffer never does. No HAL change can fix that on pcfb; the Rust audio HAL
-  (F9h) already follows the jack on the nouveau entries. The Limine menu now says so on
-  each entry (`comment:`) and remembers the last entry (`remember_last_entry: yes`), so
-  picking "Android 17, NVIDIA nouveau" once keeps the monitor's sound on every later boot.
-  Image `out/aosp17-usb-h1.img` (build `eng.caoanh.20261115.0135`); in QEMU the menu
-  shows the comments, Limine boots the nouveau entry again after a reset once it was
-  picked, and both the default and the nouveau entry reach `sys.boot_completed`. Details in
-  `docs/rust-hals.md` ("NVIDIA without a GPU driver"). Making nouveau the default entry
-  stays G5's decision (after the soak).
+- **H1 — no sound from the monitor** (RTX 4070 HDMI/DP). The NVIDIA codec sends audio only once
+  a GPU driver enables it with the mode, which pcfb never does; the Limine menu says so on each
+  entry (`comment:`) and remembers the last entry (`remember_last_entry: yes`). The nouveau entry
+  it pointed to is on branch `gpu-alternatives`; on `main` the NVIDIA (proprietary) entry gives
+  the monitor's sound (`docs/rust-hals.md`, "NVIDIA without a GPU driver").
 - **H2 — TikTok's passkey button does nothing** (after Google sign-in, identity check
   page). Status (2026-11-15): fix done, real-PC check pending. TikTok asks Credential
   Manager for a passkey; microG's `RemoteService` answers with only a remote (hybrid)
@@ -589,17 +435,10 @@ one session each, one build at a time (H1 first).
 Bugs the user found on the real PC with build `eng.caoanh.20261115.0441` (the H3 stick),
 one session each, one build at a time (I1 builds last and makes the release image).
 
-- **I1 — no picture on the nouveau and NVK entries**. Status (2026-11-15): fix done,
-  checked in QEMU, real-PC check pending. Release image `out/aosp17-usb-i.img` (build
-  `eng.caoanh.20261115.0906`, I1-I4; `--menu --userdata 64`); in QEMU the nouveau entry
-  reaches `sys.boot_completed` on vkms after the unload/reload. Cuttlefish's `init.vendor.rc` loads vkms after a 5 s wait for a
-  card0, before `init.pc.rc` loads nouveau, so vkms was card0, nouveau card1, and
-  drm_hwcomposer (`/dev/dri/card0`) drove vkms's virtual connector. `init.pc.rc` now
-  unloads vkms, loads nouveau (card0) and loads vkms again (card1). I4 removed the
-  "modetest only" entry (G1's test, its static colour pattern is by design) and pclog's
-  audio check (the 440 Hz beeps, H1's test) as passed tests; `pcgpu.sh` stays, reachable
-  with `--append "androidboot.android_pc.kms=modetest ..."`. Details in `docs/nvidia.md`
-  ("Real-PC result and fix").
+- **I1 — no picture on the nouveau and NVK entries** (vkms took card0 before nouveau) and
+  **I4 — remove the graphics tests that passed**: nouveau-only work, on branch
+  `gpu-alternatives` (`docs/nvidia.md`, "Real-PC result and fix", "Phase I4"). The vkms
+  unload/reload it introduced is what `pcnvidia.sh` does for nvidia-drm.
 - **I2 — the old launcher still shows next to Smart Dock**. Status (2026-11-15): done,
   checked on Cuttlefish (I1 builds the image). Smart Dock was already home; what showed was
   Launcher3's taskbar drawn over the dock, and Launcher3 was still a second home choice.
@@ -618,147 +457,38 @@ one session each, one build at a time (I1 builds last and makes the release imag
   of scope). The user can confirm the reason on the game's Play page and install it with
   Aurora Store (same Google-signed splits) or from genshin.hoyoverse.com. Details in
   `docs/arm-translation.md` ("I3").
-- **I4 — remove the graphics tests that passed** (user request). Status (2026-11-15): done,
-  Soong check only (I1 builds the image). Gone: G4's frame-rate benchmark (`pcgfxbench.sh`,
-  angeles, hwuimacro), the "modetest only" Limine entry, pclog's audio check and HDMI beeps;
-  `pclog.sh` deletes their leftovers on the pclog partition and in `/data/local/tmp`, the OS
-  files go with the stick update. Kept for open bugs: `pcvktest.sh` + dEQP (NVK's vkjson is
-  still `{}`), the VTS entry (never ran on the PC), `modetest`, `pcgpu.sh` (dormant), G5's
-  `gpu-perf`/suspend test. Table with the evidence in `docs/nvidia.md` ("Phase I4").
 
-## Phase J — real-PC round 3
+## Phase J — real-PC round 3 (branch `gpu-alternatives`)
 
-- **J1 — still no picture on the nouveau and NVK entries** (pclog `out/pclog-i/`, build
-  `eng.caoanh.20261115.0906`). Status (2026-11-15): fix done, checked in QEMU, real-PC check
-  pending. Release image `out/aosp17-usb-j1.img` (build `eng.caoanh.20261115.1254`). nouveau
-  exposes atomic modesetting only with `atomic=1`, so drm_hwcomposer fell back to a headless
-  null display: `init.pc.rc` now loads `nouveau.ko atomic=1`. NVK refused to create an
-  instance because Soong's build-id is MD5 (16 bytes) and NVK needs SHA-1: `vulkan.nouveau`
-  links with `--build-id=sha1`. The NVK entry now asks for NVK with
-  `androidboot.android_pc.vulkan=nouveau`, and `pcvkprobe` (post-fs-data) sets
-  `ro.hardware.vulkan` to `nouveau` only when NVK creates a device, else `pastel`, so the entry
-  shows a picture either way. Monitor sound on these entries had the same cause (no mode on
-  DP-1, so no ELD); the jack → WiredAccessoryManager → HDMI Out chain already worked on the
-  modetest entry (`pclog-h3/boot-8`), so `atomic=1` fixes it too. Details in `docs/nvidia.md`
-  ("Phase J1").
-- **J2 — J1 on the PC: flickering desktop that could not be unlocked; NVK crashed** (pclog
-  `out/pclog-j1/`). Status (2026-11-15): fix done, checked in QEMU, real-PC check pending.
-  Release image `out/aosp17-usb-j2.img` (build `eng.caoanh.20261115.1455`). The desktop ran at
-  23 frames in 113 s because minigbm's nouveau buffers were dumb VRAM objects that SwiftShader
-  read back through BAR1: a new minigbm `nouveau` backend allocates GART (cached system
-  memory) buffers, which nouveau moves to VRAM only to scan out
-  (`aosp17-minigbm-nouveau-gart.patch`). NVK crashed in `vkGetPhysicalDeviceProperties` on a
-  NULL `vk_common_*` entrypoint: Soong dropped the weakly referenced runtime objects, so
-  `vulkan.nouveau` now links the Vulkan runtime and WSI whole, as meson does. The "98
-  SurfaceFlinger crashes" were old tombstones from earlier boots; `pclog.sh` now copies only
-  new ones. Details in `docs/nvidia.md` ("Phase J2").
+J1/J2 fixed the nouveau and NVK entries on the real PC: `nouveau.ko atomic=1` for
+drm_hwcomposer, NVK's SHA-1 build-id and whole-archive Vulkan runtime, `pcvkprobe` falling back
+to SwiftShader, and a minigbm `nouveau` backend with GART buffers. The code and
+`docs/nvidia.md` ("Phase J1", "Phase J2") live on branch `gpu-alternatives`; only J2's change to
+`pclog.sh` (copy only new tombstones) stays on `main`.
 
-## Phase K — NVIDIA's own driver on bare-metal Android (Venus over vtest)
+## Phase K — NVIDIA's own driver on bare-metal Android
 
-Goal: games and the desktop render on the RTX 4070 at full speed. Decided 2026-11-15 after
-the real-PC rounds: Nova has no 3D at all (games run on SwiftShader), and NVK on Ada is
-still young. The user's `~/projects/waydroid-nvidia` already runs Android (Waydroid,
-LineageOS 20) on this RTX 4070 through NVIDIA's own driver: Mesa **Venus** in Android sends
-Vulkan over a **vtest** unix socket to a patched `virgl_test_server` that runs on the
-NVIDIA Vulkan driver (`nvidia-open` 615.78.08); GLES is ANGLE on Venus; gralloc allocates
-through vtest; Genshin Impact runs on Vulkan 1.3 there. Phase K moves that design onto
-the bare-metal stick: the "host" side runs inside Android itself.
+Decided 2026-11-15: the RTX 4070 on NVIDIA's own driver (`nvidia-open` + NVIDIA's userspace,
+620.70.06), first with the design of `~/projects/waydroid-nvidia`. The kernel half is what
+Phase L runs on and stays on `main` (docs/nvidia-proprietary.md):
 
-```
-App / SurfaceFlinger ─GLES─► ANGLE ─┐
-                     ─Vulkan────────┴─► Venus (vulkan.virtio.so, vtest transport)
-gralloc (minigbm-vtest) ───────────────┐  unix socket
-                                        ▼
-  glibc sidecar (started by init): patched virgl_test_server --venus
-        └─► NVIDIA userspace (libnvidia-*, nvidia_icd.json) ─► /dev/nvidia*, /dev/dri (nvidia-drm)
-                                                                   ▲
-  drm_hwcomposer on nvidia-drm (modeset=1) scans out the same dma-bufs ──┘
-  kernel: nvidia-open modules (nvidia, nvidia-modeset, nvidia-drm, nvidia-uvm) + GSP firmware
-```
+- **K1 — nvidia-open kernel modules on GKI android17-6.18** (`tools/nvidia-build.sh`, GKI
+  namespace import `nvidia-open-gki-ns.patch`), loaded step by step at post-fs by `pcnvidia.sh`
+  on the entry with `androidboot.android_pc.gpu=nvidia`, `cfi=kcfi,warn`, lockups panic, pclog
+  copies efi-pstore (K1b). **K1c:** four kCFI mismatches fixed (`nvidia-open-kcfi.patch`),
+  `intel_iommu=off`.
+- **K4 — display and sound on nvidia-drm:** drm_hwcomposer on the nvidia-drm card `pcnvdisplay`
+  finds, overlay planes off, fences through `IN_FENCE_FD`/`OUT_FENCE_PTR`; monitor sound through
+  nvidia's ELD and the F9h Rust audio HAL.
 
-The phase reuses waydroid-nvidia's patches and shims (Mesa `mesa-26.2.6` Venus patches,
-virglrenderer `1.3.0` vtest dma-buf patches, `minigbm-vtest`, `gpuid`, `hwc-yuv`,
-`mapper-yv12`, feature declarations incl. `opengles.aep`) and its notes in `venus/notes-*.md`.
-NVIDIA's userspace is binary and glibc-only; it is used for this personal stick only and is
-not redistributed. pcfb, nouveau/NVK and Nova entries stay as they are; Phase K adds an
-**"NVIDIA (proprietary, Venus)"** boot entry (`androidpc.gpu=nvidia`).
-
-- **K1 — nvidia-open kernel modules on GKI android17-6.18.** Build `nvidia.ko`,
-  `nvidia-modeset.ko`, `nvidia-drm.ko`, `nvidia-uvm.ko` from `open-gpu-kernel-modules` at the
-  same version as the userspace (start with 615.78.08, the host's) as vendor modules, ship
-  `gsp_ga10x.bin`/`gsp_tu10x.bin` in `/vendor/firmware/nvidia/<version>/`, load them only on
-  the new entry (`nvidia-drm modeset=1 fbdev=1`, nouveau/Nova blocklisted, `pcfb.enable=0`).
-  Risk: symbols outside the GKI KMI list; if the prebuilt GKI cannot load the modules, build
-  the GKI kernel with `tools/gki-build.sh` and say what changed. Done when: on the real PC the
-  modules load, GSP boots, `/dev/nvidia*` exist and `card0` (nvidia-drm) shows DP-1 connected.
-  **Status (2026-11-15): code done, QEMU check passed, real-PC test pending** — 620.70.06 (the
-  host's version now), built by `tools/nvidia-build.sh` against the prebuilt GKI image (only a
-  GKI namespace import was needed, no kernel change), entry needs `cfi=kcfi`; image
-  `out/aosp17-usb-k1.img` (docs/nvidia-proprietary.md, K1).
-  **K1b (2026-11-15):** the combined K image hung on the real PC before pclog started (modules
-  loaded in early-init). Now loaded at post-fs step by step after pclog is up, `cfi=kcfi,warn`,
-  lockups panic, pclog copies efi-pstore; debug entry with the kernel log on screen that loads
-  the driver after boot. Image `out/aosp17-usb-k1b.img`; real-PC test pending.
-  **K1c (2026-11-15):** K1b's logs: the hang was a kCFI trap (SEC2 scrubber getter called through
-  a mismatched NVOC pointer); with `,warn` the driver came up, Venus ran on the RTX 4070, then
-  Xid 51 (BAD_TSG) at the first post-boot load. Fixed four kCFI mismatches
-  (`nvidia-open-kcfi.patch`), `intel_iommu=off` on the NVIDIA entries (the host runs without the
-  IOMMU), safe debug entry. Image `out/aosp17-usb-k1c.img`; real-PC test pending.
-  **K1d (2026-11-16):** kCFI fixed for real (no CFI failure), Xid 51 stays with the IOMMU off; its
-  trigger is microG DroidGuard opening two ANGLE/Vulkan displays at once. clang and gcc builds
-  give GSP identical structure layouts; the host never had high-priority queues (no SYS_NICE),
-  the stick does; debug entry removed. Superseded by Phase L1.
-- **K2 — glibc sidecar with the NVIDIA userspace and vtest.** A minimal glibc root (glibc,
-  NVIDIA userspace of the same version, patched virglrenderer `virgl_test_server`) shipped
-  read-only in the vendor partition (or its own partition if `super` is too small), started
-  by init in its own SELinux domain with the vtest socket where Venus expects it. Done when:
-  on the real PC `nvidia-smi` (inside the sidecar) lists the RTX 4070 and
-  `virgl_test_server` runs.
-  **Status (2026-11-15): code done, checked on the build host and in QEMU, real-PC test
-  pending** — 256 MiB glibc root at `/vendor/bin/nvsidecar` (fits the vendor group, no layout
-  change): glibc 2.44, NVIDIA 620.70.06 (incl. GLVND EGL, which NVIDIA's Vulkan needs),
-  virglrenderer 1.3.0 + vtest patches v5-v7 linked with the root's ld.so as interpreter
-  (`tools/nvsidecar-build.sh`); `vendor.nvsidecar` starts at late-fs on the nvidia entry in its
-  own domain and creates `/dev/socket/vtest`, or exits without it when no GPU answers
-  `nvidia-smi`. Host bwrap test with only the root: Venus vulkaninfo shows the RTX 4070,
-  protocol-7 sync_files 10/10; QEMU: fails cleanly, Venus falls back to SwiftShader
-  (docs/nvidia-proprietary.md, K2).
-- **K3 — Android side: Venus, gralloc, GLES, features.** Build waydroid-nvidia's Venus
-  (patched Mesa) for AOSP 17 x86_64 + arm64-bridge ABIs, `minigbm-vtest` as gralloc,
-  ANGLE → Venus as GLES (ES 3.2 + AEP), `gpuid`, and the honest feature declarations
-  (Vulkan 1.3, `opengles.aep`), all only on the `nvidia` entry. Testable without the real PC
-  against a vtest server on the build host (lavapipe or the host's NVIDIA). Done when:
-  Android in QEMU/Cuttlefish connected to a host vtest shows `Pipeline=Skia (Vulkan)` on Venus.
-  **Status (2026-11-15): done, checked in QEMU** — Venus (Mesa 26.2.6 + waydroid's patches,
-  NDK build, `tools/venus-android-build.sh`) in the Cuttlefish Vulkan APEX, minigbm `vtest`
-  backend (server allocations + udmabuf), ANGLE ES 3.2 without overrides, gpuid inside ANGLE,
-  AEP and ES 3.2 declared only when Venus runs; `$venus` in mkusb, `pcvenusprobe.sh` falls back
-  to SwiftShader without the socket. A host vtest cannot serve a VM (fds over SCM_RIGHTS), so
-  the test ran waydroid's `virgl_test_server` on lavapipe inside the guest
-  (`tools/venus-test.sh`): `Pipeline=Skia (Vulkan)`, vkjson driver `venus`
-  (docs/nvidia-proprietary.md, K3). For K2: socket `/dev/socket/vtest` (0666, before
-  SurfaceFlinger), vtest protocol 6.
-- **K4 — display and sound on nvidia-drm.** drm_hwcomposer on nvidia-drm importing the
-  vtest-allocated (block-linear, modifier) dma-bufs, native mode on DP-1, hotplug; HDMI/DP
-  audio through nvidia's ELD → the F9h Rust audio HAL. Done when: on the real PC the desktop
-  shows on the monitor from the NVIDIA entry with sound.
-  **Status (2026-11-15): code done, QEMU check passed, real-PC test pending** — Cuttlefish's
-  drm_hwcomposer unchanged on nvidia-drm; `pcnvdisplay` (post-fs-data, nvidia entry) points it
-  at the nvidia-drm card by name and publishes the primary planes' `IN_FORMATS` modifiers
-  (LINEAR + block-linear kind 6 on the host's RTX 4070) to K3's vtest gralloc, so the client
-  target always scans out; overlay planes off (client composition); fences through
-  `IN_FENCE_FD`/`OUT_FENCE_PTR`; monitor sound needs no code (ELD via unsolicited events, J1's
-  chain). `$venus` added to the entry. QEMU: every entry boots, the nvidia entry steps aside
-  (no GPU). Combined image `out/aosp17-usb-k.img` (K1-K4, build
-  `eng.caoanh.20261115.2013`; docs/nvidia-proprietary.md, K4).
-- **K5 — games and soak.** Where Winds Meet, Genshin Impact (Play Store should now list it:
-  `opengles.aep`), Delta Force on the NVIDIA entry; frame rate compared with the Nova and
-  nouveau entries; suspend/resume; 1-hour soak with GPU temperature. Done when: games run on
-  the RTX 4070 at playable frame rates; then the NVIDIA entry may become the default.
-
-Order: K1 → K2 → K4, with K3 in parallel (it needs no NVIDIA hardware); K5 last. Every step
-that needs the real PC ends with the `tools/update-usb-aosp17.sh` command for the user and a
-pclog read.
+The Android half — K2's glibc sidecar (NVIDIA's Vulkan driver behind a patched
+`virgl_test_server` on a vtest socket) and K3's Mesa Venus, minigbm `vtest` gralloc, ANGLE
+`gpuid` and AEP feature files — worked in QEMU and on the PC but is a forwarding layer, not a
+device driver; it hit Xid 51 on the real PC (K1d's gcc-built RM A/B entry and L1's test
+entries chased it). Phase L replaced it. That code (`hals/nvsidecar`, `aosp-device/venus`,
+`tools/nvsidecar-*`, `tools/venus-*`, the Venus/virglrenderer patches, the L1 entries,
+`pcnvtest`, the on-screen log strip) and its notes in docs/nvidia-proprietary.md live on branch
+`gpu-alternatives`.
 
 ## Phase L — NVIDIA's driver as the device's native GPU driver
 
@@ -790,7 +520,9 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   for 30 minutes with no Xid while a test client creates channels and renders.
   **Status (2026-11-16):** test entries without Phase K clients (`gpu=nvidia-l1`, clang and
   gcc-built RM), pcnvtest (channels, copy, compute, two devices at once, HIGH/REALTIME priority,
-  30-min soak), on-screen log strip; image `out/aosp17-usb-l1.img`, real-PC run pending.
+  30-min soak), on-screen log strip; image `out/aosp17-usb-l1.img`, real-PC run pending. The L1
+  test entries, pcnvtest and the log strip are on branch `gpu-alternatives` now; the NVIDIA entry
+  keeps queue priorities at MEDIUM (L3) and pclog still records every Xid.
 - **L2 — nvglibc: NVIDIA's glibc libraries inside bionic processes.** A loader + glibc-ABI shim
   (symbol versions `GLIBC_2.x`, `__libc_*`, `errno`/TLS layout, `dl*`, `pthread_*`, `stat`
   structs, `fopen`/stdio, `getauxval`, `__cxa_*`) so `dlopen` of NVIDIA's ICD from a bionic
@@ -857,14 +589,20 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   `pcwwmvk.sh` runs once user 0's storage is unlocked, and nvglibc keeps NVIDIA's pthread keys
   itself (Firefox aborted with bionic's keys used up). Real-PC check pending.
 
-Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
-removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm
-display, DP audio) stay.
+Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 and live on branch
+`gpu-alternatives`; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm display, DP audio)
+stay. NVIDIA's userspace libraries for `/vendor/lib64/nvidia` come from
+`tools/nvidia-userspace-build.sh` (the build host's 620.70.06).
+
+**Open cleanup:** the GKI build (`aosp-device/kernel`, `tools/gki-build.sh`) still builds nouveau
+and Nova with their kernel patches and nouveau's GSP firmware; dropping them needs a full GKI +
+nvidia-open rebuild and a real-PC check.
 
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
 - The host CPU is flaky under build load (see `docs/aosp-build.md`, "Flaky host").
-- The RTX 4070 runs on the UEFI GOP framebuffer (`pcfb`) with software rendering
-  until Phase G lands. nouveau on Ada is young, and every G test needs the real PC
-  (no GPU passthrough on this host).
+- The RTX 4070 renders only on the NVIDIA (proprietary) entry, on NVIDIA's binary userspace
+  (620.70.06, personal use only); the other entries run on the UEFI GOP framebuffer (`pcfb`)
+  with SwiftShader. NVIDIA tests run in the VFIO VM (`tools/run-qemu-aosp17-vfio.sh`) before
+  the real PC.

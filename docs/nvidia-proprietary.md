@@ -10,6 +10,15 @@ Driver version: **620.70.06**, the build host's `nvidia-open` / `nvidia-utils` (
 waydroid-nvidia started from 615.78.08; the host has moved on). Kernel modules, GSP firmware
 and the K2 userspace must all be this exact version.
 
+**On branch `main` this document covers only the kernel side that Phase L (NVIDIA's driver as
+the device's own driver, `docs/nvidia-native.md`) runs on: K1 (nvidia-open modules, kCFI fixes)
+and K4 (display and sound on nvidia-drm).** Phase K's Android half — the glibc sidecar with the
+vtest server (K2), Mesa Venus, the minigbm `vtest` gralloc and ANGLE's gpuid (K3) — and the L1
+test entries are on branch `gpu-alternatives`, with this document's full version. The sections
+below are a dated log: where they mention Venus, the sidecar, the "NVIDIA (proprietary, Venus)"
+entry name, or the nouveau and Nova entries, they describe the stick at that date; today the
+entry is "Android 17, NVIDIA (proprietary)" with Phase L's graphics stack.
+
 ## K1. nvidia-open kernel modules on GKI android17-6.18
 
 ### What was added
@@ -22,8 +31,8 @@ and the K2 userspace must all be this exact version.
 | Firmware | `gki-build.sh` step `firmware` → `/vendor/firmware/nvidia/620.70.06/` | `gsp_ga10x.bin` (17 MiB) and `ucodes_ga10x.bin` (54 MiB) from the host's `/usr/lib/firmware/nvidia/620.70.06/` |
 | Blocklist | `aosp-device/pc/modules.blocklist` | the four modules, so the boot-time module load skips them on every entry |
 | Init | `aosp-device/pc/init.pc.rc`, `pcnvidia.sh` | on `ro.boot.android_pc.gpu=nvidia`: modprobe, device nodes, composer settings |
-| gralloc (until K3) | `tools/patches/aosp17-minigbm-nvidia-dumb.patch` | minigbm's dumb backend for the DRM driver `nvidia-drm` |
-| Boot entry | `tools/mkusb-aosp17.sh --menu` | **"Android 17, NVIDIA (proprietary, Venus)"** |
+| gralloc | `tools/patches/aosp17-minigbm-nvidia.patch` (Phase L3; K1 used dumb buffers) | minigbm's `nvidia` backend for the DRM driver `nvidia-drm` |
+| Boot entry | `tools/mkusb-aosp17.sh --menu` | **"Android 17, NVIDIA (proprietary)"** (K1 named it "..., Venus") |
 | Logs | `aosp-device/pc/pclog.sh` | `== nvidia modules`, `== nvidia dmesg`, `== /proc/driver/nvidia`, `== /dev/nvidia*`, `== drm cards`, `== modetest -c nvidia-drm` |
 
 ### Building against the GKI image
@@ -383,350 +392,11 @@ stalled. Showing the log beside the UI would need the log off that framebuffer (
 window instead of the kernel console), which does not help with a freeze. The main entry's
 pclog and efi-pstore now cover what the debug entry was for.
 
-### L1. Isolating the Xid 51: test client, no Phase K clients, log strip (2026-11-16)
+### L1, K2, K3
 
-PLAN.md Phase L: NVIDIA's driver becomes the device's native GPU driver; the sidecar/Venus route
-is superseded and no CPU fallback is wanted. L1 is the kernel side: find and fix the Xid 51.
-
-**Test entries.** "Android 17, NVIDIA L1 test: driver + test client (log strip)" boots with
-`androidboot.android_pc.gpu=nvidia-l1`. `init.pc.rc` loads the same modules (`pcnvidia.sh load`),
-but none of Phase K's GPU clients start: K2's sidecar, K3's Venus and K4's pcnvdisplay all key on
-`gpu=nvidia`. Android shows its desktop through drm_hwcomposer on nvidia-drm (card0) with minigbm
-dumb buffers, without the GPU. The entry tests the driver, not the desktop. The only Vulkan
-client is **pcnvtest**. "…RM built by gcc (cfi=off)" is the same with
-`androidboot.android_pc.nvidia_rm=gcc`: the RM cores built by the host's gcc 16 as distributions
-build them (`tools/nvidia-build.sh` step 4, `/vendor/lib/nvidia-gcc`, `insmod`), `cfi=off`.
-
-**pcnvtest** (`aosp-device/pc/nvtest/pcnvtest.c`, built for glibc by `tools/nvtest-build.sh`,
-run through the sidecar's glibc root, which ships on every entry): each test creates its own
-VkDevice, so its own channels and TSG. It fills a 16 MiB VRAM buffer (`vkCmdFillBuffer`), copies
-it to a host-visible one (`vkCmdCopyBuffer`), runs a compute shader over it, waits on a fence
-(5 s timeout) and checks every word. Modes: `info`, `copy [default|low|medium|high|realtime]`,
-`pair N` (two threads creating devices at once, DroidGuard's pattern), `many N`. On the build
-host's RTX 4070 `copy`, `pair` and `many` pass; `copy high` fails with
-`VK_ERROR_NOT_PERMITTED` there (no `CAP_SYS_NICE`), which confirms the host never used high
-priority.
-
-**Schedule** (`pcnvtest.sh`, from 20 s after `sys.boot_completed`, as root, so with
-`CAP_SYS_NICE`): `nvidia-smi -L` and `-q`, `info`, `copy`, `pair 5`, `many 16`; then every
-30 s `copy` + `pair 1`; at 10 min `copy high`, `copy realtime`, `copy`; soak to 30 min. After
-every step it checks the kernel log for a new `NVRM: Xid` and logs `XID after step <name>`.
-Lines go to the kernel log (`pcnvtest:`), to `/data/vendor/pcgpu/nvtest.txt` and into pclog's
-`== pcnvtest` section.
-
-| Result on the PC | Meaning |
-|---|---|
-| Xid during `copy`/`pair`/`many` in the first minute | any channel creation wedges the GPU: kernel module, GKI or firmware side; compare with the gcc entry |
-| no Xid until `copy high`/`copy realtime`, then Xid | high-priority TSGs (what `CAP_SYS_NICE` unlocked for K2's server) |
-| no Xid in 30 min | the driver is stable on its own; the Xid came from the Venus server's use (next: replay its pattern) |
-| clang entry fails, gcc entry passes | clang code generation of the RM |
-
-**Log strip.** On these entries `pclogstrip.sh` follows the kernel log, keeps the driver's and the
-tests' lines (NVRM, nvidia, GSP, Xid, CFI, pcnvidia, pcnvtest, oopses) in
-`/data/local/tmp/logstrip.txt`, and starts **PcLogStrip** (`aosp-device/pc/logstrip`, a
-platform-signed system app). PcLogStrip shows the file's tail in a semi-transparent overlay on
-the right 30% of the screen. The overlay never takes focus or touches, so the UI under and
-beside it keeps working, and the kernel console stays off the framebuffer.
-
-**First L1 run (build `eng.caoanh.20261116.1459`, L3's image; `out/pclog-l3` boot-23 and
-boot-24).** `nvidia-smi` worked, but every pcnvtest step failed with `vkCreateInstance = -9`
-(`VK_ERROR_INCOMPATIBLE_DRIVER`), so nothing reached the GPU and there was no Xid in 900 s. The
-cause: L3 moved NVIDIA's libraries to `/vendor/lib64/nvidia` and renamed them in the JSONs, and
-NVIDIA's Vulkan ICD initialises through its GLVND EGL driver. pcnvtest.sh had never named the
-EGL vendor JSON, which the root's old absolute path had covered. Reproduced on the build host
-with L3's layout: without `__EGL_VENDOR_LIBRARY_FILENAMES`, -9 (the loader says only *Could not
-get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr'*); with it, the RTX 4070 and `copy` OK.
-pcnvtest.sh now sets it, and if `info` still fails it runs the loader once with
-`VK_LOADER_DEBUG=error,warn,driver` into the log and stops.
-
-The same boots showed the L1 entries' desktop as slow and striped. That is expected for a
-driver-only entry: SwiftShader draws 2560x1080 at 144 Hz into nvidia-drm dumb buffers, which
-live in VRAM and are read back by the CPU through BAR1 (284 frames in 300 s). The desktop on
-the GPU is L3's entry.
-
-## K2. glibc sidecar: NVIDIA's userspace and the vtest server
-
-NVIDIA's userspace is built for glibc and Android is bionic, so the Vulkan driver runs in its
-own small glibc world inside Android: a read-only root with glibc, NVIDIA's userspace at the
-kernel modules' version (620.70.06) and waydroid-nvidia's patched `virgl_test_server`. Venus
-in Android (K3) and minigbm's vtest gralloc talk to it over the unix socket
-`/dev/socket/vtest`, as Waydroid talks to the host's server.
-
-### What was added
-
-| Piece | Where | What |
-|---|---|---|
-| Root builder | `tools/nvsidecar-build.sh [NV_VERSION]` | builds virglrenderer, assembles the root in `aosp/device/android-pc/nvsidecar/` (not in git) |
-| vtest patches | `tools/patches/nvsidecar-vrend-000{1,2,3}-*.patch` | waydroid-nvidia's `vrend-0001..0003`: `RESOURCE_IMPORT_BLOB` (v5), `ALLOC_DMABUF_IMAGE` (v6), `SYNC_EXPORT_FD` (v7) on virglrenderer 1.3.0 |
-| Host test | `tools/nvsidecar-hosttest.sh` | runs the root in a bwrap sandbox on the host's own RTX 4070 |
-| Install | `aosp-device/hals/nvsidecar/hal.mk` | copies the root to `/vendor/bin/nvsidecar/` (`PRODUCT_COPY_FILES`) |
-| Service | `aosp-device/hals/nvsidecar/{nvsidecar.sh,init.nvsidecar.rc}` | `vendor.nvsidecar`, only on `ro.boot.android_pc.gpu=nvidia` |
-| SELinux | `aosp-device/hals/nvsidecar/sepolicy/` | domain `nvsidecar`; types `nvsidecar_file`, `nvidia_device`, `vtest_socket`, `nvsidecar_data_file` |
-| Logs | `aosp-device/pc/pclog.sh` | `== nvsidecar`, `== nvidia-smi -q (sidecar)`, `== avc nvsidecar` |
-
-`hals/nvsidecar` is picked up by the `hals/*/hal.mk` and `hals/*/sepolicy` globs, so no shared
-makefile changed. It is not a HAL; it only borrows that wiring (as K4's `hals/nvdisplay` does).
-
-### The root
-
-`tools/nvsidecar-build.sh` (about 256 MiB):
-
-```
-/vendor/bin/nvsidecar/
-  bin/virgl_test_server, bin/virgl_render_server   virglrenderer 1.3.0 + vrend-0001..0003
-  bin/nvidia-smi                                   NVIDIA's binary
-  lib/ld-linux-x86-64.so.2, libc.so.6, ...         the build host's glibc (2.44) and deps
-  lib/libvirglrenderer.so.1, libvulkan.so.1        + GLVND libEGL.so.1, libGLdispatch.so.0
-  lib/libGLX_nvidia.so.0, libEGL_nvidia.so.0, libnvidia-{glcore,eglcore,glsi,tls,glvkspirv,
-      gpucomp,rtcore,allocator}.so.*, libnvidia-ml.so.1          NVIDIA 620.70.06
-  share/vulkan/icd.d/nvidia_icd.json               library_path = absolute path of libGLX_nvidia
-  share/glvnd/egl_vendor.d/10_nvidia.json          library_path = absolute path of libEGL_nvidia
-  VERSION
-```
-
-- **The dynamic loader.** virglrenderer is linked with
-  `--dynamic-linker=/vendor/bin/nvsidecar/lib/ld-linux-x86-64.so.2` and a `RUNPATH` of
-  `/vendor/bin/nvsidecar/lib`, so the kernel starts it with the root's own glibc loader and
-  `virgl_test_server` can exec `virgl_render_server` directly. NVIDIA's `nvidia-smi` keeps
-  `/lib64/ld-linux-x86-64.so.2` and is run through the loader explicitly
-  (`.../lib/ld-linux-x86-64.so.2 .../bin/nvidia-smi`). The service also sets
-  `LD_LIBRARY_PATH` to the root's `lib/` for what NVIDIA and the loaders `dlopen`.
-  (Meson's compiler sanity check cannot run a program with that interpreter on the build host,
-  so the link arguments are set with `meson configure` after the first setup.)
-- **Why `/vendor/bin`.** `fs_config` makes only `vendor/bin/*` mode 0755; the loader and the
-  programs must be executable (`execve` of an interpreter needs its x bit), and the board has
-  no `config.fs`. The whole root therefore sits below `/vendor/bin`.
-- **NVIDIA's files** come from the host's `/usr/lib` when the host runs `NV_VERSION`, otherwise
-  from `NVIDIA-Linux-x86_64-<ver>.run` (downloaded to `out/downloads/`, `--extract-only`).
-  Each library is stored under its soname (no symlinks, which `PRODUCT_COPY_FILES` would
-  duplicate). glibc and the other dependencies are the `ldd` closure of the root.
-- **What NVIDIA's Vulkan driver needs** was found by running the root in the sandbox with
-  `LD_DEBUG=files`. In 620.70.06 the Vulkan entry points (`libGLX_nvidia.so`) bring the
-  driver up through EGL: GLVND's `libEGL.so.1` → `libEGL_nvidia.so` →
-  `libnvidia-eglcore.so`. Without them `vk_icdGetInstanceProcAddr` returns no
-  `vkCreateInstance` and the loader reports "Found no drivers" (never seen on the host, whose
-  `/usr/lib` has them). `libGLX_nvidia.so` also `dlopen`s X11/xcb libraries (`libX11-xcb`,
-  `libxcb-{dri3,glx,present,randr,sync,xfixes}`); they are in the root, no X server is
-  involved. `libnvidia-rtcore` (ray tracing) is loaded at device creation.
-  Not shipped: CUDA, OptiX, NVENC/NVDEC, NGX, the OpenGL front ends, `libdbus` (optional).
-- **Size.** vendor.img was 345 MiB; the Cuttlefish vendor group (`odm vendor vendor_dlkm
-  odm_dlkm`) has 1404 MiB, so the root fits the existing `super` layout: no partition or group
-  change, and `tools/update-usb-aosp17.sh` updates the stick in place (it rewrites `super` as a
-  whole and keeps `userdata`).
-
-### The service
-
-`init.nvsidecar.rc`, on `ro.boot.android_pc.gpu=nvidia` only:
-
-- at `late-fs`: relabel K1's `/dev/nvidia*` nodes (`pcnvidia.sh` makes them with `mknod` as su
-  at post-fs, so they carry `/dev`'s `device` label) to `nvidia_device`, then
-  `start vendor.nvsidecar`. late-fs comes before K3's `init.venus.rc` waits for the socket at
-  post-fs-data, and before `class_start core/hal` at boot;
-- at `post-fs-data`: `/data/vendor/nvsidecar{,/cache}` (HOME, NVIDIA's shader cache; used only
-  once clients connect);
-- `vendor.nvsidecar`: `user root` (only to create its socket in `/dev/socket`, which is
-  root:root 0755) with every capability dropped but `SYS_NICE` (NVIDIA's queue priorities),
-  `group graphics`, `stdio_to_kmsg`, `oneshot`, `disabled`.
-
-`nvsidecar.sh` (domain `nvsidecar`):
-
-1. prints the root's `VERSION`;
-2. exits without a socket when there is no `/dev/nvidiactl` or `nvidia-smi -L` sees no GPU
-   (QEMU, a module that did not load, a version mismatch): K3's `pcvenusprobe.sh` then finds
-   no `/dev/socket/vtest` and boots on SwiftShader;
-3. otherwise, with umask 0 (apps connect with their own uids), runs
-   `virgl_test_server --venus --no-virgl --no-fork --multi-clients --socket-path /dev/socket/vtest`
-   with `VK_DRIVER_FILES` = the root's `nvidia_icd.json` only,
-   `__EGL_VENDOR_LIBRARY_FILENAMES` = the root's NVIDIA EGL vendor file only and
-   `RENDER_SERVER_EXEC_PATH` = the root's `virgl_render_server`, and starts it again 2 s after
-   it exits. Its output (and the server's) reaches the kernel log through `stdio_to_kmsg`,
-   tag `nvsidecar` in `logcat -b all`. These are waydroid-vtest.service's flags without
-   `--rendernode`: with NVIDIA's ICD alone, vrend-0002's dma-buf allocator takes the only
-   device with the export extensions.
-
-### SELinux
-
-`nvsidecar` is an init daemon domain (`nvsidecar_exec` = `/vendor/bin/nvsidecar.sh`); the glibc
-programs run from `nvsidecar_file` without a transition. It may use the vendor shell and toybox,
-write the kernel log, read and execute its root, open `nvidia_device` and the DRM render nodes
-(`gpu_device`; cards only `getattr`), read `proc` and `sysfs` (`/proc/driver/nvidia`, PCI and DRM
-devices), `execmem` (NVIDIA's shader compiler), `sys_nice`, its data directory, create
-`vtest_socket` in `/dev/socket` (type transition on the name `vtest`) and use unix stream and
-seqpacket sockets (both `unix_stream_socket` to SELinux). Clients (`untrusted_app_all`,
-`platform_app`, `priv_app`, `system_app`, the other core domains, the allocator, composer and
-camera HAL servers; not `app_zygote` and the SDK sandbox, which the platform forbids unix
-sockets) may write the socket, `connectto` the server and exchange fds with it. Core processes
-connecting to a vendor socket is outside Treble's default, so the domain carries
-`socket_between_core_and_vendor_violators`; the wire format is vtest, not a system API, and the
-daemon only runs on the NVIDIA entry. The entry boots with `androidboot.selinux=permissive`
-(K1), so missing rules show up in pclog's `== avc nvsidecar` instead of breaking the boot; they
-are to be added from the first real-PC log.
-
-### Tests
-
-**Build host (bwrap).** `tools/nvsidecar-hosttest.sh` runs the root in a sandbox that has only
-`/vendor/bin/nvsidecar`, `/dev/nvidia*`, `/dev/dri`, `/proc`, `/sys` and an empty `/data` (no
-`/usr`, no `/lib64`), with the service's flags and environment on a private socket under
-`$XDG_RUNTIME_DIR` (Waydroid's `waydroid-vtest` service and socket are not touched), and the
-host's Mesa Venus as the client:
-
-```
-== nvidia-smi -L (sandbox)
-GPU 0: NVIDIA GeForce RTX 4070 (UUID: GPU-735380de-...)
-== virgl_test_server (sandbox), vulkaninfo through Venus (host)
-	apiVersion         = 1.4.334
-	deviceName         = Virtio-GPU Venus (NVIDIA GeForce RTX 4070)
-	driverName         = venus
-	conformanceVersion = 1.4.0.0
-== vtest-sync-fd (waydroid-nvidia's patched Venus, protocol 7)
-  real sync_file fds: 10 of 10
-PASS (0 failures)
-```
-
-**QEMU (no NVIDIA GPU).** vendor and super built on top of the K1 and K3 commits (vendor.img
-543 MiB, was 345 MiB; SELinux policy with every neverallow check passing), image
-`out/aosp17-usb-k2-qemu.img` (`--menu --userdata 2048 --append "console=ttyS0,115200
-androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"`),
-`default_entry` set to "NVIDIA (proprietary, Venus)" in its `limine.conf`, booted with
-`NO_WINDOW=1 AUDIO=none tools/run-qemu-aosp17-usb.sh`, read over adb:
-
-| Check | Result |
-|---|---|
-| boot | `sys.boot_completed=1` |
-| service | started at late-fs, `nvsidecar: nvidia 620.70.06 ...` then `nvsidecar: no /dev/nvidiactl (no NVIDIA GPU, or nvidia.ko did not load): not starting`, exit 0 after 43 ms; `init.svc.vendor.nvsidecar=stopped`, no `/dev/socket/vtest` |
-| fallback | `vendor.venus.probe=swiftshader`, `ro.hardware.vulkan=pastel` (K3's probe found no socket) |
-| labels | `/vendor/bin/nvsidecar.sh` `nvsidecar_exec`, the root `nvsidecar_file` (mode 0755 from fs_config), `/data/vendor/nvsidecar{,/cache}` `nvsidecar_data_file` root:graphics 0770 |
-| second start | a stray `/dev/nvidiactl` (root:root, no driver behind it) appeared 30 s after boot; `start vendor.nvsidecar` then got past the first check and stopped at the second: `nvidia-smi sees no GPU: not starting` |
-| glibc on Android | `ld-linux-x86-64.so.2 nvidia-smi -L` runs (NVIDIA's "couldn't communicate with the NVIDIA driver", exit 9); `virgl_test_server` with the service's environment starts on Android's kernel and binds its socket |
-| SELinux | no `avc: denied` for `nvsidecar`, `vtest_socket` or `nvidia_device` |
-
-The service's output goes to the kernel log, but on this boot the dmesg ring had wrapped
-before adb came up; logd's copy (`logcat -b all`, tag `nvsidecar`) has it, so pclog reads it
-from there. `virgl_test_server` run by hand without `LD_LIBRARY_PATH` stops at `libexpat.so.1`
-(a dependency of `libgbm`, which has no run path of its own): the root needs the environment
-the service sets.
-
-**Real PC (pending, with K4's image).** In pclog's `boot-N/state*`: `== nvsidecar` shows
-`init.svc: running`, `virgl_test_server` in `u:r:nvsidecar:s0` and `/dev/socket/vtest` as
-`vtest_socket`; `== nvidia-smi -q (sidecar)` lists the RTX 4070 with driver 620.70.06;
-`getprop vendor.venus.probe` is `venus`; `== avc nvsidecar` lists the rules still missing.
-
-### Changing the driver version
-
-Kernel modules and userspace must match exactly. After K1's `tools/nvidia-build.sh` builds a
-new version, run `tools/nvsidecar-build.sh <version>` (no argument: the host's version), then
-`tools/nvsidecar-hosttest.sh` if the host runs that version, then the vendor image.
-
-### Status
-
-**Code done, checked on the build host (bwrap, the RTX 4070) and in QEMU (starts, fails
-cleanly), real-PC test pending.** No release image: K4 builds the combined one. Done when, on
-the real PC, `nvidia-smi` from the sidecar lists the RTX 4070 and `virgl_test_server` runs
-(pclog `== nvsidecar`, `== nvidia-smi -q (sidecar)`).
-
-## K3. Android side: Venus, gralloc, ANGLE, features
-
-The Android half of waydroid-nvidia's design. It acts only on a boot entry with
-`androidboot.android_pc.vulkan=venus` (`$venus` in `tools/mkusb-aosp17.sh`, for the NVIDIA
-entry's command line), and only when the vtest socket is there at post-fs-data. Vulkan is Mesa
-**Venus** (`vulkan.virtio`) over the vtest socket of K2's sidecar; GLES is **ANGLE** on Venus;
-gralloc is minigbm's new **vtest** backend.
-
-```
-apps, SurfaceFlinger ── GLES ── ANGLE (system) ─┐
-                     ── Vulkan ─────────────────┴─ Venus (vulkan.virtio, Cuttlefish Vulkan APEX)
-gralloc: minigbm "vtest" backend                          │ vendor.mesa.vtest.socket.name
-   GPU-only buffers ── VCMD_ALLOC_DMABUF_IMAGE ───────────┤ = /dev/socket/vtest (0666)
-   CPU/video/cursor buffers ── udmabuf (linear), imported by Venus (VCMD_RESOURCE_IMPORT_BLOB)
-                                                          ▼
-                                    K2: virgl_test_server --venus (vtest protocol 6)
-```
-
-### What was added
-
-| Piece | Where | What |
-|---|---|---|
-| Venus | `tools/venus-android-build.sh` → `aosp-device/venus/prebuilt/x86_64/vulkan.virtio.so` (`VERSION` next to it) | Mesa `mesa-26.2.6` + waydroid-nvidia's patches `0001`, `0002`, `1001`–`1004`, `1007`–`1011` (copied to `tools/patches/venus/`) + `2001` (below), cross-built with NDK r30 (API 33, libc++ static) with waydroid's meson options. The script clones Mesa into `out/venus/mesa` (from `~/projects/waydroid-nvidia/src/mesa` when it exists, else upstream), branch `pc-venus`, and starts again from the tag when the patch list changes. Stripped, 1.9 MB; the unstripped library stays in `out/venus/mesa/build-android-x86_64` for symbolizing tombstones. NEEDED: libdrm, libhardware, liblog, libnativewindow, libsync. Built with `--build-id=sha1` (meson's default) |
-| Venus in the APEX | `aosp-device/venus/Android.bp` (`cc_prebuilt_library_shared` `vulkan.virtio`), `tools/patches/aosp17-cf-vulkan-venus.patch` (`patch -p1` in `aosp/device/google/cuttlefish`, after `aosp17-cf-vulkan-nouveau.patch`) | Cuttlefish loads Vulkan drivers only from `com.google.cf.vulkan` (`ro.vulkan.apex`), so Venus goes into that APEX (`lib64/hw`) next to SwiftShader and NVK, picked by `ro.hardware.vulkan=virtio` |
-| Gralloc interop | `tools/patches/venus/2001-util-u_gralloc-read-minigbm-native-handles.patch` | the same `u_gralloc_minigbm.c` as AOSP's Mesa 26.1 (Phase G3): Venus reads minigbm's `cros_gralloc_handle` (format, modifier, plane fds, offsets, strides). Properties through libc, so the NDK build needs no libcutils |
-| Gralloc | `tools/patches/aosp17-minigbm-vtest.patch` (`git apply` in `aosp/external/minigbm`, after the rw-lock, drop-master and nouveau-gart patches; K1's nvidia-dumb patch goes on top) | a new backend `vtest.c`, chosen before the DRM node scan when `ro.vendor.minigbm.vtest=true`; it opens no DRM node, so the composer is alone on nvidia-drm. GPU-only buffers of the formats the server maps to a VkFormat (AB24, XB24, AR24, XR24, RG16, AB30, XB30, AB4H) come from `VCMD_ALLOC_DMABUF_IMAGE` with the GPU's own modifier (NVIDIA block-linear); scanout buffers get the `SCANOUT` flag and, when K4 has set them from the KMS plane's `IN_FORMATS`, only the modifiers in `vendor.gralloc.vtest.modifiers.<fourcc hex>.<n>` (hex; read again until the list is there). Everything else (CPU access, cursor, video, camera, blobs, other formats, any server failure) is linear system memory: a sealed memfd turned into a dma-buf by `/dev/udmabuf` (the x86 GKI image has udmabuf but no system dma-heap), pitch aligned to 256 B. `bo->handle` is the dma-buf fd, as in `dma_heap.c`; mapping is `mmap` of the dma-buf plus `DMA_BUF_IOCTL_SYNC`. Socket: `ro.vendor.minigbm.vtest.socket`, else `vendor.mesa.vtest.socket.name`, else `/dev/socket/vtest`; one connection per allocator process, opened at the first allocation and reconnected once when the server went away |
-| GLES | the system ANGLE (`androidboot.hardware.egl=angle`, as on every entry) | AOSP 17's ANGLE exposes ES 3.2 by itself when every extension 3.2 needs is there (`CanSupportGLES32`, `vk_caps_utils.cpp`); waydroid's Android 13 ANGLE needed `exposeNonConformantExtensionsAndVersions`, this one does not (checked below) |
-| gpuid | `tools/patches/aosp17-angle-gpuid.patch` (`git apply` in `aosp/external/angle`), `aosp-device/venus/gpuid*.conf` | waydroid's gpuid is a vendor shim with ANGLE as DT_NEEDED; here ANGLE is in `/system/lib64` and the vendor (sphal) namespace cannot link it, so the same lookup is in ANGLE's `Context::initRendererString`/`initVendorString`: a process listed in `/vendor/etc/gpuid.conf` (`<process>|<GL_VENDOR>|<GL_RENDERER>`) gets those strings. The file is empty; `pcvenusprobe.sh` mounts `gpuid.nvidia.conf` (Genshin Impact → `Qualcomm` / `Adreno (TM) 750`) over it when Venus runs |
-| Features | `pcvenusprobe.sh`, `aosp-device/venus/*.xml`, `tools/mkusb-aosp17.sh` | Vulkan 1.3, level 1 and compute are already declared by the Cuttlefish Vulkan APEX. `android.hardware.opengles.aep`: an empty `/vendor/etc/permissions/android.hardware.opengles.aep.pc.xml`, over which the probe mounts the real declaration when Venus runs (before system_server reads the features). `reqGlEsVersion`: `androidboot.opengles.version` moved from the shared bootconfig (which wins over the command line) to each entry's command line, 196609 (3.1) by default; the Venus entry gets none and the probe sets 196610 (3.2) or 196609 |
-| Entry | `tools/mkusb-aosp17.sh`: `venus="androidboot.android_pc.vulkan=venus androidboot.hardware.guest_hwui_renderer=skiavk"` | the graphics half of the NVIDIA entry's command line (K4 adds it to K1's entry); HWUI draws with Skia on Vulkan. Like the NVK entry, `entry()` then adds neither `androidboot.hardware.vulkan` nor `androidboot.opengles.version`, so both properties stay unset in early-init. `entry()` also reads `--append` words for these overrides |
-| Init, probe | `aosp-device/venus/init.venus.rc`, `pcvenusprobe.sh` | on `android_pc.vulkan=venus`, post-fs-data: `wait /dev/socket/vtest 20` (K2's sidecar starts earlier), then the probe. **With the socket**: `ro.vendor.minigbm.vtest=true`, `vendor.mesa.vn.debug=vtest` (no virtio-gpu probing), `vendor.mesa.vtest.socket.name=/dev/socket/vtest` (Mesa reads `MESA_*`/`VN_*` options from `debug.mesa.*`, `vendor.mesa.*` and `mesa.*`; the vendor prefix keeps them in the vendor namespace), `ro.hardware.vulkan=virtio`, `ro.opengles.version=196610`, and the gpuid and AEP bind mounts. **No CPU fallback** (the user's decision, 2026-11-16: this project draws on the NVIDIA GPU): without the socket the entry is set up the same way and the probe logs an error (`vendor.venus.probe=no-socket`); nothing draws. The result is in `vendor.venus.probe` (`venus` or `no-socket`), a `pcvenusprobe:` kernel log line and `/data/vendor/pcgpu/venus.txt`. All of this runs before the allocator (class hal), SurfaceFlinger and system_server start in `on boot`. Properties: `vendor_venus_prop` (vendor public, readable by every domain: apps load Venus and the mapper) |
-
-Not ported because not needed here: waydroid's `hwc-yuv` (a hwcomposer shim for Hyprland's
-format list) and `mapper-yv12` (a gralloc4 mapper shim for the gbm_mesa minigbm fork's one-plane
-YV12): minigbm's own YV12 has three planes, and K4 composes with drm_hwcomposer. No 32-bit Venus:
-the product is x86_64-only, and arm64 apps reach Vulkan and GLES through libndk_translation's
-proxy libraries, which call the x86_64 loader and drivers.
-
-### The vtest socket (for K2)
-
-`/dev/socket/vtest`, mode 0666 (apps connect with their own uid), created by K2's
-`virgl_test_server --venus --no-virgl --no-fork --multi-clients --socket-path /dev/socket/vtest`
-(only `nvidia_icd.json` in `VK_DRIVER_FILES`, `RENDER_SERVER_EXEC_PATH` set) before
-SurfaceFlinger starts: start the sidecar at post-fs-data or earlier; `init.venus.rc` waits up
-to 20 s for the socket. The server needs vtest protocol 6 (`vrend-0001` + `vrend-0002`); Venus
-here does not ask for protocol 7. No `--rendernode` is needed: the server's allocator takes the
-Vulkan device with dma-buf and modifier export.
-
-### SELinux
-
-The NVIDIA entry boots permissive, like the other GPU entries. For enforcing these are missing:
-the allocator (`hal_graphics_allocator`) opening `/dev/udmabuf` (`udmabuf_device` is a private
-platform type, so vendor policy has to relabel the device), every client domain connecting to
-the sidecar's socket (K2's types), the probe (runs as `su`) and the bind mounts (init may
-already mount on `vendor_configs_file`).
-
-### K3 test
-
-No NVIDIA GPU is needed, but a server on the build host cannot serve a VM: vtest hands
-dma-bufs and shared memory over the socket as file descriptors (SCM_RIGHTS). So the test runs
-the server inside the guest, on lavapipe:
-
-- `tools/venus-test.sh build`: lavapipe (glibc, from the same Mesa checkout, in its own git
-  worktree `out/venus/mesa-lvp`, 813 steps) and a private glibc root `out/venus/test-root`
-  (269 MB: the host's ld.so and libraries, waydroid-nvidia's patched `virgl_test_server` and
-  `virgl_render_server` (vtest protocol 6), the Vulkan loader, lavapipe with
-  `VK_EXT_external_memory_dma_buf` and `VK_EXT_image_drm_format_modifier`). The render server
-  starts through a wrapper that runs it with the private ld.so (the binaries' PT_INTERP does not
-  exist on Android). lavapipe gets a test-only patch
-  (`tools/patches/venus-test/lavapipe-two-queues.patch`): HWUI aborts unless the graphics
-  family has two queues (`VulkanManager.cpp`, `kRequestedQueueCount`), and lavapipe has one;
-  the patch reports two and hands out the same queue for both. The RTX 4070 has 16.
-- `tools/venus-test.sh push vsock:3:5555` copies it to `/data/local/tmp/vtest`. An entry with
-  `androidboot.android_pc.venus_test=1` runs its `run.sh` from `init.venus.rc` at post-fs-data,
-  before the probe waits for the socket.
-- Image: `tools/mkusb-aosp17.sh --append "androidboot.android_pc.vulkan=venus
-  androidboot.hardware.guest_hwui_renderer=skiavk androidboot.android_pc.venus_test=1
-  androidboot.hardware.hwcomposer.mode=client" out/venus/k3-test.img`, booted with
-  `QEMU_EXTRA="-device vhost-vsock-pci,guest-cid=3" tools/run-qemu-aosp17-usb.sh` (adb over
-  vsock). `hwcomposer.mode=client` is for QEMU only: the ranchu composer uses its guest
-  composer only with `ro.hardware.vulkan=pastel` and otherwise wants a gfxstream host
-  (`Can't create AidlComposerClient`); the NVIDIA entry runs drm_hwcomposer (K4).
-
-Results (2026-11-15, QEMU, 4 vCPUs, 4 GB):
-
-| Check | First boot (nothing in /data, no socket) | After `push` and a reboot (lavapipe server) |
-|---|---|---|
-| `vendor.venus.probe` | `swiftshader` (`wait /dev/socket/vtest` timed out after 20 s; this SwiftShader fallback was removed on 2026-11-16, see above) | `venus` |
-| `ro.hardware.vulkan`, `ro.opengles.version` | `pastel`, 196609 | `virtio`, 196610 |
-| boot | completes on SwiftShader | completes, SurfaceFlinger on ANGLE on Venus |
-| `dumpsys gfxinfo` (systemui, launcher3) | | `Pipeline=Skia (Vulkan)`, frames rendered, none janky |
-| `cmd gpu vkjson` | | `driverName` `venus`, `driverInfo` `Mesa 26.2.6`, `deviceName` `llvmpipe (LLVM 23.1.5, 256 bits)` (patch 1010 shows the host GPU's own name; on the PC, the RTX 4070) |
-| GLES (`dumpsys SurfaceFlinger`) | | `ANGLE (Mesa, Vulkan 1.3.354 (llvmpipe ...), venus-26.2.6), OpenGL ES 3.2`, without `exposeNonConformantExtensionsAndVersions` (ASTC comes from Venus's emulation, patch 1008) |
-| features (`pm list features`) | | `android.hardware.opengles.aep`, `vulkan.version` 1.3, `vulkan.level` 1, `vulkan.compute` |
-| gralloc | | the server logs `vtest_vk_alloc: allocating window buffers on llvmpipe`; the allocator calls `UDMABUF_CREATE` for linear buffers; Venus reads the handles (`Using minigbm native handles`) |
-| screen | | the desktop (wallpaper, taskbar) on the QEMU display through the composer |
-
-Not checked here: gpuid (it needs Genshin Impact, which K5 runs on the PC), NVIDIA's own
-block-linear buffers and the scanout modifiers (K2 and K4, on the PC).
-
-Build note: `tools/aosp-device-link.sh` keeps mtimes, so a file edited before the last build's
-outputs were written is not copied again by ninja; the first test image had an old
-`init.venus.rc`. `touch` the edited files under `aosp-device/` before building.
+The L1 test entries (log strip, pcnvtest, gcc-built RM), the glibc sidecar (K2) and Venus,
+the vtest gralloc and gpuid (K3) are on branch `gpu-alternatives` (this document's full
+version there). Phase L replaced them (`docs/nvidia-native.md`).
 
 ## K4. Display and sound on nvidia-drm
 
@@ -735,9 +405,9 @@ outputs were written is not copied again by ninja; the first test image had an o
 | Piece | Where | What |
 |---|---|---|
 | Composer | the entry's command line (`$drm`, K1) | Cuttlefish's drm_hwcomposer APEX, unchanged, on nvidia-drm (`modeset=1`): atomic commits, the monitor's preferred mode, hotplug, vblank, fences |
-| Card and modifiers | `aosp-device/hals/nvdisplay/pcnvdisplay.cpp` (`/vendor/bin/pcnvdisplay`), `init.nvdisplay.rc` | runs at `post-fs-data` on `androidboot.android_pc.gpu=nvidia`, before class `hal` (composer, allocator). Finds the `nvidia-drm` card by driver name, sets `vendor.hwc.drm.device` to it, reads `IN_FORMATS` of every primary plane and writes the modifiers they all scan out as `vendor.gralloc.vtest.modifiers.<fourcc hex>.<n>` for K3's minigbm vtest backend. `vendor.pc.nvdisplay` and `pcnvdisplay:` kernel log lines say what it found |
-| Overlay planes | `init.pc.rc` (K1's block) | `ro.vendor.hwc.use_overlay_planes=0`, as on the nouveau entries |
-| Entry | `tools/mkusb-aosp17.sh` | K1's "Android 17, NVIDIA (proprietary, Venus)" gets K3's `$venus` words |
+| Card and modifiers | `aosp-device/hals/nvdisplay/pcnvdisplay.cpp` (`/vendor/bin/pcnvdisplay`), `init.nvdisplay.rc` | runs at `post-fs-data` on `androidboot.android_pc.gpu=nvidia`, before class `hal` (composer, allocator). Finds the `nvidia-drm` card by driver name, sets `vendor.hwc.drm.device` to it and logs the modifiers every primary plane scans out (`IN_FORMATS`). In K4 it also published them as `vendor.gralloc.vtest.modifiers.*` for K3's vtest gralloc; since Phase L minigbm's `nvidia` backend picks the scanout layout itself. `vendor.pc.nvdisplay` and `pcnvdisplay:` kernel log lines say what it found |
+| Overlay planes | `init.pc.rc` (K1's block) | `ro.vendor.hwc.use_overlay_planes=0` |
+| Entry | `tools/mkusb-aosp17.sh` | K1's entry, with K3's `$venus` words in K4 (Phase L's `$nvl3` today) |
 | Logs | `aosp-device/pc/pclog.sh` | `== nvdisplay` (props, `pcnvdisplay`/`nvidia-drm` dmesg), `== modetest nvidia-drm` (connectors, encoders, planes with types and AB24 modifiers) |
 
 ### How the pieces fit
@@ -833,32 +503,11 @@ patch 2026-06-05) carries K1-K4 together.
 
 ### Real-PC test
 
-Unmount the stick's FAT partitions if the desktop mounted them (`udisksctl unmount -b
-/dev/sda2`, `udisksctl unmount -b /dev/sda5`; do not open the stick in a file manager), then
-update it in place (keeps apps and data; type the full word `yes`):
-
-```bash
-sudo tools/update-usb-aosp17.sh out/aosp17-usb-k.img /dev/sda
-```
-
-On the PC (monitor on the RTX 4070's DisplayPort), entry **"Android 17, NVIDIA (proprietary,
-Venus)"**:
-
-1. Picture: the GOP picture, a short black screen while GSP boots, then the lock screen at
-   2560x1080 on the monitor. Unlock and use the desktop for a minute (launcher, settings,
-   a scroll in Chrome).
-2. Sound on the monitor: play a video; the output device should be "HDMI Out" and the sound
-   should come from the monitor.
-3. `adb shell dumpsys gfxinfo com.android.systemui | grep Pipeline` → `Skia (Vulkan)`;
-   `adb shell getprop vendor.venus.probe` → `venus`.
-4. Where Winds Meet and Genshin Impact: frame rate (in-game counter or `dumpsys gfxinfo`)
-   against the same scene on the Nova entry.
-5. Back on the build host, `tools/pclog-read.sh /dev/sda`; in the nvidia boot's
-   `state-*.txt`: `== nvdisplay` (`vendor.pc.nvdisplay` naming the nvidia-drm card and
-   `AB24:7 ...`, `vendor.hwc.drm.device` = that card, the modifier props), `== modetest
-   nvidia-drm` (the DP connector `connected`, a CRTC with the 2560x1080 mode), the eld and
-   audio device sections (`monitor_present 1`, `HDMI Out` connected), and K2/K3's sections
-   (`vendor.nvsidecar` running, `vendor.venus.probe=venus`).
+The K4 real-PC test ran on the Venus entry; on `main` the NVIDIA entry runs Phase L's stack, and
+its real-PC checks are in `docs/nvidia-native.md`. For the display part: `== nvdisplay`
+(`vendor.pc.nvdisplay` naming the nvidia-drm card, `vendor.hwc.drm.device` = that card) and
+`== modetest nvidia-drm` (the DP connector `connected`, a CRTC with the monitor's mode) in the
+NVIDIA boot's `state-*.txt`, the eld and audio device sections for the monitor's sound.
 
 If the screen stays black: `vendor.pc.nvdisplay` and the `pcnvdisplay:` lines say whether the
 card was found; drm_hwcomposer's errors are in logcat (`hwc`), an import failure there means a

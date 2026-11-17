@@ -57,16 +57,16 @@ bionic process (nvglibc_vktest now, the L3 Vulkan HAL next)
   (`src/libc_syms.def`) is the union of the GLIBC-versioned imports of libGLX_nvidia,
   libnvidia-{glcore,glsi,tls,gpucomp,glvkspirv,rtcore,allocator,eglcore,ml}, libEGL_nvidia and
   GLVND's libEGL/libGLdispatch: 386 forwards, 74 wrappers, 7 variables.
-- **The driver directories**: `$NVGLIBC_DRIVER_PATH`, default
-  `/vendor/lib64/nvidia:/vendor/bin/nvsidecar/lib` (K2's glibc root, until L3 gives the
-  libraries their own directory). Only NVIDIA's libraries, GLVND's `libEGL.so.1` and
-  `libGLdispatch.so.0` (and `$NVGLIBC_ALLOW`) are loaded from there; anything else the driver
+- **The driver directories**: `$NVGLIBC_DRIVER_PATH`, default `/vendor/lib64/nvidia` (until L3
+  it also had K2's glibc root `/vendor/bin/nvsidecar/lib`, now on branch `gpu-alternatives`).
+  Only NVIDIA's libraries, GLVND's `libEGL.so.1` and `libGLdispatch.so.0` (and `$NVGLIBC_ALLOW`) are loaded from there; anything else the driver
   `dlopen()`s optionally (libxcb-*, libdbus, `libnvidia-egl-{wayland,gbm,xcb}`, libnvtegrahv) is
   reported missing, which the driver tolerates. `libdrm.so.2` maps to bionic's `libdrm.so`
   (plain C ABI).
 - **EGL.** Without an X display NVIDIA's Vulkan ICD starts through EGL (GLVND `libEGL.so.1` →
   `libEGL_nvidia.so.0` → `libnvidia-eglcore`), as K2 found for the sidecar. nvglibc sets
-  `__EGL_VENDOR_LIBRARY_FILENAMES` (if unset) to `<driver dir>/../share/glvnd/egl_vendor.d/10_nvidia.json`.
+  `__EGL_VENDOR_LIBRARY_FILENAMES` (if unset) to the first of `<driver dir>/10_nvidia.json` and
+  `<driver dir>/../share/glvnd/egl_vendor.d/10_nvidia.json` that exists.
 
 ### ABI differences handled (x86_64)
 
@@ -132,7 +132,7 @@ Cost: 512 bytes per thread in every dynamically linked process.
 | Packages | `aosp-device/hals/nvglibc/hal.mk` |
 | bionic | `tools/patches/aosp17-bionic-static-tls-surplus.patch` |
 | Host test | `tools/nvglibc-hosttest.sh` |
-| Real PC | `aosp-device/pc/pclog.sh`: `nvglibc_vktest` into `boot-N/nvglibc-vktest.txt` (exit status and any `NVRM: Xid` lines appended), 30 s after boot completed on `gpu=nvidia`; on `gpu=nvidia-l1` only after L1's pcnvtest has finished, so that it stays the only GPU client |
+| Real PC | `aosp-device/pc/pclog.sh`: `nvglibc_vktest` into `boot-N/nvglibc-vktest.txt` (exit status and any `NVRM: Xid` lines appended), 30 s after boot completed on `gpu=nvidia` |
 
 `nvglibc_vktest` drives the ICD without a Vulkan loader, as a hwvulkan HAL does:
 `vk_icdNegotiateLoaderICDInterfaceVersion` (5), `vkCreateInstance` (1.3),
@@ -143,8 +143,8 @@ compute shader writing `i*i+7` into 65536 words of host-visible memory, checked 
 
 The device binaries run on the build host in a bwrap sandbox that looks like the device:
 `/system` from the product out directory with the patched **bootstrap** linker and libc, the
-Soong-built `/vendor/lib64` and `/vendor/bin/nvglibc_vktest`, K2's glibc root at
-`/vendor/bin/nvsidecar` (default driver directory and EGL JSON), and the host's `/dev/nvidia*`.
+Soong-built `/vendor/lib64` (with NVIDIA's libraries and EGL JSON in `/vendor/lib64/nvidia`, the
+default driver directory) and `/vendor/bin/nvglibc_vktest`, and the host's `/dev/nvidia*`.
 No `linux_bionic` build was needed: the device's own bionic runs on the host kernel (the property
 area is missing, which bionic tolerates). The host's driver and the user's desktop are only read.
 
@@ -224,11 +224,11 @@ composer: drm_hwcomposer on nvidia-drm (K4), client composition, IN_FENCE_FD / O
 |---|---|---|
 | Vulkan HAL | `aosp-device/hals/nvgpu/vulkan/` (`vulkan.nvidia`) | NVIDIA's dispatchable objects already start with the loader magic `0x01CDC0DE` (= `HWVULKAN_DISPATCH_MAGIC`), so every handle is NVIDIA's and almost every entry point is NVIDIA's function itself (no wrapping, no per-call cost). Hooked: instance/device creation (extension lists: window-system and swapchain extensions hidden, the two Android ones added; the NVIDIA extensions they need enabled on every device), `vkGetPhysicalDevice{Properties2,ImageFormatProperties2,ExternalBufferProperties}`, `vkCreateImage`/`vkDestroyImage`/`vkBindImageMemory2`/`vkCreateImageView`, `vkCreateBuffer`, `vkAllocateMemory`/`vkFreeMemory`, `vkCreateSamplerYcbcrConversion`, `vkGetDeviceImageMemoryRequirements`, the AHB queries, the gralloc-usage queries, `vkAcquireImageANDROID`, `vkQueueSignalReleaseImageANDROID`. |
 | Buffer layout | `aosp-device/hals/nvgpu/include/nvgr/nvgr_layout.h` | shared by the HAL and the gralloc (below) |
-| gralloc | `tools/patches/aosp17-minigbm-nvidia.patch` → `aosp/external/minigbm/nvidia.c` | replaces K1's nvidia-drm dumb backend; with `ro.hardware.vulkan=nvidia` it allocates as below, otherwise it is still K1's dumb backend (the L1 test entries) |
+| gralloc | `tools/patches/aosp17-minigbm-nvidia.patch` → `aosp/external/minigbm/nvidia.c` | replaces K1's nvidia-drm dumb backend; with `ro.hardware.vulkan=nvidia` it allocates as below, otherwise it gives nvidia-drm dumb buffers as K1 did (the L1 test entries used that; they are on branch `gpu-alternatives`). One patch on top of the rw-lock and drop-master patches |
 | Init | `aosp-device/hals/nvgpu/init.nvgpu.rc` | on `androidboot.hardware.vulkan=nvidia`: `ro.vulkan.apex` empty, `debug.renderengine.backend=skiavkthreaded` |
-| NVIDIA userspace | `aosp-device/hals/nvgpu/hal.mk`, `hals/nvsidecar/hal.mk` | NVIDIA's ICD, GLVND libEGL/libGLdispatch, libEGL_nvidia and libnvidia-{glsi,tls,gpucomp,glcore,eglcore,glvkspirv,rtcore,allocator} (the set nvglibc loads, L2) from K2's glibc root to `/vendor/lib64/nvidia` (nvglibc's first driver directory; the sphal namespace reaches `/vendor/lib64` only), with an EGL vendor JSON naming `libEGL_nvidia.so.0` bare; vulkan.nvidia sets `__EGL_VENDOR_LIBRARY_FILENAMES` to it. The rest of the root stays at `/vendor/bin/nvsidecar` for L1's glibc test client, with bare-name ICD and EGL JSONs. |
-| SELinux | `aosp-device/hals/nvgpu/sepolicy/file_contexts`, K2's `file_contexts` | the HAL, libnvglibc, `/vendor/lib64/nvglibc/`, `/vendor/lib64/nvidia/` as `same_process_hal_file` (apps may map only those executable); `/dev/nvidia*` as `gpu_device` (AOSP's GPU rules then cover every client). The entry stays SELinux-permissive. |
-| Entry | `tools/mkusb-aosp17.sh` | "Android 17, NVIDIA (proprietary)": K1's `$nvp` + `androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk` + `$drm`. K3's `$venus` is gone; K2's server starts only with `androidboot.android_pc.vulkan=venus`, which no entry has. |
+| NVIDIA userspace | `aosp-device/hals/nvgpu/hal.mk`, `tools/nvidia-userspace-build.sh` | NVIDIA's ICD, GLVND libEGL/libGLdispatch, libEGL_nvidia and libnvidia-{glsi,tls,gpucomp,glcore,eglcore,glvkspirv,rtcore,allocator} (the set nvglibc loads, L2) from the build host's NVIDIA install (`tools/nvidia-userspace-build.sh`, until 2026-11-17 K2's glibc root) to `/vendor/lib64/nvidia` (nvglibc's first driver directory; the sphal namespace reaches `/vendor/lib64` only), with an EGL vendor JSON naming `libEGL_nvidia.so.0` bare; vulkan.nvidia sets `__EGL_VENDOR_LIBRARY_FILENAMES` to it. The rest of the root stays at `/vendor/bin/nvsidecar` for L1's glibc test client, with bare-name ICD and EGL JSONs. |
+| SELinux | `aosp-device/hals/nvgpu/sepolicy/file_contexts` (the `/dev/nvidia*` lines came from K2's, relabelled at late-fs by `init.nvgpu.rc`) | the HAL, libnvglibc, `/vendor/lib64/nvglibc/`, `/vendor/lib64/nvidia/` as `same_process_hal_file` (apps may map only those executable); `/dev/nvidia*` as `gpu_device` (AOSP's GPU rules then cover every client). The entry stays SELinux-permissive. |
+| Entry | `tools/mkusb-aosp17.sh` | "Android 17, NVIDIA (proprietary)": K1's `$nvp` + `androidboot.hardware.vulkan=nvidia androidboot.hardware.guest_hwui_renderer=skiavk` + `$drm`. K3's `$venus` and K2's server are on branch `gpu-alternatives`. |
 | Host test | `tools/nvgpu-hosttest.sh`, `aosp-device/hals/nvgpu/hosttest/` | the HAL and the gralloc backend built with gcc for the build host and run on its RTX 4070 (below) |
 
 ### Buffer layout (measured on the RTX 4070, NVIDIA 620.70.06)

@@ -531,6 +531,10 @@ still the pcfb entry. On the nouveau entries the sound follows the screen: when 
 turns the screen off, drm_hwcomposer disables the CRTC, nouveau turns the output's audio
 off, the jack goes off, and media moves to the onboard codec until the screen is back.
 
+On `main` today the nouveau entries are on branch `gpu-alternatives`; the "Android 17, NVIDIA
+(proprietary)" entry gives the codec its ELD the same way, through nvidia-drm's modeset
+(`docs/nvidia-proprietary.md`, K4), and the checks below apply to it.
+
 What to check on the real PC (nouveau entry, monitor on the RTX 4070): `state-*.txt`
 `== hdmi eld` shows `monitor_present 1`, `eld_valid 1` on one pin with the monitor's name,
 `tinymix 1` shows that PCM's jack `On`, `== audio devices` lists HDMI connected, the beep in
