@@ -69,6 +69,18 @@ int GetPropertyInt(const char* name, int def) {
     return v ? atoi(v) : def;
 }
 
+}  // namespace nvvk
+
+// bionic's, for the ASTC emulation (astc/probe.rs): system properties come from the environment
+// here too (value is PROP_VALUE_MAX bytes).
+extern "C" int __system_property_get(const char* name, char* value) {
+    const char* v = getenv(name);
+    snprintf(value, 92, "%s", v ? v : "");
+    return static_cast<int>(strlen(value));
+}
+
+namespace nvvk {
+
 void* IcdOpen(const char* name, char* err, size_t err_size) {
     void* lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
     if (!lib)
@@ -134,7 +146,8 @@ int AhbAllocate(const AhbDesc& desc, AHardwareBuffer** out) {
     const int planes = gbm_bo_get_plane_count(bo);
     h.version = sizeof(native_handle_t);
     h.numFds = planes;
-    h.numInts = (sizeof(cros_gralloc_handle) - sizeof(native_handle_t)) / sizeof(int) - DRV_MAX_FDS;
+    // as cros_gralloc_driver.cc: numFds + numInts is the whole handle
+    h.numInts = (sizeof(cros_gralloc_handle) - sizeof(native_handle_t)) / sizeof(int) - planes;
     for (int p = 0; p < planes; p++) {
         h.fds[p] = gbm_bo_get_fd_for_plane(bo, p);
         h.strides[p] = gbm_bo_get_stride_for_plane(bo, p);

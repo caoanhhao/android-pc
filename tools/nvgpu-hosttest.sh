@@ -9,7 +9,8 @@
 #   tools/nvgpu-hosttest.sh            build and run
 #   NVVK_VERBOSE=1 tools/nvgpu-hosttest.sh
 #
-# Small build (a few files), pinned to the E-cores like every build here. The shared AOSP tree is
+# Small build (a few files and the HAL's Rust ASTC module, built with rustc), pinned to the E-cores
+# like every build here. The shared AOSP tree is
 # not modified.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,12 +42,26 @@ for f in "${srcs_c[@]}"; do
         "${inc[@]}" "${drm[@]}" "$G/$f" -o "$o"
     objs+=("$o")
 done
+# The ASTC emulation (libnvvk_astc in Android.bp): built with the host rustc from the same
+# sources Soong uses (AOSP's ash crate with only its "debug" feature: lib.rs loads no library
+# itself, and third_party/astc-decode), through tools/limited-build.sh. Linked in so the HAL's
+# vkGet*ProcAddr goes through it as on the device; the test itself uploads no ASTC texture.
+ash=$A/external/rust/android-crates-io/crates/ash
+rs=(rustc -O -C debuginfo=1 --out-dir "$OUT")
+"$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2021 --crate-type rlib --crate-name ash \
+    --cap-lints allow --cfg 'feature="debug"' "$ash/src/lib.rs"
+"$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2018 --crate-type rlib --crate-name astc_decode \
+    --cap-lints allow "$N/third_party/astc-decode/src/lib.rs"
+"$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2021 --crate-type staticlib --crate-name nvvk_astc \
+    --extern ash="$OUT/libash.rlib" --extern astc_decode="$OUT/libastc_decode.rlib" \
+    "$N/vulkan/astc/lib.rs"
+
 for f in vulkan/nvvk_hal.cpp vulkan/nvvk_wsi.cpp vulkan/nvvk_buffer.cpp hosttest/nvvk_hosttest.cpp; do
     o=$OUT/$(basename "${f%.cpp}").o
     "${pin[@]}" g++ -c -O2 -g -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
         -DVK_USE_PLATFORM_ANDROID_KHR "${inc[@]}" "${drm[@]}" "$N/$f" -o "$o"
     objs+=("$o")
 done
-"${pin[@]}" g++ -o "$OUT/nvvk_hosttest" "${objs[@]}" $(pkg-config --libs libdrm) -ldl -lpthread
+"${pin[@]}" g++ -o "$OUT/nvvk_hosttest" "${objs[@]}" "$OUT/libnvvk_astc.a" $(pkg-config --libs libdrm) -ldl -lpthread -lm
 echo "== $OUT/nvvk_hosttest"
 exec "${pin[@]}" "$OUT/nvvk_hosttest"
