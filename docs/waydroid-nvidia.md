@@ -129,6 +129,26 @@ the container instead: `/vendor/etc/init/waydroid-nvidia.rc` runs
 the container's `/dev` tmpfs. The container may (`CAP_MKNOD`, no device cgroup rules); the host's
 own nodes and permissions are untouched.
 
+## The composer and the mouse cursor
+
+Waydroid's hwcomposer hands the mouse cursor to the compositor as a `wl_shm` buffer
+(`persist.waydroid.cursor_force_shm=false`, the default; the name is inverted), and copies each
+cursor image into it with its own EGL (`egl_render_to_pixels`, `hardware/waydroid/hwcomposer`),
+which is ANGLE on `vulkan.nvidia` here. The composer gets libEGL only with `hwcomposer.waydroid.so`,
+through `dlopen()`, so `libnvglibc_tls.so` came in as dynamic TLS, nvglibc refused NVIDIA's
+libraries (`libnvglibc_tls.so is not loaded in this process`), the composer's
+`eglChooseConfig`/`eglCreateContext` returned `EGL_NOT_INITIALIZED`, and Waydroid showed no cursor.
+
+`aosp-device/waydroid/composer/composer-preload-wrapper.c` is installed over
+`/vendor/bin/hw/android.hardware.graphics.composer@2.1-service` (the vendor image's binary goes
+beside it as `...-service.real`, read from `vendor.img` by `nvidia-build.sh`) and execs it with
+`LD_PRELOAD=libnativewindow.so:libEGL.so`: libEGL (and so `libnvglibc_tls.so`) is loaded at
+start. libnativewindow is the earlier Venus project's fix (`~/projects/waydroid-nvidia`,
+`venus/notes-cursor.md`: Android 13's ANGLE looks up `AHardwareBuffer_*` with
+`dlsym(dlopen(NULL))`). An init `override` of the service is not applied in Waydroid, hence the
+wrapper. Checked 2026-11-18: the composer's maps have `libnvglibc_tls.so` and `libGLX_nvidia.so.0`,
+its EGL calls all return `EGL_SUCCESS`, and the Android pointer shows over the Waydroid window.
+
 ## Build and install
 
 ```bash
@@ -198,13 +218,9 @@ tombstone in 5+ minutes; `sys.boot_completed=1`):
 
 Open:
 
-- **On screen.** During these tests Hyprland ran on the Intel iGPU (left in `gpu-mode igpu` by the
-  VFIO tests), and an iGPU compositor cannot show NVIDIA block-linear video memory, so the
-  Waydroid window was not opened. With Hyprland on the RTX 4070 (`~/.config/hypr/scripts/gpu-mode
-  nvidia`, then log in again), `waydroid show-full-ui` should show the frames without a copy:
-  to be checked.
+- **On screen** (2026-11-18, Hyprland back on the RTX 4070 with `gpu-mode nvidia`):
+  `waydroid show-full-ui` shows Android, and the mouse cursor after the composer fix above. An
+  iGPU compositor cannot show NVIDIA block-linear video memory.
 - **YUV** (video frames, camera) stays linear on the Intel iGPU, which `vulkan.nvidia` does not
   image.
-- `tools/nvgpu-hosttest.sh` no longer links (`nvvk_astc_proc` undefined: the L4 ASTC module is
-  Rust, built only by Soong); unrelated to Waydroid.
 - 32-bit and arm (libhoudini) apps have no NVIDIA driver (NVIDIA's userspace here is x86_64 only).

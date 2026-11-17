@@ -11,8 +11,10 @@
 #   3. NVIDIA's userspace (tools/nvidia-userspace-build.sh), initial-exec TLS rewritten
 #   4. Waydroid's /system/lib64/libvulkan.so and libEGL.so (read from its system.img) with
 #      libnvglibc_tls.so as a DT_NEEDED
-#   5. NDK: libnvglibc_tls.so, libgbm_mesa_wrapper.so (aosp-device/waydroid/gralloc) and the
-#      test out/waydroid-nvidia/ahb_vktest (aosp-device/waydroid/test)
+#   5. NDK: libnvglibc_tls.so, libgbm_mesa_wrapper.so (aosp-device/waydroid/gralloc), the
+#      composer wrapper (aosp-device/waydroid/composer; the vendor image's composer, read from
+#      its vendor.img, goes beside it as ...-service.real) and the test
+#      out/waydroid-nvidia/ahb_vktest (aosp-device/waydroid/test)
 # Output: out/waydroid-nvidia/overlay/{system,vendor} (NVIDIA's libraries included: never
 # committed or redistributed).
 set -euo pipefail
@@ -93,6 +95,13 @@ done
     "$ROOT/aosp-device/waydroid/gralloc/nvgbm_wrapper.c" -llog -ldl
 "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded \
     "$OV/vendor/lib64/libgbm_mesa_wrapper.so"
+# the composer with libEGL.so preloaded (its EGL copies the mouse cursor)
+COMPOSER=bin/hw/android.hardware.graphics.composer@2.1-service
+mkdir -p "$OV/vendor/bin/hw"
+debugfs -R "dump /$COMPOSER $OV/vendor/$COMPOSER.real" "$WD_IMAGES/vendor.img" 2>/dev/null
+[[ -s $OV/vendor/$COMPOSER.real ]] || { echo "cannot read $COMPOSER from $WD_IMAGES/vendor.img" >&2; exit 1; }
+"$CC" -O2 -Wall -Werror -o "$OV/vendor/$COMPOSER" \
+    "$ROOT/aosp-device/waydroid/composer/composer-preload-wrapper.c"
 # the gralloc -> Vulkan -> EGL check (run as /data/local/tmp/ahb_vktest, not in the overlay)
 "$CC" -O1 -Wall -Werror -o "$OUT/ahb_vktest" "$ROOT/aosp-device/waydroid/test/ahb_vktest.c" \
     -lvulkan -landroid -lnativewindow -lEGL

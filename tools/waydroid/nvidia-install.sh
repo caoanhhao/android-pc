@@ -68,10 +68,17 @@ for d in /sys/class/drm/renderD*; do [[ $(cat "$d/device/vendor") == 0x10de ]] &
 if sudo test -e "$MARKER"; then
     b=$(sudo sh -c "ls -1d $BACKUPS/*/ 2>/dev/null | tail -1")
     echo "== already installed: updating, the backup stays $b"
-    # files new in this version are added too
+    # files new in this version: an overlay file it replaces for the first time is backed up,
+    # one it adds is listed
     (cd "$OV" && find . -type f) | while read -r f; do
         f=${f#./}
-        sudo test -e "$WD/overlay/$f" || echo "$WD/overlay/$f" | sudo tee -a "$b/added.txt" >/dev/null
+        if sudo grep -qxF "$WD/overlay/$f" "$b/added.txt" || sudo test -e "$b/overlay/$f"; then
+            continue
+        elif sudo test -e "$WD/overlay/$f"; then
+            sudo install -D -p "$WD/overlay/$f" "$b/overlay/$f"
+        else
+            echo "$WD/overlay/$f" | sudo tee -a "$b/added.txt" >/dev/null
+        fi
     done
 else
     b=$BACKUPS/$(date +%Y%m%d-%H%M%S)
