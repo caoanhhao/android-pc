@@ -851,7 +851,9 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   `EnableVulkan.tag`) exists; the server then sends a `vlk` shader package and the game loads the
   arm64 libvulkan. vulkan.nvidia emulates ASTC (Rust, decoded on the CPU at submit), and the world
   renders with its textures on Vulkan at 44-48 fps in the VFIO VM (48 Hz is the game's cap; it idles
-  at 3-5 fps by itself when left alone) (docs/nvidia-native.md, L4).
+  at 3-5 fps by itself when left alone) (docs/nvidia-native.md, L4). Stick image
+  `out/aosp17-usb-l4b.img` (build `eng.caoanh.20261117.1610`, NVIDIA (proprietary) entry;
+  `pcwwmvk.sh` creates the game's `vulkan.tag` at boot). Real-PC check pending.
 
 Phase K's sidecar/vtest/Venus pieces (K2, K3) are superseded by L2/L3 on the NVIDIA entry and are
 removed from it when L3 lands; K1 (kernel modules), K1c (kCFI fixes) and K4 (nvidia-drm

@@ -476,6 +476,18 @@ patcher's device check (`gpuid: GL_RENDERER is Adreno (TM) 840 for this app`). `
 game (its SDK and its device check), so they stay. The splash video does not use GL on Vulkan
 (`StartLiveWithLocalVideo Not OES` / `Use Raw Data`).
 
+**On the stick (build `eng.caoanh.20261117.1610`, `out/aosp17-usb-l4b.img`,
+`tools/mkusb-aosp17.sh --menu --userdata 64`, PC identity).** Entry "Android 17, NVIDIA
+(proprietary)". `vulkan.nvidia` has the ASTC emulation; `debug.nvvk.stats` is unset (off). The
+game needs its `LocalData/vulkan.tag`, and the stick's userdata is encrypted, so the image makes
+it: `hals/nvgpu/pcwwmvk.sh`, started by `init.nvgpu.rc` when the boot completes on the NVIDIA
+entry, creates the empty tag in `/data/media/0/Android/data/com.netease.yyvn/files/LocalData`
+(owned like that directory) when the directory exists and the tag does not, and logs to the
+kernel log (`pcwwmvk:`, in pclog). So on the real PC: start the game once (its data directory
+appears), reboot, start it again: it picks Vulkan. If the game gave up on Vulkan after failed
+starts it creates `VulkanBroken.tag` and stays on ES3 until that file is deleted (the script
+leaves it and logs it). `persist.vendor.android_pc.wwm_vulkan=0` turns the script off.
+
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
 process). The game never loads the arm64 `libvulkan` (`/proc/<pid>/maps` has only the arm64

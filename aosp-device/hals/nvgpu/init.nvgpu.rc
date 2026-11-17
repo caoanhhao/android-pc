@@ -16,3 +16,15 @@
 on early-init && property:ro.boot.hardware.vulkan=nvidia
     setprop ro.vulkan.apex ""
     setprop debug.renderengine.backend skiavkthreaded
+
+# Phase L4: Where Winds Meet on its Vulkan renderer (pcwwmvk.sh creates the game's empty
+# LocalData/vulkan.tag; persist.vendor.android_pc.wwm_vulkan=0 turns it off).
+on property:sys.boot_completed=1 && property:ro.boot.hardware.vulkan=nvidia
+    start vendor.pcwwmvk
+
+service vendor.pcwwmvk /vendor/bin/pcwwmvk.sh
+    user root
+    group root media_rw
+    seclabel u:r:su:s0
+    oneshot
+    disabled

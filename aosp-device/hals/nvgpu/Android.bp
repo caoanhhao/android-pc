@@ -80,6 +80,14 @@ rust_library {
     clippy_lints: "none",
 }
 
+// Phase L4: creates Where Winds Meet's LocalData/vulkan.tag at boot (init.nvgpu.rc).
+sh_binary {
+    name: "pcwwmvk.sh",
+    src: "pcwwmvk.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
 prebuilt_etc {
     name: "init.nvgpu.rc",
     src: "init.nvgpu.rc",

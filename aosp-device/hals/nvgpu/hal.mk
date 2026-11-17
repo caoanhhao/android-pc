@@ -7,6 +7,7 @@
 # nvglibc's soname libraries are listed by hals/nvglibc/hal.mk.
 PRODUCT_PACKAGES += \
     init.nvgpu.rc \
+    pcwwmvk.sh \
     vulkan.nvidia
 
 PC_NVIDIA_LIB_DIR := device/android-pc/nvsidecar/lib
