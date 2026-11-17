@@ -438,7 +438,7 @@ and saves the new logs as `out/vfio-l4/vk/LABEL.log`):
 | c3 | arm64 code's `/proc/cpuinfo` (berberis serves `/system/etc/berberis/cpuinfo.arm64.txt`): 8 Qualcomm cores, `Hardware: Qualcomm Technologies, Inc SM8850` | ES3 |
 | c4 | `ro.hardware.virtual_device` 0; retail model/fingerprint on every partition, `ro.build.display.id/description/flavor` | ES3 |
 | c5 | `ro.product.cpu.abi` arm64-v8a, `ro.bionic.arch` arm64 | ES3 |
-| b | 8 vCPUs (`device_model`'s 4th field is the CPU count) | not run: above the 4-vCPU VM cap |
+| b | 8 vCPUs (one run, the user allowed it above the 4-vCPU cap; `device_model` becomes `samsung#SM-S9480#0#8#2#`) | ES3 |
 
 The server side: the fenbao index the game fetches
 (`https://h72naxx2gb-14.update.easebar.com/pl/patchmd5_global_publish_android_formal_o_fenbao.txt`,
@@ -453,7 +453,7 @@ compute, `android.software.vulkan.deqp.level`, from the cf.vulkan APEX). Inputs 
 Vulkan (`Engine/Config/Platform.bin`: `EnableVulkan` default True, with a windows-only rule;
 GlobalOptions has Vulkan PSO options), so the choice is the checker's.
 
-Conclusion (with every device-side tell above hidden except the CPU count): the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
+Conclusion (with every device-side tell above hidden, 8 CPUs included): the step that returns ES3 is the checker's `choose`, inside the encrypted patcher
 scripts, before any Vulkan call; the identity and GPU name a real Vulkan-capable phone reports do
 not change it, and the server gives this Android release GLES shaders only, so a forced Vulkan
 backend would have no shaders to run. Changing it means editing the game's scripts or APK
