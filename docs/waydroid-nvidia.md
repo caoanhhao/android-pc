@@ -172,7 +172,7 @@ adds; later runs update the files and keep that backup; `--uninstall` restores i
 `waydroid.cfg`: `ro.hardware.vulkan=nvidia`, `ro.hardware.egl=angle`,
 `gralloc.gbm.device=/dev/dri/renderD129`, `ro.zygote.disable_gl_preload=true` (Phase L3b: zygote
 must not hold NVIDIA's fds), `debug.hwui.renderer=skiavk`, `debug.nvvk.pipeline_cache_max=262144`,
-removes `waydroid.gralloc.vtest`, then runs `waydroid upgrade --offline` and restarts
+removes `waydroid.gralloc.vtest` and `mesa.vtest.socket.name` (the Venus setup's), then runs `waydroid upgrade --offline` and restarts
 `waydroid-container`.
 
 Reading Android's logs needs root: `sudo waydroid logcat`, or a script piped into

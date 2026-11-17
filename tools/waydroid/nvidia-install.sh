@@ -17,7 +17,8 @@
 #     Waydroid rewrites its LXC configuration at every start, so bind mounts would not stay)
 #   - waydroid.cfg [properties]: ro.hardware.vulkan=nvidia, gralloc.gbm.device (the NVIDIA node),
 #     ro.zygote.disable_gl_preload=true, debug.hwui.renderer=skiavk,
-#     debug.nvvk.pipeline_cache_max=262144; the vtest gralloc switch off
+#     debug.nvvk.pipeline_cache_max=262144; the vtest gralloc switch and
+#     Venus's vtest socket off
 # then `waydroid upgrade --offline` and a restart of waydroid-container.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -121,5 +122,6 @@ del_prop debug.renderengine.backend
 # Android 13's HWUI crashes storing a large pipeline cache (vulkan.nvidia's GetPipelineCacheData)
 set_prop debug.nvvk.pipeline_cache_max 262144
 del_prop waydroid.gralloc.vtest
+del_prop mesa.vtest.socket.name
 restart
 echo "installed; backup in $b (--uninstall restores it)"
