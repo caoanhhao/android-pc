@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <sys/system_properties.h>
+#include <unistd.h>
 
 #include <android/hardware_buffer.h>
 #include <log/log.h>
@@ -50,6 +51,12 @@ void* IcdOpen(const char* name, char* err, size_t err_size) {
         snprintf(err, err_size, "nvglibc: %s", e ? e : "unknown error");
     }
     return lib;
+}
+
+bool IcdHasLibrary(const char* name) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s", NVGLIBC_DEFAULT_DRIVER_PATH, name);
+    return access(path, R_OK) == 0;
 }
 
 void* IcdSym(void* lib, const char* name) {

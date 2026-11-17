@@ -242,6 +242,18 @@ int ChooseMemoryType(Device* dev, uint32_t bits) {
     return __builtin_ctz(bits);
 }
 
+uint32_t DeviceLocalTypes(Device* dev) {
+    uint32_t bits = 0;
+    for (uint32_t i = 0; i < dev->memory_props.memoryTypeCount; i++)
+        if (dev->memory_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            bits |= 1u << i;
+    return bits;
+}
+
+bool HasDeviceLocalType(Device* dev, uint32_t bits) {
+    return (bits & DeviceLocalTypes(dev)) != 0;
+}
+
 uint32_t FdMemoryTypes(Device* dev, int fd) {
     VkMemoryFdPropertiesKHR props = {VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
     if (dev->fn.GetMemoryFdPropertiesKHR(dev->handle, kDmaBuf, fd, &props) != VK_SUCCESS)
@@ -312,6 +324,10 @@ bool CheckBufferLayout(const GrallocBuffer& b, const ImageInfo& image) {
 VkResult ImportDmaBuf(Device* dev, const GrallocBuffer& b, VkImage image, VkBuffer buffer,
                       int memory_type, const void* extra_chain, VkDeviceMemory* out) {
     const uint32_t fd_types = FdMemoryTypes(dev, b.fd);
+    // A type GetAndroidHardwareBufferPropertiesANDROID added for ANGLE (below) is not one NVIDIA
+    // imports this dma-buf with: choose one that is.
+    if (memory_type >= 0 && !(fd_types & (1u << memory_type)))
+        memory_type = -1;
     if (memory_type < 0) {
         uint32_t bits = fd_types;
         if (image) {
@@ -717,6 +733,12 @@ VKAPI_ATTR VkResult VKAPI_CALL GetAndroidHardwareBufferPropertiesANDROID(
                   reinterpret_cast<const char*>(&b.drm_format));
         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
     }
+    // NVIDIA imports system memory (udmabuf: buffers the CPU touches) only into a host memory
+    // type, and ANGLE binds an AHB image only to a device-local one (Android 13's SurfaceFlinger
+    // draws through ANGLE: Waydroid, docs/waydroid-nvidia.md). Offer the device-local image types
+    // too; ImportDmaBuf() then takes a type NVIDIA accepts for the dma-buf.
+    if (image && !HasDeviceLocalType(dev, props->memoryTypeBits))
+        props->memoryTypeBits |= ImageMemoryTypes(dev) & DeviceLocalTypes(dev);
 
     auto* f1 = static_cast<VkAndroidHardwareBufferFormatPropertiesANDROID*>(FindOut(
         props->pNext, VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID));

@@ -122,6 +122,11 @@ access model`.
 
 Cost: 512 bytes per thread in every dynamically linked process.
 
+On a bionic without that patch (Waydroid's Android 13, `docs/waydroid-nvidia.md`), nvglibc places
+the initial-exec TLS itself, in a static block of `libnvglibc_tls.so`, after
+`tools/waydroid/nvtls-rewrite` has rewritten NVIDIA's `TPOFF64` relocations
+(`src/tls_surplus.c`).
+
 ### Files
 
 | Piece | Where |

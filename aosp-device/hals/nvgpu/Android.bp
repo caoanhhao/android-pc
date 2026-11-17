@@ -16,11 +16,10 @@ package {
     default_visibility: ["//visibility:private"],
 }
 
-cc_library_shared {
-    name: "vulkan.nvidia",
+cc_defaults {
+    name: "vulkan.nvidia_defaults",
     vendor: true,
     compile_multilib: "64",
-    relative_install_path: "hw",
     srcs: [
         "vulkan/nvvk_buffer.cpp",
         "vulkan/nvvk_hal.cpp",
@@ -50,7 +49,24 @@ cc_library_shared {
     ],
     // Only the hwvulkan module symbol is the API.
     version_script: "vulkan/vulkan.nvidia.map",
+}
+
+cc_library_shared {
+    name: "vulkan.nvidia",
+    defaults: ["vulkan.nvidia_defaults"],
+    relative_install_path: "hw",
     visibility: ["//visibility:public"],
+}
+
+// The same HAL for Waydroid's Android 13 (docs/waydroid-nvidia.md): libc++ linked in, because
+// Android 13's libc++ lacks symbols this one uses (std::__1::__hash_memory, __libcpp_verbose_abort).
+// Not in any product: tools/waydroid/nvidia-build.sh builds it and installs it as
+// /vendor/lib64/hw/vulkan.nvidia.so in Waydroid's overlay.
+cc_library_shared {
+    name: "vulkan.nvidia.waydroid",
+    defaults: ["vulkan.nvidia_defaults"],
+    relative_install_path: "waydroid",
+    stl: "libc++_static",
 }
 
 // ASTC LDR textures emulated on NVIDIA's driver, which has none (vulkan/astc/lib.rs): ASTC images

@@ -32,6 +32,7 @@ cc_library_shared {
         "src/core.c",
         "src/libc.c",
         "src/pthread.c",
+        "src/tls_surplus.c",
     ],
     local_include_dirs: ["src"],
     export_include_dirs: ["include"],

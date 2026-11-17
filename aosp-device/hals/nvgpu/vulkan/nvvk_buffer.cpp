@@ -33,6 +33,49 @@ enum : uint32_t {
     kAhbR16G16Uint = 0x3a,
 };
 
+// Waydroid's minigbm (android_external_minigbm, lineage-18.1, gbm_mesa backend) has a 32-bit
+// usage field; the fields after it move up by 4 bytes, and the handle is one int shorter
+// (docs/waydroid-nvidia.md). minigbm makes numFds + numInts the handle's size in ints.
+struct waydroid_cros_gralloc_handle : public native_handle_t {
+    int32_t fds[DRV_MAX_FDS];
+    uint32_t strides[DRV_MAX_PLANES];
+    uint32_t offsets[DRV_MAX_PLANES];
+    uint32_t sizes[DRV_MAX_PLANES];
+    uint32_t id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint32_t tiling;
+    uint64_t format_modifier;
+    uint64_t use_flags;
+    uint32_t magic;
+    uint32_t pixel_stride;
+    int32_t droid_format;
+    int32_t usage;
+    uint32_t num_planes;
+    uint64_t reserved_region_size;
+    uint64_t total_size;
+} __attribute__((packed));
+
+template <typename Handle>
+constexpr int HandleInts() {
+    return static_cast<int>((sizeof(Handle) - sizeof(native_handle_t)) / sizeof(int));
+}
+
+template <typename Handle>
+void ReadHandle(const Handle* h, GrallocBuffer* out) {
+    out->fd = h->fds[0];  // all planes share one dma-buf (minigbm "nvidia" backend)
+    out->drm_format = h->format;
+    out->width = h->width;
+    out->height = h->height;
+    out->modifier = h->format_modifier;
+    // total_size also counts the metadata region, which lives in its own fd
+    // (cros_gralloc_driver.cc: total_size = reserved_region_size + the bo's size).
+    out->size = h->total_size - h->reserved_region_size;
+    out->droid_format = h->droid_format;
+    out->usage = static_cast<uint64_t>(h->usage);
+}
+
 const nvgr_fmt kCpp1 = {0, 1, {1}, {1}, {1}, false};
 const nvgr_fmt kCpp2 = {0, 1, {2}, {1}, {1}, false};
 const nvgr_fmt kCpp4 = {0, 1, {4}, {1}, {1}, false};
@@ -45,24 +88,19 @@ bool ReadGrallocHandle(const native_handle* handle, GrallocBuffer* out) {
         NVVK_LOGE("null gralloc handle");
         return false;
     }
+    // Both layouts start with the same fields up to magic.
     auto* h = reinterpret_cast<const cros_gralloc_handle*>(handle);
-    const int ints = static_cast<int>((sizeof(cros_gralloc_handle) - sizeof(native_handle_t)) /
-                                      sizeof(int)) - DRV_MAX_FDS;
-    if (handle->numFds < 1 || handle->numInts < ints || h->magic != kCrosGrallocMagic) {
+    const int ints = handle->numFds + handle->numInts;
+    const int waydroid_ints = HandleInts<waydroid_cros_gralloc_handle>();
+    if (handle->numFds < 1 || ints < waydroid_ints || h->magic != kCrosGrallocMagic) {
         NVVK_LOGE("not a minigbm buffer (fds %d ints %d magic %#x)", handle->numFds,
-                  handle->numInts, handle->numInts >= ints ? h->magic : 0);
+                  handle->numInts, ints >= waydroid_ints ? h->magic : 0);
         return false;
     }
-    out->fd = h->fds[0];  // all planes share one dma-buf (minigbm "nvidia" backend)
-    out->drm_format = h->format;
-    out->width = h->width;
-    out->height = h->height;
-    out->modifier = h->format_modifier;
-    // total_size also counts the metadata region, which lives in its own fd
-    // (cros_gralloc_driver.cc: total_size = reserved_region_size + the bo's size).
-    out->size = h->total_size - h->reserved_region_size;
-    out->droid_format = h->droid_format;
-    out->usage = static_cast<uint64_t>(h->usage);
+    if (ints >= HandleInts<cros_gralloc_handle>())
+        ReadHandle(h, out);
+    else
+        ReadHandle(reinterpret_cast<const waydroid_cros_gralloc_handle*>(handle), out);
     return true;
 }
 

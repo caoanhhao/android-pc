@@ -1,0 +1,8 @@
+[package]
+name = "nvtls-rewrite"
+version = "0.1.0"
+edition = "2021"
+description = "Rewrite NVIDIA's initial-exec TLS libraries for nvglibc's own TLS surplus (Waydroid)"
+license = "BSD-3-Clause"
+
+[dependencies]

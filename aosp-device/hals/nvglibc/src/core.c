@@ -11,7 +11,8 @@
 //    bionic finds every DT_NEEDED already loaded by soname: no linker namespace is needed, which
 //    keeps this usable from vendor code (libdl_android is platform-only).
 //  - Its initial-exec TLS (libnvidia-tls, DF_STATIC_TLS) lives in bionic's static TLS surplus
-//    (tools/patches/aosp17-bionic-static-tls-surplus.patch).
+//    (tools/patches/aosp17-bionic-static-tls-surplus.patch), or, on a bionic without that patch
+//    (Waydroid), in nvglibc's own (tls_surplus.c).
 
 #define _GNU_SOURCE
 #include <android/log.h>
@@ -348,6 +349,11 @@ static void* load_path(const char* path, int flags, int depth) {
     h = dlopen(path, (flags & ~RTLD_DEEPBIND) | RTLD_NODELETE);
     if (!h) {
         set_error("%s", dlerror());
+        goto out;
+    }
+    if (!nvg_tls_fixup(path)) {
+        set_error("%s: cannot place its TLS (see logcat -s nvglibc)", path);
+        h = NULL;
         goto out;
     }
     add_loaded(soname, path, h);

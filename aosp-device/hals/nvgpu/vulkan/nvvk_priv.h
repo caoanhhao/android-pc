@@ -53,6 +53,8 @@ int GetPropertyInt(const char* name, int def);
 // NVIDIA's ICD: open the library and look up its loader-interface entry points.
 void* IcdOpen(const char* name, char* err, size_t err_size);
 void* IcdSym(void* lib, const char* name);
+// Whether the driver's library `name` (e.g. libcuda.so.1) is installed beside the ICD.
+bool IcdHasLibrary(const char* name);
 
 // The AHardwareBuffer calls the HAL needs (libnativewindow on the device).
 struct AhbDesc {

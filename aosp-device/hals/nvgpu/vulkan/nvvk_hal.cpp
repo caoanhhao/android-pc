@@ -94,6 +94,29 @@ const char* const kHiddenDeviceExtensions[] = {
     "VK_NV_low_latency2",
 };
 
+// Device extensions NVIDIA backs with CUDA (libcuda.so.1, not among the libraries nvglibc loads:
+// hals/nvgpu/hal.mk, tools/waydroid/nvidia-build.sh). The driver lists them, but enabling any of
+// them fails vkCreateDevice with VK_ERROR_INITIALIZATION_FAILED, and Android 13's HWUI enables
+// every extension a device lists (Waydroid, docs/waydroid-nvidia.md). Hidden unless libcuda.so.1
+// is in the driver directory.
+const char* const kCudaDeviceExtensions[] = {
+    "VK_KHR_acceleration_structure",
+    "VK_KHR_ray_query",
+    "VK_KHR_ray_tracing_maintenance1",
+    "VK_KHR_ray_tracing_pipeline",
+    "VK_KHR_ray_tracing_position_fetch",
+    "VK_NV_cluster_acceleration_structure",
+    "VK_NV_cuda_kernel_launch",
+    "VK_NV_optical_flow",
+    "VK_NV_partitioned_acceleration_structure",
+    "VK_NV_ray_tracing",
+    "VK_NV_ray_tracing_invocation_reorder",
+    "VK_NV_ray_tracing_linear_swept_spheres",
+    "VK_NV_ray_tracing_motion_blur",
+    "VK_NV_ray_tracing_validation",
+    "VK_NVX_binary_import",
+};
+
 // What this module adds (VK_ANDROID_native_buffer: version 8, swapchain images may be bound
 // later through vkBindImageMemory2).
 const VkExtensionProperties kAndroidDeviceExtensions[] = {
@@ -119,14 +142,22 @@ bool InList(const char* const (&list)[N], const char* name) {
     return false;
 }
 
+bool HaveCuda() {
+    static const bool have = IcdHasLibrary("libcuda.so.1");
+    return have;
+}
+
 VkResult FilterExtensions(VkResult result, std::vector<VkExtensionProperties>& exts,
                           bool device, uint32_t* count, VkExtensionProperties* props) {
     if (result != VK_SUCCESS)
         return result;
+    const bool cuda = HaveCuda();
     exts.erase(std::remove_if(exts.begin(), exts.end(),
-                              [device](const VkExtensionProperties& e) {
-                                  return device ? InList(kHiddenDeviceExtensions, e.extensionName)
-                                                : InList(kHiddenInstanceExtensions, e.extensionName);
+                              [device, cuda](const VkExtensionProperties& e) {
+                                  if (!device)
+                                      return InList(kHiddenInstanceExtensions, e.extensionName);
+                                  return InList(kHiddenDeviceExtensions, e.extensionName) ||
+                                         (!cuda && InList(kCudaDeviceExtensions, e.extensionName));
                               }),
                exts.end());
     if (device)
@@ -413,6 +444,14 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical,
         features2->features.textureCompressionASTC_LDR = astc;
     if (result != VK_SUCCESS) {
         NVVK_LOGE("NVIDIA vkCreateDevice failed: %d", result);
+        for (const char* name : names)
+            NVVK_LOGE("  extension %s", name);
+        for (auto* s = static_cast<const VkBaseInStructure*>(nv.pNext); s; s = s->pNext)
+            NVVK_LOGE("  pNext sType %d", s->sType);
+        for (uint32_t i = 0; i < nv.queueCreateInfoCount; i++)
+            NVVK_LOGE("  queue family %u count %u flags %#x",
+                      nv.pQueueCreateInfos[i].queueFamilyIndex, nv.pQueueCreateInfos[i].queueCount,
+                      nv.pQueueCreateInfos[i].flags);
         return result;
     }
 
@@ -492,6 +531,27 @@ struct Hook {
     PFN_vkVoidFunction fn;
 };
 
+// Android 13's HWUI (Waydroid, docs/waydroid-nvidia.md) aborts with SIGFPE in BlobCache::clean()
+// when it stores a pipeline cache larger than half of its blob cache, and NVIDIA's grow past
+// that. debug.nvvk.pipeline_cache_max caps what this offers (bytes, 0: no cap): a larger cache is
+// reported as empty, so the app stores none (NVIDIA keeps its own shader cache).
+VKAPI_ATTR VkResult VKAPI_CALL GetPipelineCacheData(VkDevice device, VkPipelineCache cache,
+                                                    size_t* size, void* data) {
+    Device* dev = GetDevice(device);
+    static const size_t cap = static_cast<size_t>(GetPropertyInt("debug.nvvk.pipeline_cache_max", 0));
+    if (cap) {
+        size_t full = 0;
+        const VkResult result = dev->fn.GetPipelineCacheData(device, cache, &full, nullptr);
+        if (result != VK_SUCCESS)
+            return result;
+        if (full > cap) {
+            *size = 0;
+            return VK_SUCCESS;
+        }
+    }
+    return dev->fn.GetPipelineCacheData(device, cache, size, data);
+}
+
 #define NVVK_HOOK(name, fn) {"vk" #name, reinterpret_cast<PFN_vkVoidFunction>(fn)}
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name);
@@ -506,6 +566,7 @@ const Hook kDeviceHooks[] = {
     NVVK_HOOK(BindImageMemory2, BindImageMemory2),
     NVVK_HOOK(BindImageMemory2KHR, BindImageMemory2),
     NVVK_HOOK(CreateImageView, CreateImageView),
+    NVVK_HOOK(GetPipelineCacheData, GetPipelineCacheData),
     NVVK_HOOK(CreateBuffer, CreateBuffer),
     NVVK_HOOK(AllocateMemory, AllocateMemory),
     NVVK_HOOK(FreeMemory, FreeMemory),

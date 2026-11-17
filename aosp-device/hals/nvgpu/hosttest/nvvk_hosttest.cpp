@@ -76,6 +76,13 @@ void* IcdOpen(const char* name, char* err, size_t err_size) {
     return lib;
 }
 
+bool IcdHasLibrary(const char* name) {
+    void* lib = dlopen(name, RTLD_LAZY | RTLD_LOCAL | RTLD_NOLOAD);
+    if (!lib)
+        lib = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
+    return lib != nullptr;
+}
+
 void* IcdSym(void* lib, const char* name) {
     return dlsym(lib, name);
 }
