@@ -174,3 +174,6 @@ VKAPI_ATTR VkResult VKAPI_CALL QueueSignalReleaseImageANDROID(VkQueue, uint32_t,
                                                               const VkSemaphore*, VkImage, int*);
 
 }  // namespace nvvk
+
+// The ASTC emulation (astc/lib.rs): its entry point of a Vulkan function, or null.
+extern "C" PFN_vkVoidFunction nvvk_astc_proc(const char* name);

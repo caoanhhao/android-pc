@@ -44,6 +44,7 @@ std::mutex g_lock;  // the maps below and g_inst
 std::unordered_map<VkDevice, Device*> g_devices;
 std::unordered_map<VkQueue, Device*> g_queues;
 bool g_inst_resolved = false;
+VkInstance g_first_instance = VK_NULL_HANDLE;  // for nvvk_next_instance_proc
 
 // Instance extensions that need a window system or a display Android does not have, or that
 // Android's loader implements itself; never shown to the loader.
@@ -216,6 +217,7 @@ void ResolveInstanceFns(VkInstance instance) {
     g_inst.name = reinterpret_cast<PFN_vk##name>(g_icd.gipa(instance, "vk" #name));
 #include "nvvk_instance_fns.inc"
 #undef NVVK_FN
+    g_first_instance = instance;
     if (!g_inst.GetPhysicalDeviceProperties2)
         g_inst.GetPhysicalDeviceProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
             g_icd.gipa(instance, "vkGetPhysicalDeviceProperties2KHR"));
@@ -388,8 +390,27 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical,
     std::vector<VkDeviceQueueCreateInfo> queues;
     std::vector<VkDeviceQueueGlobalPriorityCreateInfoKHR> prios;
     ClampQueuePriorities(&nv, queues, prios);
+    // textureCompressionASTC_LDR is the ASTC emulation's (astc/lib.rs), not NVIDIA's: never ask
+    // the driver for it. The VkPhysicalDeviceFeatures2 in the chain is the app's and const, so it
+    // is cleared for the call and put back.
+    VkPhysicalDeviceFeatures features;
+    if (info->pEnabledFeatures) {
+        features = *info->pEnabledFeatures;
+        features.textureCompressionASTC_LDR = VK_FALSE;
+        nv.pEnabledFeatures = &features;
+    }
+    VkPhysicalDeviceFeatures2* features2 = nullptr;
+    for (auto* s = static_cast<const VkBaseInStructure*>(info->pNext); s; s = s->pNext)
+        if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)
+            features2 = const_cast<VkPhysicalDeviceFeatures2*>(
+                reinterpret_cast<const VkPhysicalDeviceFeatures2*>(s));
+    const VkBool32 astc = features2 ? features2->features.textureCompressionASTC_LDR : VK_FALSE;
+    if (features2)
+        features2->features.textureCompressionASTC_LDR = VK_FALSE;
 
     VkResult result = g_inst.CreateDevice(physical, &nv, allocator, out);
+    if (features2)
+        features2->features.textureCompressionASTC_LDR = astc;
     if (result != VK_SUCCESS) {
         NVVK_LOGE("NVIDIA vkCreateDevice failed: %d", result);
         return result;
@@ -527,13 +548,14 @@ PFN_vkVoidFunction FindHook(const Hook (&hooks)[N], const char* name) {
     return nullptr;
 }
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name) {
+// The entry points below the ASTC emulation (astc/lib.rs): this module's own, or NVIDIA's.
+PFN_vkVoidFunction NextDeviceProc(VkDevice device, const char* name) {
     if (PFN_vkVoidFunction fn = FindHook(kDeviceHooks, name))
         return fn;
     return g_inst.GetDeviceProcAddr(device, name);
 }
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance, const char* name) {
+PFN_vkVoidFunction NextInstanceProc(VkInstance instance, const char* name) {
     if (PFN_vkVoidFunction fn = FindHook(kInstanceHooks, name))
         return fn;
     if (instance)
@@ -542,6 +564,19 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance
     if (!StartIcd())
         return nullptr;
     return g_icd.gipa(instance, name);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name) {
+    if (PFN_vkVoidFunction fn = nvvk_astc_proc(name))
+        return fn;
+    return NextDeviceProc(device, name);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance, const char* name) {
+    if (instance)
+        if (PFN_vkVoidFunction fn = nvvk_astc_proc(name))
+            return fn;
+    return NextInstanceProc(instance, name);
 }
 
 // ---- the hwvulkan module ----
@@ -586,6 +621,35 @@ Device* GetDeviceForQueue(VkQueue queue) {
 }
 
 }  // namespace nvvk
+
+// ---- for the ASTC emulation (astc/lib.rs) ----
+
+extern "C" const void* nvvk_next_device_proc(VkDevice device, const char* name) {
+    return reinterpret_cast<const void*>(nvvk::NextDeviceProc(device, name));
+}
+
+extern "C" const void* nvvk_next_instance_proc(const char* name) {
+    return reinterpret_cast<const void*>(nvvk::NextInstanceProc(nvvk::g_first_instance, name));
+}
+
+extern "C" VkDevice nvvk_queue_device(VkQueue queue) {
+    nvvk::Device* dev = nvvk::GetDeviceForQueue(queue);
+    return dev ? dev->handle : VK_NULL_HANDLE;
+}
+
+extern "C" bool nvvk_device_memory_properties(VkDevice device,
+                                              VkPhysicalDeviceMemoryProperties* props) {
+    nvvk::Device* dev = nvvk::GetDevice(device);
+    if (!dev)
+        return false;
+    *props = dev->memory_props;
+    return true;
+}
+
+extern "C" void nvvk_log(int level, const char* msg) {
+    nvvk::Log(level == 0 ? nvvk::kLogError : level == 1 ? nvvk::kLogWarn : nvvk::kLogInfo, "%s",
+              msg);
+}
 
 extern "C" {
 __attribute__((visibility("default"))) hwvulkan_module_t HAL_MODULE_INFO_SYM = {

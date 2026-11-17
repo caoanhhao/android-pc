@@ -413,7 +413,25 @@ With an empty `/sdcard/Android/data/com.netease.yyvn/files/LocalData/vulkan.tag`
 `libproxy_arm64_to_x86_64_libvulkan.so` (vulkan.nvidia behind it). First result: the launcher UI
 draws its text but every image is black (the NVIDIA driver has no ASTC_LDR or ETC2 texture
 compression, and the game ships ASTC textures), and it downloads the Vulkan variant of the core
-resources again (5.4 GB). Next: ASTC decoding for the game's Vulkan path.
+resources again (5.4 GB).
+
+**ASTC on vulkan.nvidia (Rust, `hals/nvgpu/vulkan/astc/lib.rs`).** The HAL now reports
+`textureCompressionASTC_LDR` and emulates it: an ASTC image is created as R8G8B8A8 (UNORM/SRGB),
+its format properties are those of R8G8B8A8 for sampling and transfers, and a
+`vkCmdCopyBufferToImage(2)` into it is recorded as a copy from a HAL staging buffer that
+`vkQueueSubmit(2)` fills by decoding the app's blocks on the CPU (the astc-decode crate, pure Rust,
+vendored in `hals/nvgpu/third_party/astc-decode`). The C++ HAL asks the Rust module first in its
+`vkGet*ProcAddr` and hands it the entry points below (`nvvk_next_device_proc` and friends).
+`vkCreateDevice` clears `textureCompressionASTC_LDR` before NVIDIA sees it (otherwise NVIDIA
+returns `VK_ERROR_FEATURE_NOT_PRESENT` and SurfaceFlinger's RenderEngine aborts).
+
+Result in the VFIO VM (S26 identity, `vulkan.tag`): `checker choose Vulkan`, the HAL logs
+`ASTC textures are decoded on the CPU`, the game process maps the arm64 `libvulkan` and
+`libproxy_arm64_to_x86_64_libvulkan.so` with `vulkan.nvidia` behind them, and the world renders
+with its textures (bamboo forest, grass, character, HUD): `out/vfio-l4/vk/wwm-vulkan-world.png`.
+Open: 3 fps, a steady 333 ms per frame with the process nearly idle (0.9 s of CPU in 5 s) and
+each frame ready on the GPU ~2 ms after it is queued, so the game waits on something with a
+timeout every frame; and some iridescent noise patches on the ground.
 
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the

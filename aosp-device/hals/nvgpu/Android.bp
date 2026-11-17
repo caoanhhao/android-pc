@@ -40,6 +40,7 @@ cc_library_shared {
         "libnativewindow",
         "libnvglibc",
     ],
+    static_libs: ["libnvvk_astc"],
     cflags: [
         "-DVK_USE_PLATFORM_ANDROID_KHR",
         "-Wall",
@@ -50,6 +51,33 @@ cc_library_shared {
     // Only the hwvulkan module symbol is the API.
     version_script: "vulkan/vulkan.nvidia.map",
     visibility: ["//visibility:public"],
+}
+
+// ASTC LDR textures emulated on NVIDIA's driver, which has none (vulkan/astc/lib.rs): ASTC images
+// become R8G8B8A8 images and uploads are decoded on the CPU (third_party/astc-decode).
+rust_ffi_static {
+    name: "libnvvk_astc",
+    crate_name: "nvvk_astc",
+    srcs: ["vulkan/astc/lib.rs"],
+    edition: "2021",
+    vendor: true,
+    compile_multilib: "64",
+    rustlibs: [
+        "libash_rust",
+        "libastc_decode_pc",
+    ],
+}
+
+// A software ASTC decoder in Rust (third_party/astc-decode: astc-decode 0.3.1, Apache-2.0).
+rust_library {
+    name: "libastc_decode_pc",
+    crate_name: "astc_decode",
+    srcs: ["third_party/astc-decode/src/lib.rs"],
+    edition: "2018",
+    vendor: true,
+    compile_multilib: "64",
+    lints: "none",
+    clippy_lints: "none",
 }
 
 prebuilt_etc {
