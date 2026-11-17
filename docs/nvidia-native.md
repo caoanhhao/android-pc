@@ -468,6 +468,17 @@ When the checker decides, and what it could read (2026-11-17, S26 identity):
   encrypted strings: only `Vulkan(MT)`), and the other native libraries reference Vulkan only for
   video/live streaming (`libnative-mvd-render`, `libshared-texture`).
 - Tracing the process with strace makes it exit at once (anti-debug); not used further.
+- Its own state files do not steer it: with `LocalData/last_graphics_api.tag` and
+  `Patch/driver.tag` pre-seeded (no newline, like its `es3`) with `vk`, `vulkan`, `Vulkan`,
+  `Vulkan(MT)`, `vk_mt` and `VK` in turn, every run logs `checker choose ES3` and writes `es3` back
+  into `last_graphics_api.tag`; the patcher then logs `check_prefer_driver res=nil` and writes
+  `es3` into `driver.tag` too. The checker is itself a patch file from the server
+  (`PatchPatcher:check_file file=LuaText/checker.lua pass=true`, encrypted).
+- The code around it is protected: the launcher activity `com.netease.game.MessiahNativeActivity`
+  is not in the APK's eight dex files (the game's own classes load from an encrypted container at
+  run time), so its intent extras or engine arguments cannot be read; the server toggles it uses
+  (`shader_prereg skip reason=disabled by toggle`) sit in the encrypted
+  `engine_features_remote_cache.txt` / `engine_features_grey_info.txt`.
 - Without the game's GLES shader caches (`LocalData/Cache/GLES.cache`, `ShaderProfiles`,
   `Patch/Shader/*.shader.config` moved away) it still picks ES3, so it is not keeping the API it
   has caches for.
