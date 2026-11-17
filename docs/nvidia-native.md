@@ -465,7 +465,7 @@ tombstone_14: SIGSEGV at 0x1cd in libnvidia-eglcore under ANGLE
 went 35+ min) is the thing to fix there. The QEMU image `out/aosp17-usb-l4-qemu-nv.img` keeps the S26
 Ultra identity (/product/etc/build.prop overlay, gpuid.conf `Adreno (TM) 840`) at the user's
 request; `/data/local/tmp/product-build.prop.orig` and `cpuinfo.arm64.txt.orig` there, and the
-saved `initrd.img`, restore the PC identity.
+saved `out/vfio-l4/vk/initrd.img.pc-orig` (bootconfig with cutf_cvm), restore the PC identity.
 
 ## VFIO in QEMU: the NVIDIA entries on the real card in a VM
 
