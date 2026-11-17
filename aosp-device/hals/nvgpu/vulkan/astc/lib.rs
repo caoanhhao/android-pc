@@ -2,29 +2,42 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! ASTC LDR textures for vulkan.nvidia: NVIDIA's driver has no ASTC (Phase L4).
+//! Texture formats and shader behavior NVIDIA's desktop driver lacks, for vulkan.nvidia (Phase L4).
 //!
-//! Android games ship ASTC textures and their Vulkan paths need `textureCompressionASTC_LDR`
-//! (Where Winds Meet's world is ASTC). The driver gets an R8G8B8A8 image (UNORM or SRGB) in
-//! place of every ASTC image, and the texels are decoded on the CPU with the astc-decode crate
-//! (third_party/astc-decode):
-//! - `vkGetPhysicalDeviceFeatures*`: `textureCompressionASTC_LDR` is true;
-//! - `vkGetPhysicalDevice*FormatProperties*`: an ASTC format has what its R8G8B8A8 format has
-//!   for sampling and transfers in optimal tiling, nothing in linear tiling or as a buffer;
-//! - `vkCreateImage` / `vkCreateImageView` / `vkGetDeviceImageMemoryRequirements`: an ASTC
-//!   format becomes its R8G8B8A8 format;
+//! Android games ship ASTC and ETC2/EAC textures and their Vulkan paths need
+//! `textureCompressionASTC_LDR` (Where Winds Meet's world is ASTC, a few of its maps ETC2/EAC);
+//! NVIDIA has neither. The driver gets an uncompressed image in place of every such image
+//! (R8G8B8A8 UNORM or SRGB; R16(G16) UNORM/SNORM for EAC R11(G11)), and the texels are decoded
+//! on the CPU: ASTC with the astc-decode crate (third_party/astc-decode), ETC2/EAC in etc.rs.
+//! - `vkGetPhysicalDeviceFeatures*`: `textureCompressionASTC_LDR` and `textureCompressionETC2`
+//!   are true;
+//! - `vkGetPhysicalDevice*FormatProperties*`: a compressed format has what its emulated format
+//!   has for sampling and transfers in optimal tiling, nothing in linear tiling or as a buffer;
+//! - `vkCreateImage` / `vkCreateImageView` / `vkGetDeviceImageMemoryRequirements`: a compressed
+//!   format becomes its emulated format;
 //! - `vkCmdCopyBufferToImage(2)` into such an image records a copy from a staging buffer of
-//!   the HAL instead, and `vkQueueSubmit(2)` decodes the app's ASTC blocks into it before
-//!   submitting: the app may write its upload buffer up to the submit. The source buffer must
-//!   be in host-visible memory (an upload buffer always is); the staging buffers live until
-//!   the command buffer is begun again, reset or freed.
+//!   the HAL instead, and `vkQueueSubmit(2)` decodes the app's blocks into it before
+//!   submitting (also for secondary command buffers the submitted ones execute): the app may
+//!   write its upload buffer up to the submit. The source buffer must be in host-visible
+//!   memory (an upload buffer always is); the staging buffers live until the command buffer is
+//!   begun again, reset or freed.
 //!
-//! Copies out of an ASTC image (to a buffer, or to an image of another format) are not emulated.
+//! Copies out of a compressed image (to a buffer, or to an image of another format) are not
+//! emulated.
+//!
+//! With `debug.nvvk.invariant_position` 1, `vkCreateShaderModule` makes vertex shader positions
+//! invariant (spirv.rs, an experiment).
+//!
+//! Debugging: `debug.nvvk.astc_trace` 1 logs every upload, view, copy and memory alias of a
+//! compressed image (`ASTC trace: ...`), `debug.nvvk.astc_dump` 1 writes decoded regions for a
+//! comparison with a reference decoder (`dump()`).
 //!
 //! The C++ HAL (nvvk_hal.cpp) asks `nvvk_astc_proc` first in its vkGet*ProcAddr; the functions
 //! here call the HAL's own entry points (or NVIDIA's) below them through `nvvk_next_*_proc`.
 
+mod etc;
 mod probe;
+mod spirv;
 
 use ash::vk;
 use std::collections::HashMap;
@@ -58,35 +71,82 @@ pub(crate) fn log(level: i32, msg: &str) {
 
 // ---- decoding ----
 
-/// Decodes the blocks of a `w` x `h` ASTC image (rows of `row_blocks` 16-byte blocks) into
-/// `rgba`, a `w` x `h` R8G8B8A8 image with rows of `w * 4` bytes. Rows of blocks are decoded
-/// on up to 4 threads. sRGB textures decode to their stored (sRGB-encoded) values, which the
-/// R8G8B8A8_SRGB image then converts as the ASTC sRGB format would.
-fn decode(astc: Astc, blocks: &[u8], row_blocks: u32, w: u32, h: u32, rgba: &mut [u8]) -> bool {
-    let footprint = astc_decode::Footprint::new(astc.bw, astc.bh);
-    let (bw, bh) = (astc.bw as usize, astc.bh as usize);
+/// Decodes one block of `c` and hands each texel (`c.texel_bytes()` bytes) with its position in
+/// the block to `put`. False if the block is invalid (ASTC's error color is written then).
+fn decode_block(c: Compressed, block: &[u8], mut put: impl FnMut(usize, usize, &[u8])) -> bool {
+    let row_major = |put: &mut dyn FnMut(usize, usize, &[u8]), texels: &[&[u8]]| {
+        for (i, t) in texels.iter().enumerate() {
+            put(i % 4, i / 4, t);
+        }
+    };
+    let half = |b: &[u8]| -> [u8; 8] { b.try_into().unwrap() };
+    match c.codec {
+        Codec::Astc => {
+            let footprint = astc_decode::Footprint::new(c.bw, c.bh);
+            astc_decode::astc_decode_block(block.try_into().unwrap(), footprint, |x, y, color| {
+                put(x as usize, y as usize, &color)
+            })
+        }
+        Codec::Etc2Rgb | Codec::Etc2RgbA1 => {
+            let t = etc::etc2_rgb(&half(block), c.codec == Codec::Etc2RgbA1);
+            row_major(&mut put, &t.each_ref().map(|t| &t[..]));
+            true
+        }
+        Codec::Etc2Rgba => {
+            let alpha = etc::eac_alpha(&half(&block[..8]));
+            let mut t = etc::etc2_rgb(&half(&block[8..]), false);
+            for (t, a) in t.iter_mut().zip(alpha) {
+                t[3] = a;
+            }
+            row_major(&mut put, &t.each_ref().map(|t| &t[..]));
+            true
+        }
+        Codec::EacR11 { signed } => {
+            let t = etc::eac_r11(&half(block), signed).map(u16::to_le_bytes);
+            row_major(&mut put, &t.each_ref().map(|t| &t[..]));
+            true
+        }
+        Codec::EacRg11 { signed } => {
+            let r = etc::eac_r11(&half(&block[..8]), signed);
+            let g = etc::eac_r11(&half(&block[8..]), signed);
+            let t: [[u8; 4]; 16] = std::array::from_fn(|i| {
+                let (r, g) = (r[i].to_le_bytes(), g[i].to_le_bytes());
+                [r[0], r[1], g[0], g[1]]
+            });
+            row_major(&mut put, &t.each_ref().map(|t| &t[..]));
+            true
+        }
+    }
+}
+
+/// Decodes the blocks of a `w` x `h` compressed image (rows of `row_blocks` blocks) into `out`,
+/// a `w` x `h` image of its emulated format with rows of `w * c.texel_bytes()` bytes. Rows of
+/// blocks are decoded on up to 4 threads. sRGB textures decode to their stored (sRGB-encoded)
+/// values, which the R8G8B8A8_SRGB image then converts as the compressed sRGB format would.
+fn decode(c: Compressed, blocks: &[u8], row_blocks: u32, w: u32, h: u32, out: &mut [u8]) -> bool {
+    let (bw, bh) = (c.bw as usize, c.bh as usize);
     let (w, h, row_blocks) = (w as usize, h as usize, row_blocks as usize);
+    let (block_bytes, texel) = (c.block_bytes(), c.texel_bytes());
     let blocks_x = w.div_ceil(bw);
-    let band = bh * w * 4; // the bytes one row of blocks fills
+    let band = bh * w * texel; // the bytes one row of blocks fills
     let decode_row = |by: usize, out: &mut [u8]| -> bool {
         let mut ok = true;
         for bx in 0..blocks_x {
-            let at = (by * row_blocks + bx) * 16;
-            let Some(block) = blocks.get(at..at + 16) else {
+            let at = (by * row_blocks + bx) * block_bytes;
+            let Some(block) = blocks.get(at..at + block_bytes) else {
                 return false;
             };
-            let block: &[u8; 16] = block.try_into().unwrap();
-            ok &= astc_decode::astc_decode_block(block, footprint, |x, y, color| {
-                let (px, py) = (bx * bw + x as usize, y as usize);
-                if px < w && (by * bh + py) < h {
-                    let i = (py * w + px) * 4;
-                    out[i..i + 4].copy_from_slice(&color);
+            ok &= decode_block(c, block, |x, y, color| {
+                let px = bx * bw + x;
+                if px < w && (by * bh + y) < h {
+                    let i = (y * w + px) * texel;
+                    out[i..i + texel].copy_from_slice(color);
                 }
             });
         }
         ok
     };
-    let rows: Vec<(usize, &mut [u8])> = rgba[..w * h * 4].chunks_mut(band).enumerate().collect();
+    let rows: Vec<(usize, &mut [u8])> = out[..w * h * texel].chunks_mut(band).enumerate().collect();
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(4);
@@ -123,14 +183,43 @@ fn decode(astc: Astc, blocks: &[u8], row_blocks: u32, w: u32, h: u32, rgba: &mut
 
 // ---- formats ----
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Codec {
+    Astc,
+    Etc2Rgb,
+    Etc2RgbA1,
+    Etc2Rgba,
+    EacR11 { signed: bool },
+    EacRg11 { signed: bool },
+}
+
+/// A compressed format the driver lacks: ASTC LDR, ETC2 or EAC.
 #[derive(Clone, Copy)]
-struct Astc {
+struct Compressed {
+    codec: Codec,
     bw: u32,
     bh: u32,
     srgb: bool,
 }
 
-/// Block sizes in the order of the VkFormat enum (each as UNORM, then SRGB).
+impl Compressed {
+    fn block_bytes(&self) -> usize {
+        match self.codec {
+            Codec::Etc2Rgb | Codec::Etc2RgbA1 | Codec::EacR11 { .. } => 8,
+            _ => 16,
+        }
+    }
+
+    /// The bytes of a texel of the emulated format.
+    fn texel_bytes(&self) -> usize {
+        match self.codec {
+            Codec::EacR11 { .. } => 2,
+            _ => 4,
+        }
+    }
+}
+
+/// ASTC block sizes in the order of the VkFormat enum (each as UNORM, then SRGB).
 const BLOCKS: [(u32, u32); 14] = [
     (4, 4),
     (5, 4),
@@ -148,7 +237,28 @@ const BLOCKS: [(u32, u32); 14] = [
     (12, 12),
 ];
 
-fn astc_of(format: vk::Format) -> Option<Astc> {
+fn compressed_of(format: vk::Format) -> Option<Compressed> {
+    let etc = |codec, srgb| {
+        Some(Compressed {
+            codec,
+            bw: 4,
+            bh: 4,
+            srgb,
+        })
+    };
+    match format {
+        vk::Format::ETC2_R8G8B8_UNORM_BLOCK => return etc(Codec::Etc2Rgb, false),
+        vk::Format::ETC2_R8G8B8_SRGB_BLOCK => return etc(Codec::Etc2Rgb, true),
+        vk::Format::ETC2_R8G8B8A1_UNORM_BLOCK => return etc(Codec::Etc2RgbA1, false),
+        vk::Format::ETC2_R8G8B8A1_SRGB_BLOCK => return etc(Codec::Etc2RgbA1, true),
+        vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK => return etc(Codec::Etc2Rgba, false),
+        vk::Format::ETC2_R8G8B8A8_SRGB_BLOCK => return etc(Codec::Etc2Rgba, true),
+        vk::Format::EAC_R11_UNORM_BLOCK => return etc(Codec::EacR11 { signed: false }, false),
+        vk::Format::EAC_R11_SNORM_BLOCK => return etc(Codec::EacR11 { signed: true }, false),
+        vk::Format::EAC_R11G11_UNORM_BLOCK => return etc(Codec::EacRg11 { signed: false }, false),
+        vk::Format::EAC_R11G11_SNORM_BLOCK => return etc(Codec::EacRg11 { signed: true }, false),
+        _ => {}
+    }
     let first = vk::Format::ASTC_4X4_UNORM_BLOCK.as_raw();
     let last = vk::Format::ASTC_12X12_SRGB_BLOCK.as_raw();
     let raw = format.as_raw();
@@ -157,19 +267,26 @@ fn astc_of(format: vk::Format) -> Option<Astc> {
     }
     let i = (raw - first) as usize;
     let (bw, bh) = BLOCKS[i / 2];
-    Some(Astc {
+    Some(Compressed {
+        codec: Codec::Astc,
         bw,
         bh,
         srgb: i % 2 == 1,
     })
 }
 
-/// The format the driver gets for an ASTC format; any other format unchanged.
+/// The format the driver gets for a compressed format; any other format unchanged.
 fn emulated(format: vk::Format) -> vk::Format {
-    match astc_of(format) {
-        Some(Astc { srgb: true, .. }) => vk::Format::R8G8B8A8_SRGB,
-        Some(_) => vk::Format::R8G8B8A8_UNORM,
-        None => format,
+    let Some(c) = compressed_of(format) else {
+        return format;
+    };
+    match c.codec {
+        Codec::EacR11 { signed: false } => vk::Format::R16_UNORM,
+        Codec::EacR11 { signed: true } => vk::Format::R16_SNORM,
+        Codec::EacRg11 { signed: false } => vk::Format::R16G16_UNORM,
+        Codec::EacRg11 { signed: true } => vk::Format::R16G16_SNORM,
+        _ if c.srgb => vk::Format::R8G8B8A8_SRGB,
+        _ => vk::Format::R8G8B8A8_UNORM,
     }
 }
 
@@ -234,6 +351,17 @@ struct DeviceFns {
     destroy_command_pool: vk::PFN_vkDestroyCommandPool,
     cmd_copy_buffer_to_image: vk::PFN_vkCmdCopyBufferToImage,
     cmd_copy_buffer_to_image2: Option<vk::PFN_vkCmdCopyBufferToImage2>,
+    cmd_copy_image: vk::PFN_vkCmdCopyImage,
+    cmd_copy_image2: Option<vk::PFN_vkCmdCopyImage2>,
+    cmd_blit_image: vk::PFN_vkCmdBlitImage,
+    cmd_blit_image2: Option<vk::PFN_vkCmdBlitImage2>,
+    cmd_copy_image_to_buffer: vk::PFN_vkCmdCopyImageToBuffer,
+    cmd_copy_image_to_buffer2: Option<vk::PFN_vkCmdCopyImageToBuffer2>,
+    cmd_execute_commands: vk::PFN_vkCmdExecuteCommands,
+    create_shader_module: vk::PFN_vkCreateShaderModule,
+    bind_image_memory: vk::PFN_vkBindImageMemory,
+    get_image_memory_requirements: vk::PFN_vkGetImageMemoryRequirements,
+    bind_image_memory2: Option<vk::PFN_vkBindImageMemory2>,
     queue_submit: vk::PFN_vkQueueSubmit,
     queue_submit2: Option<vk::PFN_vkQueueSubmit2>,
     wait_for_fences: vk::PFN_vkWaitForFences,
@@ -321,6 +449,20 @@ impl DeviceFns {
                 "vkCmdCopyBufferToImage2",
                 "vkCmdCopyBufferToImage2KHR"
             ),
+            cmd_copy_image: req!("vkCmdCopyImage"),
+            cmd_copy_image2: opt!("vkCmdCopyImage2", "vkCmdCopyImage2KHR"),
+            cmd_blit_image: req!("vkCmdBlitImage"),
+            cmd_blit_image2: opt!("vkCmdBlitImage2", "vkCmdBlitImage2KHR"),
+            cmd_copy_image_to_buffer: req!("vkCmdCopyImageToBuffer"),
+            cmd_copy_image_to_buffer2: opt!(
+                "vkCmdCopyImageToBuffer2",
+                "vkCmdCopyImageToBuffer2KHR"
+            ),
+            cmd_execute_commands: req!("vkCmdExecuteCommands"),
+            create_shader_module: req!("vkCreateShaderModule"),
+            bind_image_memory: req!("vkBindImageMemory"),
+            get_image_memory_requirements: req!("vkGetImageMemoryRequirements"),
+            bind_image_memory2: opt!("vkBindImageMemory2", "vkBindImageMemory2KHR"),
             queue_submit: req!("vkQueueSubmit"),
             queue_submit2: opt!("vkQueueSubmit2", "vkQueueSubmit2KHR"),
             wait_for_fences: req!("vkWaitForFences"),
@@ -350,27 +492,37 @@ struct Region {
 #[derive(Clone)]
 struct Upload {
     src: vk::Buffer,
-    astc: Astc,
+    astc: Compressed,
     regions: Vec<Region>,
     staging: vk::Buffer,
     staging_memory: vk::DeviceMemory,
     staging_ptr: usize,
+    /// With the trace: a hash of the app's blocks when they were decoded.
+    hash: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 struct CommandBuffer {
     device: vk::Device,
     pool: vk::CommandPool,
     uploads: Vec<Upload>,
+    /// Secondary command buffers this one executes, whose uploads are decoded with its own.
+    secondaries: Vec<vk::CommandBuffer>,
 }
 
 #[derive(Default)]
 struct State {
     devices: HashMap<vk::Device, DeviceFns>,
-    images: HashMap<vk::Image, Astc>,
+    images: HashMap<vk::Image, Compressed>,
     buffers: HashMap<vk::Buffer, (vk::DeviceMemory, u64)>,
     mappings: HashMap<vk::DeviceMemory, usize>, // the app's pointer for offset 0
     memory_types: HashMap<vk::DeviceMemory, u32>,
     cmd_buffers: HashMap<vk::CommandBuffer, CommandBuffer>,
+    /// With `debug.nvvk.astc_trace`: every image's format and flags, and its memory binding.
+    traced: HashMap<vk::Image, (vk::Format, vk::ImageCreateFlags)>,
+    /// With the trace: uploads recorded per compressed image, and when it was created.
+    upload_counts: HashMap<vk::Image, (u32, std::time::Instant, String)>,
+    /// Live image bindings per memory: (offset, size, image).
+    bindings: HashMap<vk::DeviceMemory, Vec<(u64, u64, vk::Image)>>,
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -395,8 +547,51 @@ fn cmd_device(cb: vk::CommandBuffer) -> Option<vk::Device> {
     state().cmd_buffers.get(&cb).map(|c| c.device)
 }
 
+/// A hash of the app's blocks of an upload (FNV-1a over every region and layer), or None if
+/// they cannot be read now.
+fn upload_hash(u: &Upload) -> Option<u64> {
+    let (memory, offset, base) = {
+        let s = state();
+        let &(memory, offset) = s.buffers.get(&u.src)?;
+        (memory, offset, *s.mappings.get(&memory)?)
+    };
+    let _ = memory;
+    let mut h = 0xcbf29ce484222325u64;
+    for r in &u.regions {
+        let len = r.slice_bytes as usize * r.layers as usize;
+        // SAFETY: the app's mapped upload buffer (still bound and mapped).
+        let src = unsafe {
+            std::slice::from_raw_parts((base as u64 + offset + r.src_offset) as *const u8, len)
+        };
+        for &b in src {
+            h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(h)
+}
+
 fn free_uploads(device: vk::Device, f: &DeviceFns, uploads: Vec<Upload>) {
+    use std::sync::atomic::Ordering;
     for u in uploads {
+        if tracing() {
+            let then = u.hash.load(Ordering::Relaxed);
+            if then != 0 {
+                if let Some(now) = upload_hash(&u) {
+                    if now != then {
+                        trace(|| {
+                            format!(
+                                "late: the blocks of an upload from buffer {:?} ({} regions, first {}x{} +{}) changed after vkQueueSubmit",
+                                u.src,
+                                u.regions.len(),
+                                u.regions[0].w,
+                                u.regions[0].h,
+                                u.regions[0].src_offset
+                            )
+                        });
+                    }
+                }
+            }
+        }
         // SAFETY: the HAL's own staging objects, no longer used by the GPU (the app reset or
         // freed the command buffer that used them).
         unsafe {
@@ -414,6 +609,7 @@ fn release_command_buffers(cbs: &[vk::CommandBuffer], forget: bool) {
             let Some(c) = s.cmd_buffers.get_mut(cb) else {
                 continue;
             };
+            c.secondaries.clear();
             let out = (c.device, std::mem::take(&mut c.uploads));
             if forget {
                 s.cmd_buffers.remove(cb);
@@ -520,9 +716,34 @@ fn record_upload(
     src: vk::Buffer,
     dst: vk::Image,
     layout: vk::ImageLayout,
-    astc: Astc,
+    astc: Compressed,
     regions: &[CopyRegion],
 ) {
+    if tracing() {
+        if let Some(c) = state().upload_counts.get_mut(&dst) {
+            c.0 += regions.len() as u32;
+        }
+        let buffer = traced_buffer(src, f);
+        for r in regions {
+            trace(|| {
+                format!(
+                    "upload cb {cb:?} buffer {src:?} ({buffer}) +{} row {} height {} -> image {dst:?} {}x{} {} at {},{},{} extent {}x{}x{}",
+                    r.buffer_offset,
+                    r.buffer_row_length,
+                    r.buffer_image_height,
+                    astc.bw,
+                    astc.bh,
+                    subresource(&r.image_subresource),
+                    r.image_offset.x,
+                    r.image_offset.y,
+                    r.image_offset.z,
+                    r.image_extent.width,
+                    r.image_extent.height,
+                    r.image_extent.depth
+                )
+            });
+        }
+    }
     let mut out = Vec::with_capacity(regions.len());
     let mut copies = Vec::with_capacity(regions.len());
     let mut size = 0u64;
@@ -541,13 +762,18 @@ fn record_upload(
         let region = Region {
             src_offset: r.buffer_offset,
             row_blocks,
-            slice_bytes: u64::from(row_blocks) * u64::from(height.div_ceil(astc.bh)) * 16,
+            slice_bytes: u64::from(row_blocks)
+                * u64::from(height.div_ceil(astc.bh))
+                * astc.block_bytes() as u64,
             w: r.image_extent.width,
             h: r.image_extent.height,
             layers: r.image_subresource.layer_count * r.image_extent.depth.max(1),
             dst_offset: size,
         };
-        size += u64::from(region.w) * u64::from(region.h) * 4 * u64::from(region.layers);
+        size += u64::from(region.w)
+            * u64::from(region.h)
+            * astc.texel_bytes() as u64
+            * u64::from(region.layers);
         copies.push(vk::BufferImageCopy {
             buffer_offset: region.dst_offset,
             buffer_row_length: 0,
@@ -584,16 +810,35 @@ fn record_upload(
         staging,
         staging_memory,
         staging_ptr,
+        hash: Default::default(),
     };
     if let Some(c) = state().cmd_buffers.get_mut(&cb) {
         c.uploads.push(upload);
     }
 }
 
+/// The command buffers a submit runs: `cbs` and the secondaries they execute.
+fn with_secondaries(cbs: &[vk::CommandBuffer]) -> Vec<vk::CommandBuffer> {
+    let s = state();
+    let mut all = cbs.to_vec();
+    let mut i = 0;
+    while i < all.len() {
+        if let Some(c) = s.cmd_buffers.get(&all[i]) {
+            for sec in &c.secondaries {
+                if !all.contains(sec) {
+                    all.push(*sec);
+                }
+            }
+        }
+        i += 1;
+    }
+    all
+}
+
 /// Decodes the uploads of command buffers about to be submitted.
 fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
     let Some(f) = device_fns(device) else { return };
-    for cb in cbs {
+    for cb in &with_secondaries(cbs) {
         // Snapshot what the uploads read, then decode without the lock.
         let work: Vec<(Upload, vk::DeviceMemory, u64, usize, Option<u32>)> = {
             let s = state();
@@ -603,7 +848,10 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
             c.uploads
                 .iter()
                 .filter_map(|u| {
-                    let &(memory, offset) = s.buffers.get(&u.src)?;
+                    let Some(&(memory, offset)) = s.buffers.get(&u.src) else {
+                        log(1, &format!("ASTC: upload from unbound buffer {:?}", u.src));
+                        return None;
+                    };
                     let base = s.mappings.get(&memory).copied().unwrap_or(0);
                     Some((
                         u.clone(),
@@ -652,14 +900,15 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
                 base = ptr as usize;
                 own = true;
             }
+            let texel = u.astc.texel_bytes();
             for r in &u.regions {
                 for l in 0..r.layers {
                     let src = base as u64 + offset + r.src_offset + u64::from(l) * r.slice_bytes;
                     let dst = u.staging_ptr as u64
                         + r.dst_offset
-                        + u64::from(l) * u64::from(r.w) * u64::from(r.h) * 4;
+                        + u64::from(l) * u64::from(r.w) * u64::from(r.h) * texel as u64;
                     let blocks_len = r.slice_bytes as usize;
-                    let out_len = r.w as usize * r.h as usize * 4;
+                    let out_len = r.w as usize * r.h as usize * texel;
                     // SAFETY: src points at the app's blocks for this region and layer (the app
                     // keeps the buffer valid until the copy executes), dst into the staging
                     // buffer sized for the region.
@@ -679,6 +928,20 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
                             &format!("ASTC: decode of a {}x{} texture failed", r.w, r.h),
                         );
                     }
+                    // SAFETY: as for the decode above.
+                    unsafe {
+                        dump(
+                            u.astc,
+                            r,
+                            std::slice::from_raw_parts(src as *const u8, blocks_len),
+                            std::slice::from_raw_parts(dst as *const u8, out_len),
+                        )
+                    };
+                }
+            }
+            if tracing() && !own {
+                if let Some(h) = upload_hash(&u) {
+                    u.hash.store(h, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             if own {
@@ -687,6 +950,104 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
             }
         }
     }
+}
+
+// ---- trace ----
+
+/// Whether `debug.nvvk.astc_trace` is 1 (read once per process): then every call that touches a
+/// compressed image is logged (`ASTC trace: ...`), up to 300 or 3000 lines of each kind.
+fn tracing() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| probe::prop_is_one(c"debug.nvvk.astc_trace"))
+}
+
+fn trace(msg: impl FnOnce() -> String) {
+    if !tracing() {
+        return;
+    }
+    // Each kind of line (its first word) has its own cap, so the many uploads at load do not
+    // crowd out the rarer events later.
+    static LINES: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    let msg = msg();
+    let kind = msg.split(' ').next().unwrap_or("").to_string();
+    let cap = if kind == "upload" || kind == "view" {
+        300
+    } else {
+        3000
+    };
+    let mut lines = LINES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let n = lines.entry(kind).or_insert(0);
+    *n += 1;
+    if *n <= cap {
+        log(2, &format!("ASTC trace: {msg}"));
+    }
+}
+
+/// The format of an image for the trace: "ASTC_6x6_SRGB", or the app's VkFormat.
+fn traced_format(image: vk::Image) -> String {
+    let s = state();
+    match s.traced.get(&image) {
+        Some((format, flags)) => format!("{format:?}/{flags:?}"),
+        None => "?".into(),
+    }
+}
+
+/// The property flags of the memory bound to `buffer`, and whether the app has it mapped.
+fn traced_buffer(buffer: vk::Buffer, f: &DeviceFns) -> String {
+    let s = state();
+    let Some(&(memory, offset)) = s.buffers.get(&buffer) else {
+        return "unbound".into();
+    };
+    let flags = s
+        .memory_types
+        .get(&memory)
+        .map(|&t| f.memory_props.memory_types[t as usize].property_flags);
+    format!(
+        "memory {memory:?}+{offset} {flags:?} mapped {}",
+        s.mappings.contains_key(&memory)
+    )
+}
+
+fn subresource(r: &vk::ImageSubresourceLayers) -> String {
+    format!(
+        "mip {} layers {}+{}",
+        r.mip_level, r.base_array_layer, r.layer_count
+    )
+}
+
+/// With `debug.nvvk.astc_dump` 1, writes the first 4000 decoded regions to
+/// `/data/local/tmp/nvvk/<n>.bin` (the directory must exist and be writable by the app): a header
+/// of 6 little-endian u32 (codec, block width, block height, width, height, row blocks), the
+/// app's blocks, then the decoded texels. For comparing the decoder with a reference.
+fn dump(c: Compressed, r: &Region, blocks: &[u8], decoded: &[u8]) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static ON: OnceLock<bool> = OnceLock::new();
+    static N: AtomicU32 = AtomicU32::new(0);
+    if !*ON.get_or_init(|| probe::prop_is_one(c"debug.nvvk.astc_dump")) {
+        return;
+    }
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    if n >= 4000 {
+        return;
+    }
+    let codec = match c.codec {
+        Codec::Astc => 0u32,
+        Codec::Etc2Rgb => 1,
+        Codec::Etc2RgbA1 => 2,
+        Codec::Etc2Rgba => 3,
+        Codec::EacR11 { .. } => 4,
+        Codec::EacRg11 { .. } => 5,
+    };
+    let mut out = Vec::with_capacity(24 + blocks.len() + decoded.len());
+    for v in [codec, c.bw, c.bh, r.w, r.h, r.row_blocks] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(blocks);
+    out.extend_from_slice(decoded);
+    let _ = std::fs::write(format!("/data/local/tmp/nvvk/{n}.bin"), out);
 }
 
 // ---- slow-call log ----
@@ -716,6 +1077,7 @@ unsafe extern "system" fn get_physical_device_features(
             vk::PFN_vkGetPhysicalDeviceFeatures
         )(physical, features);
         (*features).texture_compression_astc_ldr = vk::TRUE;
+        (*features).texture_compression_etc2 = vk::TRUE;
     }
 }
 
@@ -731,6 +1093,7 @@ unsafe extern "system" fn get_physical_device_features2(
             vk::PFN_vkGetPhysicalDeviceFeatures2
         )(physical, features);
         (*features).features.texture_compression_astc_ldr = vk::TRUE;
+        (*features).features.texture_compression_etc2 = vk::TRUE;
     }
 }
 
@@ -746,7 +1109,7 @@ unsafe extern "system" fn get_physical_device_format_properties(
             "vkGetPhysicalDeviceFormatProperties",
             vk::PFN_vkGetPhysicalDeviceFormatProperties
         )(physical, emulated(format), props);
-        if astc_of(format).is_some() {
+        if compressed_of(format).is_some() {
             mask_format_properties(&mut *props);
         }
     }
@@ -764,7 +1127,7 @@ unsafe extern "system" fn get_physical_device_format_properties2(
             "vkGetPhysicalDeviceFormatProperties2",
             vk::PFN_vkGetPhysicalDeviceFormatProperties2
         )(physical, emulated(format), props);
-        if astc_of(format).is_none() {
+        if compressed_of(format).is_none() {
             return;
         }
         mask_format_properties(&mut (*props).format_properties);
@@ -794,7 +1157,7 @@ unsafe extern "system" fn get_physical_device_image_format_properties(
     // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
     // and pointers), which is what every operation below relies on.
     unsafe {
-        if astc_of(format).is_some()
+        if compressed_of(format).is_some()
             && (tiling != vk::ImageTiling::OPTIMAL || !ASTC_USAGE.contains(usage))
         {
             return vk::Result::ERROR_FORMAT_NOT_SUPPORTED;
@@ -826,7 +1189,7 @@ unsafe extern "system" fn get_physical_device_image_format_properties2(
             "vkGetPhysicalDeviceImageFormatProperties2",
             vk::PFN_vkGetPhysicalDeviceImageFormatProperties2
         );
-        if astc_of((*info).format).is_none() {
+        if compressed_of((*info).format).is_none() {
             return next(physical, info, props);
         }
         if (*info).tiling != vk::ImageTiling::OPTIMAL || !ASTC_USAGE.contains((*info).usage) {
@@ -889,7 +1252,7 @@ impl FormatLists {
                 if (*s).s_type == vk::StructureType::IMAGE_FORMAT_LIST_CREATE_INFO {
                     let list = &*(s as *const vk::ImageFormatListCreateInfo);
                     if (0..list.view_format_count as usize)
-                        .any(|i| astc_of(*list.p_view_formats.add(i)).is_some())
+                        .any(|i| compressed_of(*list.p_view_formats.add(i)).is_some())
                     {
                         return true;
                     }
@@ -922,9 +1285,30 @@ unsafe extern "system" fn create_image(
         let Some(f) = device_fns(device) else {
             return vk::Result::ERROR_INITIALIZATION_FAILED;
         };
-        let astc = astc_of((*info).format);
+        let astc = compressed_of((*info).format);
         if astc.is_none() && !FormatLists::have_astc((*info).p_next) {
-            return (f.create_image)(device, info, allocator, image);
+            let result = (f.create_image)(device, info, allocator, image);
+            if tracing() && result == vk::Result::SUCCESS {
+                let i = &*info;
+                state().traced.insert(*image, (i.format, i.flags));
+                if i.flags.contains(vk::ImageCreateFlags::MUTABLE_FORMAT) {
+                    trace(|| {
+                        format!(
+                            "image {:?} {:?} {}x{}x{} mips {} layers {} {:?} usage {:?} (mutable)",
+                            *image,
+                            i.format,
+                            i.extent.width,
+                            i.extent.height,
+                            i.extent.depth,
+                            i.mip_levels,
+                            i.array_layers,
+                            i.flags,
+                            i.usage
+                        )
+                    });
+                }
+            }
+            return result;
         }
         let mut nv = *info;
         nv.format = emulated(nv.format);
@@ -932,6 +1316,43 @@ unsafe extern "system" fn create_image(
         let lists = FormatLists::new(nv.p_next);
         let result = (f.create_image)(device, &nv, allocator, image);
         drop(lists);
+        if tracing() && result == vk::Result::SUCCESS {
+            let i = &*info;
+            state().traced.insert(*image, (i.format, i.flags));
+            if astc.is_some() {
+                state().upload_counts.insert(
+                    *image,
+                    (
+                        0,
+                        std::time::Instant::now(),
+                        format!(
+                            "{:?} {}x{} mips {} layers {}",
+                            i.format, i.extent.width, i.extent.height, i.mip_levels, i.array_layers
+                        ),
+                    ),
+                );
+            }
+            trace(|| {
+                format!(
+                    "image {:?} {:?} {}x{}x{} mips {} layers {} {:?} usage {:?} tiling {:?}{}",
+                    *image,
+                    i.format,
+                    i.extent.width,
+                    i.extent.height,
+                    i.extent.depth,
+                    i.mip_levels,
+                    i.array_layers,
+                    i.flags,
+                    i.usage,
+                    i.tiling,
+                    if astc.is_none() {
+                        " (ASTC in its format list)"
+                    } else {
+                        ""
+                    }
+                )
+            });
+        }
         if result == vk::Result::SUCCESS {
             if let Some(a) = astc {
                 static LOGGED: OnceLock<()> = OnceLock::new();
@@ -956,7 +1377,16 @@ unsafe extern "system" fn destroy_image(
     // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
     // and pointers), which is what every operation below relies on.
     unsafe {
-        state().images.remove(&image);
+        {
+            let mut s = state();
+            s.images.remove(&image);
+            s.upload_counts.remove(&image);
+            if s.traced.remove(&image).is_some() {
+                for list in s.bindings.values_mut() {
+                    list.retain(|b| b.2 != image);
+                }
+            }
+        }
         if let Some(f) = device_fns(device) {
             (f.destroy_image)(device, image, allocator);
         }
@@ -975,7 +1405,26 @@ unsafe extern "system" fn create_image_view(
         let Some(f) = device_fns(device) else {
             return vk::Result::ERROR_INITIALIZATION_FAILED;
         };
-        if astc_of((*info).format).is_none() {
+        if tracing() {
+            let i = &*info;
+            let image_astc = emulated_image(i.image).is_some();
+            if image_astc || compressed_of(i.format).is_some() {
+                trace(|| {
+                    format!(
+                        "view of image {:?} ({}) as {:?} {:?} mips {}+{} layers {}+{}",
+                        i.image,
+                        traced_format(i.image),
+                        i.format,
+                        i.view_type,
+                        i.subresource_range.base_mip_level,
+                        i.subresource_range.level_count,
+                        i.subresource_range.base_array_layer,
+                        i.subresource_range.layer_count
+                    )
+                });
+            }
+        }
+        if compressed_of((*info).format).is_none() {
             return (f.create_image_view)(device, info, allocator, view);
         }
         let mut nv = *info;
@@ -997,7 +1446,7 @@ unsafe extern "system" fn get_device_image_memory_requirements(
             return;
         };
         let create = (*info).p_create_info;
-        if create.is_null() || astc_of((*create).format).is_none() {
+        if create.is_null() || compressed_of((*create).format).is_none() {
             return next(device, info, req);
         }
         let mut image = *create;
@@ -1045,6 +1494,7 @@ unsafe extern "system" fn free_memory(
             let mut s = state();
             s.mappings.remove(&memory);
             s.memory_types.remove(&memory);
+            s.bindings.remove(&memory);
         }
         if let Some(f) = device_fns(device) {
             (f.free_memory)(device, memory, allocator);
@@ -1166,6 +1616,7 @@ unsafe extern "system" fn allocate_command_buffers(
                         device,
                         pool: (*info).command_pool,
                         uploads: Vec::new(),
+                        secondaries: Vec::new(),
                     },
                 );
             }
@@ -1251,7 +1702,7 @@ unsafe extern "system" fn destroy_command_pool(
     }
 }
 
-fn emulated_image(image: vk::Image) -> Option<Astc> {
+fn emulated_image(image: vk::Image) -> Option<Compressed> {
     state().images.get(&image).copied()
 }
 
@@ -1327,6 +1778,452 @@ unsafe extern "system" fn cmd_copy_buffer_to_image2(
     }
 }
 
+/// Logs a copy or blit between images when one of them is an ASTC image.
+fn trace_image_copy(
+    what: &str,
+    cb: vk::CommandBuffer,
+    src: vk::Image,
+    dst: vk::Image,
+    regions: String,
+) {
+    if tracing() && (emulated_image(src).is_some() || emulated_image(dst).is_some()) {
+        trace(|| {
+            format!(
+                "{what} cb {cb:?} image {src:?} ({}) -> image {dst:?} ({}): {regions}",
+                traced_format(src),
+                traced_format(dst)
+            )
+        });
+    }
+}
+
+fn image_copy_regions<'a>(
+    regions: impl Iterator<
+        Item = (
+            &'a vk::ImageSubresourceLayers,
+            vk::Offset3D,
+            &'a vk::ImageSubresourceLayers,
+            vk::Offset3D,
+            vk::Extent3D,
+        ),
+    >,
+) -> String {
+    regions
+        .map(|(s, so, d, doff, e)| {
+            format!(
+                "[{} at {},{},{} -> {} at {},{},{} extent {}x{}x{}]",
+                subresource(s),
+                so.x,
+                so.y,
+                so.z,
+                subresource(d),
+                doff.x,
+                doff.y,
+                doff.z,
+                e.width,
+                e.height,
+                e.depth
+            )
+        })
+        .collect()
+}
+
+unsafe extern "system" fn cmd_copy_image(
+    cb: vk::CommandBuffer,
+    src: vk::Image,
+    src_layout: vk::ImageLayout,
+    dst: vk::Image,
+    dst_layout: vk::ImageLayout,
+    count: u32,
+    regions: *const vk::ImageCopy,
+) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = cmd_device(cb).and_then(device_fns) else {
+            return;
+        };
+        if tracing() {
+            let r = std::slice::from_raw_parts(regions, count as usize);
+            trace_image_copy(
+                "vkCmdCopyImage",
+                cb,
+                src,
+                dst,
+                image_copy_regions(r.iter().map(|r| {
+                    (
+                        &r.src_subresource,
+                        r.src_offset,
+                        &r.dst_subresource,
+                        r.dst_offset,
+                        r.extent,
+                    )
+                })),
+            );
+        }
+        (f.cmd_copy_image)(cb, src, src_layout, dst, dst_layout, count, regions)
+    }
+}
+
+unsafe extern "system" fn cmd_copy_image2(cb: vk::CommandBuffer, info: *const vk::CopyImageInfo2) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(next) = cmd_device(cb)
+            .and_then(device_fns)
+            .and_then(|f| f.cmd_copy_image2)
+        else {
+            return;
+        };
+        if tracing() {
+            let i = &*info;
+            let r = std::slice::from_raw_parts(i.p_regions, i.region_count as usize);
+            trace_image_copy(
+                "vkCmdCopyImage2",
+                cb,
+                i.src_image,
+                i.dst_image,
+                image_copy_regions(r.iter().map(|r| {
+                    (
+                        &r.src_subresource,
+                        r.src_offset,
+                        &r.dst_subresource,
+                        r.dst_offset,
+                        r.extent,
+                    )
+                })),
+            );
+        }
+        next(cb, info)
+    }
+}
+
+fn blit_regions<'a>(
+    regions: impl Iterator<
+        Item = (
+            &'a vk::ImageSubresourceLayers,
+            [vk::Offset3D; 2],
+            &'a vk::ImageSubresourceLayers,
+            [vk::Offset3D; 2],
+        ),
+    >,
+) -> String {
+    regions
+        .map(|(s, so, d, doff)| {
+            format!(
+                "[{} {},{}-{},{} -> {} {},{}-{},{}]",
+                subresource(s),
+                so[0].x,
+                so[0].y,
+                so[1].x,
+                so[1].y,
+                subresource(d),
+                doff[0].x,
+                doff[0].y,
+                doff[1].x,
+                doff[1].y
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "system" fn cmd_blit_image(
+    cb: vk::CommandBuffer,
+    src: vk::Image,
+    src_layout: vk::ImageLayout,
+    dst: vk::Image,
+    dst_layout: vk::ImageLayout,
+    count: u32,
+    regions: *const vk::ImageBlit,
+    filter: vk::Filter,
+) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = cmd_device(cb).and_then(device_fns) else {
+            return;
+        };
+        if tracing() {
+            let r = std::slice::from_raw_parts(regions, count as usize);
+            trace_image_copy(
+                "vkCmdBlitImage",
+                cb,
+                src,
+                dst,
+                blit_regions(r.iter().map(|r| {
+                    (
+                        &r.src_subresource,
+                        r.src_offsets,
+                        &r.dst_subresource,
+                        r.dst_offsets,
+                    )
+                })),
+            );
+        }
+        (f.cmd_blit_image)(cb, src, src_layout, dst, dst_layout, count, regions, filter)
+    }
+}
+
+unsafe extern "system" fn cmd_blit_image2(cb: vk::CommandBuffer, info: *const vk::BlitImageInfo2) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(next) = cmd_device(cb)
+            .and_then(device_fns)
+            .and_then(|f| f.cmd_blit_image2)
+        else {
+            return;
+        };
+        if tracing() {
+            let i = &*info;
+            let r = std::slice::from_raw_parts(i.p_regions, i.region_count as usize);
+            trace_image_copy(
+                "vkCmdBlitImage2",
+                cb,
+                i.src_image,
+                i.dst_image,
+                blit_regions(r.iter().map(|r| {
+                    (
+                        &r.src_subresource,
+                        r.src_offsets,
+                        &r.dst_subresource,
+                        r.dst_offsets,
+                    )
+                })),
+            );
+        }
+        next(cb, info)
+    }
+}
+
+unsafe extern "system" fn cmd_copy_image_to_buffer(
+    cb: vk::CommandBuffer,
+    src: vk::Image,
+    layout: vk::ImageLayout,
+    dst: vk::Buffer,
+    count: u32,
+    regions: *const vk::BufferImageCopy,
+) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = cmd_device(cb).and_then(device_fns) else {
+            return;
+        };
+        if tracing() && emulated_image(src).is_some() {
+            trace(|| {
+                format!("vkCmdCopyImageToBuffer cb {cb:?} image {src:?} -> buffer {dst:?} ({count} regions)")
+            });
+        }
+        (f.cmd_copy_image_to_buffer)(cb, src, layout, dst, count, regions)
+    }
+}
+
+unsafe extern "system" fn cmd_copy_image_to_buffer2(
+    cb: vk::CommandBuffer,
+    info: *const vk::CopyImageToBufferInfo2,
+) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(next) = cmd_device(cb)
+            .and_then(device_fns)
+            .and_then(|f| f.cmd_copy_image_to_buffer2)
+        else {
+            return;
+        };
+        if tracing() && emulated_image((*info).src_image).is_some() {
+            trace(|| {
+                format!(
+                    "vkCmdCopyImageToBuffer2 cb {cb:?} image {:?}",
+                    (*info).src_image
+                )
+            });
+        }
+        next(cb, info)
+    }
+}
+
+unsafe extern "system" fn cmd_execute_commands(
+    cb: vk::CommandBuffer,
+    count: u32,
+    secondaries: *const vk::CommandBuffer,
+) {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = cmd_device(cb).and_then(device_fns) else {
+            return;
+        };
+        let list = std::slice::from_raw_parts(secondaries, count as usize);
+        {
+            let mut s = state();
+            let uploads: usize = list
+                .iter()
+                .filter_map(|c| s.cmd_buffers.get(c))
+                .map(|c| c.uploads.len())
+                .sum();
+            if uploads > 0 {
+                trace(|| {
+                    format!("vkCmdExecuteCommands cb {cb:?}: {count} secondaries, {uploads} ASTC uploads")
+                });
+            }
+            if let Some(c) = s.cmd_buffers.get_mut(&cb) {
+                c.secondaries.extend_from_slice(list);
+            }
+        }
+        (f.cmd_execute_commands)(cb, count, secondaries)
+    }
+}
+
+unsafe extern "system" fn create_shader_module(
+    device: vk::Device,
+    info: *const vk::ShaderModuleCreateInfo,
+    allocator: *const vk::AllocationCallbacks,
+    module: *mut vk::ShaderModule,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = device_fns(device) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        if !invariant_position() {
+            return (f.create_shader_module)(device, info, allocator, module);
+        }
+        let code = std::slice::from_raw_parts((*info).p_code, (*info).code_size / 4);
+        let Some(patched) = spirv::invariant_position(code) else {
+            return (f.create_shader_module)(device, info, allocator, module);
+        };
+        static LOGGED: OnceLock<()> = OnceLock::new();
+        LOGGED.get_or_init(|| log(2, "vertex shader positions are made invariant"));
+        let mut nv = *info;
+        nv.code_size = patched.len() * 4;
+        nv.p_code = patched.as_ptr();
+        (f.create_shader_module)(device, &nv, allocator, module)
+    }
+}
+
+/// With the trace, every 20 s: the compressed images older than 20 s that were never uploaded.
+fn report_idle_images() {
+    static LAST: OnceLock<Mutex<std::time::Instant>> = OnceLock::new();
+    let mut last = LAST
+        .get_or_init(|| Mutex::new(std::time::Instant::now()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if last.elapsed().as_secs() < 20 {
+        return;
+    }
+    *last = std::time::Instant::now();
+    let idle: Vec<String> = state()
+        .upload_counts
+        .iter()
+        .filter(|(_, c)| c.0 == 0 && c.1.elapsed().as_secs() >= 20)
+        .map(|(i, c)| format!("{i:?} {}", c.2))
+        .collect();
+    let total = state().upload_counts.len();
+    trace(|| {
+        format!(
+            "idle: {} of {total} compressed images never uploaded",
+            idle.len()
+        )
+    });
+    for line in idle.iter().take(40) {
+        trace(|| format!("idle: {line}"));
+    }
+}
+
+/// Whether vertex shader positions are made invariant (spirv.rs): `debug.nvvk.invariant_position`
+/// is 1 (read once).
+fn invariant_position() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| probe::prop_is_one(c"debug.nvvk.invariant_position"))
+}
+
+/// Logs an image bound where another image already is, when one of them is an ASTC image.
+fn trace_image_binding(
+    device: vk::Device,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    offset: u64,
+) {
+    if !tracing() {
+        return;
+    }
+    let Some(f) = device_fns(device) else { return };
+    let mut req = vk::MemoryRequirements::default();
+    // SAFETY: a live image of this device.
+    unsafe { (f.get_image_memory_requirements)(device, image, &mut req) };
+    let size = req.size;
+    let others = {
+        let mut s = state();
+        let list = s.bindings.entry(memory).or_default();
+        let others: Vec<(u64, u64, vk::Image)> = list
+            .iter()
+            .filter(|b| b.0 < offset + size && offset < b.0 + b.1)
+            .copied()
+            .collect();
+        list.push((offset, size, image));
+        others
+    };
+    let astc = |i: &vk::Image| emulated_image(*i).is_some();
+    if !others.is_empty() && (astc(&image) || others.iter().any(|o| astc(&o.2))) {
+        trace(|| {
+            let list: Vec<String> = others
+                .iter()
+                .map(|o| format!("{:?} ({}) +{} size {}", o.2, traced_format(o.2), o.0, o.1))
+                .collect();
+            format!(
+                "alias: image {image:?} ({}) at memory {memory:?}+{offset} size {size} overlaps live {}",
+                traced_format(image),
+                list.join(", ")
+            )
+        });
+    }
+}
+
+unsafe extern "system" fn bind_image_memory(
+    device: vk::Device,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    offset: vk::DeviceSize,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = device_fns(device) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        let r = (f.bind_image_memory)(device, image, memory, offset);
+        if r == vk::Result::SUCCESS {
+            trace_image_binding(device, image, memory, offset);
+        }
+        r
+    }
+}
+
+unsafe extern "system" fn bind_image_memory2(
+    device: vk::Device,
+    count: u32,
+    infos: *const vk::BindImageMemoryInfo,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(next) = device_fns(device).and_then(|f| f.bind_image_memory2) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        let r = next(device, count, infos);
+        if r == vk::Result::SUCCESS {
+            for b in std::slice::from_raw_parts(infos, count as usize) {
+                trace_image_binding(device, b.image, b.memory, b.memory_offset);
+            }
+        }
+        r
+    }
+}
+
 unsafe extern "system" fn queue_submit(
     queue: vk::Queue,
     count: u32,
@@ -1340,8 +2237,34 @@ unsafe extern "system" fn queue_submit(
         let Some(f) = device_fns(device) else {
             return vk::Result::ERROR_DEVICE_LOST;
         };
+        if tracing() {
+            report_idle_images();
+        }
         timed("ASTC decode at vkQueueSubmit", || {
             for s in std::slice::from_raw_parts(submits, count as usize) {
+                if tracing() && s.command_buffer_count > 0 {
+                    let cbs = std::slice::from_raw_parts(
+                        s.p_command_buffers,
+                        s.command_buffer_count as usize,
+                    );
+                    let uploads: usize = {
+                        let st = state();
+                        cbs.iter()
+                            .filter_map(|c| st.cmd_buffers.get(c))
+                            .map(|c| c.uploads.len())
+                            .sum()
+                    };
+                    if uploads > 0 {
+                        trace(|| {
+                            format!(
+                                "submit: {uploads} uploads in {} command buffers, {} wait semaphores, thread {:?}",
+                                cbs.len(),
+                                s.wait_semaphore_count,
+                                std::thread::current().id()
+                            )
+                        });
+                    }
+                }
                 if s.command_buffer_count > 0 {
                     run_uploads(
                         device,
@@ -1501,6 +2424,20 @@ pub unsafe extern "C" fn nvvk_astc_proc(name: *const c_char) -> *const c_void {
         "vkCmdCopyBufferToImage" => cmd_copy_buffer_to_image as vk::PFN_vkCmdCopyBufferToImage,
         "vkCmdCopyBufferToImage2" => cmd_copy_buffer_to_image2 as vk::PFN_vkCmdCopyBufferToImage2,
         "vkCmdCopyBufferToImage2KHR" => cmd_copy_buffer_to_image2 as vk::PFN_vkCmdCopyBufferToImage2,
+        "vkCmdCopyImage" => cmd_copy_image as vk::PFN_vkCmdCopyImage,
+        "vkCmdCopyImage2" => cmd_copy_image2 as vk::PFN_vkCmdCopyImage2,
+        "vkCmdCopyImage2KHR" => cmd_copy_image2 as vk::PFN_vkCmdCopyImage2,
+        "vkCmdBlitImage" => cmd_blit_image as vk::PFN_vkCmdBlitImage,
+        "vkCmdBlitImage2" => cmd_blit_image2 as vk::PFN_vkCmdBlitImage2,
+        "vkCmdBlitImage2KHR" => cmd_blit_image2 as vk::PFN_vkCmdBlitImage2,
+        "vkCmdCopyImageToBuffer" => cmd_copy_image_to_buffer as vk::PFN_vkCmdCopyImageToBuffer,
+        "vkCmdCopyImageToBuffer2" => cmd_copy_image_to_buffer2 as vk::PFN_vkCmdCopyImageToBuffer2,
+        "vkCmdCopyImageToBuffer2KHR" => cmd_copy_image_to_buffer2 as vk::PFN_vkCmdCopyImageToBuffer2,
+        "vkCmdExecuteCommands" => cmd_execute_commands as vk::PFN_vkCmdExecuteCommands,
+        "vkCreateShaderModule" => create_shader_module as vk::PFN_vkCreateShaderModule,
+        "vkBindImageMemory" => bind_image_memory as vk::PFN_vkBindImageMemory,
+        "vkBindImageMemory2" => bind_image_memory2 as vk::PFN_vkBindImageMemory2,
+        "vkBindImageMemory2KHR" => bind_image_memory2 as vk::PFN_vkBindImageMemory2,
         "vkQueueSubmit" => queue_submit as vk::PFN_vkQueueSubmit,
         "vkQueueSubmit2" => queue_submit2 as vk::PFN_vkQueueSubmit2,
         "vkQueueSubmit2KHR" => queue_submit2 as vk::PFN_vkQueueSubmit2,

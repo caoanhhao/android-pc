@@ -445,7 +445,41 @@ kept in the HAL: any `vkWaitForFences`, `vkWaitSemaphores`, `vkQueueWaitIdle`,
 `setprop debug.nvvk.stats 1` (`astc/probe.rs`) each process logs every 2 s how often it called the
 entry points an app polls or blocks in (fence/event/query/semaphore status, acquire/release,
 submit), their time and their `VK_NOT_READY`/`VK_TIMEOUT` answers. Some red/iridescent speckles
-on the ground remain (not traced yet).
+on the ground remain: traced below (*ETC2/EAC and the striped ponds*).
+
+**ETC2/EAC and the striped ponds (2026-11-18, Waydroid on the host's RTX 4070).** The
+"ground" with wavy red/white and cyan stripes and black blocks is the courtyard's ponds, and the
+stripes are rain ripples: concentric rings aliased to moiré, in rectangular patches, drawn by
+the water shader (`sWaveSampler`, `sWaterMapTextureArraySampler`, `sGlobalWaterMap`); without
+rain the ponds render near black (RGB ~12,14,18). Not a texture-decoding bug:
+
+- `debug.nvvk.astc_dump 1` writes the first 4000 decoded regions to `/data/local/tmp/nvvk`
+  (header, the app's blocks, our texels); all 3990 ASTC regions of a world load decode the same
+  as ARM's astcenc (ANGLE's `third_party/astc-encoder`, LDR, UNORM8) to within 1 per channel;
+  astc-decode also matches astcenc on 168 astcenc-encoded images in all 14 footprints.
+- `debug.nvvk.astc_trace 1` logs every upload, view, copy, blit, secondary command buffer and
+  memory alias of a compressed image, the uploads' memory types, blocks that change after
+  `vkQueueSubmit` (`late:`) and images never uploaded (`idle:`): all uploads come from mapped
+  `HOST_VISIBLE | HOST_COHERENT` buffers, recorded on the render thread and submitted with the
+  frame; no block changes after the submit, no image copy, blit, readback or live alias touches
+  a compressed image, and every one is uploaded. The terrain is virtual-textured
+  (`sVTPhysicsMap0/1Sampler`): 128x128 ASTC 8x8 arrays of 79 layers, 5 mips, a layer per page.
+- The game's 3 depth `EQUAL` pipelines are its TAA motion vectors. Positions made invariant
+  in every vertex shader (`hals/nvgpu/vulkan/astc/spirv.rs`, `debug.nvvk.invariant_position 1`)
+  or `EQUAL` turned into `GREATER_OR_EQUAL` with a bias did not remove the rain stripes; the
+  first stays as an opt-in experiment.
+
+Found and fixed on the way (`hals/nvgpu/vulkan/astc/lib.rs`, `etc.rs`):
+
+| Symptom | Cause | Change |
+|---|---|---|
+| garbage in the game's ETC2/EAC maps (a few HUD icons were flat purple/blue squares before, not seen since) | the game creates `EAC_R11_UNORM_BLOCK` (1024x1024, 4 layers and 1) and `ETC2_R8G8B8_UNORM_BLOCK` (1024x1024, 3 layers) images although NVIDIA reports `textureCompressionETC2 = VK_FALSE`; NVIDIA creates them and samples garbage | ETC2 RGB8/RGB8A1/RGBA8 and EAC R11/RG11 (UNORM, SNORM, sRGB) emulated like ASTC: R8G8B8A8 (UNORM/SRGB) or R16(G16) UNORM/SNORM images, decoded on the CPU at submit (`etc.rs`, Khronos Data Format spec; identical to ANGLE's decoder on random blocks of every ETC2 mode, EAC within the 11-to-16-bit widening, where ANGLE adds +4 to signed values against the spec); `textureCompressionETC2` reported, cleared before NVIDIA's `vkCreateDevice` |
+| uploads recorded in a secondary command buffer never decoded (the copy read uninitialised staging memory) | `vkQueueSubmit` decoded only the primary command buffers' uploads | `vkCmdExecuteCommands` records the secondaries; their uploads are decoded with the primary's |
+
+`tools/nvgpu-hosttest.sh` runs the Rust unit tests and uploads ASTC (void-extent), ETC2 and EAC
+textures with a buffer offset, rows longer than the image and an image offset, from a secondary
+command buffer, and reads them back. Open: the water shader's rain ripples and dark ponds on
+NVIDIA.
 
 The game process in the world on Vulkan (`grep -i -E 'vulkan|gles|egl|angle' /proc/<pid>/maps`,
 S26 identity, 8 vCPUs):

@@ -54,15 +54,18 @@ extern "C" {
     fn __system_property_get(name: *const c_char, value: *mut c_char) -> c_int;
 }
 
+/// Whether the system property `name` is "1".
+pub(crate) fn prop_is_one(name: &std::ffi::CStr) -> bool {
+    let mut value = [0 as c_char; 92]; // PROP_VALUE_MAX
+                                       // SAFETY: a NUL-terminated name and a PROP_VALUE_MAX buffer, as bionic requires.
+    let n = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    n == 1 && value[0] == b'1' as c_char
+}
+
 /// Whether `debug.nvvk.stats` is 1 (read once per process).
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        let mut value = [0 as c_char; 92]; // PROP_VALUE_MAX
-                                           // SAFETY: a NUL-terminated name and a PROP_VALUE_MAX buffer, as bionic requires.
-        let n = unsafe { __system_property_get(c"debug.nvvk.stats".as_ptr(), value.as_mut_ptr()) };
-        n == 1 && value[0] == b'1' as c_char
-    })
+    *ENABLED.get_or_init(|| prop_is_one(c"debug.nvvk.stats"))
 }
 
 /// Counts one call that started at `start` and returned `r`, and logs the totals every 2 s.

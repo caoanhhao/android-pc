@@ -814,6 +814,99 @@ void TestBlob() {
     printf("ok   blob AHB 64 KiB as VkBuffer: CPU writes seen by the GPU\n");
 }
 
+// A compressed format NVIDIA lacks (ASTC, ETC2, EAC), emulated by astc/lib.rs: one block value
+// everywhere, then another one in a 4x4 sub-rectangle, uploaded as a game streams textures
+// (buffer offset, rows longer than the image, image offset) from a secondary command buffer;
+// read back from the emulated image and checked texel by texel.
+void TestCompressed(const char* name, VkFormat format, VkFormat emulated, uint32_t texel_bytes,
+                    std::vector<uint8_t> block, std::vector<uint8_t> want,
+                    std::vector<uint8_t> block2, std::vector<uint8_t> want2) {
+    if (!Selected(name))
+        return;
+    const uint32_t w = 12, h = 8, bs = block.size();  // 4x4 blocks: 3 x 2 of them
+    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, nullptr, 0, VK_IMAGE_TYPE_2D,
+                             format, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+                             VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                             VK_SHARING_MODE_EXCLUSIVE, 0, nullptr, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage image;
+    VK(DFN(CreateImage)(vk.device, &ici, nullptr, &image));
+    VkMemoryRequirements req;
+    DFN(GetImageMemoryRequirements)(vk.device, image, &req);
+    CHECK(req.size >= (VkDeviceSize)w * h * texel_bytes, "%s: %llu bytes for the emulated image",
+          name, (unsigned long long)req.size);
+    uint32_t type = 0;
+    while (!(req.memoryTypeBits >> type & 1))
+        type++;
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, type};
+    VkDeviceMemory memory;
+    VK(DFN(AllocateMemory)(vk.device, &mai, nullptr, &memory));
+    VK(DFN(BindImageMemory)(vk.device, image, memory, 0));
+
+    // rows of 4 blocks (bufferRowLength 16) after 256 bytes of junk; the 4th block of a row is
+    // junk too, as is the block after the sub-rectangle's one
+    Staging up;
+    up.Init(256 + 8 * bs + 2 * bs);
+    memset(up.data, 0xa5, 256 + 10 * bs);
+    for (uint32_t by = 0; by < 2; by++)
+        for (uint32_t bx = 0; bx < 3; bx++)
+            memcpy(up.data + 256 + (by * 4 + bx) * bs, block.data(), bs);
+    memcpy(up.data + 256 + 8 * bs, block2.data(), bs);
+
+    VkCommandBuffer secondary;
+    VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
+                                       vk.pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY, 1};
+    VK(DFN(AllocateCommandBuffers)(vk.device, &cai, &secondary));
+    VkCommandBufferInheritanceInfo inh = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, 0, &inh};
+    VK(DFN(BeginCommandBuffer)(secondary, &bi));
+    Barrier(secondary, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+    VkBufferImageCopy regions[2] = {
+        {256, 16, 8, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}},
+        {256 + 8 * bs, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {4, 4, 0}, {4, 4, 1}},
+    };
+    DFN(CmdCopyBufferToImage)(secondary, up.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                              &regions[0]);
+    Barrier(secondary, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+    DFN(CmdCopyBufferToImage)(secondary, up.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                              &regions[1]);
+    VK(DFN(EndCommandBuffer)(secondary));
+
+    // the emulated image read back in its own format's texels
+    Staging down;
+    down.Init((VkDeviceSize)w * h * texel_bytes);
+    Submit([&](VkCommandBuffer cb) {
+        DFN(CmdExecuteCommands)(cb, 1, &secondary);
+        Barrier(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED);
+        VkBufferImageCopy r = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
+        DFN(CmdCopyImageToBuffer)(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, down.buffer, 1,
+                                  &r);
+    });
+    int bad = 0;
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            const bool sub = x >= 4 && x < 8 && y >= 4;
+            const uint8_t* got = down.data + (y * w + x) * texel_bytes;
+            const std::vector<uint8_t>& exp = sub ? want2 : want;
+            if (memcmp(got, exp.data(), texel_bytes) && bad++ < 3)
+                printf("  %s (%u,%u): %02x%02x%02x%02x want %02x%02x%02x%02x\n", name, x, y,
+                       got[0], got[1], texel_bytes > 2 ? got[2] : 0, texel_bytes > 3 ? got[3] : 0,
+                       exp[0], exp[1], texel_bytes > 2 ? exp[2] : 0, texel_bytes > 3 ? exp[3] : 0);
+        }
+    DFN(FreeCommandBuffers)(vk.device, vk.pool, 1, &secondary);
+    DFN(DestroyImage)(vk.device, image, nullptr);
+    DFN(FreeMemory)(vk.device, memory, nullptr);
+    printf("%s compressed %s (as %d): %d bad texels\n", bad ? "FAIL" : "ok  ", name, emulated,
+           bad);
+    if (bad)
+        g_failures++;
+}
+
 }  // namespace
 
 int main() {
@@ -864,6 +957,21 @@ int main() {
     TestGpuToCpu(1, 300, 200, kGpuFb | kGpuSampled, "RGBA8888 (video memory)");
     TestGpuToCpu(0x23, 640, 360, kCpuReadOften | kGpuSampled, "NV12");
     TestGpuToCpu(0x32315659, 320, 240, kCpuReadOften | kGpuSampled, "YV12");
+    // compressed formats NVIDIA lacks: an ASTC void-extent (constant color) block, ETC2
+    // individual-mode blocks, EAC blocks (Where Winds Meet, Phase L4)
+    TestCompressed("ASTC_4x4", VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, 4,
+                   {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x80, 0x00, 0x40, 0x00,
+                    0xc0, 0xff, 0xff},
+                   {0x80, 0x40, 0xc0, 0xff},
+                   {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x10, 0x00, 0x20, 0x00,
+                    0x30, 0x00, 0x80},
+                   {0x10, 0x20, 0x30, 0x80});
+    TestCompressed("ETC2_RGB8", VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, 4,
+                   {0x88, 0x88, 0x88, 0, 0, 0, 0, 0}, {0x8a, 0x8a, 0x8a, 0xff},
+                   {0x44, 0x44, 0x44, 0, 0, 0, 0, 0}, {0x46, 0x46, 0x46, 0xff});
+    TestCompressed("EAC_R11", VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 2,
+                   {0x80, 0, 0, 0, 0, 0, 0, 0}, {0x30, 0x80},
+                   {0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, {0xff, 0xff});
 
     printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;

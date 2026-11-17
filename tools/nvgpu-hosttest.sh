@@ -45,7 +45,9 @@ done
 # The ASTC emulation (libnvvk_astc in Android.bp): built with the host rustc from the same
 # sources Soong uses (AOSP's ash crate with only its "debug" feature: lib.rs loads no library
 # itself, and third_party/astc-decode), through tools/limited-build.sh. Linked in so the HAL's
-# vkGet*ProcAddr goes through it as on the device; the test itself uploads no ASTC texture.
+# vkGet*ProcAddr goes through it as on the device (TestCompressed uploads ASTC, ETC2 and EAC
+# textures through it); its own unit tests (ETC2/EAC decoding, the SPIR-V invariant patch) run
+# first.
 ash=$A/external/rust/android-crates-io/crates/ash
 rs=(rustc -O -C debuginfo=1 --out-dir "$OUT")
 "$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2021 --crate-type rlib --crate-name ash \
@@ -55,6 +57,11 @@ rs=(rustc -O -C debuginfo=1 --out-dir "$OUT")
 "$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2021 --crate-type staticlib --crate-name nvvk_astc \
     --extern ash="$OUT/libash.rlib" --extern astc_decode="$OUT/libastc_decode.rlib" \
     "$N/vulkan/astc/lib.rs"
+
+"$ROOT/tools/limited-build.sh" "${rs[@]}" --edition 2021 --test --crate-name nvvk_astc_test \
+    --extern ash="$OUT/libash.rlib" --extern astc_decode="$OUT/libastc_decode.rlib" \
+    "$N/vulkan/astc/lib.rs"
+"${pin[@]}" "$OUT/nvvk_astc_test" -q
 
 for f in vulkan/nvvk_hal.cpp vulkan/nvvk_wsi.cpp vulkan/nvvk_buffer.cpp hosttest/nvvk_hosttest.cpp; do
     o=$OUT/$(basename "${f%.cpp}").o

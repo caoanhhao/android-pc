@@ -421,13 +421,14 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical,
     std::vector<VkDeviceQueueCreateInfo> queues;
     std::vector<VkDeviceQueueGlobalPriorityCreateInfoKHR> prios;
     ClampQueuePriorities(&nv, queues, prios);
-    // textureCompressionASTC_LDR is the ASTC emulation's (astc/lib.rs), not NVIDIA's: never ask
-    // the driver for it. The VkPhysicalDeviceFeatures2 in the chain is the app's and const, so it
-    // is cleared for the call and put back.
+    // textureCompressionASTC_LDR and textureCompressionETC2 are the emulation's (astc/lib.rs),
+    // not NVIDIA's: never ask the driver for them. The VkPhysicalDeviceFeatures2 in the chain is
+    // the app's and const, so it is cleared for the call and put back.
     VkPhysicalDeviceFeatures features;
     if (info->pEnabledFeatures) {
         features = *info->pEnabledFeatures;
         features.textureCompressionASTC_LDR = VK_FALSE;
+        features.textureCompressionETC2 = VK_FALSE;
         nv.pEnabledFeatures = &features;
     }
     VkPhysicalDeviceFeatures2* features2 = nullptr;
@@ -436,12 +437,17 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical,
             features2 = const_cast<VkPhysicalDeviceFeatures2*>(
                 reinterpret_cast<const VkPhysicalDeviceFeatures2*>(s));
     const VkBool32 astc = features2 ? features2->features.textureCompressionASTC_LDR : VK_FALSE;
-    if (features2)
+    const VkBool32 etc2 = features2 ? features2->features.textureCompressionETC2 : VK_FALSE;
+    if (features2) {
         features2->features.textureCompressionASTC_LDR = VK_FALSE;
+        features2->features.textureCompressionETC2 = VK_FALSE;
+    }
 
     VkResult result = g_inst.CreateDevice(physical, &nv, allocator, out);
-    if (features2)
+    if (features2) {
         features2->features.textureCompressionASTC_LDR = astc;
+        features2->features.textureCompressionETC2 = etc2;
+    }
     if (result != VK_SUCCESS) {
         NVVK_LOGE("NVIDIA vkCreateDevice failed: %d", result);
         for (const char* name : names)
