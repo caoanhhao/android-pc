@@ -9,6 +9,9 @@
 //! NVIDIA has neither. The driver gets an uncompressed image in place of every such image
 //! (R8G8B8A8 UNORM or SRGB; R16(G16) UNORM/SNORM for EAC R11(G11)), and the texels are decoded
 //! on the CPU: ASTC with the astc-decode crate (third_party/astc-decode), ETC2/EAC in etc.rs.
+//! The same way, B4G4R4A4/R4G4B4A4 and B5G6R5, which NVIDIA cannot render to (WWM renders its
+//! terrain pages into them), become R8G8B8A8 and R5G6B5 images with every feature of those,
+//! render passes and dynamic-rendering formats included.
 //! - `vkGetPhysicalDeviceFeatures*`: `textureCompressionASTC_LDR` and `textureCompressionETC2`
 //!   are true;
 //! - `vkGetPhysicalDevice*FormatProperties*`: a compressed format has what its emulated format
@@ -29,12 +32,15 @@
 //! invariant (spirv.rs, an experiment).
 //!
 //! Debugging: `debug.nvvk.astc_trace` 1 logs every upload, view, copy and memory alias of a
-//! compressed image (`ASTC trace: ...`), `debug.nvvk.astc_dump` 1 writes decoded regions for a
-//! comparison with a reference decoder (`dump()`).
+//! compressed image and images the driver does not support (`ASTC trace: ...`),
+//! `debug.nvvk.astc_dump` 1 writes decoded regions for a comparison with a reference decoder
+//! (`dump()`), `debug.nvvk.astc_tint` 1|2 tints or flattens decoded texels, and
+//! `debug.nvvk.trace_shader` names a shader whose draws are traced (descriptors.rs).
 //!
 //! The C++ HAL (nvvk_hal.cpp) asks `nvvk_astc_proc` first in its vkGet*ProcAddr; the functions
 //! here call the HAL's own entry points (or NVIDIA's) below them through `nvvk_next_*_proc`.
 
+mod descriptors;
 mod etc;
 mod probe;
 mod spirv;
@@ -58,6 +64,8 @@ extern "C" {
         device: vk::Device,
         props: *mut vk::PhysicalDeviceMemoryProperties,
     ) -> bool;
+    /// The physical device of a device the HAL has seen, or null.
+    fn nvvk_device_physical(device: vk::Device) -> vk::PhysicalDevice;
     /// 0 error, 1 warning, 2 info.
     fn nvvk_log(level: i32, msg: *const c_char);
 }
@@ -81,6 +89,19 @@ fn decode_block(c: Compressed, block: &[u8], mut put: impl FnMut(usize, usize, &
     };
     let half = |b: &[u8]| -> [u8; 8] { b.try_into().unwrap() };
     match c.codec {
+        Codec::Rgba4 { bgra } => {
+            let v = u16::from_le_bytes([block[0], block[1]]);
+            let n = |shift: u16| (((v >> shift) & 15) * 17) as u8;
+            let (r, b) = if bgra { (n(4), n(12)) } else { (n(12), n(4)) };
+            put(0, 0, &[r, n(8), b, n(0)]);
+            true
+        }
+        Codec::Bgr565 => {
+            let v = u16::from_le_bytes([block[0], block[1]]);
+            let swapped = (v & 0x1f) << 11 | (v & 0x07e0) | v >> 11;
+            put(0, 0, &swapped.to_le_bytes());
+            true
+        }
         Codec::Astc => {
             let footprint = astc_decode::Footprint::new(c.bw, c.bh);
             astc_decode::astc_decode_block(block.try_into().unwrap(), footprint, |x, y, color| {
@@ -189,8 +210,28 @@ enum Codec {
     Etc2Rgb,
     Etc2RgbA1,
     Etc2Rgba,
-    EacR11 { signed: bool },
-    EacRg11 { signed: bool },
+    EacR11 {
+        signed: bool,
+    },
+    EacRg11 {
+        signed: bool,
+    },
+    /// 16-bit RGBA 4:4:4:4 (B4G4R4A4 with `bgra`, else R4G4B4A4) as R8G8B8A8: NVIDIA cannot
+    /// render to any 4444 format.
+    Rgba4 {
+        bgra: bool,
+    },
+    /// B5G6R5 as R5G6B5 (the same bits with red and blue swapped): NVIDIA renders only to the
+    /// latter.
+    Bgr565,
+}
+
+impl Codec {
+    /// An uncompressed format NVIDIA cannot render to: emulated with every feature of its
+    /// stand-in, not only sampling and transfers.
+    fn renderable(self) -> bool {
+        matches!(self, Codec::Rgba4 { .. } | Codec::Bgr565)
+    }
 }
 
 /// A compressed format the driver lacks: ASTC LDR, ETC2 or EAC.
@@ -205,6 +246,7 @@ struct Compressed {
 impl Compressed {
     fn block_bytes(&self) -> usize {
         match self.codec {
+            Codec::Rgba4 { .. } | Codec::Bgr565 => 2,
             Codec::Etc2Rgb | Codec::Etc2RgbA1 | Codec::EacR11 { .. } => 8,
             _ => 16,
         }
@@ -213,7 +255,7 @@ impl Compressed {
     /// The bytes of a texel of the emulated format.
     fn texel_bytes(&self) -> usize {
         match self.codec {
-            Codec::EacR11 { .. } => 2,
+            Codec::EacR11 { .. } | Codec::Bgr565 => 2,
             _ => 4,
         }
     }
@@ -238,6 +280,14 @@ const BLOCKS: [(u32, u32); 14] = [
 ];
 
 fn compressed_of(format: vk::Format) -> Option<Compressed> {
+    let texel = |codec| {
+        Some(Compressed {
+            codec,
+            bw: 1,
+            bh: 1,
+            srgb: false,
+        })
+    };
     let etc = |codec, srgb| {
         Some(Compressed {
             codec,
@@ -257,6 +307,9 @@ fn compressed_of(format: vk::Format) -> Option<Compressed> {
         vk::Format::EAC_R11_SNORM_BLOCK => return etc(Codec::EacR11 { signed: true }, false),
         vk::Format::EAC_R11G11_UNORM_BLOCK => return etc(Codec::EacRg11 { signed: false }, false),
         vk::Format::EAC_R11G11_SNORM_BLOCK => return etc(Codec::EacRg11 { signed: true }, false),
+        vk::Format::B4G4R4A4_UNORM_PACK16 => return texel(Codec::Rgba4 { bgra: true }),
+        vk::Format::R4G4B4A4_UNORM_PACK16 => return texel(Codec::Rgba4 { bgra: false }),
+        vk::Format::B5G6R5_UNORM_PACK16 => return texel(Codec::Bgr565),
         _ => {}
     }
     let first = vk::Format::ASTC_4X4_UNORM_BLOCK.as_raw();
@@ -285,6 +338,7 @@ fn emulated(format: vk::Format) -> vk::Format {
         Codec::EacR11 { signed: true } => vk::Format::R16_SNORM,
         Codec::EacRg11 { signed: false } => vk::Format::R16G16_UNORM,
         Codec::EacRg11 { signed: true } => vk::Format::R16G16_SNORM,
+        Codec::Bgr565 => vk::Format::R5G6B5_UNORM_PACK16,
         _ if c.srgb => vk::Format::R8G8B8A8_SRGB,
         _ => vk::Format::R8G8B8A8_UNORM,
     }
@@ -307,10 +361,18 @@ const ASTC_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
         | vk::ImageUsageFlags::TRANSFER_DST.as_raw(),
 );
 
-fn mask_format_properties(props: &mut vk::FormatProperties) {
+fn mask_format_properties(c: Compressed, props: &mut vk::FormatProperties) {
     props.linear_tiling_features = vk::FormatFeatureFlags::empty();
-    props.optimal_tiling_features &= ASTC_FEATURES;
+    if !c.codec.renderable() {
+        props.optimal_tiling_features &= ASTC_FEATURES;
+    }
     props.buffer_features = vk::FormatFeatureFlags::empty();
+}
+
+/// Whether an image of a compressed format may have `usage` in `tiling` (optimal only; sampling
+/// and transfers, or anything its stand-in can do for the renderable ones).
+fn usable(c: Compressed, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags) -> bool {
+    tiling == vk::ImageTiling::OPTIMAL && (c.codec.renderable() || ASTC_USAGE.contains(usage))
 }
 
 // ---- the functions below this module ----
@@ -359,6 +421,10 @@ struct DeviceFns {
     cmd_copy_image_to_buffer2: Option<vk::PFN_vkCmdCopyImageToBuffer2>,
     cmd_execute_commands: vk::PFN_vkCmdExecuteCommands,
     create_shader_module: vk::PFN_vkCreateShaderModule,
+    create_graphics_pipelines: vk::PFN_vkCreateGraphicsPipelines,
+    create_render_pass: vk::PFN_vkCreateRenderPass,
+    create_render_pass2: Option<vk::PFN_vkCreateRenderPass2>,
+    create_buffer_view: vk::PFN_vkCreateBufferView,
     bind_image_memory: vk::PFN_vkBindImageMemory,
     get_image_memory_requirements: vk::PFN_vkGetImageMemoryRequirements,
     bind_image_memory2: Option<vk::PFN_vkBindImageMemory2>,
@@ -460,6 +526,10 @@ impl DeviceFns {
             ),
             cmd_execute_commands: req!("vkCmdExecuteCommands"),
             create_shader_module: req!("vkCreateShaderModule"),
+            create_graphics_pipelines: req!("vkCreateGraphicsPipelines"),
+            create_render_pass: req!("vkCreateRenderPass"),
+            create_render_pass2: opt!("vkCreateRenderPass2", "vkCreateRenderPass2KHR"),
+            create_buffer_view: req!("vkCreateBufferView"),
             bind_image_memory: req!("vkBindImageMemory"),
             get_image_memory_requirements: req!("vkGetImageMemoryRequirements"),
             bind_image_memory2: opt!("vkBindImageMemory2", "vkBindImageMemory2KHR"),
@@ -487,6 +557,7 @@ struct Region {
     h: u32,
     layers: u32,
     dst_offset: u64,
+    mip: u32,
 }
 
 #[derive(Clone)]
@@ -643,15 +714,34 @@ fn find_memory_type(f: &DeviceFns, bits: u32, want: vk::MemoryPropertyFlags) -> 
     })
 }
 
+/// A host-visible, coherent, mapped transfer destination of `size` bytes (trace readbacks).
+fn create_staging_dst(
+    device: vk::Device,
+    f: &DeviceFns,
+    size: u64,
+) -> Option<(vk::Buffer, vk::DeviceMemory, usize)> {
+    create_staging_usage(device, f, size, vk::BufferUsageFlags::TRANSFER_DST)
+}
+
 /// A host-visible, coherent, mapped transfer source of `size` bytes.
 fn create_staging(
     device: vk::Device,
     f: &DeviceFns,
     size: u64,
 ) -> Option<(vk::Buffer, vk::DeviceMemory, usize)> {
+    create_staging_usage(device, f, size, vk::BufferUsageFlags::TRANSFER_SRC)
+}
+
+/// A host-visible, coherent, mapped buffer of `size` bytes for `usage`.
+fn create_staging_usage(
+    device: vk::Device,
+    f: &DeviceFns,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+) -> Option<(vk::Buffer, vk::DeviceMemory, usize)> {
     let info = vk::BufferCreateInfo {
         size,
-        usage: vk::BufferUsageFlags::TRANSFER_SRC,
+        usage,
         sharing_mode: vk::SharingMode::EXCLUSIVE,
         ..Default::default()
     };
@@ -769,6 +859,7 @@ fn record_upload(
             h: r.image_extent.height,
             layers: r.image_subresource.layer_count * r.image_extent.depth.max(1),
             dst_offset: size,
+            mip: r.image_subresource.mip_level,
         };
         size += u64::from(region.w)
             * u64::from(region.h)
@@ -928,6 +1019,29 @@ fn run_uploads(device: vk::Device, cbs: &[vk::CommandBuffer]) {
                             &format!("ASTC: decode of a {}x{} texture failed", r.w, r.h),
                         );
                     }
+                    if tint() != 0 && texel == 4 {
+                        // SAFETY: as for the decode above.
+                        let out =
+                            unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, out_len) };
+                        const COLORS: [[u8; 3]; 6] = [
+                            [255, 0, 0],
+                            [0, 255, 0],
+                            [0, 0, 255],
+                            [255, 255, 0],
+                            [255, 0, 255],
+                            [0, 255, 255],
+                        ];
+                        let c = COLORS[r.mip as usize % 6];
+                        for t in out.chunks_exact_mut(4) {
+                            if tint() == 1 {
+                                for k in 0..3 {
+                                    t[k] = ((u16::from(t[k]) + u16::from(c[k])) / 2) as u8;
+                                }
+                            } else {
+                                t.copy_from_slice(&[128, 128, 255, 255]);
+                            }
+                        }
+                    }
                     // SAFETY: as for the decode above.
                     unsafe {
                         dump(
@@ -986,6 +1100,60 @@ fn trace(msg: impl FnOnce() -> String) {
     }
 }
 
+/// Logs, once per format/usage/tiling/flags, an image the driver does not support with what the
+/// app asks (NVIDIA lacks formats phones have, and creates some of them anyway).
+fn trace_unsupported(device: vk::Device, i: &vk::ImageCreateInfo, result: vk::Result) {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<(i32, u32, i32, u32)>>> = OnceLock::new();
+    let key = (
+        i.format.as_raw(),
+        i.usage.as_raw(),
+        i.tiling.as_raw(),
+        i.flags.as_raw(),
+    );
+    if !SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key)
+    {
+        return;
+    }
+    let mut props = vk::ImageFormatProperties::default();
+    // SAFETY: a device the HAL has seen, and valid arguments from the app's create info.
+    let r = unsafe {
+        let physical = nvvk_device_physical(device);
+        next_instance!(
+            "vkGetPhysicalDeviceImageFormatProperties",
+            vk::PFN_vkGetPhysicalDeviceImageFormatProperties
+        )(
+            physical,
+            i.format,
+            i.image_type,
+            i.tiling,
+            i.usage,
+            i.flags,
+            &mut props,
+        )
+    };
+    let mut fp = vk::FormatProperties::default();
+    // SAFETY: as above.
+    unsafe {
+        next_instance!(
+            "vkGetPhysicalDeviceFormatProperties",
+            vk::PFN_vkGetPhysicalDeviceFormatProperties
+        )(nvvk_device_physical(device), i.format, &mut fp)
+    };
+    if r != vk::Result::SUCCESS {
+        trace(|| {
+            format!(
+                "unsupported: {:?} {:?} usage {:?} flags {:?} ({}x{}): {r:?}, vkCreateImage {result:?}, optimal features {:?}",
+                i.format, i.tiling, i.usage, i.flags, i.extent.width, i.extent.height,
+                fp.optimal_tiling_features
+            )
+        });
+    }
+}
+
 /// The format of an image for the trace: "ASTC_6x6_SRGB", or the app's VkFormat.
 fn traced_format(image: vk::Image) -> String {
     let s = state();
@@ -1040,6 +1208,8 @@ fn dump(c: Compressed, r: &Region, blocks: &[u8], decoded: &[u8]) {
         Codec::Etc2Rgba => 3,
         Codec::EacR11 { .. } => 4,
         Codec::EacRg11 { .. } => 5,
+        Codec::Rgba4 { .. } => 6,
+        Codec::Bgr565 => 7,
     };
     let mut out = Vec::with_capacity(24 + blocks.len() + decoded.len());
     for v in [codec, c.bw, c.bh, r.w, r.h, r.row_blocks] {
@@ -1109,8 +1279,8 @@ unsafe extern "system" fn get_physical_device_format_properties(
             "vkGetPhysicalDeviceFormatProperties",
             vk::PFN_vkGetPhysicalDeviceFormatProperties
         )(physical, emulated(format), props);
-        if compressed_of(format).is_some() {
-            mask_format_properties(&mut *props);
+        if let Some(c) = compressed_of(format) {
+            mask_format_properties(c, &mut *props);
         }
     }
 }
@@ -1127,17 +1297,19 @@ unsafe extern "system" fn get_physical_device_format_properties2(
             "vkGetPhysicalDeviceFormatProperties2",
             vk::PFN_vkGetPhysicalDeviceFormatProperties2
         )(physical, emulated(format), props);
-        if compressed_of(format).is_none() {
+        let Some(c) = compressed_of(format) else {
             return;
-        }
-        mask_format_properties(&mut (*props).format_properties);
+        };
+        mask_format_properties(c, &mut (*props).format_properties);
         let mut s = (*props).p_next as *mut vk::BaseOutStructure;
         while !s.is_null() {
             if (*s).s_type == vk::StructureType::FORMAT_PROPERTIES_3 {
                 let p3 = &mut *(s as *mut vk::FormatProperties3);
                 p3.linear_tiling_features = vk::FormatFeatureFlags2::empty();
-                p3.optimal_tiling_features &=
-                    vk::FormatFeatureFlags2::from_raw(u64::from(ASTC_FEATURES.as_raw()));
+                if !c.codec.renderable() {
+                    p3.optimal_tiling_features &=
+                        vk::FormatFeatureFlags2::from_raw(u64::from(ASTC_FEATURES.as_raw()));
+                }
                 p3.buffer_features = vk::FormatFeatureFlags2::empty();
             }
             s = (*s).p_next;
@@ -1157,9 +1329,7 @@ unsafe extern "system" fn get_physical_device_image_format_properties(
     // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
     // and pointers), which is what every operation below relies on.
     unsafe {
-        if compressed_of(format).is_some()
-            && (tiling != vk::ImageTiling::OPTIMAL || !ASTC_USAGE.contains(usage))
-        {
+        if compressed_of(format).is_some_and(|c| !usable(c, tiling, usage)) {
             return vk::Result::ERROR_FORMAT_NOT_SUPPORTED;
         }
         next_instance!(
@@ -1189,10 +1359,10 @@ unsafe extern "system" fn get_physical_device_image_format_properties2(
             "vkGetPhysicalDeviceImageFormatProperties2",
             vk::PFN_vkGetPhysicalDeviceImageFormatProperties2
         );
-        if compressed_of((*info).format).is_none() {
+        let Some(c) = compressed_of((*info).format) else {
             return next(physical, info, props);
-        }
-        if (*info).tiling != vk::ImageTiling::OPTIMAL || !ASTC_USAGE.contains((*info).usage) {
+        };
+        if !usable(c, (*info).tiling, (*info).usage) {
             return vk::Result::ERROR_FORMAT_NOT_SUPPORTED;
         }
         let mut nv = *info;
@@ -1288,6 +1458,9 @@ unsafe extern "system" fn create_image(
         let astc = compressed_of((*info).format);
         if astc.is_none() && !FormatLists::have_astc((*info).p_next) {
             let result = (f.create_image)(device, info, allocator, image);
+            if tracing() {
+                trace_unsupported(device, &*info, result);
+            }
             if tracing() && result == vk::Result::SUCCESS {
                 let i = &*info;
                 state().traced.insert(*image, (i.format, i.flags));
@@ -1786,7 +1959,7 @@ fn trace_image_copy(
     dst: vk::Image,
     regions: String,
 ) {
-    if tracing() && (emulated_image(src).is_some() || emulated_image(dst).is_some()) {
+    if tracing() {
         trace(|| {
             format!(
                 "{what} cb {cb:?} image {src:?} ({}) -> image {dst:?} ({}): {regions}",
@@ -2011,9 +2184,17 @@ unsafe extern "system" fn cmd_copy_image_to_buffer(
         let Some(f) = cmd_device(cb).and_then(device_fns) else {
             return;
         };
-        if tracing() && emulated_image(src).is_some() {
+        if tracing() {
+            let r = std::slice::from_raw_parts(regions, count as usize);
+            let buffer = traced_buffer(dst, &f);
             trace(|| {
-                format!("vkCmdCopyImageToBuffer cb {cb:?} image {src:?} -> buffer {dst:?} ({count} regions)")
+                format!(
+                    "readbackcopy: vkCmdCopyImageToBuffer image {src:?} ({}) -> buffer {dst:?} ({buffer}): {count} regions, first {} {}x{}",
+                    traced_format(src),
+                    subresource(&r[0].image_subresource),
+                    r[0].image_extent.width,
+                    r[0].image_extent.height
+                )
             });
         }
         (f.cmd_copy_image_to_buffer)(cb, src, layout, dst, count, regions)
@@ -2105,6 +2286,113 @@ unsafe extern "system" fn create_shader_module(
     }
 }
 
+unsafe extern "system" fn create_graphics_pipelines(
+    device: vk::Device,
+    cache: vk::PipelineCache,
+    count: u32,
+    infos: *const vk::GraphicsPipelineCreateInfo,
+    allocator: *const vk::AllocationCallbacks,
+    pipelines: *mut vk::Pipeline,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = device_fns(device) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        if tracing() {
+            for i in std::slice::from_raw_parts(infos, count as usize) {
+                let vi = i.p_vertex_input_state;
+                if vi.is_null() {
+                    continue;
+                }
+                for a in std::slice::from_raw_parts(
+                    (*vi).p_vertex_attribute_descriptions,
+                    (*vi).vertex_attribute_description_count as usize,
+                ) {
+                    trace_format(
+                        device,
+                        "vertex",
+                        a.format,
+                        vk::FormatFeatureFlags::VERTEX_BUFFER,
+                    );
+                }
+            }
+        }
+        // dynamic rendering: the color formats of emulated formats are their stand-ins
+        let mut saved = Vec::new();
+        for i in std::slice::from_raw_parts(infos, count as usize) {
+            let mut n = i.p_next as *const vk::BaseInStructure;
+            while !n.is_null() {
+                if (*n).s_type == vk::StructureType::PIPELINE_RENDERING_CREATE_INFO {
+                    let r = n as *mut vk::PipelineRenderingCreateInfo;
+                    let formats: Vec<vk::Format> = (0..(*r).color_attachment_count as usize)
+                        .map(|k| emulated(*(*r).p_color_attachment_formats.add(k)))
+                        .collect();
+                    saved.push((r, (*r).p_color_attachment_formats, formats));
+                }
+                n = (*n).p_next;
+            }
+        }
+        for (r, _, formats) in &saved {
+            (**r).p_color_attachment_formats = formats.as_ptr();
+        }
+        let result =
+            (f.create_graphics_pipelines)(device, cache, count, infos, allocator, pipelines);
+        for (r, original, _) in &saved {
+            (**r).p_color_attachment_formats = *original;
+        }
+        result
+    }
+}
+
+unsafe extern "system" fn create_buffer_view(
+    device: vk::Device,
+    info: *const vk::BufferViewCreateInfo,
+    allocator: *const vk::AllocationCallbacks,
+    view: *mut vk::BufferView,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = device_fns(device) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        if tracing() {
+            trace_format(
+                device,
+                "texel buffer",
+                (*info).format,
+                vk::FormatFeatureFlags::UNIFORM_TEXEL_BUFFER,
+            );
+        }
+        (f.create_buffer_view)(device, info, allocator, view)
+    }
+}
+
+/// Logs, once per format and use, a format whose buffer features lack `need` on the driver.
+fn trace_format(device: vk::Device, what: &str, format: vk::Format, need: vk::FormatFeatureFlags) {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<(i32, u32)>>> = OnceLock::new();
+    if !SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((format.as_raw(), need.as_raw()))
+    {
+        return;
+    }
+    let mut fp = vk::FormatProperties::default();
+    // SAFETY: a device the HAL has seen.
+    unsafe {
+        next_instance!(
+            "vkGetPhysicalDeviceFormatProperties",
+            vk::PFN_vkGetPhysicalDeviceFormatProperties
+        )(nvvk_device_physical(device), format, &mut fp)
+    };
+    let ok = fp.buffer_features.contains(need);
+    trace(|| format!("format: {what} {format:?} supported {ok}"));
+}
+
 /// With the trace, every 20 s: the compressed images older than 20 s that were never uploaded.
 fn report_idle_images() {
     static LAST: OnceLock<Mutex<std::time::Instant>> = OnceLock::new();
@@ -2132,6 +2420,70 @@ fn report_idle_images() {
     for line in idle.iter().take(40) {
         trace(|| format!("idle: {line}"));
     }
+}
+
+unsafe extern "system" fn create_render_pass(
+    device: vk::Device,
+    info: *const vk::RenderPassCreateInfo,
+    allocator: *const vk::AllocationCallbacks,
+    pass: *mut vk::RenderPass,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(f) = device_fns(device) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        let i = &*info;
+        let mut attachments: Vec<vk::AttachmentDescription> =
+            std::slice::from_raw_parts(i.p_attachments, i.attachment_count as usize).to_vec();
+        for a in attachments.iter_mut() {
+            a.format = emulated(a.format);
+        }
+        let mut nv = *i;
+        nv.p_attachments = attachments.as_ptr();
+        (f.create_render_pass)(device, &nv, allocator, pass)
+    }
+}
+
+unsafe extern "system" fn create_render_pass2(
+    device: vk::Device,
+    info: *const vk::RenderPassCreateInfo2,
+    allocator: *const vk::AllocationCallbacks,
+    pass: *mut vk::RenderPass,
+) -> vk::Result {
+    // SAFETY: the caller keeps the Vulkan valid-usage rules of this call (valid handles
+    // and pointers), which is what every operation below relies on.
+    unsafe {
+        let Some(next) = device_fns(device).and_then(|f| f.create_render_pass2) else {
+            return vk::Result::ERROR_INITIALIZATION_FAILED;
+        };
+        let i = &*info;
+        let mut attachments: Vec<vk::AttachmentDescription2> =
+            std::slice::from_raw_parts(i.p_attachments, i.attachment_count as usize).to_vec();
+        for a in attachments.iter_mut() {
+            a.format = emulated(a.format);
+        }
+        let mut nv = *i;
+        nv.p_attachments = attachments.as_ptr();
+        next(device, &nv, allocator, pass)
+    }
+}
+
+/// `debug.nvvk.astc_tint` (read once): 1 tints decoded RGBA texels by mip level (red, green, blue,
+/// yellow, magenta, cyan), 2 replaces them with a flat (128, 128, 255, 255). For telling texture
+/// content from other faults on screen.
+fn tint() -> u8 {
+    static T: OnceLock<u8> = OnceLock::new();
+    *T.get_or_init(|| {
+        if probe::prop_is_one(c"debug.nvvk.astc_tint") {
+            1
+        } else if probe::prop_is_two(c"debug.nvvk.astc_tint") {
+            2
+        } else {
+            0
+        }
+    })
 }
 
 /// Whether vertex shader positions are made invariant (spirv.rs): `debug.nvvk.invariant_position`
@@ -2281,6 +2633,7 @@ unsafe extern "system" fn queue_submit(
             (f.queue_submit)(queue, count, submits, fence)
         });
         probe::record(probe::SUBMIT, start, r);
+        descriptors::after_submit(queue, device);
         r
     }
 }
@@ -2310,7 +2663,9 @@ unsafe extern "system" fn queue_submit2(
                 run_uploads(device, &cbs);
             }
         }
-        next(queue, count, submits, fence)
+        let r = next(queue, count, submits, fence);
+        descriptors::after_submit(queue, device);
+        r
     }
 }
 
@@ -2387,6 +2742,10 @@ pub unsafe extern "C" fn nvvk_astc_proc(name: *const c_char) -> *const c_void {
     if !p.is_null() {
         return p;
     }
+    let p = descriptors::proc(name);
+    if !p.is_null() {
+        return p;
+    }
     macro_rules! table {
         ($($n:literal => $f:expr),+ $(,)?) => {
             match name { $($n => $f as *const c_void,)+ _ => std::ptr::null() }
@@ -2435,6 +2794,11 @@ pub unsafe extern "C" fn nvvk_astc_proc(name: *const c_char) -> *const c_void {
         "vkCmdCopyImageToBuffer2KHR" => cmd_copy_image_to_buffer2 as vk::PFN_vkCmdCopyImageToBuffer2,
         "vkCmdExecuteCommands" => cmd_execute_commands as vk::PFN_vkCmdExecuteCommands,
         "vkCreateShaderModule" => create_shader_module as vk::PFN_vkCreateShaderModule,
+        "vkCreateGraphicsPipelines" => create_graphics_pipelines as vk::PFN_vkCreateGraphicsPipelines,
+        "vkCreateRenderPass" => create_render_pass as vk::PFN_vkCreateRenderPass,
+        "vkCreateRenderPass2" => create_render_pass2 as vk::PFN_vkCreateRenderPass2,
+        "vkCreateRenderPass2KHR" => create_render_pass2 as vk::PFN_vkCreateRenderPass2,
+        "vkCreateBufferView" => create_buffer_view as vk::PFN_vkCreateBufferView,
         "vkBindImageMemory" => bind_image_memory as vk::PFN_vkBindImageMemory,
         "vkBindImageMemory2" => bind_image_memory2 as vk::PFN_vkBindImageMemory2,
         "vkBindImageMemory2KHR" => bind_image_memory2 as vk::PFN_vkBindImageMemory2,

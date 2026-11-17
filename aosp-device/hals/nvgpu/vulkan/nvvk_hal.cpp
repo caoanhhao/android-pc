@@ -714,6 +714,11 @@ extern "C" bool nvvk_device_memory_properties(VkDevice device,
     return true;
 }
 
+extern "C" VkPhysicalDevice nvvk_device_physical(VkDevice device) {
+    nvvk::Device* dev = nvvk::GetDevice(device);
+    return dev ? dev->physical : VK_NULL_HANDLE;
+}
+
 extern "C" void nvvk_log(int level, const char* msg) {
     nvvk::Log(level == 0 ? nvvk::kLogError : level == 1 ? nvvk::kLogWarn : nvvk::kLogInfo, "%s",
               msg);

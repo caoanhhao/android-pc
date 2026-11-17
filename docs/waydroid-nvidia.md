@@ -163,10 +163,10 @@ reports no ASTC. The game's own crash handler swallows the signal (an empty mini
 the empty tag (the game must have run once; `persist.vendor.android_pc.wwm_vulkan=0` turns it off).
 With it `last_graphics_api.tag` reads `vlk` and the game renders on `vulkan.nvidia`.
 
-The ponds in the world show rain ripples as striped red/white/cyan moiré and are near black
-without rain: the water shader on NVIDIA, not the texture emulation (`docs/nvidia-native.md`,
-*ETC2/EAC and the striped ponds*, with the tracing and dump properties used to rule it out).
-The game's ETC2/EAC maps are emulated since 2026-11-18; the purple HUD icons have not been seen
+Striped/black ground patches (2026-11-18): the terrain's virtual-texture pages are rendered into
+`B4G4R4A4` and `B5G6R5` color attachments, which NVIDIA cannot render to; `vulkan.nvidia` now
+gives those images a stand-in format (`docs/nvidia-native.md`, *The striped ground: 16-bit render
+targets*). The game's ETC2/EAC maps are emulated too; the purple HUD icons have not been seen
 since.
 
 Updating only the HAL in the overlay (a new inode in the lower dir is not seen while processes

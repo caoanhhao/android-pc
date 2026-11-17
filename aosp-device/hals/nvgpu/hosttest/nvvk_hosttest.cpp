@@ -907,6 +907,110 @@ void TestCompressed(const char* name, VkFormat format, VkFormat emulated, uint32
         g_failures++;
 }
 
+// A 16-bit color format NVIDIA cannot render to (B4G4R4A4, B5G6R5), emulated by astc/lib.rs
+// with a stand-in it can: a CPU upload of one texel value, then a render pass that clears the
+// image as its color attachment (Where Winds Meet renders its terrain pages this way), each
+// read back in the stand-in's texels.
+void TestPacked(const char* name, VkFormat format, uint32_t texel_bytes, uint16_t texel,
+                std::vector<uint8_t> want_upload, std::vector<uint8_t> want_clear) {
+    if (!Selected(name))
+        return;
+    const uint32_t w = 16, h = 16;
+    VkImageFormatProperties ifp;
+    VK(IFN(GetPhysicalDeviceImageFormatProperties)(
+        vk.physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifp));
+    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, nullptr, 0, VK_IMAGE_TYPE_2D,
+                             format, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+                             VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                             VK_SHARING_MODE_EXCLUSIVE, 0, nullptr, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage image;
+    VK(DFN(CreateImage)(vk.device, &ici, nullptr, &image));
+    VkMemoryRequirements req;
+    DFN(GetImageMemoryRequirements)(vk.device, image, &req);
+    uint32_t type = 0;
+    while (!(req.memoryTypeBits >> type & 1))
+        type++;
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, req.size, type};
+    VkDeviceMemory memory;
+    VK(DFN(AllocateMemory)(vk.device, &mai, nullptr, &memory));
+    VK(DFN(BindImageMemory)(vk.device, image, memory, 0));
+    VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr, 0, image,
+                                 VK_IMAGE_VIEW_TYPE_2D, format, {},
+                                 {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkImageView view;
+    VK(DFN(CreateImageView)(vk.device, &vci, nullptr, &view));
+    VkAttachmentDescription att = {0, format, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                   VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                   VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
+    VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub = {0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1, &ref};
+    VkRenderPassCreateInfo rpci = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, nullptr, 0, 1, &att,
+                                   1, &sub};
+    VkRenderPass pass;
+    VK(DFN(CreateRenderPass)(vk.device, &rpci, nullptr, &pass));
+    VkFramebufferCreateInfo fci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, nullptr, 0, pass, 1,
+                                   &view, w, h, 1};
+    VkFramebuffer fb;
+    VK(DFN(CreateFramebuffer)(vk.device, &fci, nullptr, &fb));
+
+    Staging up, down1, down2;
+    up.Init(w * h * 2);
+    for (uint32_t i = 0; i < w * h; i++)
+        memcpy(up.data + i * 2, &texel, 2);
+    down1.Init(w * h * texel_bytes);
+    down2.Init(w * h * texel_bytes);
+    VkBufferImageCopy r = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
+    Submit([&](VkCommandBuffer cb) {
+        Barrier(cb, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+        DFN(CmdCopyBufferToImage)(cb, up.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                  &r);
+        Barrier(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED);
+        DFN(CmdCopyImageToBuffer)(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, down1.buffer, 1,
+                                  &r);
+        Barrier(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED);
+        VkClearValue clear = {};
+        clear.color.float32[0] = 1.0f;
+        clear.color.float32[1] = 0.6f;
+        clear.color.float32[2] = 0.0f;
+        clear.color.float32[3] = 1.0f;
+        VkRenderPassBeginInfo rbi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, pass, fb,
+                                     {{0, 0}, {w, h}}, 1, &clear};
+        DFN(CmdBeginRenderPass)(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+        DFN(CmdEndRenderPass)(cb);
+        DFN(CmdCopyImageToBuffer)(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, down2.buffer, 1,
+                                  &r);
+    });
+    int bad = 0;
+    for (uint32_t i = 0; i < w * h; i++) {
+        bad += memcmp(down1.data + i * texel_bytes, want_upload.data(), texel_bytes) != 0;
+        bad += memcmp(down2.data + i * texel_bytes, want_clear.data(), texel_bytes) != 0;
+    }
+    if (bad)
+        printf("  %s: upload %02x%02x%02x%02x, clear %02x%02x%02x%02x\n", name, down1.data[0],
+               down1.data[1], texel_bytes > 2 ? down1.data[2] : 0,
+               texel_bytes > 3 ? down1.data[3] : 0, down2.data[0], down2.data[1],
+               texel_bytes > 2 ? down2.data[2] : 0, texel_bytes > 3 ? down2.data[3] : 0);
+    DFN(DestroyFramebuffer)(vk.device, fb, nullptr);
+    DFN(DestroyRenderPass)(vk.device, pass, nullptr);
+    DFN(DestroyImageView)(vk.device, view, nullptr);
+    DFN(DestroyImage)(vk.device, image, nullptr);
+    DFN(FreeMemory)(vk.device, memory, nullptr);
+    printf("%s packed %s: upload and render pass clear, %d bad texels\n", bad ? "FAIL" : "ok  ",
+           name, bad);
+    if (bad)
+        g_failures++;
+}
+
 }  // namespace
 
 int main() {
@@ -972,6 +1076,13 @@ int main() {
     TestCompressed("EAC_R11", VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 2,
                    {0x80, 0, 0, 0, 0, 0, 0, 0}, {0x30, 0x80},
                    {0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, {0xff, 0xff});
+    // 16-bit render targets NVIDIA lacks: B4G4R4A4 as R8G8B8A8 (0x1234: B 1, G 2, R 3, A 4),
+    // B5G6R5 as R5G6B5 (B 5, G 10, R 20); clear color (1, 0.6, 0, 1)
+    TestPacked("B4G4R4A4", VK_FORMAT_B4G4R4A4_UNORM_PACK16, 4, 0x1234, {0x33, 0x22, 0x11, 0x44},
+               {0xff, 0x99, 0x00, 0xff});
+    TestPacked("B5G6R5", VK_FORMAT_B5G6R5_UNORM_PACK16, 2, 5 << 11 | 10 << 5 | 20,
+               {(20 << 11 | 10 << 5 | 5) & 0xff, (20 << 11 | 10 << 5 | 5) >> 8},
+               {(31 << 11 | 38 << 5) & 0xff, (31 << 11 | 38 << 5) >> 8});
 
     printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;
