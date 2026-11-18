@@ -150,6 +150,9 @@ smartdock() {
 }
 
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
+# Play Store and Google WebView, fetched here before they became user-added extras
+# (docs/google-extras.md): their modules would install over the extras placeholders.
+rm -rf "$APPS/Phonesky" "$APPS/WebViewGoogle"
 for app in "${@:-chromium fdroid microg termux smartdock}"; do
     for a in $app; do "$a"; done
 done
