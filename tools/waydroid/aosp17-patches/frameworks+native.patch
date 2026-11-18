@@ -1,3 +1,32 @@
+diff --git a/cmds/servicemanager/Access.cpp b/cmds/servicemanager/Access.cpp
+index 6e2abf6..531189b 100644
+--- a/cmds/servicemanager/Access.cpp
++++ b/cmds/servicemanager/Access.cpp
+@@ -24,6 +24,8 @@
+ 
+ #include <sstream>
+ 
++#include <unistd.h>
++
+ namespace android {
+ 
+ #ifdef VENDORSERVICEMANAGER
+@@ -33,7 +35,15 @@ constexpr bool kIsVendor = false;
+ #endif
+ 
+ #ifdef __ANDROID__
++// Waydroid's container (docs/waydroid-aosp17.md): the host has no SELinux, so binder hands
++// over no caller context, and there is none to look up either.
++static bool inWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ static std::string getPidcon(pid_t pid) {
++    if (inWaydroidContainer()) return "";
+     CHECK_EQ(nullptr, IPCThreadState::self()->getServingStackPointer())
+             << "Did not get context from PID " << pid
+             << ". We should always get contexts from other processes.";
 diff --git a/libs/binder/Parcel.cpp b/libs/binder/Parcel.cpp
 index 1ae7af3..165d2f7 100644
 --- a/libs/binder/Parcel.cpp

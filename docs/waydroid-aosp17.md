@@ -136,6 +136,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | system/core init | user `host` = `waydroid.host.uid` | the composer runs as the desktop user to reach its Wayland socket |
 | external/selinux | libselinux: context calls (`getcon`, `getpeercon`, `getfilecon`, `setexeccon`, ...) succeed in the container | init (property service, services), servicemanager, zygote and installd abort when the kernel has no SELinux; this one switch replaces upstream's patches to each of them |
 | bionic | property area accepted without its SELinux label | `__system_property_area_init()` fails without the xattr and init aborts |
+| frameworks/native servicemanager | no caller context lookup (`getpidcon`) in the container | binder hands over no SELinux context, and servicemanager aborts rather than look one up from a binder thread |
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
 
@@ -245,3 +246,9 @@ vendor image and a new system:
   cannot write `/proc/sys/vm/mmap_rnd_bits`. That is the host kernel's setting, read-only in the
   container. The fatal-error path ended the container cleanly. In the container this action
   now does nothing.
+- Test boot 5 (15:37): init finished early-init/init/late-init and started the services and
+  zygote. servicemanager aborted ("Did not get context from PID"): binder hands over no
+  security context, and it refuses to look one up from a binder thread. As a critical service
+  it then triggered the reboot path, which stopped the container cleanly. In the container it
+  now uses an empty context, as upstream Waydroid's servicemanager does. The host's
+  systemd-coredump collects the cores of crashing container processes (`coredumpctl`).
