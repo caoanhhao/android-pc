@@ -317,3 +317,11 @@ vendor image and a new system:
     and several Java services in system_server, more and riskier changes.
   The user chose (a), limited to the network programs, which attach to the container's cgroup
   and network namespace.
+- **20:30, real userdata:** system_server crash-looped on "Failed to initialize Keystore super
+  keys for user 0" (keystore2 could not decrypt the existing CE super key). Fixed by moving
+  `system_de/0/spblob`, `system/locksettings.db*` and `misc/keystore/persistent.sqlite` to
+  `~/.local/share/waydroid-backup/keystore-reset-20261118-2032`; the next boot completes with no
+  lock credential.
+- `waydroid show-full-ui` waits forever for the `waydroidplatform` service (Waydroid's
+  `IPlatform`, not in the image yet, W4). Until then, open the window from the host:
+  `sudo waydroid shell -- sh -c 'setprop waydroid.active_apps Waydroid; input keyevent KEYCODE_WAKEUP'`.
