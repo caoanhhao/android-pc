@@ -137,7 +137,10 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | bionic | property area accepted without its SELinux label | `__system_property_area_init()` fails without the xattr and init aborts |
 | frameworks/native servicemanager | no caller context lookup (`getpidcon`) in the container | binder hands over no SELinux context, and servicemanager aborts rather than look one up from a binder thread |
 | system/hwservicemanager | no caller context lookup in the container | as servicemanager |
-| packages/modules/Connectivity NetBpfLoad, system/netd | NetBpfLoad loads no BPF program in the container (sets `bpf.progs_loaded`); netd's one-shot setup, iptables and bandwidth failures are not fatal there | the programs would go into the host kernel; the host's sysctls are read-only; the host may have only nftables |
+| system/netd | iptables and bandwidth-control failures are not fatal in the container | the host may have only nftables (no legacy iptables); Waydroid's host side does the container's networking |
+| packages/modules/Connectivity | NetBpfLoad: host sysctls and pre-existing host programs are not errors, no uprobestats/platform loaders; netd's map self-test skipped; ClatCoordinator skips SELinux xattr checks | see "Status": host kernel, no CAP_BPF for netd, no SELinux |
+| system/security keystore2 | placeholder calling sid in the container | binder hands over no sid; libselinux allows the check |
+| system/memory libmeminfo | no abort when the GPU-memory map is missing (container only) | the tracing program behind it is not loaded |
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
 
@@ -279,10 +282,29 @@ vendor image and a new system:
   - Boot 15: the composer, the allocator, SurfaceFlinger, the boot animation, zygote, netd and
     system_server run. netd still aborts in DnsResolver's `ADnsHelper_init`, which needs
     the BPF maps, and takes zygote/system_server with it every 5 s.
-- **Open decision: networking without BPF.** Android 17's network stack (netd, DnsResolver,
+- Boots 16-25 (16:24-17:12; the user chose (a) below): NetBpfLoad loads the network programs.
+  The host sysctls are left alone, and the "no programs yet" check is skipped (the host kernel
+  has its own). The uprobestats and platform loaders are not run: their tracing programs attach
+  kernel-wide, to the host's processes too. netd skips its map-creation self-test: the host keeps
+  `unprivileged_bpf_disabled=2`, and netd has no `CAP_BPF` there. More fixes:
+  - ClatCoordinator skips its SELinux xattr checks of the pinned maps.
+  - libmeminfo returns "no data" for the missing GPU-memory map instead of aborting.
+  - keystore2 uses a placeholder calling sid.
+  - The first stage reads `/vendor/etc/waydroid/bind-mounts` (composer VINTF; the PC's
+    sub-HAL-less `hals.pc.conf`, since SensorService blocked system_server) and puts a tmpfs
+    on `/metadata` (aconfig flag storage).
+  - `properties.aosp17` turns off the Cuttlefish oemlock, UWB and Thread APEXes and
+    `ro.frp.pst`.
+- **Boot 25: `sys.boot_completed=1`.** The launcher and taskbar show in the Waydroid window, and
+  SurfaceFlinger renders with Vulkan ("RE Vulkan (Ganesh)", `ro.hardware.vulkan=nvidia`,
+  `renderD129`). Play Store (`com.android.vending`) and `com.google.android.gms` are installed.
+- **Decided: networking BPF (a).** Android 17's network stack (netd, DnsResolver,
+  ConnectivityService, NetworkStats) depends on BPF programs and maps. The options were: Android 17's network stack (netd, DnsResolver,
   ConnectivityService, NetworkStats) depends on BPF programs and maps. Either:
   - (a) like upstream Waydroid, let NetBpfLoad load its programs. They go into the host kernel
     and attach to the container's own cgroup subtree. The host-side guard does not block
     `bpf()`, and a container with `CAP_SYS_ADMIN` could already load any BPF program. Or:
   - (b) keep BPF out and patch the remaining users in the container. That means DnsResolver
     and several Java services in system_server, more and riskier changes.
+  The user chose (a), limited to the network programs, which attach to the container's cgroup
+  and network namespace.
