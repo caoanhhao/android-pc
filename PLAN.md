@@ -596,6 +596,40 @@ stay. NVIDIA's userspace libraries for `/vendor/lib64/nvidia` come from
 The GKI build on `main` no longer has nouveau, Nova, their kernel patches or nouveau's GSP
 firmware (checked in the VFIO VM; real-PC check pending).
 
+## Phase W — the PC image in Waydroid
+
+Decided 2026-11-18: the host's Waydroid (1.6.3) runs this tree's AOSP 17 instead of the
+LineageOS 20 image, keeping its userdata if possible. **The Waydroid image is the PC build
+itself** (user decision, 2026-11-18): `aosp_pc_x86_64-cp2a-userdebug`, same out directory,
+x86_64 only, packed as Waydroid's `system.img` + `vendor.img`. From Waydroid only the host side
+is used (tools, LXC config, binderfs, Wayland/PulseAudio sockets, `waydroid.cfg`). A separate
+Waydroid-style product was tried first and dropped (a full build of its own, not the PC's
+AOSP). Notes and results: docs/waydroid-aosp17.md.
+
+- **W0 — container isolation first** (after the 2026-11-18 host freezes: the image's reboot
+  path ran `EXT4_IOC_SHUTDOWN` on `/data`, a bind mount of the host's `/`). The host-side guard
+  `tools/waydroid/container-guard.sh` (seccomp: no filesystem shutdown/freeze ioctls; device
+  cgroup: no host disks) is in Waydroid's config templates, kept there by a pacman hook, and
+  tested with a throwaway LXC container. In the image, init's reboot path only stops processes
+  and exits in the container. Waydroid starts only with the user's explicit OK (CLAUDE.md).
+- **W1 — container pieces in the PC product** (`aosp-device/waydroid/waydroid.mk`), dormant on
+  the PC: Waydroid's `hwcomposer.waydroid` in the HIDL composer 2.1 service with its VINTF
+  declarations swapped in at early-init, `waydroid-nvidia-nodes.sh`, `waydroid-preinit`. The
+  configuration comes as `ro.boot.*`/`ro.hardware.*` through `waydroid.prop`, like the PC's
+  `androidboot.*`.
+- **W2 — the fewest AOSP changes, run-time only** (`tools/waydroid/aosp17-patches/`): init's
+  first stage in the container, `mount_all` and `waydroid.prop`, a reboot path that never
+  touches filesystems, services without SELinux contexts, cgroup v2 only; libselinux without SELinux;
+  bionic's property area; binder without security contexts. More only when a boot log shows
+  the need, each recorded in the docs.
+- **W3 — pack and install:** `tools/waydroid/aosp17-pack.sh` (system_ext, product and odm into
+  the system image), `tools/waydroid/aosp17-switch.sh` (backup, install, switch, restore).
+  First boot on an empty data directory (`XDG_DATA_HOME`), then, after telling the user what
+  is lost (keystore keys: new KeyMint; Play services data: microG), on the real data.
+- **W4 — audio and the host session:** PulseAudio output (a Rust HAL on the session's socket
+  fits here); Waydroid's `IPlatform` service for app lists and `waydroid app launch`.
+- **W5 — Where Winds Meet** on NVIDIA's Vulkan in the container.
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).

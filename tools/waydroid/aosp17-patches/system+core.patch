@@ -1,0 +1,488 @@
+diff --git a/init/Android.bp b/init/Android.bp
+index 2783c9b..78577c5 100644
+--- a/init/Android.bp
++++ b/init/Android.bp
+@@ -324,7 +324,11 @@ cc_defaults {
+     name: "init_second_stage_defaults",
+     stem: "init",
+     defaults: ["init_defaults"],
+-    srcs: ["main.cpp"],
++    srcs: [
++        "main.cpp",
++        // android-pc: Waydroid container first stage (docs/waydroid-aosp17.md)
++        "waydroid_first_stage.cpp",
++    ],
+     symlinks: ["ueventd"],
+ }
+ 
+diff --git a/init/builtins.cpp b/init/builtins.cpp
+index 2e4a3b4..082063c 100644
+--- a/init/builtins.cpp
++++ b/init/builtins.cpp
+@@ -630,18 +630,25 @@ static Result<void> do_mount_all(const BuiltinArguments& args) {
+     std::string prop_name = "ro.boottime.init.mount_all."s + prop_post_fix;
+     android::base::Timer t;
+ 
+-    Fstab fstab;
+-    if (mount_all->fstab_path.empty()) {
+-        if (!ReadDefaultFstab(&fstab)) {
+-            return Error() << "Could not read default fstab";
+-        }
++    int mount_fstab_result;
++    if (IsRunningInWaydroid()) {
++        // android-pc: Waydroid mounted everything outside the container; /data is a plain
++        // bind mount, never encrypted (docs/waydroid-aosp17.md).
++        mount_fstab_result = FS_MGR_MNTALL_DEV_NOT_ENCRYPTABLE;
+     } else {
+-        if (!ReadFstabFromFile(mount_all->fstab_path, &fstab)) {
+-            return Error() << "Could not read fstab";
++        Fstab fstab;
++        if (mount_all->fstab_path.empty()) {
++            if (!ReadDefaultFstab(&fstab)) {
++                return Error() << "Could not read default fstab";
++            }
++        } else {
++            if (!ReadFstabFromFile(mount_all->fstab_path, &fstab)) {
++                return Error() << "Could not read fstab";
++            }
+         }
+-    }
+ 
+-    auto mount_fstab_result = fs_mgr_mount_all(&fstab, mount_all->mode);
++        mount_fstab_result = fs_mgr_mount_all(&fstab, mount_all->mode);
++    }
+     SetProperty(prop_name, std::to_string(t.duration().count()));
+ 
+     if (mount_all->import_rc) {
+diff --git a/init/main.cpp b/init/main.cpp
+index bb09f30..d11967f 100644
+--- a/init/main.cpp
++++ b/init/main.cpp
+@@ -20,6 +20,8 @@
+ #include "selinux.h"
+ #include "subcontext.h"
+ #include "ueventd.h"
++#include "util.h"
++#include "waydroid_first_stage.h"
+ 
+ #include <android-base/logging.h>
+ 
+@@ -79,6 +81,11 @@ int main(int argc, char** argv) {
+         }
+     }
+ 
++    // android-pc: Waydroid starts this binary as the container's first process.
++    if (IsRunningInWaydroid()) {
++        return WaydroidFirstStageMain(argv);
++    }
++
+ #if defined(FIRST_STAGE_INIT) || defined(RECOVERY)
+     return FirstStageMain(argc, argv);
+ #else
+diff --git a/init/property_service.cpp b/init/property_service.cpp
+index e6fffc4..1a1745a 100644
+--- a/init/property_service.cpp
++++ b/init/property_service.cpp
+@@ -1221,6 +1221,12 @@ void PropertyLoadBootDefaults() {
+     load_properties_from_file("/odm_dlkm/etc/build.prop", nullptr, &properties);
+     load_properties_from_partition("odm", /* support_legacy_path_until */ 28);
+     load_properties_from_partition("product", /* support_legacy_path_until */ 30);
++    // android-pc: in Waydroid's container, the host's generated properties (waydroid.cfg, the
++    // session) come last and override the images' (docs/waydroid-aosp17.md). The file only
++    // exists there.
++    if (access("/vendor/waydroid.prop", F_OK) == 0) {
++        load_properties_from_file("/vendor/waydroid.prop", nullptr, &properties);
++    }
+ 
+     if (access(kDebugRamdiskProp, R_OK) == 0) {
+         LOG(INFO) << "Loading " << kDebugRamdiskProp;
+diff --git a/init/reboot.cpp b/init/reboot.cpp
+index 1f2381d..7148510 100644
+--- a/init/reboot.cpp
++++ b/init/reboot.cpp
+@@ -863,6 +863,30 @@ static void DoReboot(unsigned int cmd, const std::string& reason,
+     }
+     PersistRebootReason(reason.c_str() + skip, true);
+ 
++    // In Waydroid's container every mount belongs to the host (/data is a bind mount of a
++    // directory on the host's root filesystem): stop the processes and leave, without
++    // unmounting, freezing or shutting down any filesystem. The container has no
++    // CAP_SYS_BOOT, so RebootSystem() exits init, which ends the container.
++    if (IsRunningInWaydroid()) {
++        LOG(INFO) << "Waydroid container: stopping all processes; no unmount or filesystem "
++                     "shutdown";
++        std::set<std::string> services;
++        for (const auto& s : ServiceList::GetInstance()) services.insert(s->name());
++        auto pids = StopServices(services, true /* SIGTERM */);
++        auto untracked_pids = StopUntrackedProcesses(true /* SIGTERM */);
++        pids.insert(pids.end(), untracked_pids.begin(), untracked_pids.end());
++        WaitAndLogViolations(pids, clean_shutdown_timeout / 2);
++        pids = StopServices(services, false /* SIGKILL */);
++        untracked_pids = StopUntrackedProcesses(false /* SIGKILL */);
++        pids.insert(pids.end(), untracked_pids.begin(), untracked_pids.end());
++        WaitAndLogViolations(pids, 0ms);
++        SubcontextTerminate();
++        ReapAnyOutstandingChildren();
++        LogShutdownTime(UMOUNT_STAT_SKIPPED, t);
++        RebootSystem(cmd, reboot_target, reason);
++        abort();
++    }
++
+     // If /data isn't mounted then we can skip the extra reboot steps below, since we don't need to
+     // worry about unmounting it.
+     if (GetDataFsType().empty()) {
+@@ -1092,7 +1116,8 @@ void HandlePowerctlMessage(const std::string& command) {
+         cmd = ANDROID_RB_RESTART2;
+         // Microdroid essentially treats reboot the same as shutdown, so
+         // compile out this branch to avoid bootloader_message dependency.
+-        if (!IsMicrodroid() && cmd_params.size() >= 2) {
++        // In Waydroid's container there is no bootloader or misc partition to write to.
++        if (!IsMicrodroid() && !IsRunningInWaydroid() && cmd_params.size() >= 2) {
+             reboot_target = cmd_params[1];
+             if (reboot_target == "userspace") {
+                 LOG(ERROR) << "Userspace reboot is deprecated.";
+diff --git a/init/reboot_utils.cpp b/init/reboot_utils.cpp
+index 5c402fe..b2b60db 100644
+--- a/init/reboot_utils.cpp
++++ b/init/reboot_utils.cpp
+@@ -168,7 +168,8 @@ void __attribute__((noreturn)) InitFatalReboot(int signal_number) {
+     for (const auto& frame : data.frames) {
+         LOG(ERROR) << unwinder.FormatFrame(frame);
+     }
+-    if (init_fatal_panic) {
++    // In Waydroid's container /proc/sysrq-trigger is the host kernel's: never crash it.
++    if (init_fatal_panic && !IsRunningInWaydroid()) {
+         LOG(ERROR) << __FUNCTION__ << ": Trigger crash";
+         android::base::WriteStringToFile("c", PROC_SYSRQ);
+         LOG(ERROR) << __FUNCTION__ << ": Sys-Rq failed to crash the system; fallback to exit().";
+diff --git a/init/service.cpp b/init/service.cpp
+index d38b47a..eb27a35 100644
+--- a/init/service.cpp
++++ b/init/service.cpp
+@@ -669,7 +669,9 @@ Result<void> Service::Start() {
+     }
+ 
+     std::string scon;
+-    if (!seclabel_.empty()) {
++    if (IsRunningInWaydroid()) {
++        // No SELinux on Waydroid's host: services run without a context.
++    } else if (!seclabel_.empty()) {
+         scon = seclabel_;
+     } else {
+         auto result = ComputeContextFromExecutable(args_[0]);
+@@ -754,7 +756,12 @@ Result<void> Service::Start() {
+         bool use_memcg = swappiness_ != -1 || soft_limit_in_bytes_ != -1 || limit_in_bytes_ != -1 ||
+                          limit_percent_ != -1 || !limit_property_.empty();
+         errno = -createProcessGroup(uid(), pid_, use_memcg);
+-        if (errno != 0) {
++        if (errno != 0 && IsRunningInWaydroid()) {
++            // Waydroid's container gets the controllers the host delegates to it; a service
++            // without its own process group still runs.
++            PLOG(WARNING) << "createProcessGroup(" << uid() << ", " << pid_ << ", " << use_memcg
++                          << ") failed for service '" << name_ << "'";
++        } else if (errno != 0) {
+             Result<void> result = cgroups_activated.Write(kActivatingCgroupsFailed);
+             if (!result.ok()) {
+                 return Error() << "Sending notification failed: " << result.error();
+diff --git a/init/util.cpp b/init/util.cpp
+index 6241b66..1444c44 100644
+--- a/init/util.cpp
++++ b/init/util.cpp
+@@ -38,6 +38,7 @@
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
+ #include <android-base/properties.h>
++#include <private/android_filesystem_config.h>
+ #include <android-base/scopeguard.h>
+ #include <android-base/strings.h>
+ #include <android-base/unique_fd.h>
+@@ -74,6 +75,12 @@ void (*trigger_shutdown)(const std::string& command) = nullptr;
+ // DecodeUid() - decodes and returns the given string, which can be either the
+ // numeric or name representation, into the integer uid or gid.
+ Result<uid_t> DecodeUid(const std::string& name) {
++    // android-pc: "host" is the desktop user that runs Waydroid (waydroid.host.uid, from the
++    // host's waydroid.prop); services that talk to the session's Wayland or PulseAudio socket
++    // run as that user (docs/waydroid-aosp17.md). Only Waydroid's rc files use it.
++    if (name == "host") {
++        return android::base::GetUintProperty<uid_t>("waydroid.host.uid", AID_SYSTEM);
++    }
+     if (isalpha(name[0])) {
+         passwd* pwd = getpwnam(name.c_str());
+         if (!pwd) return ErrnoError() << "getpwnam failed";
+@@ -670,6 +677,11 @@ void InitKernelLogging(char** argv) {
+     android::base::InitLogging(argv, &android::base::KernelLogger, InitAborter);
+ }
+ 
++bool IsRunningInWaydroid() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ bool IsRecoveryMode() {
+     return access("/system/bin/recovery", F_OK) == 0;
+ }
+diff --git a/init/util.h b/init/util.h
+index 52edfe3..2334356 100644
+--- a/init/util.h
++++ b/init/util.h
+@@ -102,6 +102,10 @@ Result<std::string> ParseUmountAll(const std::vector<std::string>& args);
+ void SetStdioToDevNull(char** argv);
+ void InitKernelLogging(char** argv);
+ bool IsRecoveryMode();
++// android-pc: true inside Waydroid's container, where the host bind-mounts its generated
++// waydroid.prop on /vendor/waydroid.prop (docs/waydroid-aosp17.md). Never on the PC, whose
++// /vendor is a read-only, verified image.
++bool IsRunningInWaydroid();
+ 
+ bool IsDefaultMountNamespaceReady();
+ void SetDefaultMountNamespaceReady();
+diff --git a/init/waydroid_first_stage.cpp b/init/waydroid_first_stage.cpp
+new file mode 100644
+index 0000000..a565a71
+--- /dev/null
++++ b/init/waydroid_first_stage.cpp
+@@ -0,0 +1,140 @@
++/*
++ * Copyright (C) 2026 The Android PC Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++// android-pc: the first stage of init inside Waydroid's LXC container
++// (docs/waydroid-aosp17.md). Waydroid starts /init (this binary, second-stage init) with no
++// argument as the container's first process: there is no ramdisk, the host already mounted
++// system.img as / and vendor.img on /vendor, made /dev a tmpfs with the binder nodes, and
++// mounted /proc, a read-only /sys and the cgroup2 hierarchy. The host has no SELinux, so the
++// selinux_setup stage is skipped too.
++
++#include "waydroid_first_stage.h"
++
++#include <fcntl.h>
++#include <grp.h>
++#include <paths.h>
++#include <spawn.h>
++#include <stdlib.h>
++#include <linux/capability.h>
++#include <sys/mount.h>
++#include <sys/prctl.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include <android-base/chrono_utils.h>
++#include <android-base/logging.h>
++#include <private/android_filesystem_config.h>
++
++#include "first_stage_init.h"
++#include "second_stage_resources.h"
++#include "util.h"
++
++namespace android {
++namespace init {
++
++static int MkdirIfMissing(const char* dir, mode_t mode) {
++    return access(dir, F_OK) == 0 ? 0 : mkdir(dir, mode);
++}
++
++static int MknodIfMissing(const char* path, mode_t mode, dev_t dev) {
++    return access(path, F_OK) == 0 ? chmod(path, mode & 07777) : mknod(path, mode, dev);
++}
++
++static int RemountOrMount(const char* source, const char* target, const char* type,
++                          unsigned long flags, const char* data) {
++    if (mount(source, target, type, MS_REMOUNT | flags, data) == 0) return 0;
++    return mount(source, target, type, flags, data);
++}
++
++int WaydroidFirstStageMain(char** argv) {
++    android::base::boot_clock::time_point start_time = android::base::boot_clock::now();
++    std::vector<std::pair<std::string, int>> errors;
++#define CHECKCALL(x) \
++    if ((x) != 0) errors.emplace_back(#x " failed", errno);
++
++    // Capabilities that reach the host kernel and that nothing in the container needs (as
++    // upstream Waydroid's init): no reboot, module loading, raw I/O or clock setting, and no
++    // regaining them through exec.
++    for (int cap : {CAP_MAC_ADMIN, CAP_MAC_OVERRIDE, CAP_SYS_TIME, CAP_SYS_MODULE,
++                    CAP_SYS_RAWIO, CAP_SYS_BOOT}) {
++        prctl(PR_CAPBSET_DROP, cap, 0, 0, 0);
++    }
++    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
++
++    umask(0);
++    CHECKCALL(clearenv());
++    CHECKCALL(setenv("PATH", _PATH_DEFPATH, 1));
++
++    // waydroid-preinit (waydroid/android_vendor_waydroid_init): binder nodes if missing,
++    // /dev permissions, a writable cgroup2 mount, read-only /sys and /proc/sys.
++    pid_t preinit;
++    char* const preinit_argv[] = {const_cast<char*>("/system/bin/waydroid-preinit"), nullptr};
++    char* const preinit_env[] = {nullptr};
++    if (posix_spawn(&preinit, preinit_argv[0], nullptr, nullptr, preinit_argv, preinit_env) == 0) {
++        waitpid(preinit, nullptr, 0);
++    }
++
++    CHECKCALL(RemountOrMount("tmpfs", "/dev", "tmpfs", MS_NOSUID, "mode=0755"));
++    CHECKCALL(MkdirIfMissing("/dev/pts", 0755));
++    CHECKCALL(MkdirIfMissing("/dev/socket", 0755));
++    CHECKCALL(MkdirIfMissing("/dev/dm-user", 0755));
++#define MAKE_STR(x) __STRING(x)
++    // Remount only: a new proc mount would cover LXC's read-only /proc/sys and
++    // /proc/sysrq-trigger, which are the host kernel's.
++    CHECKCALL(mount("proc", "/proc", "proc", MS_REMOUNT,
++                    "hidepid=2,gid=" MAKE_STR(AID_READPROC)));
++#undef MAKE_STR
++    gid_t groups[] = {AID_READPROC};
++    CHECKCALL(setgroups(1, groups));
++
++    CHECKCALL(MknodIfMissing("/dev/kmsg", S_IFCHR | 0600, makedev(1, 11)));
++    CHECKCALL(MknodIfMissing("/dev/random", S_IFCHR | 0666, makedev(1, 8)));
++    CHECKCALL(MknodIfMissing("/dev/urandom", S_IFCHR | 0666, makedev(1, 9)));
++    CHECKCALL(MknodIfMissing("/dev/ptmx", S_IFCHR | 0666, makedev(5, 2)));
++    CHECKCALL(MknodIfMissing("/dev/null", S_IFCHR | 0666, makedev(1, 3)));
++
++    CHECKCALL(RemountOrMount("tmpfs", "/mnt", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
++                             "mode=0755,uid=0,gid=1000"));
++    CHECKCALL(MkdirIfMissing("/mnt/vendor", 0755));
++    CHECKCALL(MkdirIfMissing("/mnt/product", 0755));
++    CHECKCALL(mount("tmpfs", "/debug_ramdisk", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
++                    "mode=0755,uid=0,gid=0"));
++    CHECKCALL(mount("tmpfs", kSecondStageRes, "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
++                    "mode=0755,uid=0,gid=0"));
++#undef CHECKCALL
++
++    SetStdioToDevNull(argv);
++    InitKernelLogging(argv);
++    LOG(INFO) << "init first stage started (Waydroid container)";
++    for (const auto& [error_string, error_errno] : errors) {
++        LOG(ERROR) << error_string << " " << strerror(error_errno);
++    }
++
++    setenv(kEnvFirstStageStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(),
++           1);
++
++    // No SELinux on the host: straight to the second stage.
++    const char* path = "/system/bin/init";
++    const char* args[] = {path, "second_stage", nullptr};
++    execv(path, const_cast<char**>(args));
++    PLOG(FATAL) << "execv(\"" << path << "\") failed";
++    return 1;
++}
++
++}  // namespace init
++}  // namespace android
+diff --git a/init/waydroid_first_stage.h b/init/waydroid_first_stage.h
+new file mode 100644
+index 0000000..da9fcea
+--- /dev/null
++++ b/init/waydroid_first_stage.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (C) 2026 The Android PC Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#pragma once
++
++namespace android {
++namespace init {
++
++// The first stage of init in the container (no ramdisk, no SELinux); execs the second stage.
++int WaydroidFirstStageMain(char** argv);
++
++}  // namespace init
++}  // namespace android
+diff --git a/libprocessgroup/setup/cgroup_map_write.cpp b/libprocessgroup/setup/cgroup_map_write.cpp
+index 0b26e95..d8577da 100644
+--- a/libprocessgroup/setup/cgroup_map_write.cpp
++++ b/libprocessgroup/setup/cgroup_map_write.cpp
+@@ -27,7 +27,9 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
++#include <android-base/file.h>
+ #include <android-base/logging.h>
++#include <android-base/strings.h>
+ #include <processgroup/cgroup_descriptor.h>
+ #include <processgroup/processgroup.h>
+ #include <processgroup/setup.h>
+@@ -134,9 +136,46 @@ static bool IsOptionalController(const CgroupController* controller) {
+     return controller->flags() & CGROUPRC_CONTROLLER_FLAG_OPTIONAL;
+ }
+ 
++// In Waydroid's LXC container (docs/waydroid-aosp17.md) the host has only cgroup v2, and
++// waydroid-preinit has remounted the container's cgroup2 (its own subtree, in a cgroup
++// namespace) writable at /sys/fs/cgroup.
++static bool InWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
++// Moves the container's processes out of its cgroup root into <root>/init: controllers
++// cannot be enabled for children of a cgroup that has processes ("no internal processes").
++static bool MoveProcessesOutOfRoot(const std::string& root) {
++    std::string pids;
++    if (!android::base::ReadFileToString(root + "/cgroup.procs", &pids)) {
++        PLOG(ERROR) << "Failed to read " << root << "/cgroup.procs";
++        return false;
++    }
++    const std::string init_cgroup = root + "/init";
++    if (!Mkdir(init_cgroup, 0, "", "")) return false;
++    for (const auto& pid : android::base::Split(pids, "\n")) {
++        if (pid.empty()) continue;
++        // A process may have exited in between.
++        if (!android::base::WriteStringToFile(pid, init_cgroup + "/cgroup.procs") &&
++            errno != ESRCH) {
++            PLOG(ERROR) << "Failed to move " << pid << " into " << init_cgroup;
++            return false;
++        }
++    }
++    return true;
++}
++
+ static bool MountV2CgroupController(const CgroupDescriptor& descriptor) {
+     const CgroupController* controller = descriptor.controller();
+ 
++    if (InWaydroidContainer()) {
++        if (!MoveProcessesOutOfRoot(controller->path())) return false;
++        return ChangeDirModeAndOwner(controller->path(), descriptor.mode(), descriptor.uid(),
++                                     descriptor.gid()) ||
++               IsOptionalController(controller);
++    }
++
+     // /sys/fs/cgroup is created by cgroup2 with specific selinux permissions,
+     // try to create again in case the mount point is changed
+     if (!Mkdir(controller->path(), 0, "", "")) {
+@@ -220,6 +259,10 @@ static bool SetupCgroup(const CgroupDescriptor& descriptor) {
+         } else {
+             return ActivateV2CgroupController(descriptor);
+         }
++    } else if (InWaydroidContainer()) {
++        // No cgroup v1 on the host (and no mounting it from a container).
++        LOG(INFO) << "Waydroid container: no cgroup v1 controller " << controller->name();
++        return true;
+     } else {
+         return MountV1CgroupController(descriptor);
+     }

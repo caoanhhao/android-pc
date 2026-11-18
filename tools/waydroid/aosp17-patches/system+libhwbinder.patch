@@ -1,0 +1,60 @@
+diff --git a/Parcel.cpp b/Parcel.cpp
+index b7cd0b5..85f770f 100644
+--- a/Parcel.cpp
++++ b/Parcel.cpp
+@@ -74,6 +74,16 @@ static size_t pad_size(size_t s) {
+ #define STRICT_MODE_PENALTY_GATHER (0x40 << 16)
+ 
+ namespace android {
++
++// android-pc: inside Waydroid's container (docs/waydroid-aosp17.md) the host kernel has no
++// SELinux, so binder cannot hand a security context to a transaction and fails those that ask
++// for one. The host bind-mounts its waydroid.prop on /vendor/waydroid.prop; that file never
++// exists on the PC.
++static bool InWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ namespace hardware {
+ 
+ static std::atomic<size_t> gParcelGlobalAllocCount;
+@@ -205,7 +215,7 @@ status_t flatten_binder(const sp<ProcessState>& /*proc*/,
+             obj.flags = priority & FLAT_BINDER_FLAG_PRIORITY_MASK;
+             obj.flags |= FLAT_BINDER_FLAG_ACCEPTS_FDS | FLAT_BINDER_FLAG_INHERIT_RT;
+             obj.flags |= (policy & 3) << FLAT_BINDER_FLAG_SCHED_POLICY_SHIFT;
+-            if (local->isRequestingSid()) {
++            if (local->isRequestingSid() && !InWaydroidContainer()) {
+                 obj.flags |= FLAT_BINDER_FLAG_TXN_SECURITY_CTX;
+             }
+             obj.hdr.type = BINDER_TYPE_BINDER;
+diff --git a/ProcessState.cpp b/ProcessState.cpp
+index 4b2f4fc..fd9c908 100644
+--- a/ProcessState.cpp
++++ b/ProcessState.cpp
+@@ -48,6 +48,16 @@
+ // -------------------------------------------------------------------------
+ 
+ namespace android {
++
++// android-pc: inside Waydroid's container (docs/waydroid-aosp17.md) the host kernel has no
++// SELinux, so binder cannot hand a security context to a transaction and fails those that ask
++// for one. The host bind-mounts its waydroid.prop on /vendor/waydroid.prop; that file never
++// exists on the PC.
++static bool InWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ namespace hardware {
+ 
+ class PoolThread : public Thread
+@@ -129,7 +139,7 @@ void ProcessState::becomeContextManager()
+     AutoMutex _l(mLock);
+ 
+     flat_binder_object obj {
+-        .flags = FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
++        .flags = InWaydroidContainer() ? 0u : FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
+     };
+ 
+     status_t result = ioctl(mDriverFD, BINDER_SET_CONTEXT_MGR_EXT, &obj);

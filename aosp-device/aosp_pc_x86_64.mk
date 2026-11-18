@@ -24,6 +24,10 @@ include $(PC_DEVICE_DIR)/desktop/desktop.mk
 # Google's WebView as the default WebView provider, AOSP's as the alternative (phase F9p).
 include $(PC_DEVICE_DIR)/webview/webview.mk
 
+# The same images also run in Waydroid's LXC container on a Linux desktop; these pieces only act
+# there (docs/waydroid-aosp17.md).
+include $(PC_DEVICE_DIR)/waydroid/waydroid.mk
+
 PRODUCT_NAME := aosp_pc_x86_64
 PRODUCT_DEVICE := pc_x86_64
 PRODUCT_BRAND := Android

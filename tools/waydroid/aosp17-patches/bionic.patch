@@ -1,0 +1,25 @@
+diff --git a/libc/bionic/system_property_api.cpp b/libc/bionic/system_property_api.cpp
+index 34438e7..a051cf1 100644
+--- a/libc/bionic/system_property_api.cpp
++++ b/libc/bionic/system_property_api.cpp
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include <sys/system_properties.h>
++#include <unistd.h>
+ 
+ #include <async_safe/CHECK.h>
+ #include <system_properties/prop_area.h>
+@@ -56,7 +57,11 @@ int __system_property_set_filename(const char*) {
+ __BIONIC_WEAK_FOR_NATIVE_BRIDGE
+ int __system_property_area_init() {
+   bool fsetxattr_fail = false;
+-  return system_properties.AreaInit(PROP_DIRNAME, &fsetxattr_fail) && !fsetxattr_fail ? 0 : -1;
++  if (!system_properties.AreaInit(PROP_DIRNAME, &fsetxattr_fail)) return -1;
++  // android-pc: the SELinux label of the property files cannot be set inside Waydroid's
++  // container (no SELinux on the host); its waydroid.prop is only there (docs/waydroid-aosp17.md).
++  if (fsetxattr_fail && access("/vendor/waydroid.prop", F_OK) != 0) return -1;
++  return 0;
+ }
+ 
+ __BIONIC_WEAK_FOR_NATIVE_BRIDGE

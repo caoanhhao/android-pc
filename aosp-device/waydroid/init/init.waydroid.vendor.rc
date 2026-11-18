@@ -1,0 +1,29 @@
+# android-pc in Waydroid's LXC container (docs/waydroid-aosp17.md). Waydroid's host side sets
+# ro.boot.android_pc.waydroid=1 in waydroid.prop (tools/waydroid/aosp17-switch.sh); none of
+# this runs on the PC.
+
+on early-init && property:ro.boot.android_pc.waydroid=1
+    # Waydroid's composer instead of the PC's: its HIDL declarations go live before
+    # servicemanager and hwservicemanager read the manifests.
+    mount none /vendor/etc/waydroid/composer-hidl.xml /vendor/etc/vintf/manifest/waydroid.xml bind
+    # NVIDIA's device nodes in the container's /dev (Waydroid binds no NVIDIA node).
+    exec - root root -- /vendor/bin/sh /vendor/bin/waydroid-nvidia-nodes.sh
+    # NVIDIA's Vulkan driver from /vendor/lib64/hw, as on the PC's NVIDIA entry
+    # (hals/nvgpu/init.nvgpu.rc).
+    setprop ro.vulkan.apex ""
+    setprop debug.renderengine.backend skiavkthreaded
+
+on post-fs && property:ro.boot.android_pc.waydroid=1
+    start vendor.hwcomposer-2-1
+
+# Waydroid's composer is a Wayland client of the host's compositor: it runs as the host user
+# (waydroid.host.uid) to reach the session's Wayland socket.
+service vendor.hwcomposer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service --desktop_file_hint=Waydroid.desktop
+    override
+    class hal animation
+    user host
+    group system graphics drmrpc
+    capabilities SYS_NICE
+    onrestart restart surfaceflinger
+    task_profiles ServiceCapacityLow
+    disabled

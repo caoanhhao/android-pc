@@ -1,0 +1,4 @@
+<!-- Empty on the PC; in Waydroid init.waydroid.vendor.rc mounts composer-hidl.xml over it
+     (docs/waydroid-aosp17.md). -->
+<manifest version="1.0" type="device">
+</manifest>

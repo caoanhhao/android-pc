@@ -1,0 +1,60 @@
+diff --git a/libs/binder/Parcel.cpp b/libs/binder/Parcel.cpp
+index 1ae7af3..165d2f7 100644
+--- a/libs/binder/Parcel.cpp
++++ b/libs/binder/Parcel.cpp
+@@ -96,6 +96,16 @@ static size_t pad_size(size_t s) {
+ 
+ namespace android {
+ 
++// android-pc: inside Waydroid's container (docs/waydroid-aosp17.md) the host kernel has no
++// SELinux, so binder cannot hand a security context to a transaction and fails those that ask
++// for one. The host bind-mounts its waydroid.prop on /vendor/waydroid.prop; that file never
++// exists on the PC.
++static bool InWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
++
+ using namespace android::binder::impl;
+ using binder::borrowed_fd;
+ using binder::unique_fd;
+@@ -319,7 +329,7 @@ status_t Parcel::flattenBinder(const sp<IBinder>& binder) {
+                 schedBits = schedPolicyMask(policy, priority);
+             }
+             obj.flags = FLAT_BINDER_FLAG_ACCEPTS_FDS;
+-            if (local->isRequestingSid()) {
++            if (local->isRequestingSid() && !InWaydroidContainer()) {
+                 obj.flags |= FLAT_BINDER_FLAG_TXN_SECURITY_CTX;
+             }
+             if (local->isInheritRt()) {
+diff --git a/libs/binder/ProcessState.cpp b/libs/binder/ProcessState.cpp
+index dd4444b..565e2f4 100644
+--- a/libs/binder/ProcessState.cpp
++++ b/libs/binder/ProcessState.cpp
+@@ -82,6 +82,16 @@ bool readDriverFeatureFile(const char* filename) {
+ 
+ namespace android {
+ 
++// android-pc: inside Waydroid's container (docs/waydroid-aosp17.md) the host kernel has no
++// SELinux, so binder cannot hand a security context to a transaction and fails those that ask
++// for one. The host bind-mounts its waydroid.prop on /vendor/waydroid.prop; that file never
++// exists on the PC.
++static bool InWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
++
+ using namespace android::binder::impl;
+ using android::binder::unique_fd;
+ 
+@@ -236,7 +246,7 @@ bool ProcessState::becomeContextManager()
+     std::unique_lock<std::mutex> _l(mLock);
+ 
+     flat_binder_object obj {
+-        .flags = FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
++        .flags = InWaydroidContainer() ? 0u : FLAT_BINDER_FLAG_TXN_SECURITY_CTX,
+     };
+ 
+     int result = ioctl(mDriverFD, BINDER_SET_CONTEXT_MGR_EXT, &obj);

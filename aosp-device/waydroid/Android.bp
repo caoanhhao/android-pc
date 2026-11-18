@@ -1,0 +1,47 @@
+// android-pc in Waydroid's LXC container (docs/waydroid-aosp17.md): modules of the PC product
+// that only do something there. The NVIDIA files for the LineageOS 20 image (gralloc/, composer/,
+// tls/, test/) are built with the NDK by tools/waydroid/nvidia-build.sh, not here.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+prebuilt_etc {
+    name: "init.waydroid.vendor.rc",
+    src: "init/init.waydroid.vendor.rc",
+    sub_dir: "init",
+    vendor: true,
+}
+
+sh_binary {
+    name: "waydroid-nvidia-nodes.sh",
+    src: "init/waydroid-nvidia-nodes.sh",
+    vendor: true,
+}
+
+prebuilt_etc {
+    name: "waydroid-composer-hidl.xml",
+    src: "vintf/composer-hidl.xml",
+    filename: "composer-hidl.xml",
+    sub_dir: "waydroid",
+    vendor: true,
+}
+
+// The mount point of composer-hidl.xml; an empty fragment on the PC.
+prebuilt_etc {
+    name: "waydroid-vintf-placeholder",
+    src: "vintf/waydroid-empty.xml",
+    filename: "waydroid.xml",
+    sub_dir: "vintf/manifest",
+    vendor: true,
+}
+
+// sw_sync_* for hwcomposer.waydroid (libsync's LLNDK stubs do not export them);
+// tools/waydroid/aosp17-setup.sh adds it to the composer's static_libs.
+cc_library_static {
+    name: "libwaydroid_sw_sync",
+    srcs: ["sw_sync/sw_sync.c"],
+    vendor: true,
+    cflags: ["-Wall", "-Werror"],
+    visibility: ["//hardware/waydroid/hwcomposer"],
+}

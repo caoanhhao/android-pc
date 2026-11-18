@@ -1,0 +1,28 @@
+// waydroid-preinit from waydroid/android_vendor_waydroid_init (GPL-3.0-or-later), fetched by
+// tools/waydroid/aosp17-setup.sh into external/waydroid-preinit. The first-stage init
+// (ANDROID_PC_WAYDROID) runs it before anything else: binder nodes, /dev permissions,
+// a writable cgroup2 mount, a read-only /sys and /proc/sys (docs/waydroid-aosp17.md).
+
+package {
+    default_applicable_licenses: ["external_waydroid_preinit_license"],
+}
+
+license {
+    name: "external_waydroid_preinit_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-GPL-3.0"],
+    license_text: ["LICENSE"],
+}
+
+cc_binary {
+    name: "waydroid-preinit",
+    static_executable: true,
+    cpp_std: "c++20",
+    cflags: ["-Wall", "-Werror"],
+    srcs: [
+        "common/*.cpp",
+        "waydroid-preinit/*.cpp",
+    ],
+    local_include_dirs: ["common"],
+    static_libs: ["libbase"],
+}
