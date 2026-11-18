@@ -340,3 +340,10 @@ vendor image and a new system:
   LineageOS data (nothing in this image sets it), which dropped every app uid without the
   restricted bit. Fixed by hand at runtime (`settings put global restricted_networking_mode 0`
   persists); the first two are fixed in the image.
+- **21:00, real userdata, image with IPlatform, input and network fixes:** boots in ~25 s;
+  `waydroidplatform` registered; `waydroid app list`, `show-full-ui` and
+  `waydroid app launch com.android.settings` work (Settings resumed, `waydroid.active_apps` and
+  `policy_control` set). `dumpsys input` lists wayland_touch (TOUCH_MT), wayland_keyboard
+  (KEYBOARD, ALPHAKEY, DPAD), wayland_pointer (CURSOR, source MOUSE, axes sized to the
+  1260x1058 window) and wayland_tablet; mouse and key events reach the dispatcher. eth0 keeps
+  its name, netd installs the `eth0` routing table, and the container reaches the internet.
