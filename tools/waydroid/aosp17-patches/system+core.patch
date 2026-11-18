@@ -80,10 +80,10 @@ index bb09f30..d11967f 100644
      return FirstStageMain(argc, argv);
  #else
 diff --git a/init/property_service.cpp b/init/property_service.cpp
-index e6fffc4..1a1745a 100644
+index e6fffc4..dbce926 100644
 --- a/init/property_service.cpp
 +++ b/init/property_service.cpp
-@@ -1221,6 +1221,12 @@ void PropertyLoadBootDefaults() {
+@@ -1221,6 +1221,15 @@ void PropertyLoadBootDefaults() {
      load_properties_from_file("/odm_dlkm/etc/build.prop", nullptr, &properties);
      load_properties_from_partition("odm", /* support_legacy_path_until */ 28);
      load_properties_from_partition("product", /* support_legacy_path_until */ 30);
@@ -92,6 +92,9 @@ index e6fffc4..1a1745a 100644
 +    // exists there.
 +    if (access("/vendor/waydroid.prop", F_OK) == 0) {
 +        load_properties_from_file("/vendor/waydroid.prop", nullptr, &properties);
++        // Waydroid sets ro.vndk.lite for "mainline" vendor images (ours); AOSP 17 has no
++        // VNDK and linkerconfig refuses to run with it, which leaves no linker namespaces.
++        properties.erase("ro.vndk.lite");
 +    }
  
      if (access(kDebugRamdiskProp, R_OK) == 0) {
@@ -255,10 +258,10 @@ index 52edfe3..2334356 100644
  void SetDefaultMountNamespaceReady();
 diff --git a/init/waydroid_first_stage.cpp b/init/waydroid_first_stage.cpp
 new file mode 100644
-index 0000000..2e9933c
+index 0000000..484044b
 --- /dev/null
 +++ b/init/waydroid_first_stage.cpp
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,150 @@
 +/*
 + * Copyright (C) 2026 The Android PC Authors
 + *
@@ -372,6 +375,12 @@ index 0000000..2e9933c
 +    // needs loop-control; ueventd's cold boot cannot run on the read-only /sys.
 +    CHECKCALL(MkdirIfMissing("/dev/block", 0755));
 +    CHECKCALL(MknodIfMissing("/dev/loop-control", S_IFCHR | 0660, makedev(10, 237)));
++
++    // Waydroid's composer instead of the PC's (aosp-device/waydroid): its HIDL declarations
++    // go over the empty VINTF fragment here, before init splits the bootstrap and default
++    // mount namespaces, so that hwservicemanager (default namespace) sees them too.
++    CHECKCALL(mount("/vendor/etc/waydroid/composer-hidl.xml",
++                    "/vendor/etc/vintf/manifest/waydroid.xml", nullptr, MS_BIND, nullptr));
 +
 +    CHECKCALL(RemountOrMount("tmpfs", "/mnt", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
 +                             "mode=0755,uid=0,gid=1000"));

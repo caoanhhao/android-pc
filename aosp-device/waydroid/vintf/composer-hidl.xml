@@ -1,6 +1,6 @@
 <!-- Waydroid only (docs/waydroid-aosp17.md): Waydroid's composer (hwcomposer.waydroid in
      AOSP's HIDL composer 2.1 service) and the HIDL interfaces it serves. Kept outside
-     /vendor/etc/vintf; init.waydroid.vendor.rc bind-mounts it over waydroid.xml there. -->
+     /vendor/etc/vintf; init's Waydroid first stage bind-mounts it over waydroid.xml there. -->
 <manifest version="1.0" type="device">
     <hal format="hidl">
         <name>android.hardware.graphics.composer</name>

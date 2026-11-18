@@ -104,10 +104,9 @@ PC's `/vendor` is a read-only, verified image, and `ro.boot.*` comes from its bo
   AOSP's HIDL composer 2.1 service, run as the host user (`user host`). Fetched from
   `waydroid/android_hardware_waydroid` (`dev/lineage-23.2`) into `hardware/waydroid` by
   `tools/waydroid/aosp17-setup.sh`; `external/wayland-protocols` gets fractional-scale-v1. Its
-  VINTF declarations live in `/vendor/etc/waydroid/composer-hidl.xml`;
-  `init.waydroid.vendor.rc` bind-mounts them over the empty
-  `/vendor/etc/vintf/manifest/waydroid.xml` at early-init, and starts the service (disabled
-  on the PC).
+  VINTF declarations live in `/vendor/etc/waydroid/composer-hidl.xml`; init's Waydroid first
+  stage bind-mounts them over the empty `/vendor/etc/vintf/manifest/waydroid.xml`, and
+  `init.waydroid.vendor.rc` starts the service (disabled on the PC).
 - **gralloc, Vulkan, GLES:** the PC's own: minigbm with the "nvidia" backend, `vulkan.nvidia`
   + nvglibc + NVIDIA's userspace (620.70.06, the host module's version), ANGLE. In the
   container `/dev/dri/renderD128` is the host's iGPU (minigbm has no backend for it) and
@@ -128,7 +127,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 |---|---|---|
 | system/core init | `waydroid_first_stage.cpp`: when `/vendor/waydroid.prop` exists, `/init` (second-stage init) runs a short first stage itself: waydroid-preinit, `/dev` and `/proc` remounted instead of mounted, nodes made only if missing, then `second_stage` | Waydroid starts `/system/bin/init` with no argument and no ramdisk; it aborts without a first stage, and the PC's first stage mounts partitions and loads SELinux policy, which the container has neither of |
 | system/core init | `mount_all` mounts nothing in the container, "not encryptable" | every fstab entry fails (Waydroid mounted everything), and a failing `mount_all` ends in recovery |
-| system/core init | `/vendor/waydroid.prop` read last | Waydroid's whole configuration (session, `[properties]`) is in that file |
+| system/core init | `/vendor/waydroid.prop` read last, without `ro.vndk.lite`; the first stage bind-mounts the composer's VINTF fragment | Waydroid's whole configuration (session, `[properties]`) is in that file; Waydroid sets `ro.vndk.lite` for vendor images like ours and linkerconfig refuses VNDK-Lite; a bind made from init.rc stays in the bootstrap mount namespace, which hwservicemanager does not see |
 | system/core init | reboot/shutdown in the container: stop every process and exit (the container has no `CAP_SYS_BOOT`), with no unmounting, `EXT4_IOC_SHUTDOWN`/`F2FS_IOC_SHUTDOWN` or bootloader message; no `/proc/sysrq-trigger` crash on a fatal init error; the first stage only remounts `/proc` (a new proc mount would cover LXC's read-only `/proc/sys` and `sysrq-trigger`) and drops `CAP_SYS_BOOT/MODULE/RAWIO/TIME/MAC_*` from the bounding set, with no_new_privs (as upstream's "Drop harmful capabilities") | every mount in the container belongs to the host: the reboot path shut down the host's `/` (see "Container guard") |
 | system/core init | services start without an SELinux context; a failing `createProcessGroup()` is a warning | no SELinux on the host (`security_compute_create` fails: "Could not get process context"); the container gets only the cgroup controllers the host delegates |
 | system/core libprocessgroup | `SetupCgroups` in the container: no cgroup v1 controllers, no cgroup2 mount (waydroid-preinit remounted the container's own), processes moved from the cgroup root to `/init` so controllers can be enabled below it (as upstream's "Move all processes away from root cgroup") | the host has only cgroup v2; `blkio` (v1) failed first and stopped the setup, so `/sys/fs/cgroup/system` never existed |
@@ -252,3 +251,14 @@ vendor image and a new system:
   it then triggered the reboot path, which stopped the container cleanly. In the container it
   now uses an empty context, as upstream Waydroid's servicemanager does. The host's
   systemd-coredump collects the cores of crashing container processes (`coredumpctl`).
+- Test boot 6 (15:48): servicemanager ran, and the host session connected to it
+  ("Service manager /dev/anbox-binder has appeared"). hwcomposer.waydroid reached the host's
+  Wayland display, but could not register: "must be in VINTF manifest". The early-init bind
+  mount of `composer-hidl.xml` was made in init's bootstrap mount namespace, which
+  hwservicemanager, in the default namespace, does not see. The first stage now makes it,
+  before init creates the namespaces. Also, linkerconfig refused to run ("no longer supports
+  VNDK-Lite configuration"), because Waydroid puts `ro.vndk.lite=true` in `waydroid_base.prop`
+  for "mainline" vendor images. With no linker namespaces, keystore2 and many services exited
+  at once; keystore2 is critical, so init took the reboot path, and the container stopped
+  cleanly. init now drops `ro.vndk.lite` from `waydroid.prop`, as upstream Waydroid's init
+  does.
