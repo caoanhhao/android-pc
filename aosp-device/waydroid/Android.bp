@@ -45,3 +45,11 @@ cc_library_static {
     cflags: ["-Wall", "-Werror"],
     visibility: ["//hardware/waydroid/hwcomposer"],
 }
+
+prebuilt_etc {
+    name: "waydroid-bind-mounts",
+    src: "bind-mounts",
+    filename: "bind-mounts",
+    sub_dir: "waydroid",
+    vendor: true,
+}

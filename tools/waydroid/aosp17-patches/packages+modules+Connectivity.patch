@@ -1,20 +1,116 @@
 diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
-index 7ba3247..114ce24 100644
+index 7ba3247..a866b45 100644
 --- a/bpf/loader/NetBpfLoad.cpp
 +++ b/bpf/loader/NetBpfLoad.cpp
-@@ -1918,6 +1918,15 @@ int main(int argc, char** argv, char * const envp[]) {
+@@ -1509,6 +1509,14 @@ static int libbpfPrint(enum libbpf_print_level lvl, const char *const formatStr,
+     return 0;
+ }
+ 
++// android-pc in Waydroid's LXC container (docs/waydroid-aosp17.md): the BPF sysctls are the
++// host kernel's and read-only there; the host decides them. The programs and maps are loaded
++// and attached to the container's own cgroup, as with upstream Waydroid.
++static bool inWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ static int doLoad(char** argv, char * const envp[]) {
+     libbpf_set_print(libbpfPrint);
+ 
+@@ -1739,7 +1747,7 @@ static int doLoad(char** argv, char * const envp[]) {
+         // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
+         // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
+         if (!writeFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
+-            isAtLeastKernelVersion(5, 13)) return 23;
++            isAtLeastKernelVersion(5, 13) && !inWaydroidContainer()) return 23;
+     }
+ 
+     if (isAtLeastU) {
+@@ -1754,12 +1762,14 @@ static int doLoad(char** argv, char * const envp[]) {
+         //  kernel does not have CONFIG_BPF_JIT=y)
+         // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
+         // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
+-        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 24;
++        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n") && !inWaydroidContainer())
++            return 24;
+ 
+         // Enable JIT kallsyms export for privileged users only
+         // (Note: this (open) will fail with ENOENT 'No such file or directory' if
+         //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
+-        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 25;
++        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n") && !inWaydroidContainer())
++            return 25;
+     }
+ 
+     // Create all the pin subdirectories
+@@ -1779,7 +1789,8 @@ static int doLoad(char** argv, char * const envp[]) {
+         if (!createDir("/sys/fs/bpf/loader")) return 31;
+     }
+ 
+-    if (runningAsRoot) {  // implies U QPR3+ and kernel 4.14+
++    // In Waydroid's container the host kernel already has programs and maps of its own.
++    if (runningAsRoot && !inWaydroidContainer()) {  // implies U QPR3+ and kernel 4.14+
+         // There should not be any programs or maps yet
+         errno = 0;
+         uint32_t progId = bpfGetNextProgId(0);  // expect 0 with errno == ENOENT
+@@ -1872,6 +1883,15 @@ static int doLoad(char** argv, char * const envp[]) {
          return 0;
      }
  
-+    // android-pc in Waydroid's container (docs/waydroid-aosp17.md): BPF programs and maps
-+    // would be loaded into the host kernel and attached to its cgroups, and its sysctls are
-+    // read-only there. Load nothing; network accounting and firewalling stay with the host.
-+    if (access("/vendor/waydroid.prop", F_OK) == 0) {
-+        ALOGI("Waydroid container: not loading BPF programs into the host kernel.");
++    // In Waydroid's container only the network programs above are loaded (attached to the
++    // container's cgroup and network namespace); the uprobe and platform loaders attach
++    // tracing programs kernel-wide, to the host's processes too.
++    if (inWaydroidContainer()) {
++        ALOGI("Waydroid container: network programs only, no uprobestats/platform loaders.");
 +        if (!SetProperty("bpf.progs_loaded", "1")) return 125;
 +        return 0;
 +    }
 +
-     // Normal 'initial' entry point
-     return android::bpf::doLoad(argv, envp);
- }
+     // unreachable before U QPR3
+     if (exists(uprobestatsBpfLoader)) {
+       ALOGI("done, transferring control to uprobestatsbpfload.");
+diff --git a/bpf/netd/BpfHandler.cpp b/bpf/netd/BpfHandler.cpp
+index 9b57548..3ad295a 100644
+--- a/bpf/netd/BpfHandler.cpp
++++ b/bpf/netd/BpfHandler.cpp
+@@ -332,12 +332,17 @@ Result<void> BpfHandler::init(const char* cg2_path) {
+             return Error(errno) << "Failed to set 1GiB RLIMIT_MEMLOCK";
+ 
+         // Make sure netd can create & write maps.  sepolicy is V+, but enough to enforce on 25Q2+
++        // android-pc: not in Waydroid's container (docs/waydroid-aosp17.md). The maps are
++        // created by NetBpfLoad (root); creating one needs CAP_BPF or CAP_SYS_ADMIN, which
++        // netd lacks there, when the host keeps unprivileged BPF disabled.
++        if (access("/vendor/waydroid.prop", F_OK) != 0) {
+         int key = 1;
+         int value = 123;
+         unique_fd map(bpf::createMap(BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2, 0));
+         if (!map.ok()) return Error(errno) << "map create failed";
+         int rv = bpf::writeToMapEntry(map, &key, &value, BPF_ANY);
+         if (rv) return Error(errno) << "map write failed (rv=" << rv << ")";
++        }
+     }
+ 
+     if (isAtLeast26Q2) {
+diff --git a/service/jni/com_android_server_connectivity_ClatCoordinator.cpp b/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
+index 70991eb..dcbdc56 100644
+--- a/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
++++ b/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
+@@ -68,10 +68,14 @@ static void verifyPerms(const char * const path,
+     if (s.st_uid != uid) ALOGF("'%s' uid is %d != %d", path, s.st_uid, uid);
+     if (s.st_gid != gid) ALOGF("'%s' gid is %d != %d", path, s.st_gid, gid);
+ 
+-    char b[255] = {};
+-    int v = lgetxattr(path, "security.selinux", &b, sizeof(b));
+-    if (v < 0) ALOGF("lgetxattr '%s' errno=%d", path, errno);
+-    if (strncmp(ctxt, b, sizeof(b))) ALOGF("context of '%s' is '%s' != '%s'", path, b, ctxt);
++    // android-pc: Waydroid's host has no SELinux, so nothing has a context
++    // (docs/waydroid-aosp17.md).
++    if (access("/vendor/waydroid.prop", F_OK) != 0) {
++        char b[255] = {};
++        int v = lgetxattr(path, "security.selinux", &b, sizeof(b));
++        if (v < 0) ALOGF("lgetxattr '%s' errno=%d", path, errno);
++        if (strncmp(ctxt, b, sizeof(b))) ALOGF("context of '%s' is '%s' != '%s'", path, b, ctxt);
++    }
+ 
+     int fd = -1;
+ 

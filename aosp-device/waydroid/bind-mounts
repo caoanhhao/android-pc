@@ -1,0 +1,9 @@
+# Bind mounts for Waydroid's container (docs/waydroid-aosp17.md), one "SOURCE TARGET" per line.
+# init's Waydroid first stage makes them before init splits its bootstrap and default mount
+# namespaces; a mount from init.rc would stay in the bootstrap namespace in the container.
+#
+# Waydroid's composer and the HIDL service manager instead of the PC's composer APEX.
+/vendor/etc/waydroid/composer-hidl.xml /vendor/etc/vintf/manifest/waydroid.xml
+# No sensors sub-HAL, as on the PC (aosp-device/pc/init.pc.rc): Cuttlefish's asks its host over
+# /dev/hvc* and SensorService then blocks system_server.
+/vendor/etc/sensors/hals.pc.conf /vendor/etc/sensors/hals.conf

@@ -1,0 +1,54 @@
+diff --git a/keystore2/src/utils.rs b/keystore2/src/utils.rs
+index b27a3c0..9181aa4 100644
+--- a/keystore2/src/utils.rs
++++ b/keystore2/src/utils.rs
+@@ -52,6 +52,7 @@ use log::{debug, error, info, warn};
+ use packagemanager_aidl::aidl::android::content::pm::IPackageManagerNative::{
+     IPackageManagerNative, LOCATION_SYSTEM,
+ };
++use std::ffi::CStr;
+ use std::iter::IntoIterator;
+ use std::thread::sleep;
+ use std::time::Duration;
+@@ -114,13 +115,22 @@ pub struct Challenge(pub i64);
+ /// 999912312359559, which is 253402300799000 ms from Jan 1, 1970.
+ pub const UNDEFINED_NOT_AFTER: i64 = 253402300799000i64;
+ 
++/// android-pc: in Waydroid's container (docs/waydroid-aosp17.md) the host has no SELinux, so
++/// binder hands over no calling sid; the checks then run against a placeholder context, which
++/// libselinux there allows. Elsewhere a missing sid stays an error.
++fn calling_sid_or_waydroid(calling_sid: Option<&CStr>) -> Option<&CStr> {
++    static IN_WAYDROID: std::sync::LazyLock<bool> =
++        std::sync::LazyLock::new(|| std::path::Path::new("/vendor/waydroid.prop").exists());
++    calling_sid.or_else(|| if *IN_WAYDROID { Some(c"u:r:waydroid_app:s0") } else { None })
++}
++
+ /// This function uses its namesake in the permission module and in
+ /// combination with with_calling_sid from the binder crate to check
+ /// if the caller has the given keystore permission.
+ pub fn check_keystore_permission(perm: KeystorePerm) -> anyhow::Result<()> {
+     ThreadState::with_calling_sid(|calling_sid| {
+         permission::check_keystore_permission(
+-            calling_sid
++            calling_sid_or_waydroid(calling_sid)
+                 .ok_or_else(Error::sys)
+                 .context(ks_err!("Cannot check permission without calling_sid."))?,
+             perm,
+@@ -135,7 +145,7 @@ pub fn check_grant_permission(access_vec: KeyPermSet, key: &KeyDescriptor) -> an
+     ThreadState::with_calling_sid(|calling_sid| {
+         permission::check_grant_permission(
+             AppUid::calling(),
+-            calling_sid
++            calling_sid_or_waydroid(calling_sid)
+                 .ok_or_else(Error::sys)
+                 .context(ks_err!("Cannot check permission without calling_sid."))?,
+             access_vec,
+@@ -155,7 +165,7 @@ pub fn check_key_permission(
+     ThreadState::with_calling_sid(|calling_sid| {
+         permission::check_key_permission(
+             AppUid::calling(),
+-            calling_sid
++            calling_sid_or_waydroid(calling_sid)
+                 .ok_or_else(Error::sys)
+                 .context(ks_err!("Cannot check permission without calling_sid."))?,
+             perm,

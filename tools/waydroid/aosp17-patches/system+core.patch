@@ -258,10 +258,10 @@ index 52edfe3..2334356 100644
  void SetDefaultMountNamespaceReady();
 diff --git a/init/waydroid_first_stage.cpp b/init/waydroid_first_stage.cpp
 new file mode 100644
-index 0000000..484044b
+index 0000000..98b09a7
 --- /dev/null
 +++ b/init/waydroid_first_stage.cpp
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,165 @@
 +/*
 + * Copyright (C) 2026 The Android PC Authors
 + *
@@ -301,7 +301,9 @@ index 0000000..484044b
 +#include <unistd.h>
 +
 +#include <android-base/chrono_utils.h>
++#include <android-base/file.h>
 +#include <android-base/logging.h>
++#include <android-base/strings.h>
 +#include <private/android_filesystem_config.h>
 +
 +#include "first_stage_init.h"
@@ -376,16 +378,29 @@ index 0000000..484044b
 +    CHECKCALL(MkdirIfMissing("/dev/block", 0755));
 +    CHECKCALL(MknodIfMissing("/dev/loop-control", S_IFCHR | 0660, makedev(10, 237)));
 +
-+    // Waydroid's composer instead of the PC's (aosp-device/waydroid): its HIDL declarations
-+    // go over the empty VINTF fragment here, before init splits the bootstrap and default
-+    // mount namespaces, so that hwservicemanager (default namespace) sees them too.
-+    CHECKCALL(mount("/vendor/etc/waydroid/composer-hidl.xml",
-+                    "/vendor/etc/vintf/manifest/waydroid.xml", nullptr, MS_BIND, nullptr));
++    // The vendor's bind mounts for the container ("SOURCE TARGET" lines,
++    // aosp-device/waydroid/bind-mounts), made here, before init splits its bootstrap and
++    // default mount namespaces: a mount from init.rc would stay in the bootstrap namespace.
++    std::string bind_mounts;
++    if (android::base::ReadFileToString("/vendor/etc/waydroid/bind-mounts", &bind_mounts)) {
++        for (const auto& line : android::base::Split(bind_mounts, "\n")) {
++            auto fields = android::base::Tokenize(line, " \t");
++            if (fields.size() != 2 || fields[0][0] == '#') continue;
++            if (mount(fields[0].c_str(), fields[1].c_str(), nullptr, MS_BIND, nullptr) != 0) {
++                errors.emplace_back("bind " + fields[0] + " " + fields[1] + " failed", errno);
++            }
++        }
++    }
 +
 +    CHECKCALL(RemountOrMount("tmpfs", "/mnt", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
 +                             "mode=0755,uid=0,gid=1000"));
 +    CHECKCALL(MkdirIfMissing("/mnt/vendor", 0755));
 +    CHECKCALL(MkdirIfMissing("/mnt/product", 0755));
++    // No metadata partition in the container: aconfigd keeps its flag storage there (and
++    // system_server cannot start without it). A tmpfs: the flags start from their defaults at
++    // every boot, and the user's /data is not touched.
++    CHECKCALL(mount("tmpfs", "/metadata", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
++                    "mode=0755,uid=0,gid=0"));
 +    CHECKCALL(mount("tmpfs", "/debug_ramdisk", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
 +                    "mode=0755,uid=0,gid=0"));
 +    CHECKCALL(mount("tmpfs", kSecondStageRes, "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,

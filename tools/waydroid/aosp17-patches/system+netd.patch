@@ -1,5 +1,5 @@
 diff --git a/server/Controllers.cpp b/server/Controllers.cpp
-index 8a2c3be..9d6a08c 100644
+index 8a2c3be..862d461 100644
 --- a/server/Controllers.cpp
 +++ b/server/Controllers.cpp
 @@ -324,7 +324,10 @@ int Controllers::initIptablesRules() {
@@ -7,9 +7,9 @@ index 8a2c3be..9d6a08c 100644
      if (initIptablesRules()) {
          gLog.error("Failed to initialize iptables rules");
 -        exit(1);
-+        // android-pc in Waydroid's container (docs/waydroid-aosp17.md): the rules that match
-+        // BPF programs cannot load (none are loaded into the host kernel); the container's own
-+        // network namespace keeps the rest.
++        // android-pc in Waydroid's container (docs/waydroid-aosp17.md): the host may have no
++        // legacy iptables (nftables only); the host's side of Waydroid does the container's
++        // networking.
 +        if (access("/vendor/waydroid.prop", F_OK) != 0) exit(1);
      }
      Stopwatch s;
@@ -25,37 +25,3 @@ index 8a2c3be..9d6a08c 100644
      }
      gLog.info("Enabling bandwidth control: %" PRId64 "us", s.getTimeAndResetUs());
  
-diff --git a/server/main.cpp b/server/main.cpp
-index be9a1d0..c6cca93 100644
---- a/server/main.cpp
-+++ b/server/main.cpp
-@@ -120,7 +120,18 @@ bool initDnsResolver() {
- 
- }  // namespace
- 
-+// android-pc in Waydroid's container (docs/waydroid-aosp17.md): no BPF programs are loaded
-+// into the host kernel, so netd runs without them.
-+static bool inWaydroidContainer() {
-+    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
-+    return waydroid;
-+}
-+
- int main(const int argc, const char* argv[]) {
-+    if ((argc == 2) && !strcmp(argv[1], "oneshot") && inWaydroidContainer()) {
-+        ALOGI("Waydroid container: no BPF programs, nothing to set up");
-+        return 0;
-+    }
-     if ((argc == 2) && !strcmp(argv[1], "oneshot")) {
-         setenv("NETD_ONESHOT", "1", 1);
-         return libnetd_updatable_init("/sys/fs/cgroup");
-@@ -145,7 +156,9 @@ int main(const int argc, const char* argv[]) {
-         exit(1);
-     }
- 
--    if (libnetd_updatable_init(cg2_path.c_str())) {
-+    if (inWaydroidContainer()) {
-+        ALOGI("Waydroid container: skipping libnetd_updatable_init (no BPF programs)");
-+    } else if (libnetd_updatable_init(cg2_path.c_str())) {
-         ALOGE("libnetd_updatable_init failed");
-         exit(1);
-     }

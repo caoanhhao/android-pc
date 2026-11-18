@@ -160,7 +160,10 @@ install_aosp17() {
         $SUDO sed -E '/^(ro\.dalvik\.vm\.native\.bridge|ro\.enable\.native\.bridge\.exec|ro\.dalvik\.vm\.isa\.arm(64)?|ro\.product\.cpu\.abilist(32|64)?|ro\.hardware\.(gralloc|egl|vulkan)|gralloc\.gbm\.[a-z]*|debug\.angle\.[a-z_]*|ro\.zygote\.disable_gl_preload|debug\.nvvk\.pipeline_cache_max|ro\.opengles\.version|debug\.hwui\.renderer) =/d' \
             "$WD/properties.lineage20" | $SUDO tee "$WD/properties.aosp17" >/dev/null
         # No boot-control HAL in the container (no misc partition: it aborts, and vold's
-        # checkpoint step waits for it forever, which stalls post-fs-data).
+        # checkpoint step waits for it forever, which stalls post-fs-data), and none of the
+        # Cuttlefish HALs that talk to a host over /dev/hvc* (oemlock, UWB, Thread): they abort,
+        # and system_server waits for the declared ones. No frp partition either: an empty
+        # ro.frp.pst keeps PersistentDataBlockService off.
         # The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in
         # Waydroid they come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the
         # container pieces (aosp-device/waydroid/init/init.waydroid.vendor.rc).
@@ -173,11 +176,15 @@ install_aosp17() {
             'ro.boot.vendor.apex.com.android.hardware.secure_element = com.android.hardware.secure_element' \
             'ro.boot.vendor.apex.com.google.emulated.camera.provider.hal = none' \
             'ro.boot.vendor.apex.com.android.hardware.boot = none' \
+            'ro.boot.vendor.apex.com.google.cf.oemlock = none' \
+            'ro.boot.vendor.apex.com.android.hardware.uwb = none' \
+            'ro.boot.vendor.apex.com.android.hardware.threadnetwork = none' \
             'ro.hardware.hwcomposer = waydroid' \
             'ro.hardware.gralloc = minigbm' \
             'ro.hardware.egl = angle' \
             'ro.hardware.vulkan = nvidia' \
             'ro.hardware.camera = ' \
+            'ro.frp.pst = ' \
             'ro.opengles.version = 196609' \
             'debug.hwui.renderer = skiavk' \
             'ro.zygote.disable_gl_preload = true' \

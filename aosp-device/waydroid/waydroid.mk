@@ -10,6 +10,7 @@ PRODUCT_PACKAGES += \
     hwservicemanager \
     init.waydroid.vendor.rc \
     waydroid-composer-hidl.xml \
+    waydroid-bind-mounts \
     waydroid-vintf-placeholder \
     waydroid-nvidia-nodes.sh
 
