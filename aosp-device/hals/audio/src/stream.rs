@@ -111,20 +111,20 @@ fn apply_gain(data: &mut [u8], format: pcm::Format, gain: f32) {
 }
 
 /// The device behind a stream: an ALSA PCM, opened while the stream is out of standby; in
-/// Waydroid's container, an output with no PCM plays to the desktop session's PulseAudio
-/// server; otherwise a null device that keeps time.
+/// Waydroid's container, a stream with no PCM plays to or captures from the desktop
+/// session's PulseAudio server; otherwise a null device that keeps time.
 pub struct SoundDevice {
     io: Io,
     address: Option<PcmAddress>,
     config: pcm::Config,
     pcm: Option<Pcm>,
-    /// Plays to PulseAudio instead of the null device.
+    /// Plays to or captures from PulseAudio instead of the null device.
     use_pulse: bool,
     pulse: Option<PulseStream>,
     levels: Arc<Levels>,
 }
 
-/// Buffering of a PulseAudio playback stream.
+/// Buffering of a PulseAudio stream.
 const PULSE_LATENCY_MS: u32 = 40;
 
 fn pulse_spec(config: &pcm::Config) -> pulse::Spec {
@@ -145,17 +145,17 @@ impl SoundDevice {
         config: pcm::Config,
         levels: Arc<Levels>,
     ) -> Self {
-        let use_pulse = address.is_none()
-            && io == Io::Output
-            && Path::new(pulse::WAYDROID_SOCKET).exists();
+        let use_pulse = address.is_none() && Path::new(pulse::WAYDROID_SOCKET).exists();
         Self { io, address, config, pcm: None, use_pulse, pulse: None, levels }
     }
 
-    /// Plays `buf` to the PulseAudio server; false if it cannot (no server, or it went
-    /// away), and the next transfer tries again with a new connection.
-    fn play_to_pulse(&mut self, buf: &[u8]) -> bool {
+    /// Plays `buf` to or captures it from the PulseAudio server; false if it cannot (no
+    /// server, or it went away), and the next transfer tries again with a new connection.
+    fn pulse_transfer(&mut self, buf: &mut [u8]) -> bool {
+        let io = self.io;
         let result = self.pulse().and_then(|stream| match stream {
-            Some(stream) => stream.write(buf),
+            Some(stream) if io == Io::Output => stream.write(buf),
+            Some(stream) => stream.read(buf),
             None => Ok(()),
         });
         if let Err(err) = result {
@@ -172,12 +172,13 @@ impl SoundDevice {
             return Ok(None);
         }
         if self.pulse.is_none() {
-            let stream = PulseStream::open(
+            let open = if self.io == Io::Output { PulseStream::open } else { PulseStream::open_record };
+            let stream = open(
                 Path::new(pulse::WAYDROID_SOCKET),
                 pulse_spec(&self.config),
                 PULSE_LATENCY_MS,
             )?;
-            debug!("{}: playing {:?}", pulse::WAYDROID_SOCKET, self.config);
+            debug!("{}: {:?} {:?}", pulse::WAYDROID_SOCKET, self.io, self.config);
             self.pulse = Some(stream);
         }
         Ok(self.pulse.as_mut())
@@ -217,7 +218,10 @@ impl Device for SoundDevice {
         if io == Io::Output {
             apply_gain(buf, format, gain);
         }
-        if use_pulse && self.play_to_pulse(buf) {
+        if use_pulse && self.pulse_transfer(buf) {
+            if io == Io::Input {
+                apply_gain(buf, format, gain);
+            }
             return Ok(());
         }
         match self.pcm()? {

@@ -144,7 +144,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | system/memory libmeminfo | no abort when the GPU-memory map is missing (container only) | the tracing program behind it is not loaded |
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | hardware/interfaces hwc2on1adapter | a hotplug of the primary display re-reads its configs and reaches SurfaceFlinger as a reconnect (upstream Waydroid's "hwc2on1: Handle primary hotplugs") | the hwcomposer reports a host window resize as a primary hotplug; the stock adapter drops it ("non-external display"), so Android kept the size the window had at boot (half the screen) |
-| (ours) aosp-device/hals/audio | the Rust audio HAL plays to the desktop session's PulseAudio server (`src/pulse.rs`, the native protocol over the socket Waydroid binds at `/run/xdg/pulse/native`) when an output has no ALSA PCM and that socket exists | the container has no `/dev/snd`, so every stream went to the HAL's null device and Waydroid had no sound; capture stays silent |
+| (ours) aosp-device/hals/audio | the Rust audio HAL plays to the desktop session's PulseAudio server (`src/pulse.rs`, the native protocol over the socket Waydroid binds at `/run/xdg/pulse/native`) when a stream has no ALSA PCM and that socket exists, and captures from its default source the same way | the container has no `/dev/snd`, so every stream went to the HAL's null device: Waydroid had no sound and a silent microphone |
 | system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`) |
 | system/core init keychords | only character devices in /dev/input are opened | init watches /dev/input for keychords and opens new nodes blocking; the composer's FIFOs there (wl_*_events) hung init (stuck after `vdc keymaster earlyBootEnded`, a zombie vdc never reaped) once /dev/input existed early in boot |
 | system/libvintf | the runtime check skips the kernel SELinux policy version in the container when it reads 0 | the host kernel has no SELinux; `VintfObject.verifyBuildAtBoot()` failed ("kernelSepolicyVersion = 0 but required >= 30") and `Build.isBuildConsistent()` made system_server show "There's an internal problem with your device" at every boot (on Android 17 this check is VINTF, not the partition fingerprints) |
@@ -358,6 +358,10 @@ vendor image and a new system:
 - **21:41, sound:** with the PulseAudio output in the audio HAL, an app's AAudio stream
   (Chromium) shows up on the host as sink input "Android" (application.id `android-pc`,
   s16le 2ch 48 kHz) on the default sink.
+- **22:22, microphone:** with record streams in `pulse.rs`, AOSP's AAudio example
+  `input_monitor` (built and run from `/data/local/tmp`) reads the host's default source
+  (the UGREEN webcam microphone) at 48 kHz with no xruns; it shows up on the host as source
+  output "Android".
 - **21:55, gamepads (padctl):** tested with a uinput pad shaped like padctl's output (045e:0b00,
   "Xbox Elite Series 2"), since the Vader 5 Pro was unplugged. Created before Waydroid started:
   `/dev/input/event30` and `js0` exist after boot, EventHub classes `KEYBOARD | GAMEPAD |
