@@ -1,0 +1,28 @@
+diff --git a/RuntimeInfo.cpp b/RuntimeInfo.cpp
+index ced343f..476584e 100644
+--- a/RuntimeInfo.cpp
++++ b/RuntimeInfo.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include "RuntimeInfo.h"
+ 
++#include <unistd.h>
++
+ #include <android-base/logging.h>
+ #include <android-base/strings.h>
+ #include <kver/kernel_release.h>
+@@ -86,7 +88,13 @@ bool RuntimeInfo::checkCompatibility(const CompatibilityMatrix& mat, std::string
+         }
+         return false;
+     }
+-    if (kernelSepolicyVersion() < mat.framework.mSepolicy.kernelSepolicyVersion()) {
++    // android-pc in Waydroid's container (docs/waydroid-aosp17.md): the host kernel has no
++    // SELinux, so its policy version reads 0; Build.isBuildConsistent() would warn the user
++    // of an "internal problem" at every boot.
++    const bool noSelinuxInWaydroid =
++            kernelSepolicyVersion() == 0 && access("/vendor/waydroid.prop", F_OK) == 0;
++    if (!noSelinuxInWaydroid &&
++        kernelSepolicyVersion() < mat.framework.mSepolicy.kernelSepolicyVersion()) {
+         if (error != nullptr) {
+             *error =
+                 "kernelSepolicyVersion = " + to_string(kernelSepolicyVersion()) +
