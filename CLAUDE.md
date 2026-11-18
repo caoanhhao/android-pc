@@ -35,6 +35,17 @@ earlier Rust kernel lives on the `aosp-16` branch).
 - Stop your VM as soon as the test is done (`cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`,
   or quit QEMU), so the next session can go.
 
+## Waydroid rule (an AOSP 17 container froze the host)
+
+- **Never start Waydroid** (`waydroid session start`, `show-full-ui`, the container
+  service, `waydroid init`) unless the user explicitly allows it for that run.
+  `waydroid-container.service` stays disabled.
+- Why: our AOSP 17 image failed early in the container, rebooted, and init's shutdown
+  path ran `EXT4_IOC_SHUTDOWN` on `/data`, a bind mount of the host's root filesystem
+  (the container keeps `sys_admin`), which shut down the host's `/` (2026-11-18, twice).
+  Any image for Waydroid must first patch init/vold so the container never issues
+  filesystem-shutdown ioctls or touches host mounts (docs/waydroid-aosp17.md).
+
 ## USB stick rule (keep the user's data)
 
 - The stick is updated **only** with `tools/update-usb-aosp17.sh NEW.img /dev/sdX`: it
