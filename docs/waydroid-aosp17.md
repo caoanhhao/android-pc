@@ -136,6 +136,8 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | external/selinux | libselinux: context calls (`getcon`, `getpeercon`, `getfilecon`, `setexeccon`, ...) succeed in the container | init (property service, services), servicemanager, zygote and installd abort when the kernel has no SELinux; this one switch replaces upstream's patches to each of them |
 | bionic | property area accepted without its SELinux label | `__system_property_area_init()` fails without the xattr and init aborts |
 | frameworks/native servicemanager | no caller context lookup (`getpidcon`) in the container | binder hands over no SELinux context, and servicemanager aborts rather than look one up from a binder thread |
+| system/hwservicemanager | no caller context lookup in the container | as servicemanager |
+| packages/modules/Connectivity NetBpfLoad, system/netd | NetBpfLoad loads no BPF program in the container (sets `bpf.progs_loaded`); netd's one-shot setup, iptables and bandwidth failures are not fatal there | the programs would go into the host kernel; the host's sysctls are read-only; the host may have only nftables |
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
 
@@ -262,3 +264,25 @@ vendor image and a new system:
   at once; keystore2 is critical, so init took the reboot path, and the container stopped
   cleanly. init now drops `ro.vndk.lite` from `waydroid.prop`, as upstream Waydroid's init
   does.
+- Boots 7-15 (15:54-16:20, automatic, empty data):
+  - hwservicemanager stayed idle ("HIDL is not supported on this device"), because the PC
+    declares no HIDL. The Waydroid fragment now declares `android.hidl.manager@1.2`.
+    hwservicemanager then aborted on the missing caller context, like servicemanager; it now
+    uses an empty context in the container.
+  - The boot-control HAL aborts without a misc partition, and vold's checkpoint step waits for
+    it forever, which stalled post-fs-data. `properties.aosp17` disables its APEX
+    (`ro.boot.vendor.apex.com.android.hardware.boot = none`).
+  - NetBpfLoad stopped the boot (`reboot,bpfloader-failed`) on the read-only host sysctls. In the
+    container it now loads no BPF programs into the host kernel. netd's one-shot setup, iptables
+    rules and bandwidth control fail without BPF and without legacy iptables on the host
+    (nftables only); in the container netd continues.
+  - Boot 15: the composer, the allocator, SurfaceFlinger, the boot animation, zygote, netd and
+    system_server run. netd still aborts in DnsResolver's `ADnsHelper_init`, which needs
+    the BPF maps, and takes zygote/system_server with it every 5 s.
+- **Open decision: networking without BPF.** Android 17's network stack (netd, DnsResolver,
+  ConnectivityService, NetworkStats) depends on BPF programs and maps. Either:
+  - (a) like upstream Waydroid, let NetBpfLoad load its programs. They go into the host kernel
+    and attach to the container's own cgroup subtree. The host-side guard does not block
+    `bpf()`, and a container with `CAP_SYS_ADMIN` could already load any BPF program. Or:
+  - (b) keep BPF out and patch the remaining users in the container. That means DnsResolver
+    and several Java services in system_server, more and riskier changes.

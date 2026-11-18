@@ -1,0 +1,36 @@
+diff --git a/ServiceManager.cpp b/ServiceManager.cpp
+index 73582d2..dfeee3e 100644
+--- a/ServiceManager.cpp
++++ b/ServiceManager.cpp
+@@ -27,6 +27,7 @@
+ #include <regex>
+ #include <sstream>
+ #include <thread>
++#include <unistd.h>
+ 
+ using android::hardware::IPCThreadState;
+ using ::android::hardware::interfacesEqual;
+@@ -36,13 +37,22 @@ namespace hidl {
+ namespace manager {
+ namespace implementation {
+ 
++// Waydroid's container (docs/waydroid-aosp17.md): the host has no SELinux, so binder hands
++// over no caller context, and there is none to look up either.
++static bool inWaydroidContainer() {
++    static const bool waydroid = access("/vendor/waydroid.prop", F_OK) == 0;
++    return waydroid;
++}
++
+ AccessControl::CallingContext getBinderCallingContext() {
+     const auto& self = IPCThreadState::self();
+ 
+     pid_t pid = self->getCallingPid();
+     const char* sid = self->getCallingSid();
+ 
+-    if (sid == nullptr) {
++    if (sid == nullptr && inWaydroidContainer()) {
++        return { true, "", pid };
++    } else if (sid == nullptr) {
+         if (pid != getpid()) {
+             android_errorWriteLog(0x534e4554, "121035042");
+         }

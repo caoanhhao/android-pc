@@ -159,6 +159,8 @@ install_aosp17() {
         # end up in waydroid.prop and would override the vendor's properties.
         $SUDO sed -E '/^(ro\.dalvik\.vm\.native\.bridge|ro\.enable\.native\.bridge\.exec|ro\.dalvik\.vm\.isa\.arm(64)?|ro\.product\.cpu\.abilist(32|64)?|ro\.hardware\.(gralloc|egl|vulkan)|gralloc\.gbm\.[a-z]*|debug\.angle\.[a-z_]*|ro\.zygote\.disable_gl_preload|debug\.nvvk\.pipeline_cache_max|ro\.opengles\.version|debug\.hwui\.renderer) =/d' \
             "$WD/properties.lineage20" | $SUDO tee "$WD/properties.aosp17" >/dev/null
+        # No boot-control HAL in the container (no misc partition: it aborts, and vold's
+        # checkpoint step waits for it forever, which stalls post-fs-data).
         # The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in
         # Waydroid they come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the
         # container pieces (aosp-device/waydroid/init/init.waydroid.vendor.rc).
@@ -170,6 +172,7 @@ install_aosp17() {
             'ro.boot.vendor.apex.com.android.hardware.strongbox = none' \
             'ro.boot.vendor.apex.com.android.hardware.secure_element = com.android.hardware.secure_element' \
             'ro.boot.vendor.apex.com.google.emulated.camera.provider.hal = none' \
+            'ro.boot.vendor.apex.com.android.hardware.boot = none' \
             'ro.hardware.hwcomposer = waydroid' \
             'ro.hardware.gralloc = minigbm' \
             'ro.hardware.egl = angle' \

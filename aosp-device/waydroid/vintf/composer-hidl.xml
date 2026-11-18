@@ -2,6 +2,17 @@
      AOSP's HIDL composer 2.1 service) and the HIDL interfaces it serves. Kept outside
      /vendor/etc/vintf; init's Waydroid first stage bind-mounts it over waydroid.xml there. -->
 <manifest version="1.0" type="device">
+    <!-- hwservicemanager itself: the PC's manifests declare no HIDL, so without this it
+         decides "HIDL is not supported on this device" and stays idle. -->
+    <hal format="hidl">
+        <name>android.hidl.manager</name>
+        <transport>hwbinder</transport>
+        <version>1.2</version>
+        <interface>
+            <name>IServiceManager</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
     <hal format="hidl">
         <name>android.hardware.graphics.composer</name>
         <transport>hwbinder</transport>

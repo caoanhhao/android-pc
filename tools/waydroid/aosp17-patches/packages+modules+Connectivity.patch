@@ -1,0 +1,20 @@
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 7ba3247..114ce24 100644
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -1918,6 +1918,15 @@ int main(int argc, char** argv, char * const envp[]) {
+         return 0;
+     }
+ 
++    // android-pc in Waydroid's container (docs/waydroid-aosp17.md): BPF programs and maps
++    // would be loaded into the host kernel and attached to its cgroups, and its sysctls are
++    // read-only there. Load nothing; network accounting and firewalling stay with the host.
++    if (access("/vendor/waydroid.prop", F_OK) == 0) {
++        ALOGI("Waydroid container: not loading BPF programs into the host kernel.");
++        if (!SetProperty("bpf.progs_loaded", "1")) return 125;
++        return 0;
++    }
++
+     // Normal 'initial' entry point
+     return android::bpf::doLoad(argv, envp);
+ }
