@@ -231,5 +231,12 @@ vendor image and a new system:
   (see "Container guard").
 - The container guard is installed and tested. The init/libprocessgroup changes for the reboot
   path and cgroups are built into a new image.
-- `waydroid-container.service` is disabled and stopped. The next start, on test data, waits for
-  the user's OK.
+- `waydroid-container.service` is disabled and stopped.
+- Test boot 3 (15:22, empty data, with the user's OK): the host was not affected. init got past
+  cgroups and SELinux contexts, and `apexd-bootstrap` ran. With no `/dev/loop-control` in the
+  container it could not mount any APEX, so dynamic binaries (no runtime linker) failed and
+  `boringssl_self_test64` asked for a reboot. The reboot path logged "Waydroid container:
+  stopping all processes; no unmount or filesystem shutdown" and the container stopped
+  cleanly. The first stage now creates `/dev/loop-control` and `/dev/block`; apexd makes the
+  loop nodes itself (`mount_before_data`). The loop devices are the host kernel's, so `losetup`
+  on the host shows them while the container runs.
