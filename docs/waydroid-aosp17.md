@@ -132,6 +132,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | system/core init | reboot/shutdown in the container: stop every process and exit (the container has no `CAP_SYS_BOOT`), with no unmounting, `EXT4_IOC_SHUTDOWN`/`F2FS_IOC_SHUTDOWN` or bootloader message; no `/proc/sysrq-trigger` crash on a fatal init error; the first stage only remounts `/proc` (a new proc mount would cover LXC's read-only `/proc/sys` and `sysrq-trigger`) and drops `CAP_SYS_BOOT/MODULE/RAWIO/TIME/MAC_*` from the bounding set, with no_new_privs (as upstream's "Drop harmful capabilities") | every mount in the container belongs to the host: the reboot path shut down the host's `/` (see "Container guard") |
 | system/core init | services start without an SELinux context; a failing `createProcessGroup()` is a warning | no SELinux on the host (`security_compute_create` fails: "Could not get process context"); the container gets only the cgroup controllers the host delegates |
 | system/core libprocessgroup | `SetupCgroups` in the container: no cgroup v1 controllers, no cgroup2 mount (waydroid-preinit remounted the container's own), processes moved from the cgroup root to `/init` so controllers can be enabled below it (as upstream's "Move all processes away from root cgroup") | the host has only cgroup v2; `blkio` (v1) failed first and stopped the setup, so `/sys/fs/cgroup/system` never existed |
+| system/core init | `SetMmapRndBits` does nothing in the container; the first stage makes `/dev/loop-control` and `/dev/block` | ASLR entropy is the host kernel's (`/proc/sys` read-only), and init aborts when it cannot set it; apexd needs loop-control to mount APEXes, and ueventd's cold boot cannot run on the read-only `/sys` |
 | system/core init | user `host` = `waydroid.host.uid` | the composer runs as the desktop user to reach its Wayland socket |
 | external/selinux | libselinux: context calls (`getcon`, `getpeercon`, `getfilecon`, `setexeccon`, ...) succeed in the container | init (property service, services), servicemanager, zygote and installd abort when the kernel has no SELinux; this one switch replaces upstream's patches to each of them |
 | bionic | property area accepted without its SELinux label | `__system_property_area_init()` fails without the xattr and init aborts |
@@ -240,3 +241,7 @@ vendor image and a new system:
   cleanly. The first stage now creates `/dev/loop-control` and `/dev/block`; apexd makes the
   loop nodes itself (`mount_before_data`). The loop devices are the host kernel's, so `losetup`
   on the host shows them while the container runs.
+- Test boot 4 (15:29): APEXes mounted and init got to `SetMmapRndBits`, which aborts when it
+  cannot write `/proc/sys/vm/mmap_rnd_bits`. That is the host kernel's setting, read-only in the
+  container. The fatal-error path ended the container cleanly. In the container this action
+  now does nothing.

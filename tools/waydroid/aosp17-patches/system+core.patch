@@ -155,6 +155,23 @@ index 5c402fe..b2b60db 100644
          LOG(ERROR) << __FUNCTION__ << ": Trigger crash";
          android::base::WriteStringToFile("c", PROC_SYSRQ);
          LOG(ERROR) << __FUNCTION__ << ": Sys-Rq failed to crash the system; fallback to exit().";
+diff --git a/init/security.cpp b/init/security.cpp
+index 39dede6..5314e04 100644
+--- a/init/security.cpp
++++ b/init/security.cpp
+@@ -94,6 +94,12 @@ static bool SetMmapRndBitsMin(int start, int min, bool compat) {
+ // ec9ee4acd97c drivers: char: random: add get_random_long()
+ // 5ef11c35ce86 mm: ASLR: use get_random_long()
+ Result<void> SetMmapRndBitsAction(const BuiltinArguments&) {
++    // In Waydroid's container /proc/sys is the host kernel's (and read-only): the host
++    // sets its own ASLR entropy.
++    if (IsRunningInWaydroid()) {
++        LOG(INFO) << "Waydroid container: leaving mmap_rnd_bits to the host";
++        return {};
++    }
+ // values are arch-dependent
+ #if defined(USER_MODE_LINUX)
+     // uml does not support mmap_rnd_bits
 diff --git a/init/service.cpp b/init/service.cpp
 index d38b47a..eb27a35 100644
 --- a/init/service.cpp
