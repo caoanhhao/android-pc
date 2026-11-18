@@ -368,7 +368,8 @@ vendor image and a new system:
   `debug.stagefright.ccodec=0` into waydroid.prop when the host has no gralloc HAL, which
   turns off every Codec2 codec (meant for images with OMX codecs; this one has only Codec2).
   aosp17-switch.sh now adds `debug.stagefright.ccodec = 4` (the default) to the properties;
-  the list has the c2.android codecs again and screenrecord encodes AVC.
+  the list has the c2.android codecs again and screenrecord encodes AVC. The user confirmed
+  the Camera app records video.
 - **21:55, gamepads (padctl):** tested with a uinput pad shaped like padctl's output (045e:0b00,
   "Xbox Elite Series 2"), since the Vader 5 Pro was unplugged. Created before Waydroid started:
   `/dev/input/event30` and `js0` exist after boot, EventHub classes `KEYBOARD | GAMEPAD |
