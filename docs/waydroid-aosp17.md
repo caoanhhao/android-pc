@@ -363,7 +363,7 @@ vendor image and a new system:
   JOYSTICK | EXTERNAL` with `Vendor_045e_Product_0b00.kl`, and `getevent` shows its BTN_GAMEPAD
   presses. Removed and created again: the nodes go and come back (padctl's profile switches
   recreate the device the same way). A uinput keyboard hotplugged at the same time gets no node.
-  Not yet tried: the real pad and a game.
+  The user then confirmed the real Vader 5 Pro (through padctl) works in a game.
 - **21:03, Where Winds Meet reaches the game world** on the real data (image of commits 124b5a9 +
   eb48bbf): arm64 through `libpc_native_bridge`, `checker choose Vulkan` on `vulkan.nvidia`
   (RTX 4070), the character and HUD in the world (`out/waydroid-aosp17-wwm-world.png`). What it
