@@ -298,6 +298,15 @@ vendor image and a new system:
 - **Boot 25: `sys.boot_completed=1`.** The launcher and taskbar show in the Waydroid window, and
   SurfaceFlinger renders with Vulkan ("RE Vulkan (Ganesh)", `ro.hardware.vulkan=nvidia`,
   `renderD129`). Play Store (`com.android.vending`) and `com.google.android.gms` are installed.
+- **Real userdata, 17:45 (user's OK after the losses were listed):** it boots
+  (`sys.boot_completed=1`) and keeps the apps (Steam, TCBS, `com.netease.yyvn`, ...). The data is
+  not file-based-encrypted, so files are readable. The user had a lock-screen credential: user 0
+  stays `RUNNING_LOCKED` behind the keyguard, with `FallbackHome` as home. The credential's
+  synthetic-password blob (`/data/system_de/0/spblob`) is protected by LineageOS 20's
+  gatekeeper/keystore, so entering it on AOSP 17 is expected to fail. Removing the credential
+  (`spblob/` and `locksettings.db`, both in the backup) needs the user's OK. DeskClock crashes
+  on LineageOS's newer clock database ("Can't downgrade database from version 12 to 8"); clearing
+  its data fixes that.
 - **Decided: networking BPF (a).** Android 17's network stack (netd, DnsResolver,
   ConnectivityService, NetworkStats) depends on BPF programs and maps. The options were: Android 17's network stack (netd, DnsResolver,
   ConnectivityService, NetworkStats) depends on BPF programs and maps. Either:
