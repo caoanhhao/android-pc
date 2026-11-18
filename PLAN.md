@@ -596,6 +596,71 @@ stay. NVIDIA's userspace libraries for `/vendor/lib64/nvidia` come from
 The GKI build on `main` no longer has nouveau, Nova, their kernel patches or nouveau's GSP
 firmware (checked in the VFIO VM; real-PC check pending).
 
+## Phase M — GeForce GTX 1050 Ti (Pascal) on NVIDIA's driver
+
+Decided 2026-11-18: the stick also drives a GTX 1050 Ti (GP107, `10de:1c82`, 4 GB), with the
+same Phase L design (NVIDIA kernel driver + NVIDIA's Vulkan ICD in-process through nvglibc and
+`vulkan.nvidia`, minigbm "nvidia" gralloc, drm_hwcomposer on nvidia-drm). Phase L's 620.70.06
+stack cannot run it:
+
+- `nvidia-open` needs a GSP (Turing or newer); Pascal has none, so it needs NVIDIA's
+  **closed** kernel modules (`kernel/` of the `.run` package, prebuilt `nv-kernel.o_binary`).
+- NVIDIA's 590+ branches dropped Maxwell, Pascal and Volta; **580.xx is the last branch** that
+  supports the GTX 1050 Ti (a legacy branch with long-term fixes). Kernel modules and
+  userspace must be the same 580 version.
+
+So the vendor image carries a second driver set next to the 620 one and `pcnvidia.sh` picks one
+at boot from the GPU's PCI ID. The 580 closed driver also supports the RTX 4070, so the whole
+580 path is tested on the build host's RTX 4070 in the VFIO VM (`tools/run-qemu-aosp17-vfio.sh`)
+before any GTX 1050 Ti is in reach; only M5 needs the card itself.
+
+```
+pcnvidia.sh: PCI ID of the NVIDIA VGA device
+  ├─ Turing+ (RTX 4070)  → /vendor/lib/modules/nvidia      (nvidia-open 620.70.06)
+  │                        /vendor/lib64/nvidia            (userspace 620.70.06)
+  └─ Pascal  (GTX 1050 Ti) → /vendor/lib/modules/nvidia580 (closed 580.xx, no GSP)
+                             /vendor/lib64/nvidia580       (userspace 580.xx)
+  → vendor.nvidia.branch=620|580 → vulkan.nvidia (nvglibc) loads the matching ICD
+```
+
+- **M1 — closed 580 kernel modules on GKI android17-6.18.** `tools/nvidia-build.sh` learns
+  `NV_FLAVOR=closed NV_VERSION=580.xx` (the newest 580 point release, extracted from NVIDIA's
+  `.run`), with the GKI namespace import and the K1c kCFI fixes ported to the glue code
+  (`kernel/nvidia/*.c`; the binary core cannot be patched and runs under `cfi=kcfi,warn`), plus
+  whatever 6.18 API fixes 580 still needs. Output in `vendor_dlkm` under `nvidia580/`. Done when
+  all five modules (`nvidia`, `nvidia-modeset`, `nvidia-drm`, `nvidia-uvm`, `nvidia-peermem` if
+  built) build, `modinfo` shows vermagic 6.18 and the right namespaces, and in the VFIO VM with
+  the RTX 4070 forced onto the 580 set they load, `nvidia-drm` takes the display and no Xid or
+  kCFI warning appears in 10 minutes.
+- **M2 — 580 userspace through nvglibc.** `tools/nvidia-userspace-build.sh` takes a version and
+  an output dir (`/vendor/lib64/nvidia580`, ICD JSON included); nvglibc gets whatever glibc
+  symbols the 580 libraries need beyond 620's (check with the existing undefined-symbol report).
+  Done when `nvglibc_vktest` passes against the 580 libraries in the VFIO VM (the build host
+  itself runs 620, and kernel and userspace versions must match).
+- **M3 — boot-time selection and HALs on either branch.** `pcnvidia.sh` reads the PCI ID, loads
+  the matching module set and sets `vendor.nvidia.branch`; `vulkan.nvidia` and the minigbm
+  "nvidia" backend take the library dir from it; SELinux labels for the new dirs. Check
+  `nvgr_layout.h`'s block-linear layout and DRM modifiers on Pascal (page kind and GOB layout
+  differ by generation; take them from the 580 driver's own `vkGetImageDrmFormatModifierProperties`
+  and nvidia-drm's IN_FORMATS) and Pascal's Vulkan limits (Vulkan 1.3, no mesh shaders, smaller
+  descriptor limits). An unknown NVIDIA GPU logs the PCI ID to pclog and fails visibly, as the
+  NVIDIA entry already does. Done when the VFIO VM boots to the desktop on the 580 branch with
+  SurfaceFlinger and HWUI on Vulkan, and on the 620 branch exactly as before.
+- **M4 — GLES, games and the stick image on 580.** ANGLE (ES 3.2 + AEP), ASTC emulation, WWM's
+  Vulkan path and Firefox in the VFIO VM on the 580 branch; a stick image with both driver sets,
+  installed with `tools/update-usb-aosp17.sh` (userdata kept). The RTX 4070 PC must keep
+  working exactly as on Phase L.
+- **M5 — real GTX 1050 Ti.** Boot the stick on a PC with the GTX 1050 Ti (or pass the card to
+  the VFIO VM if it is put in the build host as a second GPU): display and monitor sound over
+  nvidia-drm, SurfaceFlinger/HWUI on Vulkan, `dumpsys gfxinfo`, pclog with no Xid in 30
+  minutes; then frame rates at 1080p for WWM (lowest settings, 4 GB VRAM), Genshin and Delta
+  Force, recorded in docs/nvidia-native.md.
+
+Risks: 580 may need patches for 6.18 that NVIDIA has not shipped; the closed core cannot get
+kCFI fixes, so a CFI fault in it can only be worked around in the glue; two driver sets add
+about 400 MB to `vendor`; 580 is a legacy branch, so Phase L fixes made for 620 behaviour
+(queue priorities, Xid 51 handling) must be rechecked on 580.
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
