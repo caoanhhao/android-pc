@@ -348,6 +348,9 @@ vendor image and a new system:
   (KEYBOARD, ALPHAKEY, DPAD), wayland_pointer (CURSOR, source MOUSE, axes sized to the
   1260x1058 window) and wayland_tablet; mouse and key events reach the dispatcher. eth0 keeps
   its name, netd installs the `eth0` routing table, and the container reaches the internet.
+- **21:17, hwc2on1 primary hotplug:** a host resize now reaches SurfaceFlinger ("host resized
+  Waydroid#0 ...", then "Reconnecting display 0"), and the display follows. The user data sets
+  `persist.waydroid.width/height` (2560x1068), which the hwcomposer uses as the display size.
 - **21:03, Where Winds Meet reaches the game world** on the real data (image of commits 124b5a9 +
   eb48bbf): arm64 through `libpc_native_bridge`, `checker choose Vulkan` on `vulkan.nvidia`
   (RTX 4070), the character and HUD in the world (`out/waydroid-aosp17-wwm-world.png`). What it
