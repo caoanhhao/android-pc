@@ -1,29 +1,21 @@
 # Releasing the AOSP 17 image
 
-How a GitHub release of `aosp_pc_x86_64-cp2a-userdebug` is made, and what currently
-keeps the image from being published.
+How a GitHub release of `aosp_pc_x86_64-cp2a-userdebug` is made, and what may not be in it.
 
-## Status (2026-11-18): the image cannot be published as built
+## What may not be in the image
 
-The release check (`tools/make-release.sh --check-only`) was run against the images in
-`aosp/out/target/product/pc_x86_64` (built 2026-11-18 from `main` at `98dee97` plus the
-uncommitted lockdown-biometric change). Three pieces of the image are proprietary Google
-software that we may not redistribute. Each is fetched on the build machine and kept out
-of git, and the fetch scripts already say "personal use only":
+The first release check (2026-11-18, `main` at `98dee97`) found three pieces of proprietary
+Google software in the image, which we may not redistribute:
 
-| Piece | Where in the image | Source | Licence | Redistributable |
-|---|---|---|---|---|
-| Google Play Store (Phonesky, `com.android.vending`) + its privapp permissions and sysconfig | `product/priv-app/Phonesky` | Android Emulator image "Google Play, x86_64, API 37" (`tools/fetch-apps.sh playstore`) | Google proprietary; the emulator images are licensed for development use only | **No** |
-| Android System WebView (`com.google.android.webview`) | `product/app/WebViewGoogle` (+ the default-provider overlay from `aosp-device/webview/`) | the same emulator image (`tools/fetch-apps.sh webview`) | Google proprietary | **No** |
-| `libndk_translation` (ARM64 translator), its 21 `libproxy_arm64_to_x86_64_*` libraries, `ndk_translation_program_runner_binfmt_misc_arm64` | `system/lib64`, `system/bin` | Android Emulator image "Google APIs, x86_64, API 37" (`tools/fetch-ndk-translation.sh`) | Google proprietary, development use (docs/arm-translation.md) | **No** |
+| Piece | Source | Licence | Now |
+|---|---|---|---|
+| Google Play Store (Phonesky, `com.android.vending`) + its privapp permissions and sysconfig | Android Emulator image "Google Play, x86_64, API 37" | Google proprietary; the emulator images are licensed for development use only | A user-added extra (docs/google-extras.md): the image has empty placeholders |
+| `libndk_translation` (ARM64 translator), its 21 `libproxy_arm64_to_x86_64_*` libraries, `ndk_translation_program_runner_binfmt_misc_arm64` | Android Emulator image "Google APIs, x86_64, API 37" | Google proprietary, development use (docs/arm-translation.md) | A user-added extra, as above |
+| Android System WebView (`com.google.android.webview`) | the Google Play emulator image | Google proprietary | Removed: AOSP's WebView is the only provider |
 
-To publish an image, a release build has to leave these out (no Play Store, AOSP's own
-WebView as the only provider, no ARM64 apps), for example by building with the three
-fetch directories absent (`aosp/device/android-pc/apps/{Phonesky,WebViewGoogle}` and
-`aosp/device/android-pc/ndk_translation`; the makefiles then skip them) and rebuilding
-`system.img`, `product.img` and `super.img`. The release notes would then have to drop
-ARM64 apps and the Play Store from the feature list; users could still add Aurora Store
-or F-Droid apps themselves.
+`tools/make-release.sh` refuses a build in which any of them is more than an empty
+placeholder. The release ships `add-google-extras.sh`, which each user runs on their own
+computer to take the two extras from Google's images.
 
 ## Everything else in the image
 
@@ -55,14 +47,15 @@ or F-Droid apps themselves.
   no `.pem/.pk8/.key/.jks` file is tracked. `tools/make-release.sh` repeats a key search
   on the release directory before uploading.
 
-## Making a release (once the image is publishable)
+## Making a release
 
 1. Commit the change set; no other build running (`pgrep -x soong_ui`).
 2. Build with a fresh build number (`tools/aosp17-build.sh` sets one), never lowering the
    security patch level or the AVB rollback index.
-3. `tools/mkusb-aosp17.sh` (default 4 GiB userdata, not `--disk`).
+3. `tools/mkusb-aosp17.sh` (default 4 GiB userdata, not `--disk`), without extras.
 4. `tools/make-release.sh` writes `out/release/aosp17-<date>/`: the `xz`-compressed image
-   split into parts under 2 GiB, `build.txt`, `SHA256SUMS`, `INSTALL.md`, `NOTES.md`. It
-   refuses when the images contain any piece from the table above.
+   split into parts under 2 GiB, `build.txt`, `SHA256SUMS`, `INSTALL.md`, `NOTES.md`,
+   `add-google-extras.sh`, `LICENSE.nvidia`. It refuses when the images contain any piece
+   from the table above.
 5. `tools/make-release.sh --upload` tags `aosp17-<date>` and creates a **draft** release;
    the user reviews and publishes it.

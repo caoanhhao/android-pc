@@ -21,8 +21,8 @@ include $(PC_DEVICE_DIR)/microg.mk
 # Desktop mode: freeform windows and Launcher3's taskbar, landscape only (phase F9f).
 include $(PC_DEVICE_DIR)/desktop/desktop.mk
 
-# Google's WebView as the default WebView provider, AOSP's as the alternative (phase F9p).
-include $(PC_DEVICE_DIR)/webview/webview.mk
+# Play Store and libndk_translation as user-added extras, not built in (docs/google-extras.md).
+include $(PC_DEVICE_DIR)/google_extras/extras.mk
 
 # The same images also run in Waydroid's LXC container on a Linux desktop; these pieces only act
 # there (docs/waydroid-aosp17.md).
@@ -37,3 +37,6 @@ PRODUCT_MODEL := android-pc x86_64
 # The Cuttlefish makefile sets these only when TARGET_PRODUCT is its own product name.
 PRODUCT_SOONG_ONLY := $(RELEASE_SOONG_ONLY_CUTTLEFISH)
 PRODUCT_SOONG_INCREMENTAL_ANALYSIS := $(RELEASE_SOONG_INCREMENTAL_ANALYSIS)
+
+# Last, after pc/pc.mk has added every fetched app (google_extras/extras.mk).
+PRODUCT_PACKAGES := $(filter-out $(PC_EXTRAS_NOT_BUILT_IN),$(PRODUCT_PACKAGES))

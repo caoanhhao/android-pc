@@ -1,0 +1,6 @@
+# Google extras (docs/google-extras.md). After init.rc's post-fs-data has switched to the default
+# mount namespace, so the mounts are seen by zygote and every app; exec blocks until they are done.
+# Runs everywhere: without extras on the ESP or in /data it does nothing (Cuttlefish), and in
+# Waydroid the host can put them in /data/vendor/pc-extras directly.
+on post-fs-data
+    exec u:r:su:s0 root root -- /vendor/bin/pcextras.sh

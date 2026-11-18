@@ -1,18 +1,24 @@
 # ARM64 app support: Google's libndk_translation native bridge (docs/arm-translation.md).
 # The proprietary part (the translator, its host-side proxy libraries and the binfmt_misc
-# program runner) is fetched by tools/fetch-ndk-translation.sh into
-# device/android-pc/ndk_translation/system/, not in git. Everything else is built from AOSP
-# source, as Google's own ndk_translation makefile does: the arm64 guest libraries
+# program runner) is not in the image: the image has empty placeholders at their paths, and
+# google_extras/pcextras.sh mounts the real files over them at boot once the user has added
+# them with tools/add-google-extras.sh (docs/google-extras.md). Everything else is built from
+# AOSP source, as Google's own ndk_translation makefile does: the arm64 guest libraries
 # (native_bridge_support, for TARGET_NATIVE_BRIDGE_ARCH arm64 from the Cuttlefish board),
 # the binfmt_misc/init/linker config files (frameworks/libs/binary_translation/prebuilt) and
 # libberberis_exec_region (the low-2G code region the translator maps at a fixed path).
-# Without the fetch nothing changes.
+# Without the extras libpc_native_bridge cannot load the translator and ART leaves the bridge
+# off: x86_64 apps run as before, arm64-only apps do not start.
 
-PC_NDKT_DIR := device/android-pc/ndk_translation/system
-ifneq (,$(wildcard $(PC_NDKT_DIR)/lib64/libndk_translation.so))
-
-PRODUCT_COPY_FILES += $(foreach f,$(shell cd $(PC_NDKT_DIR) && find . -type f | sed 's|^\./||' | sort),\
-    $(PC_NDKT_DIR)/$(f):$(TARGET_COPY_OUT_SYSTEM)/$(f))
+PC_NDKT_PROXIES := aaudio amidi android android_runtime binder_ndk c camera2ndk EGL GLESv1_CM \
+    GLESv2 GLESv3 jnigraphics m mediandk nativehelper nativewindow neuralnetworks OpenMAXAL \
+    OpenSLES vulkan webviewchromium_plat_support
+PC_NDKT_FILES := \
+    lib64/libndk_translation.so \
+    $(foreach l,$(PC_NDKT_PROXIES),lib64/libproxy_arm64_to_x86_64_lib$(l).so) \
+    bin/ndk_translation_program_runner_binfmt_misc_arm64
+PRODUCT_COPY_FILES += $(foreach f,$(PC_NDKT_FILES),\
+    $(PC_DEVICE_DIR)/google_extras/placeholder/empty:$(TARGET_COPY_OUT_SYSTEM)/$(f))
 
 include frameworks/libs/native_bridge_support/native_bridge_support.mk
 # The guest libc (libnative_bridge_guest_libc) lives in its own Soong namespace.
@@ -59,5 +65,3 @@ PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST += \
 # /system: drop it, so Soong generates /system from this product (BoardConfig.mk clears
 # USE_SOONG_DEFINED_SYSTEM_IMAGE, which the product makefiles cannot).
 PRODUCT_SOONG_DEFINED_SYSTEM_IMAGE :=
-
-endif

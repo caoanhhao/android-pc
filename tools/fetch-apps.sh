@@ -3,8 +3,7 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [playstore] [termux] [webview] [smartdock]
-#                                                                  default: all seven
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [termux] [smartdock]   default: all five
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
@@ -14,20 +13,14 @@
 # - microG GmsCore (as com.google.android.gms): the microG project's GitHub release
 #   MICROG_VER, checked against microG's signing certificate (SHA-256
 #   9B:D0:67:27:...:D1:41:65). Installed privileged and enabled (aosp-device/microg.mk).
-# - Google Play Store (Phonesky, com.android.vending), proprietary: taken from the official
-#   Android Emulator image "Google Play, x86_64, API 37" (SHA-1 pinned below) with its
-#   privileged-permission list and sysconfig entries; checked against Google's certificate.
-#   Personal use only, never redistributed (docs/arm-translation.md).
+# Google's Play Store and WebView are not built in: Play Store is a user-added extra
+# (tools/add-google-extras.sh, docs/google-extras.md) and AOSP's WebView is the provider.
 # - Termux (com.termux) with its Termux:API and Termux:Boot add-ons: F-Droid's builds,
 #   pinned by version code and SHA-256 and checked against the certificate F-Droid signs
 #   Termux with (SHA-256 228F:B2:CF:...:D4:1C:42), so F-Droid updates install over them.
 #   Termux's APK keeps its JNI libraries compressed (extractNativeLibs="true"), and a
 #   /product app's libraries are not extracted at boot: the x86_64 ones are unpacked to
 #   apps/Termux/lib/x86_64/, which pc.mk installs beside the unchanged APK (F9j).
-# - Android System WebView (com.google.android.webview), proprietary: Google's standalone
-#   WebView from the same emulator image, checked against Google's WebView certificate.
-#   aosp-device/webview/webview.mk makes it the default WebView provider, with AOSP's
-#   com.android.webview kept as a choice in Developer options (F9p). Personal use only.
 # - Smart Dock (cu.axel.smartdock), a desktop launcher with a dock and freeform windows:
 #   F-Droid's build, pinned by version code and SHA-256 and checked against the certificate
 #   F-Droid signs it with (SHA-256 51:8E:C9:46:...:7D:C3:E9:6C). The default launcher (H4,
@@ -92,7 +85,7 @@ microg() {
     local cert=9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165
     local name pkg apk
     mkdir -p "$dl"
-    rm -rf "$APPS/FakeStore"   # microG's Play Store stub, replaced by playstore below
+    rm -rf "$APPS/FakeStore"   # microG's Play Store stub: the real Play Store is an extra
     for name in GmsCore:com.google.android.gms; do
         pkg=${name#*:}; name=${name%%:*}
         # The release names each APK <package>-<versionCode>.apk; skip the -hw (Huawei) ones.
@@ -106,106 +99,6 @@ microg() {
             "privileged: true,
     skip_preprocessed_apk_checks: true,"   # compressed dex: rejected for priv-apps otherwise
     done
-}
-
-EMU_ZIP=google_apis_playstore-x86_64-37.0_r08.zip
-
-# emu_product WORKDIR: the emulator image's /product partition, extracted to WORKDIR/product.
-emu_product() {
-    local url=https://dl.google.com/android/repository/sys-img/google_apis_playstore/x86_64-37.0_r08.zip
-    local sha1=7ba53fe131fad2cfc3de2b88e32fde5c529fc9c7
-    local dl=$ROOT/out/downloads/emu-37 work=$1 start
-    if [[ ! -f $dl/$EMU_ZIP ]]; then
-        curl -sSf -o "$dl/$EMU_ZIP.part" "$url"
-        echo "$sha1  $dl/$EMU_ZIP.part" | sha1sum -c --quiet
-        mv "$dl/$EMU_ZIP.part" "$dl/$EMU_ZIP"
-    fi
-    # system.img is a GPT disk whose partition 2 is "super"; product is EROFS in there.
-    unzip -q -d "$work" "$dl/$EMU_ZIP" x86_64/system.img
-    start=$(sfdisk -d "$work/x86_64/system.img" | sed -n 's/.*: start= *\([0-9]*\),.*/\1/p' | sed -n 2p)
-    dd if="$work/x86_64/system.img" of="$work/super.img" bs=512 skip="$start" status=none
-    rm "$work/x86_64/system.img"
-    lpunpack -p product "$work/super.img" "$work" >/dev/null
-    rm "$work/super.img"
-    "$HOST/fsck.erofs" --extract="$work/product" "$work/product.img" >/dev/null
-}
-
-playstore() {
-    local zip=$EMU_ZIP
-    local cert=f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83
-    local dl=$ROOT/out/downloads/emu-37 work
-    mkdir -p "$dl"
-    work=$(mktemp -d "$dl/playstore.XXXXXX")
-    emu_product "$work"
-    "$HOST/apksigner" verify --print-certs "$work/product/priv-app/Phonesky/Phonesky.apk" 2>/dev/null |
-        grep -q "SHA-256 digest: $cert" ||
-        { rm -rf "$work"; echo "fetch-apps.sh: Phonesky.apk is not signed by Google" >&2; exit 1; }
-    local ver
-    ver=$("$HOST/aapt2" dump badging "$work/product/priv-app/Phonesky/Phonesky.apk" |
-          sed -n "s/.*versionName='\([^' ]*\).*/\1/p")
-    install_app Phonesky "$work/product/priv-app/Phonesky/Phonesky.apk" \
-        "Google Play Store $ver from the emulator image $zip (signature checked)" "privileged: true,"
-    # Its privileged permissions, as the emulator image grants them.
-    { echo '<?xml version="1.0" encoding="utf-8"?>'
-      echo "<!-- Generated by tools/fetch-apps.sh from $zip. -->"
-      echo '<permissions>'
-      sed -n '/<privapp-permissions package="com.android.vending">/,/<\/privapp-permissions>/p' \
-          "$work/product/etc/permissions/privapp-permissions-google-p.xml"
-      echo '</permissions>'
-    } > "$APPS/Phonesky/privapp-permissions-phonesky.xml"
-    grep -q 'permission name=' "$APPS/Phonesky/privapp-permissions-phonesky.xml" ||
-        { rm -rf "$work"; echo "fetch-apps.sh: no Phonesky permissions in $zip" >&2; exit 1; }
-    # Its sysconfig entries, as the emulator image's google.xml has them. Above all
-    # allow-in-power-save-except-idle: Phonesky's DownloadService and VpaService are
-    # foreground services of type systemExempted, which Android 14+ lets an app start only
-    # when it is on the system power-save allowlist; without it every download crashes
-    # com.android.vending:background (docs/arm-translation.md, F9d).
-    { echo '<?xml version="1.0" encoding="utf-8"?>'
-      echo "<!-- Generated by tools/fetch-apps.sh from $zip (google.xml). -->"
-      echo '<config>'
-      grep 'package="com.android.vending"' "$work/product/etc/sysconfig/google.xml"
-      echo '</config>'
-    } > "$APPS/Phonesky/sysconfig-phonesky.xml"
-    grep -q '<allow-in-power-save-except-idle package="com.android.vending"' \
-        "$APPS/Phonesky/sysconfig-phonesky.xml" ||
-        { rm -rf "$work"; echo "fetch-apps.sh: no Phonesky power-save entry in $zip" >&2; exit 1; }
-    sed -i 's/^    privileged: true,$/&\n    required: ["privapp-permissions-phonesky.xml", "sysconfig-phonesky.xml"],/' \
-        "$APPS/Phonesky/Android.bp"
-    cat >> "$APPS/Phonesky/Android.bp" <<'BP'
-
-prebuilt_etc {
-    name: "privapp-permissions-phonesky.xml",
-    src: "privapp-permissions-phonesky.xml",
-    sub_dir: "permissions",
-    product_specific: true,
-}
-
-prebuilt_etc {
-    name: "sysconfig-phonesky.xml",
-    src: "sysconfig-phonesky.xml",
-    sub_dir: "sysconfig",
-    product_specific: true,
-}
-BP
-    rm -rf "$work"
-}
-
-webview() {
-    local cert=6faf3c4140407473400934d117815a21af1cfefc5c0bee61c858bc3d72ba6fe5
-    local dl=$ROOT/out/downloads/emu-37 work ver apk
-    mkdir -p "$dl"
-    work=$(mktemp -d "$dl/webview.XXXXXX")
-    emu_product "$work"
-    # The image ships it gzipped behind a stub (WebViewGoogle-Stub); PackageManager would
-    # unpack it to /data on first boot. Install the full APK in /product instead.
-    apk=$work/WebViewGoogle.apk
-    gzip -dc "$work/product/app/WebViewGoogle/WebViewGoogle.apk.gz" > "$apk"
-    "$HOST/apksigner" verify --print-certs "$apk" 2>/dev/null | grep -q "SHA-256 digest: $cert" ||
-        { rm -rf "$work"; echo "fetch-apps.sh: WebViewGoogle.apk is not signed by Google" >&2; exit 1; }
-    ver=$("$HOST/aapt2" dump badging "$apk" | sed -n "s/.*versionName='\([^' ]*\).*/\1/p")
-    install_app WebViewGoogle "$apk" \
-        "Android System WebView $ver from the emulator image $EMU_ZIP (signature checked)"
-    rm -rf "$work"
 }
 
 termux() {
@@ -257,6 +150,6 @@ smartdock() {
 }
 
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
-for app in "${@:-chromium fdroid microg playstore termux webview smartdock}"; do
+for app in "${@:-chromium fdroid microg termux smartdock}"; do
     for a in $app; do "$a"; done
 done

@@ -5,8 +5,8 @@ The image is x86_64-only. Many apps (TikTok, most games) ship native code only f
 `libnxreword.so ... is for EM_AARCH64`. Phase F9 adds:
 
 - an ARM64 → x86_64 native bridge (Google's `libndk_translation`);
-- microG in place of Google Play services, and Google's real Play Store, both preinstalled
-  and enabled.
+- microG in place of Google Play services, preinstalled, and Google's real Play Store as a
+  user-added extra (docs/google-extras.md).
 
 ## Which translator
 
@@ -18,10 +18,10 @@ The image is x86_64-only. Many apps (TikTok, most games) ship native code only f
 
 `libndk_translation` may not be redistributed. So:
 
-- it is never committed;
-- `tools/fetch-ndk-translation.sh` downloads it on the build machine from Google's own
-  server;
-- images built with it are for personal use only. Do not publish them.
+- it is never committed and never built into the image;
+- the user adds it to the stick with `tools/add-google-extras.sh`, which takes it from
+  Google's emulator image on the user's own computer, and Android mounts it over
+  placeholders at boot (docs/google-extras.md).
 
 32-bit `armeabi-v7a` apps cannot run. The product has no 32-bit zygote (x86_64-only, the
 same as Google's own x86_64-only desktop/emulator images). That would need the 32-bit
@@ -32,16 +32,17 @@ same as Google's own x86_64-only desktop/emulator images). That would need the 3
 Only the translator itself is proprietary. Everything else is built from AOSP source, the
 way Google's own `x86_64_ndk_translation_support.mk` does it.
 
-1. `tools/fetch-ndk-translation.sh` downloads `google_apis/x86_64-37.0_r08.zip` (2.1 GB).
+1. `tools/add-google-extras.sh` downloads `google_apis/x86_64-37.0_r08.zip` (2.1 GB).
    It checks the SHA-1 that Google publishes and pins in the script. It unpacks
    `system.img` (a GPT disk with `super` in partition 2, then `lpunpack`, then `debugfs`)
-   and copies 23 files into `aosp/device/android-pc/ndk_translation/system/`:
+   and puts 23 files on the stick's ESP (`android/extras/system/`); `pcextras.sh` mounts
+   them over the image's empty placeholders at boot:
    - `lib64/libndk_translation.so`, the translator;
    - `lib64/libproxy_arm64_to_x86_64_*.so` (21), host-side proxies for the NDK libraries;
    - `bin/ndk_translation_program_runner_binfmt_misc_arm64`, which runs arm64
      executables.
 2. `aosp-device/ndk_translation.mk` (included by `aosp_pc_x86_64.mk`) does four things:
-   - copies those files to `/system`;
+   - installs empty placeholders at those 23 paths in `/system`;
    - adds these AOSP modules:
      - `$(NATIVE_BRIDGE_PRODUCT_PACKAGES)` from `native_bridge_support.mk`: the arm64
        guest bionic and NDK libraries in `/system/lib64/arm64` and `bin/arm64/`. They are
@@ -94,13 +95,13 @@ it and runs on top of microG.
   `/product/priv-app` prebuilt in `aosp/device/android-pc/apps/GmsCore`.
   `aosp-device/microg/privapp-permissions-microg.xml` grants the privileged permissions it
   requests (the ones marked privileged in AOSP 17's framework-res).
-- `tools/fetch-apps.sh playstore` takes the Play Store (Phonesky, `com.android.vending`,
+- `tools/add-google-extras.sh` takes the Play Store (Phonesky, `com.android.vending`,
   50.7.34) from the official emulator image `google_apis_playstore/x86_64-37.0_r08.zip`.
-  It checks the SHA-1 of the zip and checks Google's certificate on the APK (SHA-256
-  `f0fd6c5b…60db83`). The image's `product` partition is EROFS: `fsck.erofs --extract`.
-  It generates `privapp-permissions-phonesky.xml` from the image's own
-  `privapp-permissions-google-p.xml` block. The Play Store is proprietary, like
-  `libndk_translation`: fetched on the build machine, never committed, personal use only.
+  It checks the SHA-1 of the zip. The image's `product` partition is EROFS:
+  `fsck.erofs --extract`. It generates `privapp-permissions-phonesky.xml` from the image's
+  own `privapp-permissions-google-p.xml` block. The Play Store is proprietary, like
+  `libndk_translation`: never built into the image; the user adds it as an extra and
+  Android mounts it at `/product/priv-app/Phonesky` at boot (docs/google-extras.md).
 - microG has to report Google's signature. `tools/patches/aosp17-microg-signature-spoofing.patch`
   (apply in `aosp/frameworks/base` with `git apply`) adds restricted signature spoofing
   to `ComputerEngine.generatePackageInfo`. Only these three packages can use it:

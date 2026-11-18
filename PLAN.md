@@ -23,7 +23,7 @@ covers the stock kernel.
 ```
 aosp-device/   device tree for aosp_pc_x86_64: product, pc/ (real-PC boot: init.pc.rc, pclog,
                pcnvidia.sh), libpchal, hals/<name> (Rust HALs; nvgpu = vulkan.nvidia, nvglibc,
-               nvdisplay for the NVIDIA GPU), desktop/, microg/, webview/, nbshim/, kernel/
+               nvdisplay for the NVIDIA GPU), desktop/, microg/, google_extras/, nbshim/, kernel/
 aosp-device-vendor/  modules that must sit under vendor/ in the AOSP tree
 tools/         build, USB image and QEMU scripts (tools/limited-build.sh for every heavy build);
                patches/ for AOSP, GKI and nvidia-open
@@ -629,6 +629,20 @@ AOSP). Notes and results: docs/waydroid-aosp17.md.
 - **W4 — audio and the host session:** PulseAudio output (a Rust HAL on the session's socket
   fits here); Waydroid's `IPlatform` service for app lists and `waydroid app launch`.
 - **W5 — Where Winds Meet** on NVIDIA's Vulkan in the container.
+
+## Phase R — public releases
+
+Goal: GitHub releases of the stick image that contain nothing we may not redistribute
+(docs/release.md).
+
+- **R1. Google pieces out of the image.** Google Play Store and `libndk_translation` are
+  user-added extras: `tools/add-google-extras.sh` takes them from Google's emulator images on
+  the user's computer and writes them to the stick's ESP; `pcextras.sh` copies them to
+  `/data/vendor/pc-extras` at the next boot and bind-mounts them over empty placeholders
+  before zygote starts (docs/google-extras.md). AOSP's WebView replaces Google's.
+  `tools/update-usb-aosp17.sh` keeps the stick's extras. Status (2026-11-18): code done;
+  build and boot check pending.
+- **R2. First release.** `tools/make-release.sh --upload`: draft release `aosp17-<date>`.
 
 ## Risks
 

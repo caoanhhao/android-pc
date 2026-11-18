@@ -6,7 +6,9 @@
 # Writes out/release/<tag>/: the image compressed with xz (pinned to the E-cores) and split
 # into parts under GitHub's 2 GiB asset limit, build.txt, SHA256SUMS, INSTALL.md and NOTES.md.
 # Before that it checks the build's partition images for pieces that may not be redistributed
-# (Play Store, Google WebView, libndk_translation) and refuses if one is there.
+# (Play Store, Google WebView, libndk_translation) and refuses if one is there: the image has
+# only empty placeholders for them, which users fill with tools/add-google-extras.sh
+# (docs/google-extras.md, shipped with the release).
 #
 # Options: --tag TAG      release tag (default aosp17-YYYYMMDD)
 #          --product DIR  images the stick was made from (default aosp/out/target/product/pc_x86_64)
@@ -36,12 +38,12 @@ die() { echo "make-release.sh: $*" >&2; exit 1; }
 for f in "$host/dump.erofs" "$host/fsck.erofs" "$host/avbtool"; do [[ -x $f ]] || die "missing $f (build hosttools)"; done
 
 # --- licences: pieces we may not redistribute ----------------------------------------------
-has() {   # has IMAGE PATH: PATH exists in the erofs IMAGE (dump.erofs exits non-zero either way)
+has() {   # has IMAGE PATH: PATH is in the erofs IMAGE and not empty (an extras placeholder)
     local out; out=$("$host/dump.erofs" --path="$2" "$product/$1" 2>/dev/null || true)
-    [[ $out == "Path :"* ]]
+    [[ $out == "Path :"* && $out != *"Size: 0 "* ]]
 }
 blocked=""
-has product.img /priv-app/Phonesky && blocked+="  product/priv-app/Phonesky (Google Play Store)\n"
+has product.img /priv-app/Phonesky/Phonesky.apk && blocked+="  product/priv-app/Phonesky (Google Play Store)\n"
 has product.img /app/WebViewGoogle && blocked+="  product/app/WebViewGoogle (Google's Android System WebView)\n"
 has system.img /system/lib64/libndk_translation.so && blocked+="  system/lib64/libndk_translation.so + proxies (Google's ARM64 translator)\n"
 if [[ -n $blocked ]]; then
@@ -97,6 +99,7 @@ else
     mv "$work/$name" "$rel/$name"
     joined=""
 fi
+cp "$ROOT/tools/add-google-extras.sh" "$rel/"
 cp "$ROOT/aosp/device/android-pc/nvidia-userspace/LICENSE" "$rel/LICENSE.nvidia" 2>/dev/null ||
     cp /usr/share/licenses/nvidia-utils/LICENSE "$rel/LICENSE.nvidia" 2>/dev/null ||
     echo "make-release.sh: warning: no NVIDIA LICENSE found to ship with the release" >&2
@@ -113,8 +116,13 @@ Needs a USB stick of at least 16 GB and a UEFI PC (Secure Boot off).
 3. Find the stick with \`lsblk -o NAME,SIZE,MODEL,TRAN\` and write the whole image to it
    (this erases the stick):
    \`sudo dd if=${name%.xz} of=/dev/sdX bs=4M conv=fsync oflag=direct status=progress\`
-4. Boot the PC from the stick. The first boot formats \`userdata\` (4 GiB); later builds
-   update it in place.
+4. Optional, before or after step 3: add Google Play Store and ARM64 app support, which
+   the image may not contain (they come from Google's emulator images; Android SDK License,
+   personal use). On Linux, with curl, unzip, e2fsprogs, erofs-utils, android-tools and
+   mtools installed: \`./add-google-extras.sh ${name%.xz}\` (or \`./add-google-extras.sh /dev/sdX\`
+   for the written stick).
+5. Boot the PC from the stick. The first boot formats \`userdata\` (4 GiB) and installs the
+   extras; later builds update it in place.
 
 ## Stick that already runs android-pc
 
@@ -125,7 +133,8 @@ https://github.com/caoanhhao/android-pc, with AOSP's host tools built:
     tools/update-usb-aosp17.sh ${name%.xz} /dev/sdX
 
 It rewrites only the OS partitions and keeps \`userdata\`, \`metadata\`, \`misc\`, \`frp\`
-and \`pclog\`. It asks for the sudo password itself.
+and \`pclog\`, and copies the Google extras on the stick's ESP back after rewriting it.
+It asks for the sudo password itself.
 EOF
 
 cat > "$rel/NOTES.md" <<EOF
@@ -150,7 +159,9 @@ webcam. Other UEFI x86_64 PCs may boot; NVIDIA GPUs other than Ada (RTX 40) are 
 - Desktop mode: freeform windows, taskbar and Smart Dock, landscape, mouse and keyboard.
 - NVIDIA's own driver (phases K/L): nvidia-open kernel modules, NVIDIA's Vulkan driver as
   the device GPU driver through a glibc sidecar, drm_hwcomposer on nvidia-drm.
-- microG, F-Droid, Chromium and Termux preinstalled.
+- microG, F-Droid, Chromium and Termux preinstalled; AOSP's WebView.
+- Google Play Store and ARM64 apps (Google's libndk_translation) as extras you add with
+  add-google-extras.sh from Google's own emulator images; they are not in the image.
 
 ## Known issues
 

@@ -1,0 +1,21 @@
+// Google extras (docs/google-extras.md): mounts Play Store and libndk_translation, added by
+// tools/add-google-extras.sh, over the image's placeholders at boot.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+sh_binary {
+    name: "pcextras.sh",
+    src: "pcextras.sh",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "init.pcextras.rc",
+    src: "init.pcextras.rc",
+    sub_dir: "init",
+    vendor: true,
+    visibility: ["//visibility:public"],
+}

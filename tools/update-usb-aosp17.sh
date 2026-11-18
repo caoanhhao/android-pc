@@ -24,21 +24,28 @@
 #   - a different build number (ro.build.version.incremental): Android rescans and
 #     upgrades the system apps only when the build fingerprint changes. tools/aosp17-build.sh
 #     sets a fresh BUILD_NUMBER for each run; --force skips this check.
+# Google extras (Play Store, libndk_translation; docs/google-extras.md) on the stick's ESP are
+# copied back after the ESP is rewritten, unless NEW.img brings its own. If neither has them,
+# it stops: an image without them would drop Play Store (and its data) and arm64 apps on a
+# stick whose /data has no copy yet. Add them with tools/add-google-extras.sh, or pass
+# --no-extras if the stick is to run without them.
 # Options: --dry-run    check and print the dd commands, write nothing
 #          --yes        do not ask before writing to a block device
 #          --force      write even if the build number did not change
 #          --no-verify  do not read the written partitions back to compare them
+#          --no-extras  update even if neither NEW.img nor the stick has the Google extras
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 host=$ROOT/aosp/out/host/linux-x86/bin
-dry=0 yes=0 force=0 verify=1 args=()
+dry=0 yes=0 force=0 verify=1 extras=1 args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) dry=1 ;;
         --yes) yes=1 ;;
         --force) force=1 ;;
         --no-verify) verify=0 ;;
+        --no-extras) extras=0 ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         -*) echo "update-usb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) args+=("$1") ;;
@@ -173,6 +180,26 @@ Build with tools/aosp17-build.sh (it sets a fresh BUILD_NUMBER) or pass --force.
     fi
 fi
 
+# Google extras: NEW.img's own, else the stick's, copied back after the ESP write.
+esp_has_extras() {   # esp_has_extras new|target
+    local img=$new run=(); [[ $1 == target ]] && img=$target run=("${R[@]}")
+    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
+        ::/android/extras/SHA256SUMS - >/dev/null 2>&1
+}
+restore_extras=0
+if esp_has_extras new; then
+    echo "  Google extras: from the new image"
+elif esp_has_extras target; then
+    echo "  Google extras: kept from the stick"
+    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -s -n -i "$target@@$(( $(part target esp 2) * 1048576 ))" \
+        ::/android/extras "$work/" || die "cannot read the Google extras from the stick's ESP"
+    restore_extras=1
+elif (( extras )); then
+    die "neither $new nor the stick has the Google extras (Play Store, libndk_translation) on its ESP.
+Add them first: tools/add-google-extras.sh $new
+or pass --no-extras (a stick that never had them, or one whose Android has copied them to /data already)."
+fi
+
 # --- write ---------------------------------------------------------------------------------
 # Each partition: the new content, then zeros up to the end of the stick's partition if the
 # new one is smaller (no stale AVB footer or super metadata left behind).
@@ -206,5 +233,13 @@ if (( verify )); then
             >/dev/null || die "$p reads back different from the new image: write it again"
     done
     echo "Read back and compared: OK"
+fi
+if (( restore_extras )); then
+    esp="$target@@$(( $(part target esp 2) * 1048576 ))"
+    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mmd" -i "$esp" ::/android/extras &&
+        "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -s -i "$esp" "$work"/extras/* ::/android/extras/ ||
+        die "the Google extras could not be written back to the ESP: run tools/add-google-extras.sh $target"
+    sync
+    echo "Google extras written back to the ESP"
 fi
 echo "Done. Android starts the new build on the next boot; the first boot takes longer (app upgrade and optimisation)."
