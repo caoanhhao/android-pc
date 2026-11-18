@@ -104,6 +104,29 @@ index 7e581c5..06fbd98 100644
      mkdir_recursive(Dirname(devpath), 0755);
  
      HandleDevice(uevent.action, devpath, block, uevent.major, uevent.minor, links);
+diff --git a/init/keychords.cpp b/init/keychords.cpp
+index adec383..29069df 100644
+--- a/init/keychords.cpp
++++ b/init/keychords.cpp
+@@ -22,6 +22,7 @@
+ #include <sys/cdefs.h>
+ #include <sys/inotify.h>
+ #include <sys/ioctl.h>
++#include <sys/stat.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+@@ -196,6 +197,10 @@ bool Keychords::GeteventEnable(int fd) {
+ 
+ void Keychords::GeteventOpenDevice(const std::string& device) {
+     if (registration_.count(device)) return;
++    // Only evdev nodes: in Waydroid's container /dev/input also holds the composer's input
++    // FIFOs (wl_*_events), and a blocking open of a FIFO with no writer would hang init.
++    struct stat st;
++    if (lstat(device.c_str(), &st) == 0 && !S_ISCHR(st.st_mode)) return;
+     auto fd = TEMP_FAILURE_RETRY(::open(device.c_str(), O_RDONLY | O_CLOEXEC));
+     if (fd == -1) {
+         PLOG(ERROR) << "Can not open " << device;
 diff --git a/init/main.cpp b/init/main.cpp
 index bb09f30..d11967f 100644
 --- a/init/main.cpp

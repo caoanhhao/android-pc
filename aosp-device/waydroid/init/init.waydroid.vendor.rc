@@ -12,6 +12,11 @@ on early-init && property:ro.boot.android_pc.waydroid=1
     # Waydroid's host side configures eth0 by that name; Cuttlefish's rename_eth0 would hide
     # it as buried_eth0 (device/google/cuttlefish/shared/config/init.vendor.rc).
     setprop ro.vendor.disable_rename_eth0 1
+    # The composer (user host, the system uid) makes its input FIFOs in /dev/input
+    # (wl_*_events). ueventd may create the directory first, as root:root 0755, for a host
+    # gamepad present at boot (system/core init/ueventd.cpp, WaydroidColdplugInput); mkdir
+    # also fixes the owner of an existing directory.
+    mkdir /dev/input 0775 system input
 
 on post-fs && property:ro.boot.android_pc.waydroid=1
     start vendor.hwcomposer-2-1

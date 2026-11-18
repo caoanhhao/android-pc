@@ -146,6 +146,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | hardware/interfaces hwc2on1adapter | a hotplug of the primary display re-reads its configs and reaches SurfaceFlinger as a reconnect (upstream Waydroid's "hwc2on1: Handle primary hotplugs") | the hwcomposer reports a host window resize as a primary hotplug; the stock adapter drops it ("non-external display"), so Android kept the size the window had at boot (half the screen) |
 | (ours) aosp-device/hals/audio | the Rust audio HAL plays to the desktop session's PulseAudio server (`src/pulse.rs`, the native protocol over the socket Waydroid binds at `/run/xdg/pulse/native`) when an output has no ALSA PCM and that socket exists | the container has no `/dev/snd`, so every stream went to the HAL's null device and Waydroid had no sound; capture stays silent |
 | system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`) |
+| system/core init keychords | only character devices in /dev/input are opened | init watches /dev/input for keychords and opens new nodes blocking; the composer's FIFOs there (wl_*_events) hung init (stuck after `vdc keymaster earlyBootEnded`, a zombie vdc never reaped) once /dev/input existed early in boot |
 | system/libvintf | the runtime check skips the kernel SELinux policy version in the container when it reads 0 | the host kernel has no SELinux; `VintfObject.verifyBuildAtBoot()` failed ("kernelSepolicyVersion = 0 but required >= 30") and `Build.isBuildConsistent()` made system_server show "There's an internal problem with your device" at every boot (on Android 17 this check is VINTF, not the partition fingerprints) |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
 
@@ -364,6 +365,12 @@ vendor image and a new system:
   presses. Removed and created again: the nodes go and come back (padctl's profile switches
   recreate the device the same way). A uinput keyboard hotplugged at the same time gets no node.
   The user then confirmed the real Vader 5 Pro (through padctl) works in a game.
+- **22:00, keyboard and mouse dead, then no boot:** with a pad present at boot, ueventd made
+  /dev/input as root:root 0755 before the composer, which could then not create its FIFOs
+  (keyboard and mouse dead). init.waydroid.vendor.rc now makes /dev/input system-owned in
+  early-init; with the directory there that early, init's keychords watcher opened a FIFO and
+  hung init. With keychords limited to character devices (22:09) it boots in ~10 s with the
+  four wl_*_events FIFOs, the wayland devices and the real pad.
 - **21:03, Where Winds Meet reaches the game world** on the real data (image of commits 124b5a9 +
   eb48bbf): arm64 through `libpc_native_bridge`, `checker choose Vulkan` on `vulkan.nvidia`
   (RTX 4070), the character and HUD in the world (`out/waydroid-aosp17-wwm-world.png`). What it
