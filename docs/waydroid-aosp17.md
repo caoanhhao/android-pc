@@ -362,6 +362,13 @@ vendor image and a new system:
   `input_monitor` (built and run from `/data/local/tmp`) reads the host's default source
   (the UGREEN webcam microphone) at 48 kHz with no xruns; it shows up on the host as source
   output "Android".
+- **22:27, camera video and every codec:** the camera previewed (the webcam through the PC
+  camera HAL, 1280x720 MJPG) but recording failed ("Failed to create video encoder"), and
+  `screenrecord` too: the media codec list was empty. Waydroid's host side writes
+  `debug.stagefright.ccodec=0` into waydroid.prop when the host has no gralloc HAL, which
+  turns off every Codec2 codec (meant for images with OMX codecs; this one has only Codec2).
+  aosp17-switch.sh now adds `debug.stagefright.ccodec = 4` (the default) to the properties;
+  the list has the c2.android codecs again and screenrecord encodes AVC.
 - **21:55, gamepads (padctl):** tested with a uinput pad shaped like padctl's output (045e:0b00,
   "Xbox Elite Series 2"), since the Vader 5 Pro was unplugged. Created before Waydroid started:
   `/dev/input/event30` and `js0` exist after boot, EventHub classes `KEYBOARD | GAMEPAD |

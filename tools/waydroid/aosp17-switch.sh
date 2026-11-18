@@ -163,7 +163,9 @@ install_aosp17() {
         # checkpoint step waits for it forever, which stalls post-fs-data), and none of the
         # Cuttlefish HALs that talk to a host over /dev/hvc* (oemlock, UWB, Thread): they abort,
         # and system_server waits for the declared ones. No frp partition either: an empty
-        # ro.frp.pst keeps PersistentDataBlockService off.
+        # ro.frp.pst keeps PersistentDataBlockService off. Waydroid sets
+        # debug.stagefright.ccodec=0 when the host has no gralloc HAL, for images with OMX
+        # codecs; this one has only Codec2, so 4 (the default) keeps the codec list.
         # The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in
         # Waydroid they come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the
         # container pieces (aosp-device/waydroid/init/init.waydroid.vendor.rc).
@@ -185,6 +187,7 @@ install_aosp17() {
             'ro.hardware.vulkan = nvidia' \
             'ro.hardware.camera = ' \
             'ro.frp.pst = ' \
+            'debug.stagefright.ccodec = 4' \
             'ro.opengles.version = 196609' \
             'debug.hwui.renderer = skiavk' \
             'ro.zygote.disable_gl_preload = true' \
