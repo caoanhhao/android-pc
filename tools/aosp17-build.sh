@@ -26,7 +26,7 @@ for s in $STEPS; do
     *.img|*.txt) t+=" $P/$x";;
     hosttools) t+=" out/host/linux-x86/cvd-host_package.tar.gz adb root-canal mkfs.erofs fsck.erofs lz4 unpack_bootimg";;
     *) t+=" $x";; esac; done
-  case "$s" in system.img|system_ext.img|product.img|vendor.img|droid) J=3;; *) J=${J_DEFAULT:-8};; esac
+  case "$s" in system.img|system_ext.img|product.img|vendor.img|droid) J=${J_BIG:-3};; *) J=${J_DEFAULT:-8};; esac
   echo "=== STEP$t $(date) free=$(df -BG --output=avail / | tail -1)"
   # Match process names, not command lines: a shell whose command text mentions them must not block us.
   while pgrep -x 'soong_ui|soong_build|siso|ninja|cargo|rustc' >/dev/null || pgrep -f "java .*GradleDaemon" >/dev/null; do
