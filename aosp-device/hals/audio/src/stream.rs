@@ -3,6 +3,7 @@
 //! ALSA PCM ([`SoundDevice`]).
 
 use std::io;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -36,6 +37,7 @@ use crate::aidl::{
     SinkMetadata, SourceMetadata,
 };
 use crate::pcm::{self, Pcm, PcmAddress};
+use crate::pulse::{self, PulseStream};
 use crate::worker::{self, DataQueue, Device, Io, Settings, Step, Worker};
 
 /// Module-wide levels the streams apply in software: master volume and mute for
@@ -108,14 +110,32 @@ fn apply_gain(data: &mut [u8], format: pcm::Format, gain: f32) {
     }
 }
 
-/// The device behind a stream: an ALSA PCM, opened while the stream is out of standby,
-/// or a null device that keeps time.
+/// The device behind a stream: an ALSA PCM, opened while the stream is out of standby; in
+/// Waydroid's container, an output with no PCM plays to the desktop session's PulseAudio
+/// server; otherwise a null device that keeps time.
 pub struct SoundDevice {
     io: Io,
     address: Option<PcmAddress>,
     config: pcm::Config,
     pcm: Option<Pcm>,
+    /// Plays to PulseAudio instead of the null device.
+    use_pulse: bool,
+    pulse: Option<PulseStream>,
     levels: Arc<Levels>,
+}
+
+/// Buffering of a PulseAudio playback stream.
+const PULSE_LATENCY_MS: u32 = 40;
+
+fn pulse_spec(config: &pcm::Config) -> pulse::Spec {
+    let format = match config.format {
+        pcm::Format::S16Le => pulse::SampleFormat::S16,
+        pcm::Format::S24Le => pulse::SampleFormat::S24In32,
+        pcm::Format::S32Le => pulse::SampleFormat::S32,
+        pcm::Format::S24Packed => pulse::SampleFormat::S24,
+        pcm::Format::FloatLe => pulse::SampleFormat::Float32,
+    };
+    pulse::Spec { format, channels: config.channels as u8, rate: config.rate }
 }
 
 impl SoundDevice {
@@ -125,7 +145,42 @@ impl SoundDevice {
         config: pcm::Config,
         levels: Arc<Levels>,
     ) -> Self {
-        Self { io, address, config, pcm: None, levels }
+        let use_pulse = address.is_none()
+            && io == Io::Output
+            && Path::new(pulse::WAYDROID_SOCKET).exists();
+        Self { io, address, config, pcm: None, use_pulse, pulse: None, levels }
+    }
+
+    /// Plays `buf` to the PulseAudio server; false if it cannot (no server, or it went
+    /// away), and the next transfer tries again with a new connection.
+    fn play_to_pulse(&mut self, buf: &[u8]) -> bool {
+        let result = self.pulse().and_then(|stream| match stream {
+            Some(stream) => stream.write(buf),
+            None => Ok(()),
+        });
+        if let Err(err) = result {
+            if self.pulse.take().is_some() {
+                warn!("{}: {err}", pulse::WAYDROID_SOCKET);
+            }
+            return false;
+        }
+        true
+    }
+
+    fn pulse(&mut self) -> io::Result<Option<&mut PulseStream>> {
+        if !self.use_pulse {
+            return Ok(None);
+        }
+        if self.pulse.is_none() {
+            let stream = PulseStream::open(
+                Path::new(pulse::WAYDROID_SOCKET),
+                pulse_spec(&self.config),
+                PULSE_LATENCY_MS,
+            )?;
+            debug!("{}: playing {:?}", pulse::WAYDROID_SOCKET, self.config);
+            self.pulse = Some(stream);
+        }
+        Ok(self.pulse.as_mut())
     }
 
     fn pcm(&mut self) -> io::Result<Option<&mut Pcm>> {
@@ -146,15 +201,24 @@ impl SoundDevice {
 
 impl Device for SoundDevice {
     fn start(&mut self) -> io::Result<()> {
-        self.pcm().map(|_| ())
+        self.pcm()?;
+        // Without the server the stream keeps time like the null device.
+        if let Err(err) = self.pulse() {
+            warn!("{}: {err}", pulse::WAYDROID_SOCKET);
+        }
+        Ok(())
     }
 
     fn transfer(&mut self, buf: &mut [u8]) -> io::Result<()> {
         let gain = self.levels.gain(self.io);
         let format = self.config.format;
         let io = self.io;
+        let use_pulse = self.use_pulse;
         if io == Io::Output {
             apply_gain(buf, format, gain);
+        }
+        if use_pulse && self.play_to_pulse(buf) {
+            return Ok(());
         }
         match self.pcm()? {
             Some(pcm) if io == Io::Output => pcm.write(buf)?,
@@ -180,16 +244,29 @@ impl Device for SoundDevice {
         if let Some(pcm) = &mut self.pcm {
             pcm.drain();
         }
+        if let Some(stream) = &mut self.pulse {
+            if let Err(err) = stream.drain() {
+                warn!("{}: drain: {err}", pulse::WAYDROID_SOCKET);
+                self.pulse = None;
+            }
+        }
     }
 
     fn flush(&mut self) {
         if let Some(pcm) = &mut self.pcm {
             pcm.drop_frames();
         }
+        if let Some(stream) = &mut self.pulse {
+            if let Err(err) = stream.flush() {
+                warn!("{}: flush: {err}", pulse::WAYDROID_SOCKET);
+                self.pulse = None;
+            }
+        }
     }
 
     fn standby(&mut self) {
         self.pcm = None;
+        self.pulse = None;
     }
 
     fn latency_ms(&self) -> Option<i32> {

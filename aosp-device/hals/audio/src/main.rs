@@ -1,5 +1,6 @@
 //! android.hardware.audio.core HAL for PCs: the primary module (`IModule/default`) over
-//! the built-in codec's ALSA PCM devices (`/dev/snd/pcmC*D*{p,c}`).
+//! the built-in codec's ALSA PCM devices (`/dev/snd/pcmC*D*{p,c}`); in Waydroid's container,
+//! the desktop session's PulseAudio server (`pulse.rs`).
 //!
 //! The other audio HAL instances (`IConfig/default`, the `r_submix` and `bluetooth`
 //! modules, the effects factory) stay with AOSP's default HAL in the
@@ -11,6 +12,7 @@ mod config;
 mod ctl;
 mod module;
 mod pcm;
+mod pulse;
 mod stream;
 mod worker;
 

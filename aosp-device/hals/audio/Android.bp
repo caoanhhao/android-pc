@@ -59,3 +59,14 @@ rust_test_host {
         unit_test: true,
     },
 }
+
+// The PulseAudio protocol encoding, on the host.
+rust_test_host {
+    name: "android.hardware.audio.service.pc_pulse_test",
+    crate_name: "pulse",
+    srcs: ["src/pulse.rs"],
+    edition: "2021",
+    test_options: {
+        unit_test: true,
+    },
+}
