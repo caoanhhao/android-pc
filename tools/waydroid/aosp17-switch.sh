@@ -166,6 +166,9 @@ install_aosp17() {
         # ro.frp.pst keeps PersistentDataBlockService off. Waydroid sets
         # debug.stagefright.ccodec=0 when the host has no gralloc HAL, for images with OMX
         # codecs; this one has only Codec2, so 4 (the default) keeps the codec list.
+        # The virtual fingerprint HAL matches a touch on its sensor only when enrollment_hit
+        # names an enrolled finger; it is not persistent, so without this every touch fails
+        # (docs/lockdown-biometric.md).
         # The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in
         # Waydroid they come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the
         # container pieces (aosp-device/waydroid/init/init.waydroid.vendor.rc).
@@ -188,6 +191,7 @@ install_aosp17() {
             'ro.hardware.camera = ' \
             'ro.frp.pst = ' \
             'debug.stagefright.ccodec = 4' \
+            'vendor.fingerprint.virtual.enrollment_hit = 1' \
             'ro.opengles.version = 196609' \
             'debug.hwui.renderer = skiavk' \
             'ro.zygote.disable_gl_preload = true' \

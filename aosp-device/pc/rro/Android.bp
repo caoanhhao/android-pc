@@ -1,0 +1,14 @@
+// Framework settings for aosp_pc_x86_64 (the real PC and Waydroid). A static
+// DEVICE_PACKAGE_OVERLAYS does not reach framework-res here (the system image is
+// generic_system), so this is an RRO on the vendor partition.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "pc_overlay_frameworks_base_core",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Framework settings for aosp_pc_x86_64 (the real PC and Waydroid). -->
+<resources>
+    <!-- Fingerprint still unlocks after "Lockdown" from the power menu
+         (docs/lockdown-biometric.md; needs tools/patches/aosp17-lockdown-biometric.patch).
+         Lockdown keeps locking the screen, hiding notifications and turning off trust agents;
+         a fingerprint unlock ends it. -->
+    <bool name="config_biometricUnlockInLockdown">true</bool>
+</resources>

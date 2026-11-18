@@ -30,3 +30,8 @@ PRODUCT_COPY_FILES += $(foreach f,$(wildcard device/android-pc/apps/*/lib/x86_64
 # allowed past generic_system.mk's artifact path requirement.
 PRODUCT_PACKAGES += modetest
 PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST += system/bin/modetest
+
+# Framework settings (pc/rro): fingerprint still unlocks in lockdown
+# (docs/lockdown-biometric.md; needs tools/patches/aosp17-lockdown-biometric.patch in
+# aosp/frameworks/base).
+PRODUCT_PACKAGES += pc_overlay_frameworks_base_core

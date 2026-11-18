@@ -224,6 +224,7 @@ stick in use: that wipes `userdata`.
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`) |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
+| [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint still unlocks after the power menu's Lockdown; the security tradeoff |
 
 ## Licensing note
 
