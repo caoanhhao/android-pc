@@ -58,3 +58,18 @@ unless `--no-extras` is given. `/data/vendor/pc-extras` survives updates in any 
 
 Removing them: delete `android/extras` from the ESP and `/data/vendor/pc-extras` (as root),
 then reboot.
+
+## Checked (2026-11-19, build `eng.caoanh.20261119.0009`, commit `351a894`)
+
+- QEMU, the stick image with `add-google-extras.sh` applied (default graphics entry, QEMU
+  has no NVIDIA GPU): `pcextras: installed ...` then `mounted 26 files` 7.5 s after boot,
+  `sys.boot_completed=1`. `pm path com.android.vending` is
+  `/product/priv-app/Phonesky/Phonesky.apk`, `PRIVILEGED PRODUCT`, 50.7.34-31, 102
+  permissions granted. `/system/lib64/libndk_translation.so` is the real 8.7 MB file
+  (`system_lib_file`). The arm64 guest-hook test app (`tools/guest-hook-test`) passes
+  through `libpc_native_bridge` and the translator. WebView provider: `com.android.webview`.
+- `update-usb-aosp17.sh` from the clean release image onto a copy of that stick image:
+  `Google extras written back to the ESP`, same `VERSION`. Onto a clean copy: refuses
+  without `--no-extras`.
+- Not checked yet: the real PC; an image with no extras at all on the real PC (pcextras.sh
+  exits at once, as on Cuttlefish).

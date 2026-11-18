@@ -640,8 +640,9 @@ Goal: GitHub releases of the stick image that contain nothing we may not redistr
   the user's computer and writes them to the stick's ESP; `pcextras.sh` copies them to
   `/data/vendor/pc-extras` at the next boot and bind-mounts them over empty placeholders
   before zygote starts (docs/google-extras.md). AOSP's WebView replaces Google's.
-  `tools/update-usb-aosp17.sh` keeps the stick's extras. Status (2026-11-18): code done;
-  build and boot check pending.
+  `tools/update-usb-aosp17.sh` keeps the stick's extras. Status (2026-11-19): done; checked
+  in QEMU (Play Store privileged, arm64 test app passes, extras kept by an update), not yet
+  on the real PC (docs/google-extras.md).
 - **R2. First release.** `tools/make-release.sh --upload`: draft release `aosp17-<date>`.
 
 ## Risks

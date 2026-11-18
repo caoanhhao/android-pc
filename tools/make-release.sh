@@ -13,18 +13,20 @@
 # Options: --tag TAG      release tag (default aosp17-YYYYMMDD)
 #          --product DIR  images the stick was made from (default aosp/out/target/product/pc_x86_64)
 #          --check-only   run the licence and key checks only
-#          --upload       also create a DRAFT GitHub release (gh) for the current commit;
+#          --commit SHA   the commit the images were built from (default HEAD)
+#          --upload       also create a DRAFT GitHub release (gh) for that commit;
 #                         publishing it is left to the user
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 product=$ROOT/aosp/out/target/product/pc_x86_64
 host=$ROOT/aosp/out/host/linux-x86/bin
-tag=aosp17-$(date +%Y%m%d) check_only=0 upload=0 img=""
+tag=aosp17-$(date +%Y%m%d) check_only=0 upload=0 img="" commit=HEAD
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag) tag="$2"; shift ;;
         --product) product="$2"; shift ;;
+        --commit) commit="$2"; shift ;;
         --check-only) check_only=1 ;;
         --upload) upload=1 ;;
         -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 img=${img:-$ROOT/out/aosp17-usb.img}
+commit=$(git -C "$ROOT" rev-parse --verify "$commit^{commit}")
 die() { echo "make-release.sh: $*" >&2; exit 1; }
 for f in "$host/dump.erofs" "$host/fsck.erofs" "$host/avbtool"; do [[ -x $f ]] || die "missing $f (build hosttools)"; done
 
@@ -82,7 +85,7 @@ prop() { sed -n "s/^$1=//p" "$work/build.txt"; }
     cat "$work/build.txt"
     echo "avb.public_key_sha1=$avb_key"
     echo "avb.rollback_index=$rollback"
-    echo "git.commit=$(git -C "$ROOT" rev-parse HEAD)"
+    echo "git.commit=$commit"
     echo "image=$(basename "$img") $img_bytes bytes"
 } > "$rel/build.txt"
 fingerprint=$(prop ro.system.build.fingerprint) incremental=$(prop ro.build.version.incremental)
@@ -143,7 +146,7 @@ booting from a USB stick, with the device's vendor HALs written in Rust.
 
 - Build: \`$incremental\`, security patch level $spl
 - Fingerprint: \`$fingerprint\`
-- Source: commit $(git -C "$ROOT" rev-parse --short HEAD) of this repository; see INSTALL.md
+- Source: commit ${commit:0:12} of this repository; see INSTALL.md
 
 ## Target hardware
 
@@ -185,7 +188,6 @@ echo "Release files in $rel:"
 ls -l "$rel"
 
 if [[ $upload == 1 ]]; then
-    git -C "$ROOT" diff --quiet HEAD || die "uncommitted changes: release only committed work"
-    gh release create "$tag" --draft --target "$(git -C "$ROOT" rev-parse HEAD)" \
+    gh release create "$tag" --draft --target "$commit" \
         --title "android-pc $tag" --notes-file "$rel/NOTES.md" "$rel"/*
 fi
