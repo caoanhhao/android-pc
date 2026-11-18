@@ -25,3 +25,26 @@ index 8a2c3be..862d461 100644
      }
      gLog.info("Enabling bandwidth control: %" PRId64 "us", s.getTimeAndResetUs());
  
+diff --git a/server/RouteController.cpp b/server/RouteController.cpp
+index 775bbbb..69322df 100644
+--- a/server/RouteController.cpp
++++ b/server/RouteController.cpp
+@@ -24,6 +24,7 @@
+ #include <netdutils/InternetAddresses.h>
+ #include <private/android_filesystem_config.h>
+ #include <sys/stat.h>
++#include <unistd.h>
+ 
+ #include <map>
+ 
+@@ -494,6 +495,10 @@ int modifyIncomingPacketMark(unsigned netId, const char* interface, Permission p
+         RouteController::LOCAL_MANGLE_INPUT, interface, fwmark.intValue, ~mask);
+     if (RouteController::iptablesRestoreCommandFunction(V4V6, "mangle", cmd, nullptr) != 0) {
+         ALOGE("failed to change iptables rule that sets incoming packet mark");
++        // android-pc in Waydroid's container (docs/waydroid-aosp17.md): the host may have no
++        // legacy iptables (nftables only). Go on without the mark, so the network's ip rules
++        // and routes still get installed.
++        if (access("/vendor/waydroid.prop", F_OK) == 0) return 0;
+         return -EREMOTEIO;
+     }
+ 

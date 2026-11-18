@@ -137,7 +137,8 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | bionic | property area accepted without its SELinux label | `__system_property_area_init()` fails without the xattr and init aborts |
 | frameworks/native servicemanager | no caller context lookup (`getpidcon`) in the container | binder hands over no SELinux context, and servicemanager aborts rather than look one up from a binder thread |
 | system/hwservicemanager | no caller context lookup in the container | as servicemanager |
-| system/netd | iptables and bandwidth-control failures are not fatal in the container | the host may have only nftables (no legacy iptables); Waydroid's host side does the container's networking |
+| system/netd | iptables and bandwidth-control failures are not fatal in the container; adding an interface to a network goes on without the incoming-packet mark | the host may have only nftables (no legacy iptables, or its modules not loaded); without this `networkAddInterface(eth0)` failed with EREMOTEIO and no per-network ip rules or routes were installed |
+| frameworks/native inputflinger | EventHub opens Waydroid's input FIFOs (`/dev/input/wl_{touch,keyboard,pointer,tablet}_events`) as touchscreen, keyboard, mouse and stylus, with no evdev ioctls; `CursorInputMapper` passes the pointer FIFO's absolute position (upstream Waydroid's "EventHub: Add wayland inputs support", "absolute event support for cursor" and keyboard DPAD class, Android 16 versions) | the hwcomposer writes the Wayland seat's events into these FIFOs; stock EventHub never opens them, so the window took no mouse or keyboard input |
 | packages/modules/Connectivity | NetBpfLoad: host sysctls and pre-existing host programs are not errors, no uprobestats/platform loaders; netd's map self-test skipped; ClatCoordinator skips SELinux xattr checks | see "Status": host kernel, no CAP_BPF for netd, no SELinux |
 | system/security keystore2 | placeholder calling sid in the container | binder hands over no sid; libselinux allows the check |
 | system/memory libmeminfo | no abort when the GPU-memory map is missing (container only) | the tracing program behind it is not loaded |
@@ -322,6 +323,20 @@ vendor image and a new system:
   `system_de/0/spblob`, `system/locksettings.db*` and `misc/keystore/persistent.sqlite` to
   `~/.local/share/waydroid-backup/keystore-reset-20261118-2032`; the next boot completes with no
   lock credential.
-- `waydroid show-full-ui` waits forever for the `waydroidplatform` service (Waydroid's
-  `IPlatform`, not in the image yet, W4). Until then, open the window from the host:
+- `waydroid show-full-ui` waited forever for the `waydroidplatform` service (Waydroid's
+  `IPlatform`, W4). Workaround on older images:
   `sudo waydroid shell -- sh -c 'setprop waydroid.active_apps Waydroid; input keyevent KEYCODE_WAKEUP'`.
+  The image now has it (below).
+- **IPlatform:** `WaydroidPlatform` (aosp-device/waydroid/platform), a persistent system-uid app
+  on system_ext, registers `waydroidplatform` (`lineageos.waydroid.IPlatform`, the host's
+  transaction codes in `tools/interfaces/IPlatform.py`) when `/vendor/waydroid.prop` exists; on
+  the PC it does nothing. It is Java, not Rust: everything it does (app list, launch intents,
+  PackageInstaller, Settings) is framework API. With no SELinux in the container it accepts only
+  uid 0, 1000 (the host's desktop user maps to it) and 2000. Settings modes: 0 system, 1 secure,
+  2 global (`policy_control`).
+- **Network on the real data (21:00):** eth0 came up as `buried_eth0` (Cuttlefish's
+  `rename_eth0`; init.waydroid.vendor.rc now sets `ro.vendor.disable_rename_eth0=1`), netd
+  installed no routes (see the netd row above), and `restricted_networking_mode` was 1 in the
+  LineageOS data (nothing in this image sets it), which dropped every app uid without the
+  restricted bit. Fixed by hand at runtime (`settings put global restricted_networking_mode 0`
+  persists); the first two are fixed in the image.

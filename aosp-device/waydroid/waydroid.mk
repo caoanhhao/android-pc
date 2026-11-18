@@ -12,7 +12,8 @@ PRODUCT_PACKAGES += \
     waydroid-composer-hidl.xml \
     waydroid-bind-mounts \
     waydroid-vintf-placeholder \
-    waydroid-nvidia-nodes.sh
+    waydroid-nvidia-nodes.sh \
+    WaydroidPlatform
 
 # The container's first stage runs it (system/core/init/waydroid_first_stage.cpp).
 PRODUCT_PACKAGES += waydroid-preinit

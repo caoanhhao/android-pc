@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Waydroid's IPlatform service (src/org/androidpc/waydroid/PlatformApp.java). Persistent and
+     direct-boot aware, so the service is up before the user unlocks. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.androidpc.waydroid.platform"
+    android:sharedUserId="android.uid.system">
+
+    <application
+        android:name="org.androidpc.waydroid.PlatformApp"
+        android:label="Waydroid platform"
+        android:persistent="true"
+        android:directBootAware="true"
+        android:defaultToDeviceProtectedStorage="true"
+        android:allowBackup="false" />
+</manifest>

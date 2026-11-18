@@ -9,6 +9,9 @@ on early-init && property:ro.boot.android_pc.waydroid=1
     # (hals/nvgpu/init.nvgpu.rc).
     setprop ro.vulkan.apex ""
     setprop debug.renderengine.backend skiavkthreaded
+    # Waydroid's host side configures eth0 by that name; Cuttlefish's rename_eth0 would hide
+    # it as buried_eth0 (device/google/cuttlefish/shared/config/init.vendor.rc).
+    setprop ro.vendor.disable_rename_eth0 1
 
 on post-fs && property:ro.boot.android_pc.waydroid=1
     start vendor.hwcomposer-2-1

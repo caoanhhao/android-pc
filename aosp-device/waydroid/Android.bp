@@ -53,3 +53,23 @@ prebuilt_etc {
     sub_dir: "waydroid",
     vendor: true,
 }
+
+// Waydroid's IPlatform service ("waydroidplatform", for `waydroid app list/launch` and
+// `show-full-ui`): a persistent system-uid app that registers it only in the container.
+android_app {
+    name: "WaydroidPlatform",
+    srcs: [
+        "platform/src/**/*.java",
+        "platform/src/**/I*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["platform/src"],
+    },
+    manifest: "platform/AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    system_ext_specific: true,
+    optimize: {
+        enabled: false,
+    },
+}

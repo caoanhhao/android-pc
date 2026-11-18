@@ -87,3 +87,344 @@ index dd4444b..565e2f4 100644
      };
  
      int result = ioctl(mDriverFD, BINDER_SET_CONTEXT_MGR_EXT, &obj);
+diff --git a/services/inputflinger/reader/EventHub.cpp b/services/inputflinger/reader/EventHub.cpp
+index ca79fc5..22cf2f3 100644
+--- a/services/inputflinger/reader/EventHub.cpp
++++ b/services/inputflinger/reader/EventHub.cpp
+@@ -82,6 +82,66 @@ namespace vd_flags = android::companion::virtualdevice::flags;
+ using namespace ftl::flag_operators;
+ 
+ static const char* DEVICE_INPUT_PATH = "/dev/input";
++
++// Waydroid: its hwcomposer writes input_event records for the Wayland seat into these FIFOs
++// (docs/waydroid-aosp17.md). A FIFO takes no evdev ioctls, so EventHub describes the device
++// itself, as upstream Waydroid's "EventHub: Add wayland inputs support" does. The nodes exist
++// only in Waydroid's container.
++enum { WL_INPUT_TOUCH, WL_INPUT_KEYBOARD, WL_INPUT_POINTER, WL_INPUT_TABLET, WL_INPUT_TOTAL };
++static const char* WL_INPUT_PIPE[WL_INPUT_TOTAL] = {
++        "/dev/input/wl_touch_events",
++        "/dev/input/wl_keyboard_events",
++        "/dev/input/wl_pointer_events",
++        "/dev/input/wl_tablet_events",
++};
++static const char* WL_INPUT_NAME[WL_INPUT_TOTAL] = {
++        "wayland_touch",
++        "wayland_keyboard",
++        "wayland_pointer",
++        "wayland_tablet",
++};
++static const char* WL_INPUT_LOCATION = "wayland";
++
++static int waydroidInputType(const std::string& devicePath) {
++    for (int type = 0; type < WL_INPUT_TOTAL; type++) {
++        if (devicePath == WL_INPUT_PIPE[type]) return type;
++    }
++    return -1;
++}
++
++// The axes of a Waydroid FIFO: positions span the window size the hwcomposer publishes.
++static input_absinfo waydroidAbsInfo(int axis) {
++    input_absinfo info{};
++    switch (axis) {
++        case ABS_X:
++        case ABS_MT_POSITION_X:
++            info.maximum = property_get_int32("waydroid.display_width", 0);
++            break;
++        case ABS_Y:
++        case ABS_MT_POSITION_Y:
++            info.maximum = property_get_int32("waydroid.display_height", 0);
++            break;
++        case ABS_MT_SLOT:
++            info.maximum = 9;
++            break;
++        case ABS_PRESSURE:
++        case ABS_MT_PRESSURE:
++            info.maximum = 255;
++            break;
++        case ABS_MT_TRACKING_ID:
++            info.maximum = 65535;
++            break;
++        case ABS_MT_TOUCH_MAJOR:
++        case ABS_MT_TOUCH_MINOR:
++            info.maximum = 15;
++            break;
++        case ABS_MT_ORIENTATION:
++            info.maximum = 1;
++            break;
++    }
++    info.resolution = 1;
++    return info;
++}
+ // v4l2 devices go directly into /dev
+ static const char* DEVICE_PATH = "/dev";
+ 
+@@ -672,7 +732,9 @@ bool EventHub::Device::populateAbsoluteAxisStates() {
+             continue;
+         }
+         struct input_absinfo info {};
+-        if (ioctl(fd, EVIOCGABS(axis), &info)) {
++        if (identifier.location == WL_INPUT_LOCATION) {
++            info = waydroidAbsInfo(axis);
++        } else if (ioctl(fd, EVIOCGABS(axis), &info)) {
+             ALOGE("Error reading axis info for device '%s' axis %s fd %d: %s",
+                   identifier.name.c_str(),
+                   InputEventLookup::getLinuxEvdevLabel(EV_ABS, axis, 0).code.c_str(), fd,
+@@ -2464,7 +2526,18 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+     }
+ 
+     InputDeviceIdentifier identifier;
+-
++    const int waydroidType = waydroidInputType(devicePath);
++    int driverVersion = 0;
++
++if (waydroidType >= 0) {
++    identifier.name = WL_INPUT_NAME[waydroidType];
++    identifier.bus = BUS_VIRTUAL;
++    identifier.product = 1;
++    identifier.vendor = 1;
++    identifier.version = 1;
++    identifier.location = WL_INPUT_LOCATION;
++    identifier.uniqueId = WL_INPUT_NAME[waydroidType];
++} else {
+     // Get device name.
+     if (ioctl(fd, EVIOCGNAME(sizeof(buffer) - 1), &buffer) < 1) {
+         ALOGE("Could not get device name for %s: %s", devicePath.c_str(), strerror(errno));
+@@ -2484,7 +2557,6 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+     }
+ 
+     // Get device driver version.
+-    int driverVersion;
+     if (ioctl(fd, EVIOCGVERSION, &driverVersion)) {
+         ALOGE("could not get driver version for %s, %s\n", devicePath.c_str(), strerror(errno));
+         close(fd);
+@@ -2518,6 +2590,7 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+         buffer[sizeof(buffer) - 1] = '\0';
+         identifier.uniqueId = buffer;
+     }
++}
+ 
+     // Attempt to get the bluetooth address of an input device from the uniqueId.
+     if (identifier.bus == BUS_BLUETOOTH &&
+@@ -2570,6 +2643,7 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+     // Obtain the associated device, if any.
+     device->associatedDevice = obtainAssociatedDeviceLocked(devicePath, device->configuration);
+ 
++if (waydroidType < 0) {
+     // Figure out the kinds of events the device reports.
+     device->readDeviceBitMask(EVIOCGBIT(EV_KEY, 0), device->keyBitmask);
+     device->readDeviceBitMask(EVIOCGBIT(EV_ABS, 0), device->absBitmask);
+@@ -2756,6 +2830,9 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+         device->controllerNumber = getNextControllerNumberLocked(device->identifier.name);
+         device->setLedForControllerLocked();
+     }
++} else {
++    setWaydroidInputClassesLocked(*device, waydroidType);
++}
+ 
+     if (registerDeviceForEpollLocked(*device) != OK) {
+         return;
+@@ -2788,6 +2865,44 @@ void EventHub::openDeviceLocked(const std::string& devicePath) {
+     addDeviceLocked(std::move(device));
+ }
+ 
++void EventHub::setWaydroidInputClassesLocked(Device& device, int type) {
++    if (type == WL_INPUT_TOUCH) {
++        device.classes |= InputDeviceClass::TOUCH_MT;
++        device.propBitmask.set(INPUT_PROP_DIRECT, true);
++        for (int axis : {ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TOOL_TYPE, ABS_MT_TOUCH_MAJOR,
++                         ABS_MT_TOUCH_MINOR, ABS_MT_ORIENTATION, ABS_MT_TRACKING_ID,
++                         ABS_MT_PRESSURE, ABS_MT_SLOT, ABS_X, ABS_Y, ABS_PRESSURE}) {
++            device.absBitmask.set(axis, true);
++        }
++    } else if (type == WL_INPUT_KEYBOARD) {
++        device.classes |= InputDeviceClass::KEYBOARD | InputDeviceClass::ALPHAKEY |
++                InputDeviceClass::DPAD;
++        device.keyBitmask.set(BTN_MISC, true);
++        device.keyBitmask.set(KEY_OK, true);
++        device.loadKeyMapLocked();
++    } else if (type == WL_INPUT_POINTER) {
++        device.classes |= InputDeviceClass::CURSOR;
++        device.propBitmask.set(INPUT_PROP_POINTER, true);
++        device.absBitmask.set(ABS_X, true);
++        device.absBitmask.set(ABS_Y, true);
++        device.keyBitmask.set(BTN_MOUSE, true);
++        for (int axis : {REL_X, REL_Y, REL_HWHEEL, REL_WHEEL}) {
++            device.relBitmask.set(axis, true);
++        }
++    } else if (type == WL_INPUT_TABLET) {
++        device.classes |= InputDeviceClass::EXTERNAL_STYLUS | InputDeviceClass::TOUCH;
++        device.propBitmask.set(INPUT_PROP_DIRECT, true);
++        for (int key : {BTN_TOOL_PEN, BTN_TOOL_RUBBER, BTN_TOOL_BRUSH, BTN_TOOL_PENCIL,
++                        BTN_TOOL_AIRBRUSH, BTN_TOOL_FINGER, BTN_TOOL_MOUSE, BTN_TOOL_LENS,
++                        BTN_TOUCH, BTN_STYLUS, BTN_STYLUS2, BTN_STYLUS3}) {
++            device.keyBitmask.set(key, true);
++        }
++        for (int axis : {ABS_X, ABS_Y, ABS_PRESSURE, ABS_DISTANCE, ABS_TILT_X, ABS_TILT_Y}) {
++            device.absBitmask.set(axis, true);
++        }
++    }
++}
++
+ void EventHub::openVideoDeviceLocked(const std::string& devicePath) {
+     std::unique_ptr<TouchVideoDevice> videoDevice = TouchVideoDevice::create(devicePath);
+     if (!videoDevice) {
+diff --git a/services/inputflinger/reader/include/EventHub.h b/services/inputflinger/reader/include/EventHub.h
+index 83ff604..3feca47 100644
+--- a/services/inputflinger/reader/include/EventHub.h
++++ b/services/inputflinger/reader/include/EventHub.h
+@@ -732,6 +732,7 @@ private:
+      * Create a new device for the provided path.
+      */
+     void openDeviceLocked(const std::string& devicePath) REQUIRES(mLock);
++    void setWaydroidInputClassesLocked(Device& device, int type) REQUIRES(mLock);
+     void openVideoDeviceLocked(const std::string& devicePath) REQUIRES(mLock);
+     /**
+      * Try to associate a video device with an input device. If the association succeeds,
+diff --git a/services/inputflinger/reader/mapper/CursorInputMapper.cpp b/services/inputflinger/reader/mapper/CursorInputMapper.cpp
+index da0901b..566fd9b 100644
+--- a/services/inputflinger/reader/mapper/CursorInputMapper.cpp
++++ b/services/inputflinger/reader/mapper/CursorInputMapper.cpp
+@@ -94,6 +94,39 @@ void CursorMotionAccumulator::finishSync() {
+     clearRelativeAxes();
+ }
+ 
++// --- CursorPositionAccumulator ---
++
++CursorPositionAccumulator::CursorPositionAccumulator() {
++    clearPosition();
++}
++
++void CursorPositionAccumulator::reset(InputDeviceContext& deviceContext) {
++    clearPosition();
++}
++
++void CursorPositionAccumulator::clearPosition() {
++    mX = 0;
++    mY = 0;
++}
++
++void CursorPositionAccumulator::process(const RawEvent& rawEvent) {
++    if (rawEvent.type == EV_ABS) {
++        switch (rawEvent.code) {
++        case ABS_X:
++            mX = rawEvent.value;
++            break;
++        case ABS_Y:
++            mY = rawEvent.value;
++            break;
++        }
++    }
++}
++
++void CursorPositionAccumulator::finishSync() {
++    clearPosition();
++}
++
++
+ // --- CursorInputMapper ---
+ 
+ CursorInputMapper::CursorInputMapper(InputDeviceContext& deviceContext,
+@@ -215,6 +248,8 @@ CursorInputMapper::Parameters CursorInputMapper::computeParameters(
+     if (parameters.mode == Parameters::Mode::POINTER || parameters.orientationAware) {
+         parameters.hasAssociatedDisplay = true;
+     }
++
++    parameters.isWayland = (deviceContext.getDeviceIdentifier().location == "wayland");
+     return parameters;
+ }
+ 
+@@ -237,6 +272,7 @@ std::list<NotifyArgs> CursorInputMapper::reset(nsecs_t when) {
+ 
+     mCursorButtonAccumulator.reset(getDeviceContext());
+     mCursorMotionAccumulator.reset(getDeviceContext());
++    mCursorPositionAccumulator.reset(getDeviceContext());
+     mCursorScrollAccumulator.reset(getDeviceContext());
+ 
+     return InputMapper::reset(when);
+@@ -246,6 +282,7 @@ std::list<NotifyArgs> CursorInputMapper::process(const RawEvent& rawEvent) {
+     std::list<NotifyArgs> out;
+     mCursorButtonAccumulator.process(rawEvent);
+     mCursorMotionAccumulator.process(rawEvent);
++    mCursorPositionAccumulator.process(rawEvent);
+     mCursorScrollAccumulator.process(rawEvent);
+ 
+     if (rawEvent.type == EV_SYN && rawEvent.code == SYN_REPORT) {
+@@ -313,8 +350,8 @@ std::list<NotifyArgs> CursorInputMapper::sync(nsecs_t when, nsecs_t readTime) {
+ 
+     mPointerVelocityControl.move(when, &deltaX, &deltaY);
+ 
+-    float xCursorPosition = AMOTION_EVENT_INVALID_CURSOR_POSITION;
+-    float yCursorPosition = AMOTION_EVENT_INVALID_CURSOR_POSITION;
++    float xCursorPosition = mParameters.isWayland ? mCursorPositionAccumulator.getX() : AMOTION_EVENT_INVALID_CURSOR_POSITION;
++    float yCursorPosition = mParameters.isWayland ? mCursorPositionAccumulator.getY() : AMOTION_EVENT_INVALID_CURSOR_POSITION;
+ 
+     // Moving an external trackball or mouse should wake the device.
+     // We don't do this for internal cursor devices to prevent them from waking up
+@@ -339,7 +376,10 @@ std::list<NotifyArgs> CursorInputMapper::sync(nsecs_t when, nsecs_t readTime) {
+         moveCoords.clear();
+         moveCoords.setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X, deltaX);
+         moveCoords.setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y, deltaY);
+-        if (mSource != AINPUT_SOURCE_MOUSE) {
++        if (mParameters.isWayland) {
++            moveCoords.setAxisValue(AMOTION_EVENT_AXIS_X, xCursorPosition);
++            moveCoords.setAxisValue(AMOTION_EVENT_AXIS_Y, yCursorPosition);
++        } else if (mSource != AINPUT_SOURCE_MOUSE) {
+             // Pointer capture and navigation modes
+             moveCoords.setAxisValue(AMOTION_EVENT_AXIS_X, deltaX);
+             moveCoords.setAxisValue(AMOTION_EVENT_AXIS_Y, deltaY);
+@@ -368,6 +408,11 @@ std::list<NotifyArgs> CursorInputMapper::sync(nsecs_t when, nsecs_t readTime) {
+         pointerCoords.clear();
+         pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_PRESSURE, down ? 1.0f : 0.0f);
+ 
++        if (mParameters.isWayland) {
++            pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_X, xCursorPosition);
++            pointerCoords.setAxisValue(AMOTION_EVENT_AXIS_Y, yCursorPosition);
++        }
++
+         if (buttonsReleased) {
+             BitSet32 released(buttonsReleased);
+             while (!released.isEmpty()) {
+diff --git a/services/inputflinger/reader/mapper/CursorInputMapper.h b/services/inputflinger/reader/mapper/CursorInputMapper.h
+index 7215403..6d5be2f 100644
+--- a/services/inputflinger/reader/mapper/CursorInputMapper.h
++++ b/services/inputflinger/reader/mapper/CursorInputMapper.h
+@@ -45,6 +45,26 @@ private:
+     void clearRelativeAxes();
+ };
+ 
++/* Keeps track of cursor position. */
++
++class CursorPositionAccumulator {
++public:
++    CursorPositionAccumulator();
++    void reset(InputDeviceContext& deviceContext);
++
++    void process(const RawEvent& rawEvent);
++    void finishSync();
++
++    inline int32_t getX() const { return mX; }
++    inline int32_t getY() const { return mY; }
++
++private:
++    int32_t mX;
++    int32_t mY;
++
++    void clearPosition();
++};
++
+ class CursorInputMapper : public InputMapper {
+ public:
+     template <class T, class... Args>
+@@ -88,10 +108,12 @@ private:
+         Mode mode;
+         bool hasAssociatedDisplay;
+         bool orientationAware;
++        bool isWayland;
+     } mParameters;
+ 
+     CursorButtonAccumulator mCursorButtonAccumulator;
+     CursorMotionAccumulator mCursorMotionAccumulator;
++    CursorPositionAccumulator mCursorPositionAccumulator;
+     CursorScrollAccumulator mCursorScrollAccumulator;
+ 
+     int32_t mSource;
