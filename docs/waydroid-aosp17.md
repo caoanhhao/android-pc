@@ -347,3 +347,14 @@ vendor image and a new system:
   (KEYBOARD, ALPHAKEY, DPAD), wayland_pointer (CURSOR, source MOUSE, axes sized to the
   1260x1058 window) and wayland_tablet; mouse and key events reach the dispatcher. eth0 keeps
   its name, netd installs the `eth0` routing table, and the container reaches the internet.
+- **21:03, Where Winds Meet reaches the game world** on the real data (image of commits 124b5a9 +
+  eb48bbf): arm64 through `libpc_native_bridge`, `checker choose Vulkan` on `vulkan.nvidia`
+  (RTX 4070), the character and HUD in the world (`out/waydroid-aosp17-wwm-world.png`). What it
+  needed besides the image fixes:
+  - `settings put global restricted_networking_mode 0`: the old data had it on, so the BPF owner
+    match dropped every app uid without `RESTRICTED_MATCH` (the game showed "Failed to connect to
+    update server" while root could reach the Internet).
+  - `waydroid prop set persist.waydroid.suspend false`: with the Waydroid window on a hidden
+    workspace Android went to sleep and paused the game.
+  - Earlier runs during the image swap died with SIGILL in `libnvidia-gpucomp.so` and SIGSEGV
+    (the game's own handler swallows it, empty minidump); on the new image neither came back.
