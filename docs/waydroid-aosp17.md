@@ -352,6 +352,9 @@ vendor image and a new system:
 - **21:17, hwc2on1 primary hotplug:** a host resize now reaches SurfaceFlinger ("host resized
   Waydroid#0 ...", then "Reconnecting display 0"), and the display follows. The user data sets
   `persist.waydroid.width/height` (2560x1068), which the hwcomposer uses as the display size.
+- **21:41, sound:** with the PulseAudio output in the audio HAL, an app's AAudio stream
+  (Chromium) shows up on the host as sink input "Android" (application.id `android-pc`,
+  s16le 2ch 48 kHz) on the default sink.
 - **21:03, Where Winds Meet reaches the game world** on the real data (image of commits 124b5a9 +
   eb48bbf): arm64 through `libpc_native_bridge`, `checker choose Vulkan` on `vulkan.nvidia`
   (RTX 4070), the character and HUD in the world (`out/waydroid-aosp17-wwm-world.png`). What it
