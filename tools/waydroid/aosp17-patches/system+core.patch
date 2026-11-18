@@ -54,6 +54,56 @@ index 2e4a3b4..082063c 100644
      SetProperty(prop_name, std::to_string(t.duration().count()));
  
      if (mount_all->import_rc) {
+diff --git a/init/devices.cpp b/init/devices.cpp
+index 7e581c5..06fbd98 100644
+--- a/init/devices.cpp
++++ b/init/devices.cpp
+@@ -56,6 +56,7 @@ using android::base::Split;
+ using android::base::StartsWith;
+ using android::base::StringPrintf;
+ using android::base::Trim;
++using android::base::Trim;
+ 
+ namespace android {
+ namespace init {
+@@ -772,6 +773,25 @@ void DeviceHandler::HandleBindInternal(std::string driver_name, std::string acti
+     }
+ }
+ 
++// android-pc in Waydroid's container (docs/waydroid-aosp17.md): the container receives every
++// host uevent. Android gets the desktop's keyboard and mouse through the Wayland seat, so of
++// the host's input devices only gamepads and joysticks (BTN_JOYSTICK..BTN_THUMBR, as padctl's
++// virtual pads report) get nodes; anything else would type and click twice.
++static bool IsWaydroidGamepad(const std::string& sys_device_path) {
++    std::string caps;
++    if (!ReadFileToString(sys_device_path + "/device/capabilities/key", &caps)) return false;
++    // Hex words of BITS_PER_LONG bits, the most significant first.
++    std::vector<std::string> words = Split(Trim(caps), " ");
++    constexpr size_t kBits = sizeof(unsigned long) * 8;
++    for (int key = 0x120; key <= 0x13f; key++) {  // BTN_JOYSTICK .. BTN_THUMBR
++        size_t index = key / kBits;
++        if (index >= words.size()) continue;
++        unsigned long word = strtoul(words[words.size() - 1 - index].c_str(), nullptr, 16);
++        if (word & (1UL << (key % kBits))) return true;
++    }
++    return false;
++}
++
+ void DeviceHandler::HandleUevent(const Uevent& uevent) {
+     if (uevent.action == "add" || uevent.action == "change" || uevent.action == "bind" ||
+         uevent.action == "online") {
+@@ -841,6 +861,11 @@ void DeviceHandler::HandleUevent(const Uevent& uevent) {
+         devpath = "/dev/" + Basename(uevent.path);
+     }
+ 
++    if (uevent.subsystem == "input" && uevent.action != "remove" && IsRunningInWaydroid() &&
++        !IsWaydroidGamepad(sysfs_mount_point_ + uevent.path)) {
++        return;
++    }
++
+     mkdir_recursive(Dirname(devpath), 0755);
+ 
+     HandleDevice(uevent.action, devpath, block, uevent.major, uevent.minor, links);
 diff --git a/init/main.cpp b/init/main.cpp
 index bb09f30..d11967f 100644
 --- a/init/main.cpp
@@ -204,6 +254,77 @@ index d38b47a..eb27a35 100644
              Result<void> result = cgroups_activated.Write(kActivatingCgroupsFailed);
              if (!result.ok()) {
                  return Error() << "Sending notification failed: " << result.error();
+diff --git a/init/ueventd.cpp b/init/ueventd.cpp
+index 28419d9..f417e81 100644
+--- a/init/ueventd.cpp
++++ b/init/ueventd.cpp
+@@ -31,8 +31,10 @@
+ #include <thread>
+ 
+ #include <android-base/chrono_utils.h>
++#include <android-base/file.h>
+ #include <android-base/logging.h>
+ #include <android-base/properties.h>
++#include <android-base/strings.h>
+ #include <fstab/fstab.h>
+ 
+ #include "coldboot.h"
+@@ -122,6 +124,38 @@
+ namespace android {
+ namespace init {
+ 
++// android-pc in Waydroid's container (docs/waydroid-aosp17.md): cold boot cannot regenerate
++// uevents there (the host's /sys is read-only, and a write would reach the host's udev), so
++// the input devices present before Waydroid started are added from /sys/class/input; the
++// device handler keeps only gamepads (IsWaydroidGamepad).
++static void WaydroidColdplugInput(DeviceHandler& devices) {
++    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir("/sys/class/input"), closedir);
++    if (!dir) return;
++    while (dirent* entry = readdir(dir.get())) {
++        std::string name = entry->d_name;
++        if (!android::base::StartsWith(name, "event") && !android::base::StartsWith(name, "js")) {
++            continue;
++        }
++        std::string sys_path;
++        if (!android::base::Realpath("/sys/class/input/" + name, &sys_path)) continue;
++        std::string contents;
++        if (!android::base::ReadFileToString(sys_path + "/uevent", &contents)) continue;
++        Uevent uevent{};
++        uevent.action = "add";
++        uevent.path = sys_path.substr(strlen("/sys"));
++        uevent.subsystem = "input";
++        uevent.partition_num = -1;
++        uevent.major = -1;
++        uevent.minor = -1;
++        for (const auto& line : android::base::Split(contents, "\n")) {
++            if (android::base::StartsWith(line, "MAJOR=")) uevent.major = atoi(line.c_str() + 6);
++            if (android::base::StartsWith(line, "MINOR=")) uevent.minor = atoi(line.c_str() + 6);
++            if (android::base::StartsWith(line, "DEVNAME=")) uevent.device_name = line.substr(8);
++        }
++        devices.HandleUevent(uevent);
++    }
++}
++
+ static constexpr bool kLogUeventDuration = false;
+ 
+ static UeventdConfiguration GetConfiguration() {
+@@ -217,6 +251,7 @@ int ueventd_main(int argc, char** argv) {
+         std::vector<std::string> base_paths = {"/odm/lib/modules", "/vendor/lib/modules"};
+         uevent_handlers.emplace_back(std::make_shared<ModaliasHandler>(base_paths));
+     }
++    std::shared_ptr<DeviceHandler> devices = device_handler;
+     uevent_handlers.emplace_back(std::move(device_handler));
+     uevent_handlers.emplace_back(std::make_shared<FirmwareHandler>(
+             std::move(ueventd_configuration.firmware_directories),
+@@ -234,6 +269,8 @@ int ueventd_main(int argc, char** argv) {
+         uevent_handler->ColdbootDone();
+     }
+ 
++    if (IsRunningInWaydroid()) WaydroidColdplugInput(*devices);
++
+     // We use waitpid() in ColdBoot, so we can't ignore SIGCHLD until now.
+     signal(SIGCHLD, SIG_IGN);
+     // Reap and pending children that exited between the last call to waitpid() and setting SIG_IGN
 diff --git a/init/util.cpp b/init/util.cpp
 index 6241b66..1444c44 100644
 --- a/init/util.cpp
@@ -256,209 +377,6 @@ index 52edfe3..2334356 100644
  
  bool IsDefaultMountNamespaceReady();
  void SetDefaultMountNamespaceReady();
-diff --git a/init/waydroid_first_stage.cpp b/init/waydroid_first_stage.cpp
-new file mode 100644
-index 0000000..98b09a7
---- /dev/null
-+++ b/init/waydroid_first_stage.cpp
-@@ -0,0 +1,165 @@
-+/*
-+ * Copyright (C) 2026 The Android PC Authors
-+ *
-+ * Licensed under the Apache License, Version 2.0 (the "License");
-+ * you may not use this file except in compliance with the License.
-+ * You may obtain a copy of the License at
-+ *
-+ *      http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
-+// android-pc: the first stage of init inside Waydroid's LXC container
-+// (docs/waydroid-aosp17.md). Waydroid starts /init (this binary, second-stage init) with no
-+// argument as the container's first process: there is no ramdisk, the host already mounted
-+// system.img as / and vendor.img on /vendor, made /dev a tmpfs with the binder nodes, and
-+// mounted /proc, a read-only /sys and the cgroup2 hierarchy. The host has no SELinux, so the
-+// selinux_setup stage is skipped too.
-+
-+#include "waydroid_first_stage.h"
-+
-+#include <fcntl.h>
-+#include <grp.h>
-+#include <paths.h>
-+#include <spawn.h>
-+#include <stdlib.h>
-+#include <linux/capability.h>
-+#include <sys/mount.h>
-+#include <sys/prctl.h>
-+#include <sys/stat.h>
-+#include <sys/sysmacros.h>
-+#include <sys/wait.h>
-+#include <unistd.h>
-+
-+#include <android-base/chrono_utils.h>
-+#include <android-base/file.h>
-+#include <android-base/logging.h>
-+#include <android-base/strings.h>
-+#include <private/android_filesystem_config.h>
-+
-+#include "first_stage_init.h"
-+#include "second_stage_resources.h"
-+#include "util.h"
-+
-+namespace android {
-+namespace init {
-+
-+static int MkdirIfMissing(const char* dir, mode_t mode) {
-+    return access(dir, F_OK) == 0 ? 0 : mkdir(dir, mode);
-+}
-+
-+static int MknodIfMissing(const char* path, mode_t mode, dev_t dev) {
-+    return access(path, F_OK) == 0 ? chmod(path, mode & 07777) : mknod(path, mode, dev);
-+}
-+
-+static int RemountOrMount(const char* source, const char* target, const char* type,
-+                          unsigned long flags, const char* data) {
-+    if (mount(source, target, type, MS_REMOUNT | flags, data) == 0) return 0;
-+    return mount(source, target, type, flags, data);
-+}
-+
-+int WaydroidFirstStageMain(char** argv) {
-+    android::base::boot_clock::time_point start_time = android::base::boot_clock::now();
-+    std::vector<std::pair<std::string, int>> errors;
-+#define CHECKCALL(x) \
-+    if ((x) != 0) errors.emplace_back(#x " failed", errno);
-+
-+    // Capabilities that reach the host kernel and that nothing in the container needs (as
-+    // upstream Waydroid's init): no reboot, module loading, raw I/O or clock setting, and no
-+    // regaining them through exec.
-+    for (int cap : {CAP_MAC_ADMIN, CAP_MAC_OVERRIDE, CAP_SYS_TIME, CAP_SYS_MODULE,
-+                    CAP_SYS_RAWIO, CAP_SYS_BOOT}) {
-+        prctl(PR_CAPBSET_DROP, cap, 0, 0, 0);
-+    }
-+    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-+
-+    umask(0);
-+    CHECKCALL(clearenv());
-+    CHECKCALL(setenv("PATH", _PATH_DEFPATH, 1));
-+
-+    // waydroid-preinit (waydroid/android_vendor_waydroid_init): binder nodes if missing,
-+    // /dev permissions, a writable cgroup2 mount, read-only /sys and /proc/sys.
-+    pid_t preinit;
-+    char* const preinit_argv[] = {const_cast<char*>("/system/bin/waydroid-preinit"), nullptr};
-+    char* const preinit_env[] = {nullptr};
-+    if (posix_spawn(&preinit, preinit_argv[0], nullptr, nullptr, preinit_argv, preinit_env) == 0) {
-+        waitpid(preinit, nullptr, 0);
-+    }
-+
-+    CHECKCALL(RemountOrMount("tmpfs", "/dev", "tmpfs", MS_NOSUID, "mode=0755"));
-+    CHECKCALL(MkdirIfMissing("/dev/pts", 0755));
-+    CHECKCALL(MkdirIfMissing("/dev/socket", 0755));
-+    CHECKCALL(MkdirIfMissing("/dev/dm-user", 0755));
-+#define MAKE_STR(x) __STRING(x)
-+    // Remount only: a new proc mount would cover LXC's read-only /proc/sys and
-+    // /proc/sysrq-trigger, which are the host kernel's.
-+    CHECKCALL(mount("proc", "/proc", "proc", MS_REMOUNT,
-+                    "hidepid=2,gid=" MAKE_STR(AID_READPROC)));
-+#undef MAKE_STR
-+    gid_t groups[] = {AID_READPROC};
-+    CHECKCALL(setgroups(1, groups));
-+
-+    CHECKCALL(MknodIfMissing("/dev/kmsg", S_IFCHR | 0600, makedev(1, 11)));
-+    CHECKCALL(MknodIfMissing("/dev/random", S_IFCHR | 0666, makedev(1, 8)));
-+    CHECKCALL(MknodIfMissing("/dev/urandom", S_IFCHR | 0666, makedev(1, 9)));
-+    CHECKCALL(MknodIfMissing("/dev/ptmx", S_IFCHR | 0666, makedev(5, 2)));
-+    CHECKCALL(MknodIfMissing("/dev/null", S_IFCHR | 0666, makedev(1, 3)));
-+    // APEXes are loop-mounted: apexd makes /dev/block/loopN itself (mount_before_data) but
-+    // needs loop-control; ueventd's cold boot cannot run on the read-only /sys.
-+    CHECKCALL(MkdirIfMissing("/dev/block", 0755));
-+    CHECKCALL(MknodIfMissing("/dev/loop-control", S_IFCHR | 0660, makedev(10, 237)));
-+
-+    // The vendor's bind mounts for the container ("SOURCE TARGET" lines,
-+    // aosp-device/waydroid/bind-mounts), made here, before init splits its bootstrap and
-+    // default mount namespaces: a mount from init.rc would stay in the bootstrap namespace.
-+    std::string bind_mounts;
-+    if (android::base::ReadFileToString("/vendor/etc/waydroid/bind-mounts", &bind_mounts)) {
-+        for (const auto& line : android::base::Split(bind_mounts, "\n")) {
-+            auto fields = android::base::Tokenize(line, " \t");
-+            if (fields.size() != 2 || fields[0][0] == '#') continue;
-+            if (mount(fields[0].c_str(), fields[1].c_str(), nullptr, MS_BIND, nullptr) != 0) {
-+                errors.emplace_back("bind " + fields[0] + " " + fields[1] + " failed", errno);
-+            }
-+        }
-+    }
-+
-+    CHECKCALL(RemountOrMount("tmpfs", "/mnt", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
-+                             "mode=0755,uid=0,gid=1000"));
-+    CHECKCALL(MkdirIfMissing("/mnt/vendor", 0755));
-+    CHECKCALL(MkdirIfMissing("/mnt/product", 0755));
-+    // No metadata partition in the container: aconfigd keeps its flag storage there (and
-+    // system_server cannot start without it). A tmpfs: the flags start from their defaults at
-+    // every boot, and the user's /data is not touched.
-+    CHECKCALL(mount("tmpfs", "/metadata", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
-+                    "mode=0755,uid=0,gid=0"));
-+    CHECKCALL(mount("tmpfs", "/debug_ramdisk", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
-+                    "mode=0755,uid=0,gid=0"));
-+    CHECKCALL(mount("tmpfs", kSecondStageRes, "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
-+                    "mode=0755,uid=0,gid=0"));
-+#undef CHECKCALL
-+
-+    SetStdioToDevNull(argv);
-+    InitKernelLogging(argv);
-+    LOG(INFO) << "init first stage started (Waydroid container)";
-+    for (const auto& [error_string, error_errno] : errors) {
-+        LOG(ERROR) << error_string << " " << strerror(error_errno);
-+    }
-+
-+    setenv(kEnvFirstStageStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(),
-+           1);
-+
-+    // No SELinux on the host: straight to the second stage.
-+    const char* path = "/system/bin/init";
-+    const char* args[] = {path, "second_stage", nullptr};
-+    execv(path, const_cast<char**>(args));
-+    PLOG(FATAL) << "execv(\"" << path << "\") failed";
-+    return 1;
-+}
-+
-+}  // namespace init
-+}  // namespace android
-diff --git a/init/waydroid_first_stage.h b/init/waydroid_first_stage.h
-new file mode 100644
-index 0000000..da9fcea
---- /dev/null
-+++ b/init/waydroid_first_stage.h
-@@ -0,0 +1,26 @@
-+/*
-+ * Copyright (C) 2026 The Android PC Authors
-+ *
-+ * Licensed under the Apache License, Version 2.0 (the "License");
-+ * you may not use this file except in compliance with the License.
-+ * You may obtain a copy of the License at
-+ *
-+ *      http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
-+#pragma once
-+
-+namespace android {
-+namespace init {
-+
-+// The first stage of init in the container (no ramdisk, no SELinux); execs the second stage.
-+int WaydroidFirstStageMain(char** argv);
-+
-+}  // namespace init
-+}  // namespace android
 diff --git a/libprocessgroup/setup/cgroup_map_write.cpp b/libprocessgroup/setup/cgroup_map_write.cpp
 index 0b26e95..d8577da 100644
 --- a/libprocessgroup/setup/cgroup_map_write.cpp
