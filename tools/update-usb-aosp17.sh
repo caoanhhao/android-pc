@@ -193,6 +193,8 @@ elif esp_has_extras target; then
     echo "  Google extras: kept from the stick"
     "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -s -n -i "$target@@$(( $(part target esp 2) * 1048576 ))" \
         ::/android/extras "$work/" || die "cannot read the Google extras from the stick's ESP"
+    # Copied as root from a stick: hand it back so the EXIT trap can remove it.
+    "${R[@]}" chown -R "$(id -u):$(id -g)" "$work/extras"
     restore_extras=1
 elif (( extras )); then
     die "neither $new nor the stick has the Google extras (Play Store, libndk_translation) on its ESP.
