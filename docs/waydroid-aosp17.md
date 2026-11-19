@@ -218,6 +218,18 @@ tools/waydroid/aosp17-switch.sh use lineage20
 
 `restore` keeps the AOSP 17 userdata as `~/.local/share/waydroid/data.aosp17-<date>`.
 
+## Release package and Google extras
+
+`tools/make-release.sh --waydroid DIR` ships the packed images as
+`android-pc-<tag>-waydroid.tar.xz` with `aosp17-switch.sh`, `container-guard.sh` (and
+`guard/guardtest.c`) and `add-google-extras.sh` at their repository paths; INSTALL.md of the
+release has the steps (docs/release.md). Like the stick image it has no Play Store or
+libndk_translation, only the placeholders (docs/google-extras.md). In Waydroid there is no ESP:
+`tools/add-google-extras.sh --dir ~/.local/share/waydroid/data/vendor/pc-extras` (with sudo,
+the directory belongs to root) writes them where `pcextras.sh` takes them from at the next
+start. Data that ran an image with Play Store built in keeps it only if the extras are there
+before the first start of an image without it.
+
 ## Userdata
 
 The data of LineageOS 20 (Android 13) can boot on AOSP 17 (a forward upgrade), but with a new

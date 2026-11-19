@@ -156,9 +156,13 @@ echo "Extras: $(( $(find "$out" -type f | wc -l) )) files, $(du -sh "$out" | cut
 
 # --- write -----------------------------------------------------------------------------------
 if [[ -n $dir ]]; then
-    mkdir -p "$dir"
-    rm -rf "${dir:?}"/*
-    cp -R "$out/." "$dir/"
+    # Waydroid's data/vendor belongs to root (the container's uid 0): write it with sudo.
+    run=() p=$dir
+    while [[ ! -e $p ]]; do p=$(dirname "$p"); done
+    [[ -w $p ]] || { run=(sudo); sudo -v; }
+    "${run[@]}" mkdir -p "$dir"
+    "${run[@]}" find "$dir" -mindepth 1 -delete
+    "${run[@]}" cp -R "$out/." "$dir/"
     echo "Written to $dir"
     exit 0
 fi

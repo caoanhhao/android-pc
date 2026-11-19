@@ -53,9 +53,14 @@ computer to take the two extras from Google's images.
 2. Build with a fresh build number (`tools/aosp17-build.sh` sets one), never lowering the
    security patch level or the AVB rollback index.
 3. `tools/mkusb-aosp17.sh` (default 4 GiB userdata, not `--disk`), without extras.
-4. `tools/make-release.sh` writes `out/release/aosp17-<date>/`: the `xz`-compressed image
-   split into parts under 2 GiB, `build.txt`, `SHA256SUMS`, `INSTALL.md`, `NOTES.md`,
-   `add-google-extras.sh`, `LICENSE.nvidia`. It refuses when the images contain any piece
-   from the table above.
-5. `tools/make-release.sh --upload` tags `aosp17-<date>` and creates a **draft** release;
+4. `tools/waydroid/aosp17-pack.sh out/waydroid-aosp17/release-<date>` packs the same build
+   for Waydroid (docs/waydroid-aosp17.md).
+5. `tools/make-release.sh --waydroid out/waydroid-aosp17/release-<date>` writes
+   `out/release/aosp17-<date>/`: the `xz`-compressed image split into parts under 2 GiB,
+   `android-pc-aosp17-<date>-waydroid.tar.xz` (the Waydroid `system.img` and `vendor.img` with
+   `aosp17-switch.sh`, `container-guard.sh` and `add-google-extras.sh`), `build.txt`,
+   `SHA256SUMS`, `INSTALL.md` (stick and Waydroid), `NOTES.md`, `add-google-extras.sh`,
+   `LICENSE.nvidia`. It refuses when the stick's images or the Waydroid `system.img` contain
+   any piece from the table above, or when the Waydroid `vendor.img` is not this build's.
+6. `tools/make-release.sh --upload` tags `aosp17-<date>` and creates a **draft** release;
    the user reviews and publishes it.
