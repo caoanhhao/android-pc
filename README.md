@@ -5,7 +5,9 @@ USB stick. The product is `aosp_pc_x86_64` (`aosp-device/`): the stock **GKI and
 kernel plus vendor modules built from source, and the PC's hardware served by **vendor HALs
 written in Rust** (health, power, thermal, Bluetooth, audio, camera, Wi-Fi, the NVIDIA GPU's
 Vulkan driver glue). It also ships ARM64 app support (libndk_translation), microG with the
-Play Store, a desktop-mode UI and NVIDIA's own driver for the RTX 4070.
+Play Store, a desktop-mode UI and NVIDIA's own driver for the RTX 4070. Apps and games see
+that GPU as a Qualcomm **Adreno 850** by default, so mobile games rank it as a high-end phone
+GPU ([docs/gpu-identity.md](docs/gpu-identity.md)).
 
 Target machine: Gigabyte Z790, i7-13700K, RTX 4070, 2560x1080 monitor
 ([docs/usb-boot-aosp17.md](docs/usb-boot-aosp17.md)). Cuttlefish runs the same product for
@@ -222,8 +224,7 @@ stick in use: that wipes `userdata`.
 | [docs/rust-hals.md](docs/rust-hals.md) | The Rust HALs and `libpchal` |
 | [docs/arm-translation.md](docs/arm-translation.md) | ARM64 apps, microG, Play Store, games |
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
-| [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`) |
-| [docs/gpu-identity.md](docs/gpu-identity.md) | Apps and games see an Adreno 850 instead of the RTX 4070: properties, root over adb, checks |
+| [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md), [docs/gpu-identity.md](docs/gpu-identity.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`); how that driver fits Android's games: apps see an Adreno 850 by default (changing it, root over adb, the Where Winds Meet example) |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
 | [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint still unlocks after the power menu's Lockdown; the security tradeoff |
 

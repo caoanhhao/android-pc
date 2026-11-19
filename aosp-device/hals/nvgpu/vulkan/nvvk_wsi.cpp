@@ -433,14 +433,13 @@ static uint32_t ClampApiVersion(uint32_t version) {
 
 // Mobile games rank the device by the GPU they see and pick their quality presets and resource
 // packs from that rank. Where Winds Meet does not know the RTX 4070: it ranks it "middle" and
-// caps its best preset at 70% render scale, SMAA and 16-bit terrain textures (docs/waydroid-
-// nvidia.md, "Where Winds Meet's quality"). So apps can see a Qualcomm Adreno instead: vendor,
+// caps its best preset at 70% render scale, SMAA and 16-bit terrain textures (docs/gpu-
+// identity.md, "Example: Where Winds Meet"). So apps see a Qualcomm Adreno instead: vendor,
 // device, name, type and driver. Limits, features, extensions and formats stay NVIDIA's.
 //
-// - Off by default: with every app on the Adreno, WWM never reached its first textures and
-//   TikTok's login hung on the PC (build 20261119.1409). persist.vendor.nvvk.adreno=1 turns it on.
-// - When on, every app process (uid >= 10000 in its user) sees it; system processes
-//   (SurfaceFlinger, system_server, gpuservice ...) see NVIDIA.
+// - On by default: every app process (uid >= 10000 in its user) sees it; system processes
+//   (SurfaceFlinger, system_server, gpuservice ...) see NVIDIA. persist.vendor.nvvk.adreno=0
+//   turns it off for every process.
 // - persist.vendor.nvvk.adreno_exclude: comma-separated process names that see NVIDIA.
 // - persist.vendor.nvvk.adreno_apps: comma-separated process names that see the Adreno even
 //   when they are not apps.
@@ -476,7 +475,7 @@ static const Adreno& ReportsAdreno() {
     // Keyed on the pid: a process forked after the first call (zygote) reads it again.
     pid = getpid();
     adreno = {};
-    if (GetPropertyInt("persist.vendor.nvvk.adreno", 0) == 0)
+    if (GetPropertyInt("persist.vendor.nvvk.adreno", 1) == 0)
         return adreno;
     char cmdline[256] = "";
     if (FILE* f = fopen("/proc/self/cmdline", "re")) {
