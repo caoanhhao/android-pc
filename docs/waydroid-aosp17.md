@@ -230,6 +230,15 @@ the directory belongs to root) writes them where `pcextras.sh` takes them from a
 start. Data that ran an image with Play Store built in keeps it only if the extras are there
 before the first start of an image without it.
 
+Checked 2026-11-19 on the real userdata (it ran the previous image with Play Store built in):
+`add-google-extras.sh --dir` into `data/vendor/pc-extras`, then `aosp17-switch.sh install` of
+the release images (`eng.caoanh.20261119.0009`). Boot completed; `pcextras: mounted 26 files`
+in the host's kernel log; Play Store 54.2.12-34 kept its data as an updated `PRIVILEGED
+PRODUCT` system app with 202 permissions granted; `/system/lib64/libndk_translation.so` is the
+real file and `ro.dalvik.vm.native.bridge` is `libpc_native_bridge.so`; WebView is
+`com.android.webview`. The data has no Google account (Play Store opens microG's sign-in).
+An arm64 game was not started in this check.
+
 ## Userdata
 
 The data of LineageOS 20 (Android 13) can boot on AOSP 17 (a forward upgrade), but with a new
