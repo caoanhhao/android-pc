@@ -165,7 +165,10 @@ install_aosp17() {
         # and system_server waits for the declared ones. No frp partition either: an empty
         # ro.frp.pst keeps PersistentDataBlockService off. Waydroid sets
         # debug.stagefright.ccodec=0 when the host has no gralloc HAL, for images with OMX
-        # codecs; this one has only Codec2, so 4 (the default) keeps the codec list.
+        # codecs; this one has only Codec2, so 4 (the default) keeps the codec list. The
+        # composer dozes Android 10 s after its window loses focus even while it stays on
+        # screen (meant for task cards), which blacks out the full UI: unfocused_doze_ms=0
+        # leaves dozing to the window being hidden.
         # The virtual fingerprint HAL matches a touch on its sensor only when enrollment_hit
         # names an enrolled finger; it is not persistent, so without this every touch fails
         # (docs/lockdown-biometric.md).
@@ -191,6 +194,7 @@ install_aosp17() {
             'ro.hardware.camera = ' \
             'ro.frp.pst = ' \
             'debug.stagefright.ccodec = 4' \
+            'persist.waydroid.unfocused_doze_ms = 0' \
             'vendor.fingerprint.virtual.enrollment_hit = 1' \
             'ro.opengles.version = 196609' \
             'debug.hwui.renderer = skiavk' \

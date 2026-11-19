@@ -416,6 +416,12 @@ vendor image and a new system:
   aosp17-switch.sh now adds `debug.stagefright.ccodec = 4` (the default) to the properties;
   the list has the c2.android codecs again and screenrecord encodes AVC. The user confirmed
   the Camera app records video.
+- **11-19, window black when unfocused:** hwcomposer.waydroid dozes Android (KEY_SLEEP,
+  "host visibility/engagement changed, turning Android screen off") 10 s after none of its
+  windows is activated, even while the window stays on screen; that suits task cards, not the
+  full UI. aosp17-switch.sh now sets `persist.waydroid.unfocused_doze_ms = 0`, which turns
+  off that timer; a hidden window (other workspace, minimized) still dozes Android through
+  the visibility path.
 - **21:55, gamepads (padctl):** tested with a uinput pad shaped like padctl's output (045e:0b00,
   "Xbox Elite Series 2"), since the Vader 5 Pro was unplugged. Created before Waydroid started:
   `/dev/input/event30` and `js0` exist after boot, EventHub classes `KEYBOARD | GAMEPAD |
