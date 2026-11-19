@@ -224,9 +224,16 @@ setprop persist.vendor.nvvk.adreno_apps com.netease.yyvn   # "" turns it off
 ```
 
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
-`0x5143`/`0x43050a01` and driver ID 8. Not yet checked: what the game ranks it, which preset
-and pack it then offers, and that the game is unchanged otherwise (the user was using Waydroid,
-so it was not started again).
+`0x5143`/`0x43050a01` and driver ID 8. In the game (2026-11-19 10:42): logcat has `com.netease.yyvn
+sees the GPU as an Adreno 740`, and the game's rank goes from `middle` to `high`
+(`game_account.log` `default_render_level: high`, `crash_extra` `default level: high`); it
+loads, reaches the world and plays on Vulkan, no crash in the first minutes.
+
+The graphics menu (Hình ảnh > Chi tiết hình ảnh) has the presets Tiết kiệm pin, Cân bằng, Chất
+lượng, Tuyệt phẩm, **Nguyên bản** and Tùy chỉnh. "Nguyên bản", above "Tuyệt phẩm", stays greyed
+out with the `high` rank; TAA is a separate switch (on). The resource pack is still `mid`. Open:
+what unlocks "Nguyên bản" (a higher rank, the GPU model, or the high resource pack) and whether
+the game offers the high pack now.
 
 Updating only the HAL in the overlay (a new inode in the lower dir is not seen while processes
 hold the old one, so the container restarts):
