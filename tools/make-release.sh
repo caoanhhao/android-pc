@@ -183,10 +183,12 @@ product and odm inside) and \`vendor.img\`, with the scripts that install them.
 Needs:
 - Linux with Waydroid 1.6, already set up with its own LineageOS image (\`sudo waydroid init\`),
   run as your desktop user. Tested on Arch Linux with Hyprland.
-- An NVIDIA GPU on the host's open kernel module **nvidia-open 620.70.06**: the image carries
-  NVIDIA's userspace 620.70.06, which must match the host's module. Other drivers or versions
-  show no picture. \`/dev/udmabuf\` (\`sudo modprobe udmabuf\`), and the Wayland compositor
-  running on the NVIDIA GPU.
+- An NVIDIA GPU with NVIDIA's driver on the host. Tested with \`nvidia-open\` 620.70.06 on an
+  RTX 4070. The image carries NVIDIA's user-space driver 620.70.06; NVIDIA's kernel module
+  accepts only the user-space driver of its own version ("NVRM: API mismatch" in the host's
+  kernel log otherwise), so with another host driver version Android has no GPU. Also
+  \`/dev/udmabuf\` (\`sudo modprobe udmabuf\`) and the Wayland compositor running on the
+  NVIDIA GPU.
 - About 10 GB free on \`/\` plus the size of your Waydroid userdata (it is backed up).
 
 Install:
