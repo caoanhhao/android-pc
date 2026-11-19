@@ -218,11 +218,36 @@ tools/waydroid/aosp17-switch.sh use lineage20
 
 `restore` keeps the AOSP 17 userdata as `~/.local/share/waydroid/data.aosp17-<date>`.
 
+## NVIDIA driver from the host
+
+The image carries NVIDIA's user-space driver in `/vendor/lib64/nvidia`: unmodified copies of
+the host's `/usr/lib` libraries of one version (`tools/nvidia-userspace-build.sh`), loaded by
+`vulkan.nvidia` through nvglibc. In Waydroid the kernel module is the host's, and NVIDIA's
+kernel module accepts only the user-space driver of its own version ("NVRM: API mismatch"), so
+the image's copy works only while the host runs that version. `tools/waydroid/host-nvidia.sh
+install` adds an LXC `pre-start` hook and an optional read-only bind entry to Waydroid's config
+template (`config_base`, kept after waydroid updates by a pacman hook) and to the current
+config. At every container start the hook links the host's libraries of the loaded module's
+version (`/sys/module/nvidia/version`), under the sonames the image uses, plus GLVND's `libEGL`
+and `libGLdispatch` and the image's EGL vendor JSON, into `/var/lib/waydroid/host-nvidia`
+(hard links, no copy), and LXC binds that over `/vendor/lib64/nvidia`. When the host has no
+module or not all of those libraries, or the image is not this one (the LineageOS 20 NVIDIA
+overlay has rewritten libraries), the directory is not made and the optional entry leaves the
+image's copy. The hook runs only at container start: run by hand while the container runs, it
+would empty the directory the container has bound.
+
+Checked 2026-11-19, real data, release image, host 620.70.06: `/vendor/lib64/nvidia/VERSION`
+reads `nvidia 620.70.06 (host)`, SurfaceFlinger maps `libnvidia-glcore.so.620.70.06` with the
+inode of the host's `/usr/lib` file, "RE Vulkan (Ganesh)", the lock screen renders. With the
+hook made to skip, the entry is left out and SurfaceFlinger maps the image's file (EROFS inode),
+boot completes. A real driver update has not been tried yet; a newer driver that needs glibc
+functions nvglibc lacks would fail in vulkan.nvidia and need them added there.
+
 ## Release package and Google extras
 
 `tools/make-release.sh --waydroid DIR` ships the packed images as
 `android-pc-<tag>-waydroid.tar.xz` with `aosp17-switch.sh`, `container-guard.sh` (and
-`guard/guardtest.c`) and `add-google-extras.sh` at their repository paths; INSTALL.md of the
+`guard/guardtest.c`), `host-nvidia.sh` and `add-google-extras.sh` at their repository paths; INSTALL.md of the
 release has the steps (docs/release.md). Like the stick image it has no Play Store or
 libndk_translation, only the placeholders (docs/google-extras.md). In Waydroid there is no ESP:
 `tools/add-google-extras.sh --dir ~/.local/share/waydroid/data/vendor/pc-extras` (with sudo,

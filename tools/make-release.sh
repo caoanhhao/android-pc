@@ -123,7 +123,8 @@ if [[ -n $wd ]]; then
     mkdir -p "$work/$wname/images" "$work/$wname/tools/waydroid/guard"
     cp "$wd/system.img" "$wd/vendor.img" "$work/$wname/images/"
     cp "$ROOT/tools/add-google-extras.sh" "$work/$wname/tools/"
-    cp "$ROOT/tools/waydroid/aosp17-switch.sh" "$ROOT/tools/waydroid/container-guard.sh" "$work/$wname/tools/waydroid/"
+    cp "$ROOT/tools/waydroid/aosp17-switch.sh" "$ROOT/tools/waydroid/container-guard.sh" \
+       "$ROOT/tools/waydroid/host-nvidia.sh" "$work/$wname/tools/waydroid/"
     cp "$ROOT/tools/waydroid/guard/guardtest.c" "$work/$wname/tools/waydroid/guard/"
     echo "Compressing the Waydroid images (xz -T4, CPUs 8-15)..."
     tar -C "$work" -cf - "$wname" | taskset -c 8-15 nice -n 10 xz -T4 -6 > "$work/$wname.tar.xz"
@@ -183,10 +184,8 @@ product and odm inside) and \`vendor.img\`, with the scripts that install them.
 Needs:
 - Linux with Waydroid 1.6, already set up with its own LineageOS image (\`sudo waydroid init\`),
   run as your desktop user. Tested on Arch Linux with Hyprland.
-- An NVIDIA GPU with NVIDIA's driver on the host. Tested with \`nvidia-open\` 620.70.06 on an
-  RTX 4070. The image carries NVIDIA's user-space driver 620.70.06; NVIDIA's kernel module
-  accepts only the user-space driver of its own version ("NVRM: API mismatch" in the host's
-  kernel log otherwise), so with another host driver version Android has no GPU. Also
+- An NVIDIA GPU with NVIDIA's driver on the host (\`nvidia-open\` and its user-space
+  libraries, \`nvidia-utils\` on Arch). Tested with 620.70.06 on an RTX 4070. Also
   \`/dev/udmabuf\` (\`sudo modprobe udmabuf\`) and the Wayland compositor running on the
   NVIDIA GPU.
 - About 10 GB free on \`/\` plus the size of your Waydroid userdata (it is backed up).
@@ -196,6 +195,7 @@ Install:
     ${wjoined}tar -xJf $wname.tar.xz && cd $wname
     tools/waydroid/container-guard.sh install    # once: see below
     tools/waydroid/container-guard.sh check
+    tools/waydroid/host-nvidia.sh install         # once: Android uses the host's NVIDIA driver
     tools/waydroid/aosp17-switch.sh backup        # LineageOS userdata, images and config
     tools/waydroid/aosp17-switch.sh install images
     waydroid show-full-ui
@@ -210,6 +210,14 @@ The scripts ask for the sudo password themselves; do not run them with \`sudo\`.
   and a pacman hook that keeps it after Waydroid updates; on other distributions run
   \`container-guard.sh install\` again after each Waydroid update). \`aosp17-switch.sh\`
   refuses to switch without it.
+- **The host's NVIDIA driver.** NVIDIA's kernel module accepts only the user-space driver of
+  its own version ("NVRM: API mismatch" otherwise), and Waydroid shares the host's kernel.
+  \`host-nvidia.sh install\` adds an LXC hook that, at every container start, binds the host's
+  own NVIDIA libraries of the loaded module's version (read-only, from \`/usr/lib\`) over the
+  image's copy in \`/vendor/lib64/nvidia\`, so a driver update on the host needs no new
+  image. Without it, or when the host has no libraries of that version, Android uses the
+  image's 620.70.06, which works only with a 620.70.06 module. \`host-nvidia.sh remove\`
+  undoes it.
 - **Your existing Waydroid data is upgraded to Android 17**, after \`backup\` copies it to
   \`~/.local/share/waydroid-backup/\`. Keys in the Android keystore are lost (apps may ask you
   to sign in again; remove any lock-screen PIN before switching), Google Play services is
@@ -225,7 +233,7 @@ EOF
 
 wd_note=""
 [[ -n $wd ]] && wd_note="- Waydroid: the same build runs in Waydroid on a Linux desktop with an NVIDIA GPU
-  (\`$wname.tar.xz\`, INSTALL.md \"Waydroid\"): window resizing, sound and microphone through
+  (\`$wname.tar.xz\`, INSTALL.md \"Waydroid\"), using the host's own NVIDIA driver: window resizing, sound and microphone through
   PulseAudio/PipeWire, the host's webcam, gamepads, network.
 "
 cat > "$rel/NOTES.md" <<EOF
