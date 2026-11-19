@@ -434,26 +434,37 @@ static uint32_t ClampApiVersion(uint32_t version) {
 // Mobile games rank the device by the GPU they see and pick their quality presets and resource
 // packs from that rank. Where Winds Meet does not know the RTX 4070: it ranks it "middle" and
 // caps its best preset at 70% render scale, SMAA and 16-bit terrain textures (docs/waydroid-
-// nvidia.md, "Where Winds Meet's quality"). Processes named in
-// persist.vendor.nvvk.adreno_apps (comma-separated process names) see a Qualcomm Adreno
-// instead: vendor, device, name, type and driver. persist.vendor.nvvk.adreno_model picks it:
-// "740" (the default, Snapdragon 8 Gen 2), "750", "830", "850", or another number, optionally
-// with the device ID after a colon ("850:0x44070041"). Limits, features, extensions and formats
-// stay NVIDIA's.
+// nvidia.md, "Where Winds Meet's quality"). So apps see a Qualcomm Adreno instead: vendor,
+// device, name, type and driver. Limits, features, extensions and formats stay NVIDIA's.
+//
+// - Every app process (uid >= 10000 in its user) sees it; system processes (SurfaceFlinger,
+//   system_server, gpuservice ...) see NVIDIA.
+// - persist.vendor.nvvk.adreno=0 turns it off for every process.
+// - persist.vendor.nvvk.adreno_exclude: comma-separated process names that see NVIDIA.
+// - persist.vendor.nvvk.adreno_apps: comma-separated process names that see the Adreno even
+//   when they are not apps.
+// - persist.vendor.nvvk.adreno_model: the model, "850" (the default, Snapdragon 8 Elite Gen 6
+//   Pro, the fastest Android GPU), "740", "750", "830", "840" or another number, optionally
+//   with the chip ID after a colon ("850:0x44070041").
 struct Adreno {
     unsigned model;      // 0: the process sees NVIDIA
     uint32_t device_id;  // Qualcomm's chip ID
     uint32_t driver;     // the driver's build number (V@0744 ...)
 };
 
-// Chip IDs of the Adreno GPUs the default table knows. A model outside it takes the newest
-// known one's ID unless the property gives one.
+// Chip IDs from Mesa's freedreno_devices.py. The Adreno 850 is not there yet: models it does
+// not know take the newest one's (the 840's) unless the property gives one.
 static uint32_t AdrenoChipId(unsigned model) {
     switch (model) {
         case 740: return 0x43050a01;
         case 750: return 0x43051401;
-        default:  return 0x44050a31;  // Adreno 830
+        case 830: return 0x44050001;
+        default:  return 0x44050a31;  // Adreno 840
     }
+}
+
+static bool Listed(const char* property, const std::string& name) {
+    return ("," + GetProperty(property) + ",").find("," + name + ",") != std::string::npos;
 }
 
 static const Adreno& ReportsAdreno() {
@@ -464,25 +475,28 @@ static const Adreno& ReportsAdreno() {
     // Keyed on the pid: a process forked after the first call (zygote) reads it again.
     pid = getpid();
     adreno = {};
-    char name[256] = "";
+    if (GetPropertyInt("persist.vendor.nvvk.adreno", 1) == 0)
+        return adreno;
+    char cmdline[256] = "";
     if (FILE* f = fopen("/proc/self/cmdline", "re")) {
-        const size_t n = fread(name, 1, sizeof(name) - 1, f);
-        name[n] = '\0';
+        const size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, f);
+        cmdline[n] = '\0';
         fclose(f);
     }
-    const std::string apps = "," + GetProperty("persist.vendor.nvvk.adreno_apps") + ",";
-    if (!name[0] || apps.find("," + std::string(name) + ",") == std::string::npos)
+    const std::string name = cmdline;
+    const bool app = getuid() % 100000 >= 10000;  // AID_USER_OFFSET, AID_APP_START
+    if (name.empty() || Listed("persist.vendor.nvvk.adreno_exclude", name) ||
+        (!app && !Listed("persist.vendor.nvvk.adreno_apps", name)))
         return adreno;
     const std::string spec = GetProperty("persist.vendor.nvvk.adreno_model");
     char* end = nullptr;
     adreno.model = static_cast<unsigned>(strtoul(spec.c_str(), &end, 10));
     if (adreno.model < 100 || adreno.model > 999)
-        adreno.model = 740;
+        adreno.model = 850;
     adreno.device_id = end && *end == ':' ? static_cast<uint32_t>(strtoul(end + 1, nullptr, 0))
                                            : AdrenoChipId(adreno.model);
     adreno.driver = adreno.model >= 800 ? 800 : 744;
-    NVVK_LOGI("%s sees the GPU as an Adreno %u (%#x) (persist.vendor.nvvk.adreno_apps)", name,
-              adreno.model, adreno.device_id);
+    NVVK_LOGI("%s sees the GPU as an Adreno %u (%#x)", cmdline, adreno.model, adreno.device_id);
     return adreno;
 }
 

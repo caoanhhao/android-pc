@@ -211,22 +211,38 @@ since.
 `libGame.so` and the scripts are encrypted, so which rank unlocks `AndroidHigh2` or the high
 pack could not be read.
 
-**Experiment: report the GPU as a Qualcomm Adreno.** `vulkan.nvidia` gives the processes named
-in `persist.vendor.nvvk.adreno_apps` (comma-separated process names) an Adreno's identity:
+**Apps see an Adreno 850.** `vulkan.nvidia` gives app processes a Qualcomm Adreno's identity:
 vendor `0x5143`, Qualcomm's chip ID, "Adreno (TM) <model>", integrated, driver ID
 `QUALCOMM_PROPRIETARY` and its name and info (also in every `VkPhysicalDeviceDriverProperties`
 and `VkPhysicalDeviceVulkan12Properties` of the chain); limits, features, extensions and formats
-stay NVIDIA's. `persist.vendor.nvvk.adreno_model` picks the model: `740` (the default, the
-Snapdragon 8 Gen 2 of the `ro.product.model = SM-S918B` in the user's `waydroid.cfg`), `750`,
-`830`, `850` or any other number, with an optional chip ID after a colon (`850:0x44070041`).
-740 and 750 have their real chip IDs; any other model takes the Adreno 830's (`0x44050a31`)
-unless one is given, since the 850's was not known here. Off by default. In the container, as
-root:
+stay NVIDIA's. On by default (the stick and Waydroid, same image), first as an opt-in
+experiment (31f9f35, b43affd):
+
+- every app process (uid 10000 and up in its user) sees it; system processes (SurfaceFlinger,
+  system_server's HWUI, gpuservice) see NVIDIA;
+- `persist.vendor.nvvk.adreno=0` turns it off everywhere;
+  `persist.vendor.nvvk.adreno_exclude` lists process names that see NVIDIA;
+  `persist.vendor.nvvk.adreno_apps` lists process names that see the Adreno although they are
+  not apps;
+- `persist.vendor.nvvk.adreno_model` picks the model: `850` (the default: the Snapdragon 8
+  Elite Gen 6 Pro's, the fastest Android GPU), `740`, `750`, `830`, `840` or any other number,
+  with an optional chip ID after a colon (`850:0x44070041`). Chip IDs come from Mesa's
+  `freedreno_devices.py` (740 `0x43050a01`, 750 `0x43051401`, 830 `0x44050001`, 840
+  `0x44050a31`); the 850 is not there yet and takes the 840's.
 
 ```bash
-setprop persist.vendor.nvvk.adreno_apps com.netease.yyvn   # "" turns it off
-setprop persist.vendor.nvvk.adreno_model 850
+setprop persist.vendor.nvvk.adreno 0                          # off for every app
+setprop persist.vendor.nvvk.adreno_exclude com.example.app    # off for one app
+setprop persist.vendor.nvvk.adreno_model 740
 ```
+
+The SoC stays the PC's (`ro.soc.*`, `ro.board.platform`, `/proc/cpuinfo`). WWM's Java code
+reads `SOC_MODEL`, `SOC_MANUFACTURER`, `ro.board.platform`, `ro.hardware` and `/proc/cpuinfo`,
+but in NetEase's device-info and anti-cheat collectors (`DiInfo`, `BUILD_SOC_MODEL_SET`) and
+Glide, not where the rank is logged (`device_model` = brand, model, CPU name, cores, clock);
+the quality logic itself is in encrypted native code. A Snapdragon SoC on an x86_64 CPU with
+x86 `ro.hardware` would be one more inconsistency for those collectors to report, and the
+properties are system-wide (every app and the system would see them), so it was not done.
 
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
 `0x5143`/`0x43050a01` and driver ID 8. In the game (2026-11-19 10:42): logcat has `com.netease.yyvn
