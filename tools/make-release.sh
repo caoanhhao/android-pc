@@ -154,7 +154,8 @@ Needs a USB stick of at least 16 GB and a UEFI PC (Secure Boot off).
 
 ## New (empty) stick
 
-1. Check the files: \`sha256sum -c SHA256SUMS\`.
+1. Check the files: \`sha256sum -c --ignore-missing SHA256SUMS\` (files you did not download
+   are skipped).
 2. ${joined:+Join the parts: \`$joined\`, then d}${joined:-D}ecompress: \`xz -dk $name\`.
 3. Find the stick with \`lsblk -o NAME,SIZE,MODEL,TRAN\` and write the whole image to it
    (this erases the stick):
@@ -162,7 +163,7 @@ Needs a USB stick of at least 16 GB and a UEFI PC (Secure Boot off).
 4. Optional, before or after step 3: add Google Play Store and ARM64 app support, which
    the image may not contain (they come from Google's emulator images; Android SDK License,
    personal use). On Linux, with curl, unzip, e2fsprogs, erofs-utils, android-tools and
-   mtools installed: \`./add-google-extras.sh ${name%.xz}\` (or \`./add-google-extras.sh /dev/sdX\`
+   mtools installed: \`bash add-google-extras.sh ${name%.xz}\` (or \`bash add-google-extras.sh /dev/sdX\`
    for the written stick).
 5. Boot the PC from the stick. The first boot formats \`userdata\` (4 GiB) and installs the
    extras; later builds update it in place.
@@ -177,13 +178,13 @@ installed (\`update-usb-aosp17.sh\` runs \`avbtool.py\` from the release):
 2. Find the stick with \`lsblk -o NAME,SIZE,MODEL,TRAN\`.
 3. Check first, as your own user (not with \`sudo\`; the script asks for the sudo password
    itself and uses it only for the commands on the stick):
-   \`./update-usb-aosp17.sh --dry-run ${name%.xz} /dev/sdX\`
+   \`bash update-usb-aosp17.sh --dry-run ${name%.xz} /dev/sdX\`
 4. If it says that neither the image nor the stick has the Google extras (a stick set up
    with a build that had Play Store built in), add them to the image first, as in step 4
-   above: \`./add-google-extras.sh ${name%.xz}\`. Without them the new build would start
+   above: \`bash add-google-extras.sh ${name%.xz}\`. Without them the new build would start
    without Play Store and Android would drop its data. A stick that already has them keeps
    them: the script copies them back.
-5. Update: \`./update-usb-aosp17.sh ${name%.xz} /dev/sdX\`. It ends with
+5. Update: \`bash update-usb-aosp17.sh ${name%.xz} /dev/sdX\`. It ends with
    \`Read back and compared: OK\`.
 6. Boot the PC from the stick. The first boot after an update takes longer (apps are
    upgraded and optimised).
