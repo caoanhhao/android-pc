@@ -211,16 +211,21 @@ since.
 `libGame.so` and the scripts are encrypted, so which rank unlocks `AndroidHigh2` or the high
 pack could not be read.
 
-**Experiment: report the GPU as an Adreno 740.** `vulkan.nvidia` gives the processes named in
-`persist.vendor.nvvk.adreno_apps` (comma-separated process names) the Adreno 740's identity:
-vendor `0x5143`, device `0x43050a01`, "Adreno (TM) 740", integrated, driver ID
+**Experiment: report the GPU as a Qualcomm Adreno.** `vulkan.nvidia` gives the processes named
+in `persist.vendor.nvvk.adreno_apps` (comma-separated process names) an Adreno's identity:
+vendor `0x5143`, Qualcomm's chip ID, "Adreno (TM) <model>", integrated, driver ID
 `QUALCOMM_PROPRIETARY` and its name and info (also in every `VkPhysicalDeviceDriverProperties`
 and `VkPhysicalDeviceVulkan12Properties` of the chain); limits, features, extensions and formats
-stay NVIDIA's. It matches the `ro.product.model = SM-S918B` (Galaxy S23 Ultra) in the user's
-`waydroid.cfg`. Off by default. In the container, as root:
+stay NVIDIA's. `persist.vendor.nvvk.adreno_model` picks the model: `740` (the default, the
+Snapdragon 8 Gen 2 of the `ro.product.model = SM-S918B` in the user's `waydroid.cfg`), `750`,
+`830`, `850` or any other number, with an optional chip ID after a colon (`850:0x44070041`).
+740 and 750 have their real chip IDs; any other model takes the Adreno 830's (`0x44050a31`)
+unless one is given, since the 850's was not known here. Off by default. In the container, as
+root:
 
 ```bash
 setprop persist.vendor.nvvk.adreno_apps com.netease.yyvn   # "" turns it off
+setprop persist.vendor.nvvk.adreno_model 850
 ```
 
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
@@ -232,8 +237,9 @@ loads, reaches the world and plays on Vulkan, no crash in the first minutes.
 The graphics menu (Hình ảnh > Chi tiết hình ảnh) has the presets Tiết kiệm pin, Cân bằng, Chất
 lượng, Tuyệt phẩm, **Nguyên bản** and Tùy chỉnh. "Nguyên bản", above "Tuyệt phẩm", stays greyed
 out with the `high` rank; TAA is a separate switch (on). The resource pack is still `mid`. Open:
-what unlocks "Nguyên bản" (a higher rank, the GPU model, or the high resource pack) and whether
-the game offers the high pack now.
+what unlocks "Nguyên bản" (a lock icon on it: the device, by GPU or model) and whether the game
+offers the high pack now. Next try (the user's request): Adreno 850; `cmd gpu vkjson` with
+gpuservice listed reports "Adreno (TM) 850", `0x44050a31`, "Driver Build: 800.0".
 
 Updating only the HAL in the overlay (a new inode in the lower dir is not seen while processes
 hold the old one, so the container restarts):

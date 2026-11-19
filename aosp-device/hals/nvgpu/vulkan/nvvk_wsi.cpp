@@ -13,6 +13,7 @@
 // have exactly that layout (minigbm's "nvidia" backend allocates every image-format buffer so),
 // which the import checks.
 
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -434,17 +435,35 @@ static uint32_t ClampApiVersion(uint32_t version) {
 // packs from that rank. Where Winds Meet does not know the RTX 4070: it ranks it "middle" and
 // caps its best preset at 70% render scale, SMAA and 16-bit terrain textures (docs/waydroid-
 // nvidia.md, "Where Winds Meet's quality"). Processes named in
-// persist.vendor.nvvk.adreno_apps (comma-separated process names) see the identity of the
-// Adreno 740 (Snapdragon 8 Gen 2) instead: vendor, device, name, type and driver. Limits,
-// features, extensions and formats stay NVIDIA's.
-static bool ReportsAdreno() {
+// persist.vendor.nvvk.adreno_apps (comma-separated process names) see a Qualcomm Adreno
+// instead: vendor, device, name, type and driver. persist.vendor.nvvk.adreno_model picks it:
+// "740" (the default, Snapdragon 8 Gen 2), "750", "830", "850", or another number, optionally
+// with the device ID after a colon ("850:0x44070041"). Limits, features, extensions and formats
+// stay NVIDIA's.
+struct Adreno {
+    unsigned model;      // 0: the process sees NVIDIA
+    uint32_t device_id;  // Qualcomm's chip ID
+    uint32_t driver;     // the driver's build number (V@0744 ...)
+};
+
+// Chip IDs of the Adreno GPUs the default table knows. A model outside it takes the newest
+// known one's ID unless the property gives one.
+static uint32_t AdrenoChipId(unsigned model) {
+    switch (model) {
+        case 740: return 0x43050a01;
+        case 750: return 0x43051401;
+        default:  return 0x44050a31;  // Adreno 830
+    }
+}
+
+static const Adreno& ReportsAdreno() {
     static int pid = 0;
-    static bool listed = false;
+    static Adreno adreno;
     if (pid == getpid())
-        return listed;
+        return adreno;
     // Keyed on the pid: a process forked after the first call (zygote) reads it again.
     pid = getpid();
-    listed = false;
+    adreno = {};
     char name[256] = "";
     if (FILE* f = fopen("/proc/self/cmdline", "re")) {
         const size_t n = fread(name, 1, sizeof(name) - 1, f);
@@ -452,33 +471,41 @@ static bool ReportsAdreno() {
         fclose(f);
     }
     const std::string apps = "," + GetProperty("persist.vendor.nvvk.adreno_apps") + ",";
-    if (name[0] && apps.find("," + std::string(name) + ",") != std::string::npos) {
-        listed = true;
-        NVVK_LOGI("%s sees the GPU as an Adreno 740 (persist.vendor.nvvk.adreno_apps)", name);
-    }
-    return listed;
+    if (!name[0] || apps.find("," + std::string(name) + ",") == std::string::npos)
+        return adreno;
+    const std::string spec = GetProperty("persist.vendor.nvvk.adreno_model");
+    char* end = nullptr;
+    adreno.model = static_cast<unsigned>(strtoul(spec.c_str(), &end, 10));
+    if (adreno.model < 100 || adreno.model > 999)
+        adreno.model = 740;
+    adreno.device_id = end && *end == ':' ? static_cast<uint32_t>(strtoul(end + 1, nullptr, 0))
+                                           : AdrenoChipId(adreno.model);
+    adreno.driver = adreno.model >= 800 ? 800 : 744;
+    NVVK_LOGI("%s sees the GPU as an Adreno %u (%#x) (persist.vendor.nvvk.adreno_apps)", name,
+              adreno.model, adreno.device_id);
+    return adreno;
 }
 
-static void SetDriverIdentity(VkDriverId* id, char* name, char* info) {
+static void SetDriverIdentity(const Adreno& a, VkDriverId* id, char* name, char* info) {
     *id = VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
     snprintf(name, VK_MAX_DRIVER_NAME_SIZE, "Qualcomm Technologies Inc. Adreno Vulkan Driver");
-    snprintf(info, VK_MAX_DRIVER_INFO_SIZE, "Driver Build: 744.0");
+    snprintf(info, VK_MAX_DRIVER_INFO_SIZE, "Driver Build: %u.0", a.driver);
 }
 
-static void SetAdrenoIdentity(VkPhysicalDeviceProperties* p) {
+static void SetAdrenoIdentity(const Adreno& a, VkPhysicalDeviceProperties* p) {
     p->vendorID = 0x5143;  // Qualcomm
-    p->deviceID = 0x43050a01;
+    p->deviceID = a.device_id;
     p->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-    p->driverVersion = VK_MAKE_VERSION(512, 744, 0);
-    snprintf(p->deviceName, sizeof(p->deviceName), "Adreno (TM) 740");
+    p->driverVersion = VK_MAKE_VERSION(512, a.driver, 0);
+    snprintf(p->deviceName, sizeof(p->deviceName), "Adreno (TM) %u", a.model);
 }
 
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice physical,
                                                        VkPhysicalDeviceProperties* props) {
     g_inst.GetPhysicalDeviceProperties(physical, props);
     props->apiVersion = ClampApiVersion(props->apiVersion);
-    if (ReportsAdreno())
-        SetAdrenoIdentity(props);
+    if (const Adreno& a = ReportsAdreno(); a.model)
+        SetAdrenoIdentity(a, props);
 }
 
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice physical,
@@ -488,16 +515,16 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice physica
     props->properties.apiVersion = ClampApiVersion(props->properties.apiVersion);
     if (auto* p = static_cast<VkPhysicalDevicePresentationPropertiesANDROID*>(presentation.removed()))
         p->sharedImage = VK_FALSE;  // no front-buffer rendering
-    if (ReportsAdreno()) {
-        SetAdrenoIdentity(&props->properties);
+    if (const Adreno& a = ReportsAdreno(); a.model) {
+        SetAdrenoIdentity(a, &props->properties);
         // Every struct of the chain: vkjson chains the driver properties twice.
         for (auto* s = static_cast<VkBaseOutStructure*>(props->pNext); s; s = s->pNext) {
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES) {
                 auto* d = reinterpret_cast<VkPhysicalDeviceDriverProperties*>(s);
-                SetDriverIdentity(&d->driverID, d->driverName, d->driverInfo);
+                SetDriverIdentity(a, &d->driverID, d->driverName, d->driverInfo);
             } else if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES) {
                 auto* v = reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(s);
-                SetDriverIdentity(&v->driverID, v->driverName, v->driverInfo);
+                SetDriverIdentity(a, &v->driverID, v->driverName, v->driverInfo);
             }
         }
     }
