@@ -238,8 +238,12 @@ The graphics menu (Hình ảnh > Chi tiết hình ảnh) has the presets Tiết 
 lượng, Tuyệt phẩm, **Nguyên bản** and Tùy chỉnh. "Nguyên bản", above "Tuyệt phẩm", stays greyed
 out with the `high` rank; TAA is a separate switch (on). The resource pack is still `mid`. Open:
 what unlocks "Nguyên bản" (a lock icon on it: the device, by GPU or model) and whether the game
-offers the high pack now. Next try (the user's request): Adreno 850; `cmd gpu vkjson` with
-gpuservice listed reports "Adreno (TM) 850", `0x44050a31`, "Driver Build: 800.0".
+offers the high pack now. Adreno 850 (11:04, the user's request): `cmd gpu vkjson` with
+gpuservice listed reports "Adreno (TM) 850", `0x44050a31`, "Driver Build: 800.0"; the game logs
+`sees the GPU as an Adreno 850`, ranks it `high` as with the 740, and "Nguyên bản" keeps its
+lock. So the lock does not follow the GPU name or chip ID alone; the model (`SM-S918B`), the
+emulator flag or a server-side list are left. Changing the model would show the account a new
+device, so it was not tried.
 
 Updating only the HAL in the overlay (a new inode in the lower dir is not seen while processes
 hold the old one, so the container restarts):
