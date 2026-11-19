@@ -421,7 +421,7 @@ vendor image and a new system:
   windows is activated, even while the window stays on screen; that suits task cards, not the
   full UI. aosp17-switch.sh now sets `persist.waydroid.unfocused_doze_ms = 0`, which turns
   off that timer; a hidden window (other workspace, minimized) still dozes Android through
-  the visibility path.
+  the visibility path. The user confirmed the window no longer goes black.
 - **21:55, gamepads (padctl):** tested with a uinput pad shaped like padctl's output (045e:0b00,
   "Xbox Elite Series 2"), since the Vader 5 Pro was unplugged. Created before Waydroid started:
   `/dev/input/event30` and `js0` exist after boot, EventHub classes `KEYBOARD | GAMEPAD |
