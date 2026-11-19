@@ -8,6 +8,9 @@
 #          e.g. `tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-f9.img`).
 # TARGET:  the stick (/dev/sdX, whole disk) or a stick image file.
 #
+# Needs sfdisk, and AOSP's host tools (mcopy, mmd, avbtool) from a checkout; without them it
+# takes mtools from the system and avbtool.py next to it (a release ships both scripts).
+#
 # Run it as yourself, not with sudo: for a stick it asks for the sudo password once, at the
 # start, and runs only the commands that read or write /dev/sdX as root (sfdisk, dd, mcopy
 # on the stick). The password stays cached while it runs, even through a long write.
@@ -46,7 +49,7 @@ while [[ $# -gt 0 ]]; do
         --force) force=1 ;;
         --no-verify) verify=0 ;;
         --no-extras) extras=0 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p}' "$0"; exit 0 ;;
         -*) echo "update-usb-aosp17.sh: unknown option $1 (see --help)" >&2; exit 2 ;;
         *) args+=("$1") ;;
     esac
@@ -56,7 +59,19 @@ done
 new=${args[0]} target=${args[1]}
 die() { echo "update-usb-aosp17.sh: $*" >&2; exit 1; }
 [[ -f $new ]] || die "no image $new"
-for f in "$host/mcopy" "$host/avbtool"; do [[ -x $f ]] || die "missing $f (build hosttools)"; done
+# Host tools: AOSP's (a checkout with the build's host tools), else mtools and avbtool from the
+# system, or avbtool.py next to this script (a release ships it there).
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tool() {   # tool VAR NAME: sets the array VAR to the command that runs NAME
+    local -n cmd=$1
+    if [[ -x $host/$2 ]]; then cmd=("$host/$2")
+    elif [[ $2 == avbtool && -f $here/avbtool.py ]] && command -v python3 >/dev/null; then
+        cmd=(python3 "$here/avbtool.py")
+    elif command -v "$2" >/dev/null; then cmd=("$(command -v "$2")")
+    else die "needs $2 (install mtools; avbtool comes with the release as avbtool.py, run by python3)"
+    fi
+}
+tool mcopy mcopy; tool mmd mmd; tool avbtool avbtool
 command -v sfdisk >/dev/null || die "needs sfdisk"
 
 # OS partitions, in write order (the ESP last: until it is written the stick boots the old
@@ -133,7 +148,7 @@ extract() {   # extract new|target PART FILE: copy a partition out of NEW or TAR
     "${run[@]}" dd if="$img" bs=1M skip="$(part "$1" "$2" 2)" count="$(part "$1" "$2" 3)" status=none > "$3"
 }
 avb() {   # avb FILE: "key-sha1 rollback-index" of a vbmeta image
-    "$host/avbtool" info_image --image "$1" 2>/dev/null | awk '
+    "${avbtool[@]}" info_image --image "$1" 2>/dev/null | awk '
         /^Public key \(sha1\):/ { k = $4 } /^Rollback Index:/ { r = $3 } END { print k, r }'
 }
 extract new vbmeta_a "$work/new.vbmeta"
@@ -152,7 +167,7 @@ fi
 # before it existed have none, and their build number was the default eng.<user>).
 buildinfo() {   # buildinfo new|target: the ESP's android/build.txt, or nothing
     local img=$new run=(); [[ $1 == target ]] && img=$target run=("${R[@]}")
-    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
+    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "${mcopy[@]}" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
         ::/android/build.txt - 2>/dev/null || true
 }
 prop() { sed -n "s/^$2=//p" <<<"$1" | head -1; }
@@ -183,7 +198,7 @@ fi
 # Google extras: NEW.img's own, else the stick's, copied back after the ESP write.
 esp_has_extras() {   # esp_has_extras new|target
     local img=$new run=(); [[ $1 == target ]] && img=$target run=("${R[@]}")
-    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
+    "${run[@]}" env MTOOLS_SKIP_CHECK=1 "${mcopy[@]}" -n -i "$img@@$(( $(part "$1" esp 2) * 1048576 ))" \
         ::/android/extras/SHA256SUMS - >/dev/null 2>&1
 }
 restore_extras=0
@@ -191,14 +206,14 @@ if esp_has_extras new; then
     echo "  Google extras: from the new image"
 elif esp_has_extras target; then
     echo "  Google extras: kept from the stick"
-    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -s -n -i "$target@@$(( $(part target esp 2) * 1048576 ))" \
+    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "${mcopy[@]}" -s -n -i "$target@@$(( $(part target esp 2) * 1048576 ))" \
         ::/android/extras "$work/" || die "cannot read the Google extras from the stick's ESP"
     # Copied as root from a stick: hand it back so the EXIT trap can remove it.
     "${R[@]}" chown -R "$(id -u):$(id -g)" "$work/extras"
     restore_extras=1
 elif (( extras )); then
     die "neither $new nor the stick has the Google extras (Play Store, libndk_translation) on its ESP.
-Add them first: tools/add-google-extras.sh $new
+Add them first: add-google-extras.sh $new (next to this script in a release, tools/ in a checkout)
 or pass --no-extras (a stick that never had them, or one whose Android has copied them to /data already)."
 fi
 
@@ -238,9 +253,9 @@ if (( verify )); then
 fi
 if (( restore_extras )); then
     esp="$target@@$(( $(part target esp 2) * 1048576 ))"
-    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mmd" -i "$esp" ::/android/extras &&
-        "${R[@]}" env MTOOLS_SKIP_CHECK=1 "$host/mcopy" -s -i "$esp" "$work"/extras/* ::/android/extras/ ||
-        die "the Google extras could not be written back to the ESP: run tools/add-google-extras.sh $target"
+    "${R[@]}" env MTOOLS_SKIP_CHECK=1 "${mmd[@]}" -i "$esp" ::/android/extras &&
+        "${R[@]}" env MTOOLS_SKIP_CHECK=1 "${mcopy[@]}" -s -i "$esp" "$work"/extras/* ::/android/extras/ ||
+        die "the Google extras could not be written back to the ESP: run add-google-extras.sh $target"
     sync
     echo "Google extras written back to the ESP"
 fi

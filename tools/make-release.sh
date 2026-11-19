@@ -4,7 +4,8 @@
 #   tools/make-release.sh [options] [IMG]      default IMG: out/aosp17-usb.img
 #
 # Writes out/release/<tag>/: the image compressed with xz (pinned to the E-cores) and split
-# into parts under GitHub's 2 GiB asset limit, build.txt, SHA256SUMS, INSTALL.md and NOTES.md,
+# into parts under GitHub's 2 GiB asset limit, build.txt, SHA256SUMS, INSTALL.md, NOTES.md,
+# add-google-extras.sh and update-usb-aosp17.sh with avbtool.py,
 # and with --waydroid the same build packed for Waydroid (docs/waydroid-aosp17.md).
 # Before that it checks the build's partition images for pieces that may not be redistributed
 # (Play Store, Google WebView, libndk_translation) and refuses if one is there: the image has
@@ -117,6 +118,10 @@ else
     joined=""
 fi
 cp "$ROOT/tools/add-google-extras.sh" "$rel/"
+# Updating a stick in place needs no AOSP checkout: the script, and avbtool.py (Python, stdlib
+# only) that it runs when AOSP's host tools are not there.
+cp "$ROOT/tools/update-usb-aosp17.sh" "$ROOT/aosp/external/avb/avbtool.py" "$rel/"
+cp "$ROOT/aosp/external/avb/LICENSE" "$rel/LICENSE.avbtool"
 if [[ -n $wd ]]; then
     # The Waydroid images with the scripts that install them, at their paths in the repository.
     wname=android-pc-$tag-waydroid
@@ -164,15 +169,34 @@ Needs a USB stick of at least 16 GB and a UEFI PC (Secure Boot off).
 
 ## Stick that already runs android-pc
 
-Do not write the whole image again: that erases your apps and data. From a checkout of
-https://github.com/caoanhhao/android-pc, with AOSP's host tools built:
+Do not write the whole image again (step 3 above): that erases your apps and data. Update
+the stick in place instead, on Linux with \`sfdisk\` (util-linux), mtools and python3
+installed (\`update-usb-aosp17.sh\` runs \`avbtool.py\` from the release):
 
-    tools/update-usb-aosp17.sh --dry-run ${name%.xz} /dev/sdX
-    tools/update-usb-aosp17.sh ${name%.xz} /dev/sdX
+1. Steps 1 and 2 above: check the files and decompress the image.
+2. Find the stick with \`lsblk -o NAME,SIZE,MODEL,TRAN\`.
+3. Check first, as your own user (not with \`sudo\`; the script asks for the sudo password
+   itself and uses it only for the commands on the stick):
+   \`./update-usb-aosp17.sh --dry-run ${name%.xz} /dev/sdX\`
+4. If it says that neither the image nor the stick has the Google extras (a stick set up
+   with a build that had Play Store built in), add them to the image first, as in step 4
+   above: \`./add-google-extras.sh ${name%.xz}\`. Without them the new build would start
+   without Play Store and Android would drop its data. A stick that already has them keeps
+   them: the script copies them back.
+5. Update: \`./update-usb-aosp17.sh ${name%.xz} /dev/sdX\`. It ends with
+   \`Read back and compared: OK\`.
+6. Boot the PC from the stick. The first boot after an update takes longer (apps are
+   upgraded and optimised).
 
-It rewrites only the OS partitions and keeps \`userdata\`, \`metadata\`, \`misc\`, \`frp\`
-and \`pclog\`, and copies the Google extras on the stick's ESP back after rewriting it.
-It asks for the sudo password itself.
+It rewrites only the OS partitions (\`esp\`, \`vbmeta*\`, \`boot\`, \`init_boot\`,
+\`vendor_boot\`, \`super\`) and keeps \`userdata\` (apps, accounts, files), \`metadata\`,
+\`misc\`, \`frp\`, \`pclog\` and the partition table. It refuses, writing nothing, when:
+
+- the stick already runs this same build: \`--force\` installs it again anyway (to repair
+  the OS partitions);
+- the image was signed with another key, has an older security patch level or a lower
+  rollback index, or has a different partition layout: the new build could not open the
+  old data. Only a fresh install (step 3 above) works then, and it erases the stick.
 EOF
 [[ -n $wd ]] && cat >> "$rel/INSTALL.md" <<EOF
 

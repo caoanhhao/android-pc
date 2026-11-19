@@ -60,7 +60,8 @@ computer to take the two extras from Google's images.
    `android-pc-aosp17-<date>-waydroid.tar.xz` (the Waydroid `system.img` and `vendor.img` with
    `aosp17-switch.sh`, `container-guard.sh` and `add-google-extras.sh`), `build.txt`,
    `SHA256SUMS`, `INSTALL.md` (stick and Waydroid), `NOTES.md`, `add-google-extras.sh`,
-   `LICENSE.nvidia`. It refuses when the stick's images or the Waydroid `system.img` contain
+   `update-usb-aosp17.sh` with `avbtool.py` (updating a stick in place needs no AOSP checkout,
+   only sfdisk, mtools and python3), `LICENSE.avbtool`, `LICENSE.nvidia`. It refuses when the stick's images or the Waydroid `system.img` contain
    any piece from the table above, or when the Waydroid `vendor.img` is not this build's.
 6. `tools/make-release.sh --upload` tags `aosp17-<date>` and creates a **draft** release;
    the user reviews and publishes it.
