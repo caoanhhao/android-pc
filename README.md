@@ -223,6 +223,7 @@ stick in use: that wipes `userdata`.
 | [docs/arm-translation.md](docs/arm-translation.md) | ARM64 apps, microG, Play Store, games |
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`) |
+| [docs/gpu-identity.md](docs/gpu-identity.md) | Apps and games see an Adreno 850 instead of the RTX 4070: properties, root over adb, checks |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
 | [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint still unlocks after the power menu's Lockdown; the security tradeoff |
 

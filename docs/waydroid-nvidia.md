@@ -258,6 +258,10 @@ Booted on the PC: the failures above. Replaced (2026-11-19 15:5x) by build
 `eng.caoanh.20261119.1548` with the identity off by default, image
 `out/aosp17-usb-adreno-off.img` (same way, one NVIDIA entry), written with
 `tools/update-usb-aosp17.sh`: "Read back and compared: OK". Not yet booted on the PC.
+Then (2026-11-19, the user's request) the stick went back to build 1409 with the Adreno 850 for
+every app (`out/aosp17-usb-adreno850.img` over `eng.caoanh.20261119.0009`, "Read back and
+compared: OK", Google extras written back); the user tested it on the PC and games and apps
+recognise the Adreno. User guide, root over adb and the properties: [gpu-identity.md](gpu-identity.md).
 
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
 `0x5143`/`0x43050a01` and driver ID 8. In the game (2026-11-19 10:42): logcat has `com.netease.yyvn
