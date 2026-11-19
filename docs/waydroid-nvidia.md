@@ -244,6 +244,13 @@ the quality logic itself is in encrypted native code. A Snapdragon SoC on an x86
 x86 `ro.hardware` would be one more inconsistency for those collectors to report, and the
 properties are system-wide (every app and the system would see them), so it was not done.
 
+On the stick (2026-11-19 14:2x): build `eng.caoanh.20261119.1409` (commit 276bf5e;
+`vendor.img` has the new `vulkan.nvidia`), image `out/aosp17-usb-adreno850.img`
+(`tools/mkusb-aosp17.sh --userdata 64`; its ESP has the one NVIDIA entry,
+`androidboot.hardware.vulkan=nvidia`, no ranchu), written with `tools/update-usb-aosp17.sh`
+over `eng.caoanh.20261119.0009`: "Read back and compared: OK", Google extras written back.
+Not yet booted on the PC.
+
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
 `0x5143`/`0x43050a01` and driver ID 8. In the game (2026-11-19 10:42): logcat has `com.netease.yyvn
 sees the GPU as an Adreno 740`, and the game's rank goes from `middle` to `high`
