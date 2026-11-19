@@ -211,16 +211,21 @@ since.
 `libGame.so` and the scripts are encrypted, so which rank unlocks `AndroidHigh2` or the high
 pack could not be read.
 
-**Apps see an Adreno 850.** `vulkan.nvidia` gives app processes a Qualcomm Adreno's identity:
-vendor `0x5143`, Qualcomm's chip ID, "Adreno (TM) <model>", integrated, driver ID
-`QUALCOMM_PROPRIETARY` and its name and info (also in every `VkPhysicalDeviceDriverProperties`
-and `VkPhysicalDeviceVulkan12Properties` of the chain); limits, features, extensions and formats
-stay NVIDIA's. On by default (the stick and Waydroid, same image), first as an opt-in
-experiment (31f9f35, b43affd):
+**Apps can see an Adreno 850 (off by default).** `vulkan.nvidia` can give app processes a
+Qualcomm Adreno's identity: vendor `0x5143`, Qualcomm's chip ID, "Adreno (TM) <model>",
+integrated, driver ID `QUALCOMM_PROPRIETARY` and its name and info (also in every
+`VkPhysicalDeviceDriverProperties` and `VkPhysicalDeviceVulkan12Properties` of the chain);
+limits, features, extensions and formats stay NVIDIA's. First an opt-in experiment for listed
+processes (31f9f35, b43affd), then on for every app by default (276bf5e), now off by default
+again: on the PC (build `eng.caoanh.20261119.1409`, boot 34) WWM never reached its first
+texture upload in three starts (the old build logs `ASTC textures are decoded on the CPU` about
+12 s after start), its first start hit an ANR, and TikTok's login (a WebView page) hung. The
+Waydroid test had given only WWM's own process the Adreno; with every app on it, WebView, Play
+services and Play Games, which WWM uses at start and login, saw it too.
 
-- every app process (uid 10000 and up in its user) sees it; system processes (SurfaceFlinger,
-  system_server's HWUI, gpuservice) see NVIDIA;
-- `persist.vendor.nvvk.adreno=0` turns it off everywhere;
+- `persist.vendor.nvvk.adreno=1` turns it on (default `0`, every process sees NVIDIA);
+- when on, every app process (uid 10000 and up in its user) sees it; system processes
+  (SurfaceFlinger, system_server's HWUI, gpuservice) see NVIDIA;
   `persist.vendor.nvvk.adreno_exclude` lists process names that see NVIDIA;
   `persist.vendor.nvvk.adreno_apps` lists process names that see the Adreno although they are
   not apps;
@@ -231,7 +236,7 @@ experiment (31f9f35, b43affd):
   `0x44050a31`); the 850 is not there yet and takes the 840's.
 
 ```bash
-setprop persist.vendor.nvvk.adreno 0                          # off for every app
+setprop persist.vendor.nvvk.adreno 1                          # on for every app
 setprop persist.vendor.nvvk.adreno_exclude com.example.app    # off for one app
 setprop persist.vendor.nvvk.adreno_model 740
 ```
@@ -249,7 +254,10 @@ On the stick (2026-11-19 14:2x): build `eng.caoanh.20261119.1409` (commit 276bf5
 (`tools/mkusb-aosp17.sh --userdata 64`; its ESP has the one NVIDIA entry,
 `androidboot.hardware.vulkan=nvidia`, no ranchu), written with `tools/update-usb-aosp17.sh`
 over `eng.caoanh.20261119.0009`: "Read back and compared: OK", Google extras written back.
-Not yet booted on the PC.
+Booted on the PC: the failures above. Replaced (2026-11-19 15:5x) by build
+`eng.caoanh.20261119.1548` with the identity off by default, image
+`out/aosp17-usb-adreno-off.img` (same way, one NVIDIA entry), written with
+`tools/update-usb-aosp17.sh`: "Read back and compared: OK". Not yet booted on the PC.
 
 Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
 `0x5143`/`0x43050a01` and driver ID 8. In the game (2026-11-19 10:42): logcat has `com.netease.yyvn
