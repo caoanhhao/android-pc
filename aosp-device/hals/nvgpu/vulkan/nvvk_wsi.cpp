@@ -430,10 +430,55 @@ static uint32_t ClampApiVersion(uint32_t version) {
     return max | VK_API_VERSION_PATCH(version);
 }
 
+// Mobile games rank the device by the GPU they see and pick their quality presets and resource
+// packs from that rank. Where Winds Meet does not know the RTX 4070: it ranks it "middle" and
+// caps its best preset at 70% render scale, SMAA and 16-bit terrain textures (docs/waydroid-
+// nvidia.md, "Where Winds Meet's quality"). Processes named in
+// persist.vendor.nvvk.adreno_apps (comma-separated process names) see the identity of the
+// Adreno 740 (Snapdragon 8 Gen 2) instead: vendor, device, name, type and driver. Limits,
+// features, extensions and formats stay NVIDIA's.
+static bool ReportsAdreno() {
+    static int pid = 0;
+    static bool listed = false;
+    if (pid == getpid())
+        return listed;
+    // Keyed on the pid: a process forked after the first call (zygote) reads it again.
+    pid = getpid();
+    listed = false;
+    char name[256] = "";
+    if (FILE* f = fopen("/proc/self/cmdline", "re")) {
+        const size_t n = fread(name, 1, sizeof(name) - 1, f);
+        name[n] = '\0';
+        fclose(f);
+    }
+    const std::string apps = "," + GetProperty("persist.vendor.nvvk.adreno_apps") + ",";
+    if (name[0] && apps.find("," + std::string(name) + ",") != std::string::npos) {
+        listed = true;
+        NVVK_LOGI("%s sees the GPU as an Adreno 740 (persist.vendor.nvvk.adreno_apps)", name);
+    }
+    return listed;
+}
+
+static void SetDriverIdentity(VkDriverId* id, char* name, char* info) {
+    *id = VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
+    snprintf(name, VK_MAX_DRIVER_NAME_SIZE, "Qualcomm Technologies Inc. Adreno Vulkan Driver");
+    snprintf(info, VK_MAX_DRIVER_INFO_SIZE, "Driver Build: 744.0");
+}
+
+static void SetAdrenoIdentity(VkPhysicalDeviceProperties* p) {
+    p->vendorID = 0x5143;  // Qualcomm
+    p->deviceID = 0x43050a01;
+    p->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    p->driverVersion = VK_MAKE_VERSION(512, 744, 0);
+    snprintf(p->deviceName, sizeof(p->deviceName), "Adreno (TM) 740");
+}
+
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice physical,
                                                        VkPhysicalDeviceProperties* props) {
     g_inst.GetPhysicalDeviceProperties(physical, props);
     props->apiVersion = ClampApiVersion(props->apiVersion);
+    if (ReportsAdreno())
+        SetAdrenoIdentity(props);
 }
 
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice physical,
@@ -443,6 +488,19 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice physica
     props->properties.apiVersion = ClampApiVersion(props->properties.apiVersion);
     if (auto* p = static_cast<VkPhysicalDevicePresentationPropertiesANDROID*>(presentation.removed()))
         p->sharedImage = VK_FALSE;  // no front-buffer rendering
+    if (ReportsAdreno()) {
+        SetAdrenoIdentity(&props->properties);
+        // Every struct of the chain: vkjson chains the driver properties twice.
+        for (auto* s = static_cast<VkBaseOutStructure*>(props->pNext); s; s = s->pNext) {
+            if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES) {
+                auto* d = reinterpret_cast<VkPhysicalDeviceDriverProperties*>(s);
+                SetDriverIdentity(&d->driverID, d->driverName, d->driverInfo);
+            } else if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES) {
+                auto* v = reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(s);
+                SetDriverIdentity(&v->driverID, v->driverName, v->driverInfo);
+            }
+        }
+    }
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL GetPhysicalDeviceImageFormatProperties2(

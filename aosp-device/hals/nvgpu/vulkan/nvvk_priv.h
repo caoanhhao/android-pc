@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -49,6 +50,8 @@ void Log(LogLevel level, const char* fmt, ...) __attribute__((format(printf, 2, 
 
 // A system property, or def.
 int GetPropertyInt(const char* name, int def);
+// A system property's value ("" if unset).
+std::string GetProperty(const char* name);
 
 // NVIDIA's ICD: open the library and look up its loader-interface entry points.
 void* IcdOpen(const char* name, char* err, size_t err_size);

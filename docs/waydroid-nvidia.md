@@ -169,6 +169,65 @@ gives those images a stand-in format (`docs/nvidia-native.md`, *The striped grou
 targets*). The game's ETC2/EAC maps are emulated too; the purple HUD icons have not been seen
 since.
 
+### Where Winds Meet's quality
+
+2026-11-19, AOSP 17 image in Waydroid, NVIDIA 620.70.06, the user's data: the best preset
+("Tuyệt phẩm") still looks soft. The game's own choice, not the graphics stack:
+
+- **Not the stack.** The game's swapchain is 2560x1068 RGBA8 (the Android display, the
+  `persist.waydroid.width/height` pin), and SurfaceFlinger composes it 1:1 (`dumpsys
+  SurfaceFlinger`: source crop = display frame, no scaling). The game runs Vulkan on
+  `vulkan.nvidia` (`last_graphics_api.tag` = `vlk`, `VkPipeline.cache`, the process maps
+  NVIDIA's libraries); the device has `samplerAnisotropy` (16x), BC, ASTC/ETC2 (decoded
+  losslessly to RGBA8), Vulkan 1.4.
+- **The game ranks the device "middle".** Its log (`LocalData/game_account.log`, every byte
+  +1) records a `default_render_level` per login: `middle` for this device. It was `high` only
+  on 2026-11-15 18:11-19:51, while the earlier Venus setup reported the GPU as "Adreno (TM)
+  740" (`~/projects/waydroid-nvidia`, `venus/notes-wwm.md`); NVIDIA's own name gets `middle`.
+  `LocalData/crash_extra`: `default level: middle`, `setting level: high`.
+- **"Tuyệt phẩm" is the `high` level, render set `AndroidHigh`.** `Engine/Config/
+  AllRenderOptions.bin` (Messiah's binary config: u16-length keys, a type byte, `p` = u32 length
+  + blob) has `AndroidFastLow2` ... `AndroidHigh`, `AndroidHigh2`. `AndroidHigh` against
+  `AndroidHigh2` (and `PCHigh`):
+
+  | option | AndroidHigh | AndroidHigh2 | PCHigh |
+  |---|---|---|---|
+  | `ScreenScale` (3D render scale) | 0.7 | 0.85 | 1.0 |
+  | `ScreenMinSize` / `ScreenSize` (render width clamp) | 1300 / 1920 | - | - |
+  | anti-aliasing | SMAA | TSAA (TAA quality 3) | TSAA |
+  | `EnableVirtualTexture565` (terrain pages in RGB565) | 1 | 0 | 0 |
+  | `MaxTextureSize` | 8 | 7 | 7 |
+  | realtime reflections, transparency scale | 0.5, 0.5 | 1.0, 1.0 | 1.0, 1.0 |
+  | bloom downsample, CSM tile size | 4, 15 | 2, 100 | 2, 100 |
+
+  So the 3D scene is drawn at about 1792x748 and stretched to 2560x1068 with RCAS sharpening;
+  screenshots show it (soft rocks and grass, sharp HUD).
+- **The resources are the "mid" pack.** `LocalData/patch_conf.json`: `"patch_level":"mid"`, and
+  every downloaded list is `patchlist_mid_*`: the textures themselves are the mid-range phone
+  set, chosen at the first start (2026-11-15 14:03, rank `middle`).
+- The game also flags the device as an emulator (`LocalData/Patch/emulator.tag`); the earlier
+  notes found that NetEase's Pharos reports `is_ad_simulator=1` whatever the properties say.
+
+`libGame.so` and the scripts are encrypted, so which rank unlocks `AndroidHigh2` or the high
+pack could not be read.
+
+**Experiment: report the GPU as an Adreno 740.** `vulkan.nvidia` gives the processes named in
+`persist.vendor.nvvk.adreno_apps` (comma-separated process names) the Adreno 740's identity:
+vendor `0x5143`, device `0x43050a01`, "Adreno (TM) 740", integrated, driver ID
+`QUALCOMM_PROPRIETARY` and its name and info (also in every `VkPhysicalDeviceDriverProperties`
+and `VkPhysicalDeviceVulkan12Properties` of the chain); limits, features, extensions and formats
+stay NVIDIA's. It matches the `ro.product.model = SM-S918B` (Galaxy S23 Ultra) in the user's
+`waydroid.cfg`. Off by default. In the container, as root:
+
+```bash
+setprop persist.vendor.nvvk.adreno_apps com.netease.yyvn   # "" turns it off
+```
+
+Checked: with `/system/bin/gpuservice` in the list, `cmd gpu vkjson` reports "Adreno (TM) 740",
+`0x5143`/`0x43050a01` and driver ID 8. Not yet checked: what the game ranks it, which preset
+and pack it then offers, and that the game is unchanged otherwise (the user was using Waydroid,
+so it was not started again).
+
 Updating only the HAL in the overlay (a new inode in the lower dir is not seen while processes
 hold the old one, so the container restarts):
 

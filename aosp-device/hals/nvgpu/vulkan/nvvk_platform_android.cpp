@@ -39,6 +39,12 @@ int GetPropertyInt(const char* name, int def) {
     return end != value ? static_cast<int>(v) : def;
 }
 
+std::string GetProperty(const char* name) {
+    char value[PROP_VALUE_MAX] = "";
+    __system_property_get(name, value);
+    return value;
+}
+
 void* IcdOpen(const char* name, char* err, size_t err_size) {
     // NVIDIA's Vulkan driver initialises through GLVND's libEGL, which finds NVIDIA's EGL driver
     // through this file (hals/nvgpu/hal.mk installs both). Overwrites what nvglibc's constructor

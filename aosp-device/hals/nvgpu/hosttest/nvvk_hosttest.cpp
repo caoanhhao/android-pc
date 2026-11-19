@@ -69,6 +69,11 @@ int GetPropertyInt(const char* name, int def) {
     return v ? atoi(v) : def;
 }
 
+std::string GetProperty(const char* name) {
+    const char* v = getenv(name);
+    return v ? v : "";
+}
+
 }  // namespace nvvk
 
 // bionic's, for the ASTC emulation (astc/probe.rs): system properties come from the environment
