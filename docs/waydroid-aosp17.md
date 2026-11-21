@@ -307,7 +307,7 @@ before the first start of an image without it.
 
 Checked 2026-11-19 on the real userdata (it ran the previous image with Play Store built in):
 `add-google-extras.sh --dir` into `data/vendor/pc-extras`, then `aosp17-switch.sh install` of
-the release images (`eng.caoanh.20261119.0009`). Boot completed; `pcextras: mounted 26 files`
+the release images (`eng.builder.20261119.0009`). Boot completed; `pcextras: mounted 26 files`
 in the host's kernel log; Play Store 54.2.12-34 kept its data as an updated `PRIVILEGED
 PRODUCT` system app with 202 permissions granted; `/system/lib64/libndk_translation.so` is the
 real file and `ro.dalvik.vm.native.bridge` is `libpc_native_bridge.so`; WebView is
@@ -334,7 +334,7 @@ vendor image and a new system:
 2026-11-18:
 - The PC build with the Waydroid pieces is installed as `images-aosp17`; `waydroid.cfg` points to
   it, and the LineageOS 20 overlay is kept in `overlay.lineage20`. The backup is in
-  `~/.local/share/waydroid-backup/lineage20-20261118-1222`.
+  `~/.local/share/waydroid-backup/lineage20-<date>`.
 - The real userdata was never mounted. Two test starts on an empty data directory froze the host
   (see "Container guard").
 - The container guard is installed and tested. The init/libprocessgroup changes for the reboot
@@ -422,7 +422,7 @@ vendor image and a new system:
 - **20:30, real userdata:** system_server crash-looped on "Failed to initialize Keystore super
   keys for user 0" (keystore2 could not decrypt the existing CE super key). Fixed by moving
   `system_de/0/spblob`, `system/locksettings.db*` and `misc/keystore/persistent.sqlite` to
-  `~/.local/share/waydroid-backup/keystore-reset-20261118-2032`; the next boot completes with no
+  `~/.local/share/waydroid-backup/keystore-reset-<date>`; the next boot completes with no
   lock credential.
 - `waydroid show-full-ui` waited forever for the `waydroidplatform` service (Waydroid's
   `IPlatform`, W4). Workaround on older images:

@@ -25,8 +25,8 @@ ANGLE on the same Vulkan driver, so ANGLE should report the Adreno too (not chec
 
 | Build | Default |
 |---|---|
-| `eng.caoanh.20261119.1409` (commit 276bf5e, image `out/aosp17-usb-adreno850.img`) | Adreno 850, every app |
-| `eng.caoanh.20261119.1548` (commit 2528884, image `out/aosp17-usb-adreno-off.img`) | NVIDIA; `persist.vendor.nvvk.adreno=1` turns the Adreno on |
+| `eng.builder.20261119.1409` (commit 276bf5e, image `out/aosp17-usb-adreno850.img`) | Adreno 850, every app |
+| `eng.builder.20261119.1548` (commit 2528884, image `out/aosp17-usb-adreno-off.img`) | NVIDIA; `persist.vendor.nvvk.adreno=1` turns the Adreno on |
 | later builds (this commit) | Adreno 850, every app |
 
 The stick runs build 1409 (since 2026-11-19). The user tested it on the PC with the Adreno 850
@@ -70,21 +70,21 @@ adb shell), so root goes through adb. Two ways to connect:
 4. On the other computer (with Android's platform-tools installed):
 
    ```bash
-   adb pair 192.168.1.50:37123
+   adb pair 192.0.2.50:37123
    ```
 
    (the IP and port from the pairing dialog), then type the six-digit code.
 5. Connect to the address shown on the Wireless debugging screen itself (a different port):
 
    ```bash
-   adb connect 192.168.1.50:41235
+   adb connect 192.0.2.50:41235
    ```
 
 6. Restart adbd as root, then reconnect:
 
    ```bash
    adb root
-   adb connect 192.168.1.50:41235
+   adb connect 192.0.2.50:41235
    adb shell id
    ```
 
@@ -195,7 +195,7 @@ the package name for most apps; `adb shell ps -A | grep <package>` lists the exa
 - **The game ranks the device "middle".** Its log (`LocalData/game_account.log`, every byte
   +1) records a `default_render_level` per login: `middle` for this device. It was `high` only
   on 2026-11-15 18:11-19:51, while the earlier Venus setup reported the GPU as "Adreno (TM)
-  740" (`~/projects/waydroid-nvidia`, `venus/notes-wwm.md`); NVIDIA's own name gets `middle`.
+  740" (the earlier waydroid-nvidia project, `venus/notes-wwm.md`); NVIDIA's own name gets `middle`.
   `LocalData/crash_extra`: `default level: middle`, `setting level: high`.
 - **"Tuyệt phẩm" is the `high` level, render set `AndroidHigh`.** `Engine/Config/
   AllRenderOptions.bin` (Messiah's binary config: u16-length keys, a type byte, `p` = u32 length
@@ -257,22 +257,22 @@ properties are system-wide (every app and the system would see them), so it was 
 First an opt-in experiment for listed processes
 (31f9f35, b43affd), then on for every app (276bf5e), off again in build 1548 (2528884), and on
 by default once more after the user's test on the PC. On the PC's first boot of build
-`eng.caoanh.20261119.1409` (boot 34) WWM never reached its first texture upload in three
+`eng.builder.20261119.1409` (boot 34) WWM never reached its first texture upload in three
 starts, its first start hit an ANR, and TikTok's login (a WebView page) hung; the Waydroid test
 had given only WWM's own process the Adreno. In the user's later test of the same build the
 games and apps worked with the Adreno for every app. If one hangs, see "If an app misbehaves".
 
-On the stick (2026-11-19 14:2x): build `eng.caoanh.20261119.1409` (commit 276bf5e;
+On the stick (2026-11-19 14:2x): build `eng.builder.20261119.1409` (commit 276bf5e;
 `vendor.img` has the new `vulkan.nvidia`), image `out/aosp17-usb-adreno850.img`
 (`tools/mkusb-aosp17.sh --userdata 64`; its ESP has the one NVIDIA entry,
 `androidboot.hardware.vulkan=nvidia`, no ranchu), written with `tools/update-usb-aosp17.sh`
-over `eng.caoanh.20261119.0009`: "Read back and compared: OK", Google extras written back.
+over `eng.builder.20261119.0009`: "Read back and compared: OK", Google extras written back.
 Booted on the PC: the failures above. Replaced (2026-11-19 15:5x) by build
-`eng.caoanh.20261119.1548` with the identity off by default, image
+`eng.builder.20261119.1548` with the identity off by default, image
 `out/aosp17-usb-adreno-off.img` (same way, one NVIDIA entry), written with
 `tools/update-usb-aosp17.sh`: "Read back and compared: OK". Not yet booted on the PC.
 Then (2026-11-19, the user's request) the stick went back to build 1409 with the Adreno 850 for
-every app (`out/aosp17-usb-adreno850.img` over `eng.caoanh.20261119.0009`, "Read back and
+every app (`out/aosp17-usb-adreno850.img` over `eng.builder.20261119.0009`, "Read back and
 compared: OK", Google extras written back); the user tested it on the PC and games and apps
 recognise the Adreno.
 

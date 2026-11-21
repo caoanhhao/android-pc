@@ -399,7 +399,7 @@ Four boots on 2026-11-11 (logs read with `tools/pclog-read.sh` / the `PCLOG` par
 after rebooting into the build host; the build host *is* the target PC):
 
 1. Boot completed; GOP framebuffer 1920x1080 (the monitor is 2560x1080), RTL8125 up with
-   DHCP (`eth0` 192.168.1.15, network validated), USB keyboard (FC900R) and mouse, HD Audio
+   DHCP (`eth0` 192.0.2.15, network validated), USB keyboard (FC900R) and mouse, HD Audio
    and the NVIDIA HDMI codecs, webcam (`uvcvideo`, UGREEN Camera 4K), AX211 Bluetooth
    firmware loaded. Broken: Wi-Fi (`iwlmvm` unresolved LED symbol), ALSA card 0 was the
    webcam microphone, and the only "browser" was the WebView test shell.
@@ -741,16 +741,16 @@ the partitions from Linux gives the same result (data kept) with none of that.
 
 On a sparse copy of `out/aosp17-usb-f9f.img` (`WRITABLE=1 tools/run-qemu-aosp17-usb.sh`):
 
-1. Booted the old build (`.../eng.caoanh:userdebug/test-keys`), installed a small
+1. Booted the old build (`.../eng.builder:userdebug/test-keys`), installed a small
    debuggable test APK over adb, wrote `files/marker.txt` into its credential-encrypted data
    (`run-as`), a file in `/sdcard/Download`, a secure setting, and set a lock-screen PIN
    (`locksettings set-pin`), so the CE keys are bound to a credential. Powered off.
 2. Built with the new `tools/aosp17-build.sh` (image steps up to `super.img`, BUILD_NUMBER
-   `eng.caoanh.20261113.2019`), made `out/aosp17-usb-update.img` with
+   `eng.builder.20261113.2019`), made `out/aosp17-usb-update.img` with
    `mkusb-aosp17.sh --menu --userdata 64`, ran `update-usb-aosp17.sh` on the copy (21 s,
    read-back compare OK). A second run refuses: same build number.
 3. Booted: `ro.build.fingerprint` is the new one; `pm_critical_info: Upgrading from ...
-   eng.caoanh ... to ... eng.caoanh.20261113.2019`, "Build fingerprint changed; clearing code
+   eng.builder ... to ... eng.builder.20261113.2019`, "Build fingerprint changed; clearing code
    caches". The user starts locked (`RUNNING_LOCKED`), the PIN unlocks it
    (`RUNNING_UNLOCKED`), and the test app, its CE file, the `/sdcard` file and the setting
    are all there. 0 AVC denials.
@@ -761,7 +761,7 @@ instead of a file).
 
 ### F9 release (2026-11-13)
 
-`out/aosp17-usb-f9.img` (`--menu --userdata 64`, build `eng.caoanh.20261113.2228`, main at
+`out/aosp17-usb-f9.img` (`--menu --userdata 64`, build `eng.builder.20261113.2228`, main at
 8c8638e) is the frozen F9 build. `--dry-run` against the f9g stick image accepts it
 (same layout and AVB key, patch level 2026-06-05 on both sides, new build number). The
 real update on a sparse copy of that image wrote and compared all OS partitions, and the

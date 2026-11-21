@@ -3,7 +3,7 @@
 Phase L (`docs/nvidia-native.md`) on the build host's Waydroid instead of the stick: Android apps in
 Waydroid draw on the RTX 4070 through NVIDIA's own userspace driver (620.70.06, the host's
 `nvidia-open`), loaded in-process by nvglibc behind `vulkan.nvidia`. No host-side render server
-(the earlier attempt in `~/projects/waydroid-nvidia`, Venus over vtest, needed one).
+(the earlier attempt, the waydroid-nvidia project with Venus over vtest, needed one).
 
 ```
 App / HWUI (Skia on Vulkan)        SurfaceFlinger (SkiaGL) -- ANGLE (GLES)
@@ -143,7 +143,7 @@ libraries (`libnvglibc_tls.so is not loaded in this process`), the composer's
 `/vendor/bin/hw/android.hardware.graphics.composer@2.1-service` (the vendor image's binary goes
 beside it as `...-service.real`, read from `vendor.img` by `nvidia-build.sh`) and execs it with
 `LD_PRELOAD=libnativewindow.so:libEGL.so`: libEGL (and so `libnvglibc_tls.so`) is loaded at
-start. libnativewindow is the earlier Venus project's fix (`~/projects/waydroid-nvidia`,
+start. libnativewindow is the earlier Venus project's fix (waydroid-nvidia,
 `venus/notes-cursor.md`: Android 13's ANGLE looks up `AHardwareBuffer_*` with
 `dlsym(dlopen(NULL))`). An init `override` of the service is not applied in Waydroid, hence the
 wrapper. Checked 2026-11-18: the composer's maps have `libnvglibc_tls.so` and `libGLX_nvidia.so.0`,
@@ -258,7 +258,7 @@ tombstone in 5+ minutes; `sys.boot_completed=1`):
 
 Open:
 
-- **On screen** (2026-11-18, Hyprland back on the RTX 4070 with `gpu-mode nvidia`):
+- **On screen** (2026-11-18, Hyprland back on the RTX 4070):
   `waydroid show-full-ui` shows Android, and the mouse cursor after the composer fix above. An
   iGPU compositor cannot show NVIDIA block-linear video memory.
 - **YUV** (video frames, camera) stays linear on the Intel iGPU, which `vulkan.nvidia` does not

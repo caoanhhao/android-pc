@@ -13,7 +13,7 @@
  * as children of the executable and are loaded at process start:
  *   - libnativewindow.so: Android 13's ANGLE finds AHardwareBuffer_* with
  *     dlsym(dlopen(NULL)), which searches only the executable's tree; the composer gets
- *     libnativewindow only later, with hwcomposer.waydroid.so (from ~/projects/waydroid-nvidia,
+ *     libnativewindow only later, with hwcomposer.waydroid.so (from the earlier waydroid-nvidia project,
  *     venus/notes-cursor.md).
  *   - libEGL.so: it needs libnvglibc_tls.so (tools/waydroid/nvidia-build.sh), whose static TLS
  *     nvglibc places NVIDIA's initial-exec TLS in; loaded later with the HAL module it would be

@@ -59,7 +59,7 @@ unless `--no-extras` is given. `/data/vendor/pc-extras` survives updates in any 
 Removing them: delete `android/extras` from the ESP and `/data/vendor/pc-extras` (as root),
 then reboot.
 
-## Checked (2026-11-19, build `eng.caoanh.20261119.0009`, commit `351a894`)
+## Checked (2026-11-19, build `eng.builder.20261119.0009`, commit `351a894`)
 
 - QEMU, the stick image with `add-google-extras.sh` applied (default graphics entry, QEMU
   has no NVIDIA GPU): `pcextras: installed ...` then `mounted 26 files` 7.5 s after boot,

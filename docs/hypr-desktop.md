@@ -11,7 +11,7 @@ pieces and "Known limits" collects what is left. Sub-phase notes: "`PcSystemUI` 
 (D0)", "Shell extension points (D0)", "`hyprtile` and dynamic tiling (D1)", "Workspaces and
 keybinds (D2)", "Decoration and animation (D3)", "`HyprLauncher` (D4)", "Lua configuration
 (D5)" (reference docs/hypr-lua.md), "Touch gestures (D6)". This note also records what was
-decided in the brainstorm that started in `~/projects/hyprland-android` (an empty repo, now
+decided in the brainstorm that started in a separate hyprland-android repository (an empty repo, now
 folded into this one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
 
 ## Goal
@@ -1095,7 +1095,7 @@ Known limits:
 
 D1-D6 tried new APKs through Waydroid's overlay (`/var/lib/waydroid/overlay`). D7 built the
 whole product once more (`tools/aosp17-build.sh`, image steps up to `super.img`, build
-`eng.caoanh.20261121.2248`), packed it for Waydroid (`tools/waydroid/aosp17-pack.sh`, which
+`eng.builder.20261121.2248`), packed it for Waydroid (`tools/waydroid/aosp17-pack.sh`, which
 now creates `out/waydroid-aosp17/` itself) and copied `system.img` and `vendor.img` into
 `/var/lib/waydroid/images-aosp17/` (`aosp17-switch.sh install` does the same plus the switch
 from LineageOS 20; Waydroid already ran this image, so a copy was enough). The overlay's D1-D6
@@ -1108,7 +1108,7 @@ LXC mount points) and `vendor/lib64/hw/vulkan.nvidia.so` (identical to the image
 
 ### End-to-end check (2026-11-21)
 
-The user's data (backed up first, `~/.local/share/waydroid-backup/aosp17-20261121-1716`): the
+The user's data (backed up first, `~/.local/share/waydroid-backup/aosp17-<date>`): the
 new fingerprint booted, PackageManager upgraded the system apps, the HOME role is
 `com.android.hyprlauncher`, `PcSystemUI` is SystemUI, the hypr RRO is enabled, SystemUI
 connected to the launcher (`onInitialize` with `IHyprShell` and Shell's 12 other interfaces),
@@ -1184,7 +1184,7 @@ one D2-D6 used, and the injected keys go through the same InputManager key gestu
 
 The same product builds for the stick: the D7 build's `super.img`, boot images and vbmeta
 came out of the same run, and `tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-d7.img`
-made an 8.7 GiB stick image whose `android/build.txt` names build `eng.caoanh.20261121.2248`
+made an 8.7 GiB stick image whose `android/build.txt` names build `eng.builder.20261121.2248`
 (patch level 2026-06-05, unchanged). The stick itself was not touched; the image is ready for
 `tools/update-usb-aosp17.sh` (docs/usb-boot-aosp17.md, §10).
 

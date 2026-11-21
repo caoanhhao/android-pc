@@ -549,7 +549,7 @@ so the close happened inside TikTok's code. WebView only reports it. Checked:
   as the emulator's. TikTok's Java code runs on ART, not translated.
 - `tools/webview-intercept-test/` serves a page whose scripts are `GZIPInputStream`s in
   `FilterInputStream` wrappers, as TikTok does, plus one stream closed before it is
-  returned. On Cuttlefish (build `eng.caoanh.20261113.2206`) both providers give
+  returned. On Cuttlefish (build `eng.builder.20261113.2206`) both providers give
   `RESULT gz=ok big=ok closed=failed`: open streams of any size load, and only the
   pre-closed one fails, with the same `available()` stack as TikTok's.
 
@@ -724,7 +724,7 @@ clicks from reaching the game. Nothing to fix.
 
 ### H2: TikTok's passkey button does nothing after Google sign-in (Credential Manager hang)
 
-Real PC, build `eng.caoanh.20261114.2338`, logs in `out/pclog-g6/boot-4/logcat.txt`
+Real PC, build `eng.builder.20261114.2338`, logs in `out/pclog-g6/boot-4/logcat.txt`
 (2026-11-14 17:35 and 17:44). After "Sign in with Google", TikTok opens the same identity
 check page as in F9p (`inapp.tiktokv.com/ucenter_web/idv_inapp/verification`, Spark
 channel `tiktok_account_idv`). With Google's WebView (F9p) the page now loads, offers a
@@ -788,7 +788,7 @@ adb shell am start -n pc.test.credman/.MainActivity
 adb logcat -s CredManTest CredentialManager
 ```
 
-Result on Cuttlefish (`aosp_pc_x86_64`, build `eng.caoanh.20261115.0135`, which has the
+Result on Cuttlefish (`aosp_pc_x86_64`, build `eng.builder.20261115.0135`, which has the
 patch), 2026-11-15. With only microG's providers, as on the PC, the log is the PC's
 sequence up to `For ui, provider data size: 1`, then the patch's
 `No provider data left for ui - responding with failure`, and the app logs
@@ -797,7 +797,7 @@ the request. With the test provider turned on, both remote entries are dropped a
 answer is the same. Without the patch the PC log stops at `For ui, provider data size`
 and the request is answered only when the client cancels it.
 
-Release image `out/aosp17-usb-h2.img`, build `eng.caoanh.20261115.0346` (main with H1, H2
+Release image `out/aosp17-usb-h2.img`, build `eng.builder.20261115.0346` (main with H1, H2
 and H4): in QEMU it boots to `sys.boot_completed` and the same test, with microG's providers
 only, ends with `TYPE_NO_CREDENTIAL` 50 ms after the request. Update the stick in place with
 `sudo tools/update-usb-aosp17.sh out/aosp17-usb-h2.img /dev/sdX`.
@@ -810,7 +810,7 @@ real passkey, or signing in by email or phone instead of Google.
 
 ### H3: Where Winds Meet — arm64 code that PLT-hooks host libraries
 
-Real PC, G6 stick (`eng.caoanh.20261114.2338`), logs in `out/pclog-g6/boot-4`, 2026-11-14.
+Real PC, G6 stick (`eng.builder.20261114.2338`), logs in `out/pclog-g6/boot-4`, 2026-11-14.
 Where Winds Meet (`com.netease.yyvn`) still crashed at start, 8 times, always the same way
 as in F9n: `SIGSEGV (SEGV_ACCERR)`, "trying to execute non-executable memory",
 `#00 pc 0x13147c libunisec.so`, `#01 art::ReadMagicAndReset+185` in the x86_64
@@ -877,7 +877,7 @@ function, which counts the call and calls the saved host `read`. The activity th
 a `DexClassLoader` on its own APK, which goes through `ReadMagicAndReset` like the game's
 packer does. `build.sh` builds it with the AOSP host tools.
 
-**Results (build `eng.caoanh.20261115.0441`, 2026-11-15).**
+**Results (build `eng.builder.20261115.0441`, 2026-11-15).**
 - Cuttlefish, `persist.sys.pc.nb_hooks=0` (handler off): the test app crashes exactly like
   the game, `SIGSEGV (SEGV_ACCERR)`, "trying to execute non-executable memory",
   `#00 libguesthook.so`, `#01 art::ReadMagicAndReset+185` in `libartbase.so`.
@@ -913,7 +913,7 @@ packer does. `build.sh` builds it with the AOSP host tools.
 
 ### I3: Genshin Impact still missing from the Play Store
 
-Real PC, image `out/aosp17-usb-h3.img` (build `eng.caoanh.20261115.0441`), logs in
+Real PC, image `out/aosp17-usb-h3.img` (build `eng.builder.20261115.0441`), logs in
 `out/pclog-h3/boot-7` … `boot-11`, 2026-11-15. Where Winds Meet and Delta Force are listed
 and install from the Play Store; Genshin Impact (`com.miHoYo.GenshinImpact`) does not show
 up in search.
@@ -976,7 +976,7 @@ site):
   `1073E74EB38BD6D19476CBF8EA9DBF9FB761A677`, William Budington, EFF);
 - token: Aurora Store's anonymous dispenser (`auroraoss.com/api/auth`), not the user's
   account; Google Play ToS accepted by the user;
-- files in `~/Downloads/genshin/com.miHoYo.GenshinImpact/` on the build host:
+- files in a local download directory on the build host:
   `com.miHoYo.GenshinImpact.apk` (33 MB, base),
   `com.miHoYo.GenshinImpact.config.arm64_v8a.apk` (145 MB),
   `com.miHoYo.GenshinImpact.AssetBundles.apk` (514 MB, install-time asset pack); about

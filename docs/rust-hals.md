@@ -507,7 +507,7 @@ the RTX 4070), which is a display-stack change, not a HAL one. With a monitor on
 onboard Intel graphics (i915) or an AMD card, the jacks work and the path above applies.
 
 **Real-PC result (H1, 2026-11-15).** The stick's default entry (pcfb, build
-`eng.caoanh.20261114.2338`, pclog `boot-4`) confirmed it: card 1 "HDA NVidia" (`01:00.1`)
+`eng.builder.20261114.2338`, pclog `boot-4`) confirmed it: card 1 "HDA NVidia" (`01:00.1`)
 has its four HDMI PCMs (3, 7, 8, 9), every `/proc/asound/card1/eld#*` reads
 `monitor_present 0`, `eld_valid 0`, all `HDMI/DP,pcm=N Jack` controls are off, the beeps in
 `hdmi-check.txt` "play" (`tinyplay` exits 0) but nothing comes out, and the audio check
@@ -542,7 +542,7 @@ What to check on the real PC (nouveau entry, monitor on the RTX 4070): `state-*.
 `hdmi-check.txt` is heard on that PCM, and `audio-check.txt` reports device type 9.
 
 QEMU check of the menu (image `out/aosp17-usb-h1-qemu.img`, build
-`eng.caoanh.20261115.0135`, `tools/run-qemu-aosp17-usb.sh`): Limine 12.9.6 shows the pcfb
+`eng.builder.20261115.0135`, `tools/run-qemu-aosp17-usb.sh`): Limine 12.9.6 shows the pcfb
 comment under the default entry and the "sound plays on the monitor" comment once
 "Android 17, NVIDIA nouveau" is selected; after booting that entry and a `system_reset`
 the menu comes back with it highlighted and counts down to it (OVMF keeps the variable

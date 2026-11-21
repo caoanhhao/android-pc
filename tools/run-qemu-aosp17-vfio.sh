@@ -15,8 +15,8 @@
 #
 # The host must not be using the card (docs/nvidia-native.md, "VFIO in QEMU"):
 #   - IOMMU on: VT-d in the firmware, intel_iommu=on iommu=pt on the kernel command line;
-#   - Hyprland and SDDM's Xorg on the iGPU (~/.config/hypr/scripts/gpu-mode igpu, monitor
-#     cable on the motherboard, reboot), no process with /dev/nvidia* or the card's DRM nodes open.
+#   - Hyprland and SDDM's Xorg on the iGPU (AQ_DRM_DEVICES = the iGPU, SDDM on Wayland,
+#     monitor cable on the motherboard, reboot), no process with /dev/nvidia* or the card's DRM nodes open.
 # The script asks for the password (sudo) to unbind the card from nvidia and bind its
 # functions to vfio-pci. They stay there when QEMU exits, ready for the next run: given back,
 # the card's new DRM node would be opened by Hyprland's hotplug handling (AQ_DRM_DEVICES
@@ -62,7 +62,7 @@ bind_vfio() {
     # Already loaded after an earlier run; modprobe would fail anyway once a kernel update has
     # removed the running kernel's /lib/modules.
     [[ -d /sys/bus/pci/drivers/vfio-pci ]] || sudo modprobe vfio-pci
-    # Root processes too (SDDM's greeter Xorg: ~/.config/hypr/scripts/gpu-mode igpu moves it).
+    # Root processes too (SDDM's greeter Xorg, unless SDDM runs on Wayland).
     local root_holders
     root_holders=$(sudo fuser "${nodes[@]}" 2>/dev/null | tr -s ' ' '\n' | sort -un | xargs -r -I{} ps -o pid=,user=,comm= -p {} || true)
     [[ -z $root_holders ]] || die "the RTX 4070 is in use:

@@ -296,7 +296,7 @@ at MEDIUM because Phase K's Xid 51 came right after a high-priority channel star
   for RGBA8888 (333×77, 2560×1080), RGB565, RGBA_FP16, RGBA_1010102, R8, NV12 (1920×1080,
   176×144), YV12, P010; GPU → CPU for RGBA8888 in system and video memory, NV12, YV12. Every
   byte compared: 0 differences.
-- QEMU: build `eng.caoanh.20261116.1459` (system, vendor, super on top of the L1 and L2 commits).
+- QEMU: build `eng.builder.20261116.1459` (system, vendor, super on top of the L1 and L2 commits).
   - NVIDIA entry (`out/aosp17-usb-l3-qemu-nv.img`: the entry's words through `--append`, QEMU has
     no NVIDIA GPU): `ro.hardware.vulkan=nvidia`, `ro.vulkan.apex` empty (the APEX's own setprop
     is refused, as intended), `debug.renderengine.backend=skiavkthreaded`,
@@ -323,13 +323,13 @@ counts the metadata region too (`cros_gralloc_driver.cc`: `reserved_region_size`
 size), which lives in its own fd; the HAL took 15468 (4096 of buffer + 11372 of metadata) as
 the dma-buf's size and NVIDIA refused the import. The host test goes through gbm, whose
 buffers have no metadata region, so it never saw it. `ReadGrallocHandle` now subtracts
-`reserved_region_size`. Build `eng.caoanh.20261117.0020` in the VFIO VM: `sys.boot_completed=1`,
+`reserved_region_size`. Build `eng.builder.20261117.0020` in the VFIO VM: `sys.boot_completed=1`,
 SurfaceFlinger `RE Vulkan (Ganesh)`, SystemUI `Pipeline=Skia (Vulkan)`, the desktop in
 `screencap`, no Xid (`out/vfio-l3c/`).
 
 ### L3b: zygote must not hold NVIDIA's device fds (2026-11-16)
 
-First real-PC boot of the entry (build `eng.caoanh.20261116.1950`, out/pclog-l1b/boot-28):
+First real-PC boot of the entry (build `eng.builder.20261116.1950`, out/pclog-l1b/boot-28):
 `vulkan.nvidia: device NVIDIA GeForce RTX 4070, driver NVIDIA 620.70.06`, SurfaceFlinger's
 GaneshVkRenderEngine up on the GPU, no Xid in 615 s, but zygote64 crash-looped (100 tombstones,
 `JNI FatalError called: (system_server) Not allowlisted (61): /dev/nvidiactl` from
@@ -355,7 +355,7 @@ Fix, both:
   (`ro.zygote.disable_gl_preload`): zygote does not load the graphics driver at all, every app
   loads it itself.
 
-QEMU (build `eng.caoanh.20261116.2040`, the entry's words without the preload switch, so zygote
+QEMU (build `eng.builder.20261116.2040`, the entry's words without the preload switch, so zygote
 does preload the driver): with SurfaceFlinger stopped (it aborts without a GPU and takes zygote
 with it), a restarted zygote maps `vulkan.nvidia.so`, libnvglibc, nvglibc's soname libraries and
 `libGLX_nvidia.so.0`, holds no `/dev/nvidia*` fd, and forks system_server; no `Not allowlisted`
@@ -384,7 +384,7 @@ Result: the world renders fully (bamboo forest, fog, shadows, the character, eve
 `out/vfio-l4/wwm-world.png`; ~30 fps at 2560x1080 (33.4 ms per frame from SurfaceFlinger's
 latency, the game's default cap), no Xid. Open: the RGBA4 copies are skipped (no visible
 effect seen yet); ASTC decode costs CPU on texture upload.
-Build `eng.caoanh.20261117.0224` (the patch in the full image set) boots the NVIDIA entry in the
+Build `eng.builder.20261117.0224` (the patch in the full image set) boots the NVIDIA entry in the
 VFIO VM with the same `libGLESv2_angle.so` (md5 `99d86416…`) as the WWM run; QEMU image
 `out/aosp17-usb-l4a-qemu-nv.img` (the WWM run itself used `out/aosp17-usb-l4-qemu-nv.img`).
 Stick update image `out/aosp17-usb-l4a.img` (`tools/mkusb-aosp17.sh --menu --userdata 64`, same
@@ -531,7 +531,7 @@ patcher's device check (`gpuid: GL_RENDERER is Adreno (TM) 840 for this app`). `
 game (its SDK and its device check), so they stay. The splash video does not use GL on Vulkan
 (`StartLiveWithLocalVideo Not OES` / `Use Raw Data`).
 
-**On the stick (build `eng.caoanh.20261117.1610`, `out/aosp17-usb-l4b.img`,
+**On the stick (build `eng.builder.20261117.1610`, `out/aosp17-usb-l4b.img`,
 `tools/mkusb-aosp17.sh --menu --userdata 64`, PC identity).** Entry "Android 17, NVIDIA
 (proprietary)". `vulkan.nvidia` has the ASTC emulation; `debug.nvvk.stats` is unset (off). The
 game needs its `LocalData/vulkan.tag`, and the stick's userdata is encrypted, so the image makes
@@ -556,7 +556,7 @@ glibc keys itself (`hals/nvglibc/src/pthread.c`): 256 keys with generations (a d
 key does not see old values), all of a thread's values in one array behind a single bionic key,
 destructors run as glibc does (up to 4 rounds). Firefox then starts, loads pages and opens its URL
 bar without crashing; WWM still starts on Vulkan. Stick image `out/aosp17-usb-l4c.img`, build
-`eng.caoanh.20261117.1924`.
+`eng.builder.20261117.1924`.
 
 The investigation that led here (kept for the record): The goal was WWM's own Vulkan
 backend (arm64 `libvulkan` through the native bridge's proxy to vulkan.nvidia, no ANGLE in the
@@ -700,15 +700,13 @@ The host must leave the card alone first:
 
 1. VT-d on in the firmware; `intel_iommu=on iommu=pt` added to `GRUB_CMDLINE_LINUX_DEFAULT`
    in `/etc/default/grub`, `grub-mkconfig -o /boot/grub/grub.cfg`, reboot.
-2. Hyprland on the iGPU: `~/.config/hypr/scripts/gpu-mode igpu` (points
-   `config/custom/gpu.lua` at `~/.config/hypr/gpu/igpu.lua` instead of `gpu/nvidia.lua`:
-   `AQ_DRM_DEVICES` = the iGPU only, Mesa EGL/GLX/GBM/Vulkan/VA-API for Hyprland, its apps and
-   the systemd user services, so nothing opens `/dev/nvidia*`), monitor on a motherboard
-   port, reboot (this board's iGPU ports are only probed at boot). SDDM on Wayland: on X11 it
-   keeps its greeter's root Xorg running for the whole session and that Xorg holds the card;
-   `~/.config/hypr/system/sddm-wayland.conf` in `/etc/sddm.conf.d/` (`DisplayServer=wayland`,
-   greeter in weston, which runs only while the greeter is shown). Without a
-   monitor on the iGPU, `igpu.lua` falls back to `nvidia.lua`. `gpu-mode nvidia` undoes it.
+2. The host compositor on the iGPU: point Hyprland at the iGPU only (`AQ_DRM_DEVICES` = the
+   iGPU, Mesa EGL/GLX/GBM/Vulkan/VA-API for Hyprland, its apps and the systemd user services,
+   so nothing opens `/dev/nvidia*`), monitor on a motherboard port, reboot (this board's iGPU
+   ports are only probed at boot). SDDM on Wayland: on X11 it keeps its greeter's root Xorg
+   running for the whole session and that Xorg holds the card; a drop-in in
+   `/etc/sddm.conf.d/` with `DisplayServer=wayland` (greeter in weston, which runs only while
+   the greeter is shown). Switching back to the NVIDIA card undoes it.
 3. The launcher refuses to start while the IOMMU is off, while the card's IOMMU group holds
    another device that is not a bridge, or while a process holds `/dev/nvidia*` or the card's
    DRM nodes (it lists them). It asks for the password, unloads the nvidia modules, binds the

@@ -1,7 +1,7 @@
 # NVIDIA's own driver on bare-metal Android (Phase K)
 
 Running log for Phase K of `PLAN.md`: the RTX 4070 (AD104, `10de:2786`) driven by NVIDIA's
-own driver instead of nouveau or Nova, with the design of `~/projects/waydroid-nvidia`
+own driver instead of nouveau or Nova, with the design of the earlier waydroid-nvidia project
 (Mesa Venus over a vtest socket to `virgl_test_server` on NVIDIA's Vulkan) moved onto the
 stick. One section per step. NVIDIA's firmware and userspace binaries are used for this
 personal stick only and are not redistributed.
@@ -121,7 +121,7 @@ fixed for nouveau; K3's vtest gralloc and K4 replace this path.
 
 ### QEMU check (2026-11-15)
 
-Build `eng.caoanh.20261115.1540`, image `out/aosp17-usb-k1-qemu.img` (`--menu --userdata 2048
+Build `eng.builder.20261115.1540`, image `out/aosp17-usb-k1-qemu.img` (`--menu --userdata 2048
 --append console=ttyS0,115200`), every entry booted once with `NO_WINDOW=1
 tools/run-qemu-aosp17-usb.sh` (E-cores 12-15, 4 vCPUs, 4 GiB) after setting `default_entry`
 in the image's `limine.conf` (mtools), and read over adb. QEMU has no NVIDIA GPU, so the
@@ -163,7 +163,7 @@ the whole round was repeated afterwards.
 ### Status
 
 **Code done, QEMU check passed, real-PC test pending.** Release image `out/aosp17-usb-k1.img`
-(`--menu --userdata 64`, build `eng.caoanh.20261115.1540`, security patch 2026-06-05). It was
+(`--menu --userdata 64`, build `eng.builder.20261115.1540`, security patch 2026-06-05). It was
 built from the shared checkout, so it also carries the K2-K4 work in progress at that time,
 all inert on this entry (K3's Venus only with `androidboot.hardware.vulkan=virtio`, K4's
 `pcnvdisplay` only confirms nvidia-drm's card), and K3's move of `androidboot.opengles.version`
@@ -205,7 +205,7 @@ path is K4's); if nvidia.ko fails, the `NVRM:` lines say why (firmware path:
 
 ### K1b. First real-PC boot hung: diagnosis and changes (2026-11-15)
 
-**Result of the combined K image** (`out/aosp17-usb-k.img`, build `eng.caoanh.20261115.2013`):
+**Result of the combined K image** (`out/aosp17-usb-k.img`, build `eng.builder.20261115.2013`):
 on "Android 17, NVIDIA (proprietary, Venus)" the screen went black after the firmware logo and
 the PC hung; pclog has no directory for that boot (`out/pclog-k`: boot-18 nouveau and boot-19
 NVK on the same build, both fine).
@@ -239,7 +239,7 @@ Changes:
 | `pclog.sh` | every boot copies `/sys/fs/pstore/*` (efi-pstore records of an earlier crash) into `boot-N/pstore/` and removes them (they would fill the NVRAM); the K1 dump block also runs on the debug entry and includes `pcnvidia.sh debug`'s report |
 | new entry **"Android 17, NVIDIA debug (kernel log on screen, driver loads after boot)"** | `androidboot.android_pc.gpu=nvidia-debug`, pcfb on (Android on the GOP framebuffer as usual), `earlycon=efifb keep_bootcon loglevel=7` (the kernel log scrolls over the screen), the same `nvdiag` words. After `sys.boot_completed`, `pcnvidia.sh debug` waits 30 s, then loads `nvidia`, `nvidia-uvm`, `nvidia-modeset`, `nvidia-drm modeset=0` with 10 s pauses (makes `/dev/nvidia*`), writes `/data/vendor/pcgpu/nvidia.txt`, and last reloads `nvidia-drm modeset=1`, which takes the monitor over from pcfb. K2-K4's services do not run there (they key on `gpu=nvidia`) |
 
-QEMU check (build `eng.caoanh.20261115.2202`, `out/aosp17-usb-k1b-qemu.img`):
+QEMU check (build `eng.builder.20261115.2202`, `out/aosp17-usb-k1b-qemu.img`):
 
 - NVIDIA entry: `pcnvidia: step: mp -r vkms.ko` at 9.0 s (post-fs), `step: mp nvidia.ko`,
   `NVRM: No NVIDIA GPU found.`, the later steps skip or fail cleanly, vkms back as card0,
@@ -261,7 +261,7 @@ the boot after a panic holds the panic's kernel log.
 
 ### K1c. kCFI fixes, Xid 51, safe debug entry (2026-11-15)
 
-**K1b real-PC result** (build `eng.caoanh.20261115.2202`, logs in `out/pclog-k1b`):
+**K1b real-PC result** (build `eng.builder.20261115.2202`, logs in `out/pclog-k1b`):
 
 - The original hang was kCFI. `boot-20/pstore` held the earlier boot's panic:
   `CFI failure at kgspAllocateScrubberUcodeImage_IMPL+0x3a/0xe0 [nvidia] (target:
@@ -319,7 +319,7 @@ never does; after that, the clang code generation of the RM cores.
 warning level; not the info/audit flood) and no `softlockup_panic`/`nmi_watchdog=panic`;
 `keep_bootcon` stays (without it the screen console stops when `ttynull` registers).
 
-QEMU check (build `eng.caoanh.20261115.2345`): the NVIDIA entry boots on vkms without the GPU
+QEMU check (build `eng.builder.20261115.2345`): the NVIDIA entry boots on vkms without the GPU
 (command line has `cfi=kcfi,warn intel_iommu=off`, `sys.boot_completed` at 90 s, K3's socket
 wait included); the debug entry runs every step to the last one (`mp nvidia-drm.ko modeset=1`
 at 109 s, `NVRM: No NVIDIA GPU found.`) and Android keeps running on pcfb; the default entry
@@ -349,7 +349,7 @@ On the PC (Limine remembers the last entry: pick each one by hand):
 
 ### K1d. Xid 51 trigger, A/B entries, debug entry removed (2026-11-16)
 
-**K1c real-PC result** (build `eng.caoanh.20261115.2345`, `out/pclog-k1c/boot-22`): no
+**K1c real-PC result** (build `eng.builder.20261115.2345`, `out/pclog-k1c/boot-22`): no
 `CFI failure` any more, all modules load, sound from the monitor works; but Xid 51 (`BAD_TSG ...
 error code: 4`) and Xid 154 (PF FLR) are still there at 57 s with `intel_iommu=off`, so the
 IOMMU was not the cause. After it every GPFIFO allocation fails with `NV_ERR_RESET_REQUIRED`,
@@ -469,7 +469,7 @@ version there). Phase L replaced them (`docs/nvidia-native.md`).
 
 ### QEMU check (2026-11-15)
 
-Build `eng.caoanh.20261115.2013` (K1-K4), image `out/aosp17-usb-k4-qemu.img` (`--menu
+Build `eng.builder.20261115.2013` (K1-K4), image `out/aosp17-usb-k4-qemu.img` (`--menu
 --userdata 2048 --append console=ttyS0,115200`), entries 1 and 5-9 booted once each with
 `NO_WINDOW=1 tools/run-qemu-aosp17-usb.sh` and a vsock adb (`default_entry` set in the image's
 `limine.conf` with mtools). QEMU has no NVIDIA GPU, so on the NVIDIA entry the check is that
@@ -498,7 +498,7 @@ abort on the pcfb entries show on the other entries as well and are not from K4.
 ### Status
 
 **Code done, QEMU check passed, real-PC test pending.** Release image
-`out/aosp17-usb-k.img` (`--menu --userdata 64`, build `eng.caoanh.20261115.2013`, security
+`out/aosp17-usb-k.img` (`--menu --userdata 64`, build `eng.builder.20261115.2013`, security
 patch 2026-06-05) carries K1-K4 together.
 
 ### Real-PC test

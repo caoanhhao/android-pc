@@ -300,7 +300,7 @@ be coded in parallel but must take turns building.
   CE data, PIN, files and settings survive. A/B OTA was rejected (needs `_b` partitions, a
   slot-aware bootloader and boot_control). Details: `docs/usb-boot-aosp17.md` §10.
   *USB image `out/aosp17-usb-f9g.img` (2026-11-13, `--disk /dev/sda --menu`):* holds F9m
-  and F9n on top of f9f (build `eng.caoanh.20261113.2019`, already built after both commits,
+  and F9n on top of f9f (build `eng.builder.20261113.2019`, already built after both commits,
   so nothing was rebuilt), with F9o's `android/build.txt` on the ESP. Its super partition
   matches the build. Checked in the build: `libinputflinger.so` has the mouse-as-touch code,
   `microg.xml` turns DroidGuard/SafetyNet on, `pclog.sh` is the F9m one. The QEMU smoke
@@ -338,7 +338,7 @@ be coded in parallel but must take turns building.
 
   **F9 status: frozen (2026-11-13).** The F9 release is `out/aosp17-usb-f9.img`
   (`tools/mkusb-aosp17.sh --menu --userdata 64`, an update image for the flashed stick),
-  build `eng.caoanh.20261113.2228` (main at 8c8638e, security patch 2026-06-05, AVB test
+  build `eng.builder.20261113.2228` (main at 8c8638e, security patch 2026-06-05, AVB test
   key, rollback index 0). It holds F9a–F9q; the only change over the f9g stick is F9p
   (Google WebView as the default provider) and F9q (pclog keeps Unreal logs). Checks:
   `update-usb-aosp17.sh --dry-run` against the f9g stick image passes (layout, AVB key,
@@ -385,7 +385,7 @@ firmware for nouveau and Nova (`main`'s GKI build has neither).
 
 ## Phase H — real-PC fixes
 
-Bugs the user found on the real PC with build `eng.caoanh.20261114.2338` (the G6 stick),
+Bugs the user found on the real PC with build `eng.builder.20261114.2338` (the G6 stick),
 one session each, one build at a time (H1 first).
 
 - **H1 — no sound from the monitor** (RTX 4070 HDMI/DP). The NVIDIA codec sends audio only once
@@ -400,7 +400,7 @@ one session each, one build at a time (H1 first).
   the client, so the request hangs. `tools/patches/aosp17-credman-empty-ui.patch`
   (frameworks/base) answers `NoCredentialException` instead, as on a phone without a
   passkey. Checked on Cuttlefish with `tools/credman-test/`. Image
-  `out/aosp17-usb-h2.img` (build `eng.caoanh.20261115.0346`, from main with H1, H2 and H4);
+  `out/aosp17-usb-h2.img` (build `eng.builder.20261115.0346`, from main with H1, H2 and H4);
   in QEMU it reaches `sys.boot_completed` and the test's passkey request ends with
   `TYPE_NO_CREDENTIAL` in 50 ms. Details in `docs/arm-translation.md` ("H2").
 - **H3 — Where Winds Meet crashes at start** (`com.netease.yyvn`, arm64 through
@@ -412,7 +412,7 @@ one session each, one build at a time (H1 first).
   that turns both crossings into translator wrappers/trampolines (exported berberis
   functions). Checked on Cuttlefish with `tools/guest-hook-test/` (crash reproduced with
   the handler off, `PASS` with it on; VLC still runs). Image `out/aosp17-usb-h3.img`
-  (build `eng.caoanh.20261115.0441`, H1+H2+H3+H4); in QEMU it reaches
+  (build `eng.builder.20261115.0441`, H1+H2+H3+H4); in QEMU it reaches
   `sys.boot_completed` and the test app passes. Details in `docs/arm-translation.md` ("H3").
 - **H4 — Smart Dock as the default launcher** (user request, 2026-11-15). Status
   (2026-11-15): done on Cuttlefish, real-PC check pending. Smart Dock (F-Droid build 1.15.0,
@@ -431,7 +431,7 @@ one session each, one build at a time (H1 first).
 
 ## Phase I — real-PC round 2
 
-Bugs the user found on the real PC with build `eng.caoanh.20261115.0441` (the H3 stick),
+Bugs the user found on the real PC with build `eng.builder.20261115.0441` (the H3 stick),
 one session each, one build at a time (I1 builds last and makes the release image).
 
 - **I1 — no picture on the nouveau and NVK entries** (vkms took card0 before nouveau) and
@@ -468,7 +468,7 @@ to SwiftShader, and a minigbm `nouveau` backend with GART buffers. The code and
 ## Phase K — NVIDIA's own driver on bare-metal Android
 
 Decided 2026-11-15: the RTX 4070 on NVIDIA's own driver (`nvidia-open` + NVIDIA's userspace,
-620.70.06), first with the design of `~/projects/waydroid-nvidia`. The kernel half is what
+620.70.06), first with the design of the earlier waydroid-nvidia project. The kernel half is what
 Phase L runs on and stays on `main` (docs/nvidia-proprietary.md):
 
 - **K1 — nvidia-open kernel modules on GKI android17-6.18** (`tools/nvidia-build.sh`, GKI
@@ -576,14 +576,14 @@ kernel: nvidia-open 620.70.06 (K1, kCFI fixed in K1c) + GSP firmware
   (GLES via ANGLE on vulkan.nvidia, ~30 fps at 2560x1080), after ANGLE got ARM's ASTC decoder
   (NVIDIA has no ASTC; the game ships ASTC textures, so the world was white) and a guard for a
   `glCopyImageSubData` divide-by-zero; the game needs more than the 4 GB guest RAM (12 GB used).
-  Build `eng.caoanh.20261117.0224`, stick image `out/aosp17-usb-l4a.img` (entry "Android 17,
+  Build `eng.builder.20261117.0224`, stick image `out/aosp17-usb-l4a.img` (entry "Android 17,
   NVIDIA (proprietary)"). Details in docs/nvidia-native.md, L4. Real-PC check pending.
   Native Vulkan for WWM: its launcher script picks Vulkan when `LocalData/vulkan.tag` (or
   `EnableVulkan.tag`) exists; the server then sends a `vlk` shader package and the game loads the
   arm64 libvulkan. vulkan.nvidia emulates ASTC (Rust, decoded on the CPU at submit), and the world
   renders with its textures on Vulkan at 44-48 fps in the VFIO VM (48 Hz is the game's cap; it idles
   at 3-5 fps by itself when left alone) (docs/nvidia-native.md, L4). Stick image
-  `out/aosp17-usb-l4b.img` (build `eng.caoanh.20261117.1610`, NVIDIA (proprietary) entry;
+  `out/aosp17-usb-l4b.img` (build `eng.builder.20261117.1610`, NVIDIA (proprietary) entry;
   `pcwwmvk.sh` creates the game's `vulkan.tag` at boot). Build 1924 (`out/aosp17-usb-l4c.img`):
   `pcwwmvk.sh` runs once user 0's storage is unlocked, and nvglibc keeps NVIDIA's pthread keys
   itself (Firefox aborted with bionic's keys used up). Real-PC check pending.
@@ -638,7 +638,7 @@ mouse and keyboard first with simple touch gestures, replacing Smart Dock and La
 is part of the ROM, fixed to this tree's AOSP 17, with no Shizuku or root tricks, and built
 the way Google builds SystemUI variants (CarSystemUI): a `PcSystemUI` that overrides
 `SystemUI` with its own WM Shell module, plus `HyprLauncher` as home and recents provider.
-The earlier `~/projects/hyprland-android` repo (empty) is folded into this one. Design:
+The earlier hyprland-android repository (empty) is folded into this one. Design:
 docs/hypr-desktop.md.
 
 - **D0 — `PcSystemUI` skeleton:** a SystemUI variant in `aosp-device/hypr/` that overrides
@@ -726,7 +726,7 @@ docs/hypr-desktop.md.
   Details and limits in docs/hypr-desktop.md, "Touch gestures (D6)".
 - **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
   Hyprland), with the user's OK to start Waydroid. Status (2026-11-21): done. The full image
-  (build `eng.caoanh.20261121.2248`) packed for Waydroid replaced the D1-D6 overlay APKs (moved
+  (build `eng.builder.20261121.2248`) packed for Waydroid replaced the D1-D6 overlay APKs (moved
   to `/var/lib/waydroid/overlay-phase-d-tests.*`). On the user's backed-up data it boots with
   HyprLauncher as HOME and PcSystemUI connected, up to the user's own lock screen; on the test
   data, end to end: launcher, tiling and re-tiling, workspaces 1-9, ALT binds, borders,

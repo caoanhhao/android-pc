@@ -89,7 +89,7 @@ To get stock lockdown back, set `config_biometricUnlockInLockdown` to `false` in
 
 ## Test
 
-2026-11-19, Waydroid (`images-aosp17`, system `eng.caoanh.20261118.2254`), on a test data
+2026-11-19, Waydroid (`images-aosp17`, system `eng.builder.20261118.2254`), on a test data
 directory (`XDG_DATA_HOME=~/.local/share/waydroid-test`) with a test password and the user's
 `settings_fingerprint_5.xml` copied in. The RRO was built by hand with `aapt2` and installed in
 Waydroid's overlay (`/var/lib/waydroid/overlay/vendor/overlay/`), because `vendor.img` could not be
