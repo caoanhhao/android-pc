@@ -20,6 +20,8 @@ class DwindleLayout : TileLayout {
         var splitTop: Boolean? = null
         /** Set by [toggleSplit]: the direction no longer follows the box's shape. */
         var pinned = false
+        /** The box from the last arrange, for [resize]. */
+        var box: Box? = null
 
         fun replace(old: Node, new: Node) {
             if (first === old) first = new else second = new
@@ -102,6 +104,29 @@ class DwindleLayout : TileLayout {
         leaves[id]?.parent?.ratio = ratio.coerceIn(0.1f, 1.9f)
     }
 
+    override fun resize(id: Int, dx: Int, dy: Int) {
+        val leaf = leaves[id] ?: return
+        if (dx != 0) grow(leaf, dx, top = false)
+        if (dy != 0) grow(leaf, dy, top = true)
+    }
+
+    /** Moves the nearest split of that direction above [leaf] so that it grows by [by]. */
+    private fun grow(leaf: Leaf, by: Int, top: Boolean) {
+        var child: Node = leaf
+        var split = leaf.parent
+        while (split != null && split.splitTop != top) {
+            child = split
+            split = split.parent
+        }
+        split ?: return
+        val box = split.box ?: return
+        val size = if (top) box.height else box.width
+        if (size <= 0) return
+        val delta = 2f * by / size
+        split.ratio = (if (split.first === child) split.ratio + delta else split.ratio - delta)
+            .coerceIn(0.1f, 1.9f)
+    }
+
     override fun configure(cfg: TileConfig) {
         pendingRatio = cfg.defaultSplitRatio
         pendingForceSplit = cfg.forceSplit
@@ -125,6 +150,7 @@ class DwindleLayout : TileLayout {
                     else -> shapeTop
                 }
                 n.splitTop = top
+                n.box = box
                 if (top) {
                     val y = box.top + (box.height * n.ratio / 2f).roundToInt()
                     place(n.first, Box(box.left, box.top, box.right, y), area, cfg, out)

@@ -11,6 +11,9 @@ class MasterLayout(private val masterCount: Int = 1) : TileLayout {
     private val order = mutableListOf<Int>()
     private var newIsMaster = false
     private var newOnTop = false
+    /** mfact changed by [resize]; null follows the configuration. */
+    private var factor: Float? = null
+    private var lastWidth = 0
 
     override val ids: List<Int> get() = order.toList()
 
@@ -42,16 +45,29 @@ class MasterLayout(private val masterCount: Int = 1) : TileLayout {
 
     override fun arrange(area: Box, cfg: TileConfig): Map<Int, Box> {
         configure(cfg)
+        if (factor == null) factor0 = cfg.masterFactor
         val out = LinkedHashMap<Int, Box>()
         if (order.isEmpty()) return out
         val masters = order.take(masterCount)
         val stack = order.drop(masterCount)
+        lastWidth = area.width
         val split = if (stack.isEmpty()) area.right
-                    else area.left + (area.width * cfg.masterFactor).roundToInt()
+                    else area.left + (area.width * (factor ?: cfg.masterFactor)).roundToInt()
         column(masters, Box(area.left, area.top, split, area.bottom), area, cfg, out)
         column(stack, Box(split, area.top, area.right, area.bottom), area, cfg, out)
         return out
     }
+
+    /** Masters grow to the right, stack windows to the left; rows keep equal heights. */
+    override fun resize(id: Int, dx: Int, dy: Int) {
+        val i = order.indexOf(id)
+        if (i < 0 || dx == 0 || lastWidth <= 0 || order.size <= masterCount) return
+        val d = dx.toFloat() / lastWidth
+        val f = factor ?: factor0
+        factor = (if (i < masterCount) f + d else f - d).coerceIn(0.05f, 0.95f)
+    }
+
+    private var factor0 = 0.55f
 
     private fun column(ids: List<Int>, box: Box, area: Box, cfg: TileConfig, out: MutableMap<Int, Box>) {
         ids.forEachIndexed { i, id ->

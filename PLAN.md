@@ -671,7 +671,19 @@ docs/hypr-desktop.md.
   hyprtile (Shell's two-window tiling never starts). Checked on Waydroid; details and limits in
   docs/hypr-desktop.md, "Workspaces and keybinds (D2)".
 - **D3 — decoration and animation:** rounded corners, gradient active border, minimal caption,
-  bezier curves for window and workspace animations.
+  bezier curves for window and workspace animations. Status (2026-11-21): done. A small Shell
+  extension point (`WindowDecorStyle`, tools/patches/aosp17-shell-decor-style.patch, built into
+  the PcSystemUI APK only) lets `HyprDecorations` drop the caption of tiled windows (floating
+  ones keep Shell's), set corner radius and opacity in Shell's own transactions and draw the
+  gradient border (Hyprland's colour and angle syntax) with four small buffer layers.
+  `HyprAnimator` plays popin/slide/fade opens and closes, bezier re-tiling and
+  slide/slidevert/fade workspace switches from one `AnimationConfig` (Hyprland's `bezier` and
+  `animation` lines and tree, its example defaults), and `HyprMouse` adds MOD + left drag
+  (move/swap), MOD + right drag (resize, splits for tiled windows), MOD + middle click (float).
+  Settings are `persist.hypr.*` properties until D5. Checked on Waydroid with screenshots,
+  screen recordings and SurfaceFlinger timestats (no missed frames); 52 host tests. Limits
+  (mouse resize lands on release, Shell-started closes keep Shell's animation) in
+  docs/hypr-desktop.md, "Decoration and animation (D3)".
 - **D4 — `HyprLauncher`:** home and recents provider (replaces Smart Dock and Launcher3),
   `IHyprShell` through Shell's external interfaces, bar, app launcher, overview.
 - **D5 — Lua configuration:** `init.lua` with hot reload, error screen, window rules, event

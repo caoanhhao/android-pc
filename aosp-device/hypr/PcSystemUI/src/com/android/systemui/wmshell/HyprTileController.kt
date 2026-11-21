@@ -9,12 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
+import android.hardware.input.InputManager
 import android.os.IBinder
 import android.os.SystemProperties
 import android.os.UserHandle
 import android.util.Log
 import android.view.Display.DEFAULT_DISPLAY
 import android.view.Display.INVALID_DISPLAY
+import android.view.MotionEvent
 import android.view.SurfaceControl
 import android.view.WindowManager.TRANSIT_CHANGE
 import android.view.WindowManager.TRANSIT_CLOSE
@@ -22,6 +24,7 @@ import android.view.WindowManager.TRANSIT_OPEN
 import android.view.WindowManager.TRANSIT_TO_BACK
 import android.view.WindowManager.TRANSIT_TO_FRONT
 import android.window.TransitionInfo
+import android.window.TransitionInfo.FLAG_IS_WALLPAPER
 import android.window.TransitionRequestInfo
 import android.window.WindowContainerTransaction
 import com.android.hyprtile.Box
@@ -39,9 +42,12 @@ import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
 import com.android.wm.shell.common.ShellExecutor
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.EnterReason
+import com.android.wm.shell.desktopmode.DesktopMixedTransitionHandler
 import com.android.wm.shell.desktopmode.DesktopModeKeyGestureHandler
+import com.android.wm.shell.desktopmode.DesktopModeTransitionTypes.TRANSIT_DESKTOP_MODE_DESK_TO_DESK_SWITCH
 import com.android.wm.shell.desktopmode.DesktopTasksController
 import com.android.wm.shell.desktopmode.DesktopUserRepositories
+import com.android.wm.shell.desktopmode.SnapController
 import com.android.wm.shell.desktopmode.data.DesktopRepository
 import com.android.wm.shell.desktopmode.multidesks.DeskSwitchTransitionHandler
 import com.android.wm.shell.shared.desktopmode.DesktopModeTransitionSource
@@ -49,6 +55,7 @@ import com.android.wm.shell.sysui.ShellInit
 import com.android.wm.shell.transition.FocusTransitionObserver
 import com.android.wm.shell.transition.Transitions
 import com.android.wm.shell.transition.Transitions.TransitionFinishCallback
+import com.android.wm.shell.windowdecor.DesktopModeWindowDecorViewModel
 import java.util.Optional
 
 /**
@@ -72,6 +79,13 @@ import java.util.Optional
  * Each desk (Shell's multidesks) is a Hyprland workspace with its own layout tree: workspace N
  * of a display is its N-th desk, created on demand. [dispatch] runs Hyprland's dispatchers
  * (Phase D2); [HyprKeybinds] calls it from key gestures.
+ *
+ * Phase D3: [HyprDecorations] styles the windows (corners, gradient border, opacity, caption
+ * only on floating windows) and [HyprAnimator] animates the transitions this controller starts
+ * (re-tiling, workspace switches) and the desk transitions it sees first (windows opening and
+ * closing): as the newest handler it is asked before Shell's own animations. [HyprMouse] adds
+ * Hyprland's mouse binds (MOD + left drag moves, MOD + right drag resizes, MOD + middle click
+ * toggles floating).
  */
 class HyprTileController(
     private val context: Context,
@@ -85,6 +99,10 @@ class HyprTileController(
     private val focusTransitionObserver: FocusTransitionObserver,
     private val shellKeyGestureHandler: Optional<DesktopModeKeyGestureHandler>,
     private val mainExecutor: ShellExecutor,
+    private val snapController: SnapController,
+    private val mixedHandler: Optional<DesktopMixedTransitionHandler>,
+    inputManager: InputManager,
+    private val decorViewModel: Optional<DesktopModeWindowDecorViewModel>,
 ) : Transitions.TransitionHandler, Transitions.TransitionObserver {
 
     private val tile = HyprTile(readConfig())
@@ -99,6 +117,44 @@ class HyprTileController(
     /** Tiled tasks maximized with `fullscreen 1`; they keep their tile in the layout. */
     private val maximized = HashSet<Int>()
 
+    val decorations = HyprDecorations(
+        enabled = { enabled },
+        isTiled = { tile.isTiled(it) },
+        isVisible = { userRepositories.isPresent && repository.isVisibleTask(it) },
+    )
+    private val animator = HyprAnimator()
+    private var animationsEnabled = HyprStyleProps.animationsEnabled()
+    private val mouse = HyprMouse(inputManager, this)
+    /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
+    private val ownChanges = HashSet<IBinder>()
+    /** Desk switches this controller started and animates. */
+    private val deskSwitches = HashMap<IBinder, DeskSwitch>()
+    /** Requests this controller saw: the trigger task and whether it was visible before. */
+    private val requests = HashMap<IBinder, Pair<Int, Boolean>>()
+    /** Where a window really is when a transition starts (a mouse-dragged window), absolute. */
+    private val startOverride = HashMap<Int, Rect>()
+    private var mouseDrag: MouseDrag? = null
+
+    private data class DeskSwitch(val displayId: Int, val from: Int, val to: Int)
+
+    /** A window being moved or resized with MOD + mouse. */
+    private class MouseDrag(
+        val task: RunningTaskInfo,
+        val resize: Boolean,
+        val x0: Float,
+        val y0: Float,
+        /** Absolute bounds when the drag started. */
+        val bounds: Rect,
+        /** Which corner a resize drags: the one nearest to where the button went down. */
+        val right: Boolean,
+        val bottom: Boolean,
+        val leash: SurfaceControl?,
+    ) {
+        var lastDx = 0
+        var lastDy = 0
+        var current = Rect(bounds)
+    }
+
     init {
         shellInit.addInitCallback(::onInit, this)
     }
@@ -110,7 +166,10 @@ class HyprTileController(
         }
         transitions.addHandler(this)
         transitions.registerObserver(this)
-        Log.i(TAG, "hyprtile ready: ${tile.config}")
+        decorations.install()
+        mouse.start()
+        Log.i(TAG, "hyprtile ready: ${tile.config}, animations " +
+            (if (animationsEnabled) "on" else "off"))
     }
 
     /** Tiling is on (persist.hypr.tiling); with it off, Shell's own behaviour comes back. */
@@ -140,6 +199,7 @@ class HyprTileController(
         // handlers dispatch the request again from inside their own handleRequest, which comes
         // back here; the nested call steps aside.
         if (inRequest) return null
+        requests[transition] = task.taskId to task.isVisible
         inRequest = true
         val other = try {
             transitions.dispatchRequest(transition, request, this)
@@ -182,13 +242,157 @@ class HyprTileController(
         }
     }
 
+    /**
+     * Animates the transitions this controller started (re-tiling, desk switches) and desk
+     * transitions that come from a request it saw (a window opening, coming to front, closing
+     * or going to back, with its neighbours moving), also when Shell's mixed handler has a
+     * pending launch for them (it is asked after this handler).
+     * Anything else (leaving the desk, fullscreen, home, wallpaper, activities inside a task)
+     * goes to Shell's handlers.
+     */
     override fun startAnimation(
         transition: IBinder,
         info: TransitionInfo,
         startTransaction: SurfaceControl.Transaction,
         finishTransaction: SurfaceControl.Transaction,
         finishCallback: TransitionFinishCallback,
-    ): Boolean = false // other handlers animate; this one only adds bounds
+    ): Boolean {
+        val desk = deskSwitches.remove(transition)
+        val own = ownChanges.remove(transition)
+        val request = requests.remove(transition)
+        if (!animationsEnabled || !enabled) return false
+        if (desk != null) {
+            return animateDeskSwitch(desk, info, startTransaction, finishTransaction, finishCallback)
+        }
+        if (!own && request == null) return false
+        val changes = windowChanges(info, finishTransaction, request) ?: return false
+        // Shell's desktop launches leave a pending launch in its mixed handler, which would
+        // animate next; it is told the transition was consumed so it drops that state.
+        if (!own) {
+            mixedHandler.ifPresent {
+                if (it.hasTransition(transition)) it.onTransitionConsumed(transition, false, null)
+            }
+        }
+        Log.d(TAG, "animating ${if (own) "change" else "request"} ${info.debugId}: " +
+            changes.joinToString { "${it.kind}" })
+        animator.animateWindows(changes, startTransaction) { finishCallback.onTransitionFinished(null) }
+        return true
+    }
+
+    /**
+     * The window changes of a desk transition, or null when it holds anything else. Sets each
+     * window's final state in [finishT].
+     */
+    private fun windowChanges(
+        info: TransitionInfo,
+        finishT: SurfaceControl.Transaction,
+        request: Pair<Int, Boolean>?,
+    ): List<HyprAnimator.WindowChange>? {
+        if (info.rootCount != 1) return null
+        val display = info.getRoot(0).let { root ->
+            displayController.getDisplayLayout(root.displayId)?.let { Rect(0, 0, it.width(), it.height()) }
+        } ?: return null
+        val out = ArrayList<HyprAnimator.WindowChange>()
+        val deskIds = repository.getAllDeskIds()
+        for (c in info.changes) {
+            val task = c.taskInfo
+            if (task == null || c.hasFlags(FLAG_IS_WALLPAPER)) {
+                Log.d(TAG, "not animating ${info.debugId}: non-task change ${c.mode}")
+                return null
+            }
+            if (task.taskId in deskIds) {
+                // The desk root itself (it may come to front with its first task).
+                if (c.mode == TRANSIT_OPEN || c.mode == TRANSIT_CLOSE) return null
+                continue
+            }
+            // A closing task may already be gone from the repository: its parent is the desk.
+            if (task.parentTaskId !in deskIds && repository.getDeskIdForTask(task.taskId) == null) {
+                Log.d(TAG, "not animating ${info.debugId}: task ${task.taskId} outside desks")
+                return null
+            }
+            if (task.windowingMode != WINDOWING_MODE_FREEFORM ||
+                task.activityType != ACTIVITY_TYPE_STANDARD) {
+                Log.d(TAG, "not animating ${info.debugId}: task ${task.taskId} not freeform")
+                return null
+            }
+            val (from, to) = HyprAnimator.relBounds(c)
+            val alpha = decorations.opacity(task.isFocused)
+            val kind = when (c.mode) {
+                TRANSIT_OPEN -> HyprAnimator.WindowChange.Kind.OPEN
+                TRANSIT_TO_FRONT ->
+                    if (request != null && request.first == task.taskId && !request.second) {
+                        HyprAnimator.WindowChange.Kind.OPEN
+                    } else {
+                        HyprAnimator.WindowChange.Kind.MOVE
+                    }
+                TRANSIT_CLOSE, TRANSIT_TO_BACK -> HyprAnimator.WindowChange.Kind.CLOSE
+                else -> HyprAnimator.WindowChange.Kind.MOVE
+            }
+            val start = startOverride.remove(task.taskId)?.let {
+                Rect(it).apply { offset(from.left - c.startAbsBounds.left, from.top - c.startAbsBounds.top) }
+            } ?: from
+            out += HyprAnimator.WindowChange(c.leash, kind, if (start.isEmpty) to else start, to,
+                alpha, display)
+            finishT.setMatrix(c.leash, 1f, 0f, 0f, 1f)
+            if (kind != HyprAnimator.WindowChange.Kind.CLOSE) {
+                finishT.setPosition(c.leash, to.left.toFloat(), to.top.toFloat())
+                finishT.setAlpha(c.leash, alpha)
+            }
+        }
+        return out.takeIf { it.isNotEmpty() }
+    }
+
+    private fun animateDeskSwitch(
+        desk: DeskSwitch,
+        info: TransitionInfo,
+        startT: SurfaceControl.Transaction,
+        finishT: SurfaceControl.Transaction,
+        finishCallback: TransitionFinishCallback,
+    ): Boolean {
+        val repo = repository
+        val layout = displayController.getDisplayLayout(desk.displayId) ?: return false
+        val display = Rect(0, 0, layout.width(), layout.height())
+        val fromDesk = info.changes.find { it.taskInfo?.taskId == desk.from }
+        val toDesk = info.changes.find { it.taskInfo?.taskId == desk.to }
+        val fromTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.from }
+        val toTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.to }
+        val fromPos = repo.getDeskPosition(desk.from) ?: return false
+        val toPos = repo.getDeskPosition(desk.to) ?: return false
+        Log.d(TAG, "animating desk switch ${desk.from} -> ${desk.to}")
+        snapController.onDeskSwitchAnimationStarting(desk.displayId, desk.from, desk.to)
+        val toAlphas = toTasks.map { it.leash to decorations.opacity(it.taskInfo?.isFocused == true) }
+        // As Shell's switch: the old desk's tasks end hidden, the new desk's shown.
+        fromDesk?.let { finishT.setPosition(it.leash, display.left.toFloat(), display.top.toFloat()) }
+        toDesk?.let { finishT.setPosition(it.leash, display.left.toFloat(), display.top.toFloat()) }
+        for (c in fromTasks) finishT.setAlpha(c.leash, 0f)
+        for ((leash, a) in toAlphas) finishT.setAlpha(leash, a)
+        animator.animateDeskSwitch(display, fromDesk?.leash, toDesk?.leash,
+            fromTasks.map { it.leash }, toAlphas, forward = toPos > fromPos, startT) {
+            snapController.onDeskSwitchAnimationEnded(desk.displayId, desk.to)
+            finishCallback.onTransitionFinished(null)
+        }
+        return true
+    }
+
+    /**
+     * Relayouts the decorations whose caption no longer matches the window's state. A window
+     * tiled without moving (its tile is where it already was, e.g. a desk restored at boot)
+     * gets no transition, so Shell would not decorate it again.
+     */
+    private fun refreshCaptions() {
+        val vm = decorViewModel.orElse(null) ?: return
+        for (id in decorations.staleCaptions()) {
+            taskOrganizer.getRunningTaskInfo(id)?.let {
+                Log.d(TAG, "caption of task $id out of date, relayout")
+                vm.onTaskInfoChanged(it)
+            }
+        }
+    }
+
+    /** Starts a TRANSIT_CHANGE with new bounds that this controller animates. */
+    private fun startChange(wct: WindowContainerTransaction) {
+        ownChanges += transitions.startTransition(TRANSIT_CHANGE, wct, this)
+    }
 
     // ---- observer path: catch up with changes made without a request ----
 
@@ -200,6 +404,11 @@ class HyprTileController(
     ) {}
 
     override fun onTransitionFinished(transition: IBinder, aborted: Boolean) {
+        ownChanges -= transition
+        deskSwitches -= transition
+        requests -= transition
+        // Shell's animations end at alpha 1; this runs after the finish transaction is applied.
+        mainExecutor.execute { decorations.reapplyOpacity() }
         // The repository learns about task changes from task-info callbacks that can arrive
         // just after the transition; sync once things settle.
         mainExecutor.removeCallbacks(syncRunnable)
@@ -228,7 +437,9 @@ class HyprTileController(
             // activity (a permission dialog) was on top when it opened. Tasks the user floated
             // stay floating.
             for (id in expanded.asReversed()) {
-                if (tile.isTiled(id) || id in userFloated) continue
+                // A task Shell put on another desk than the request said (it relaunched into
+                // the desk it last lived on) is tiled again here.
+                if (tile.workspaceOf(id) == deskId || id in userFloated) continue
                 val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
                 val float = floats(task)
                 if (float && tile.isFloating(id)) continue
@@ -240,11 +451,12 @@ class HyprTileController(
             addBounds(deskId, displayId, wct)
             if (!wct.isEmpty) {
                 Log.d(TAG, "sync desk $deskId: ${tile.tiled(deskId)}")
-                transitions.startTransition(TRANSIT_CHANGE, wct, null)
+                startChange(wct)
             }
         }
         applied.keys.retainAll { tile.isTiled(it) }
         maximized.retainAll { tile.isTiled(it) }
+        refreshCaptions()
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
     }
 
@@ -369,7 +581,13 @@ class HyprTileController(
         addBounds(to, displayId, wct, moving)
         Log.d(TAG, "switch desk $from -> $to on display $displayId" +
             (moving?.let { ", moving task ${it.taskId}" } ?: ""))
-        val transition = deskSwitchTransitionHandler.startTransition(wct, repo.userId, displayId, from, to)
+        val transition = if (animationsEnabled) {
+            transitions.startTransition(TRANSIT_DESKTOP_MODE_DESK_TO_DESK_SWITCH, wct, this).also {
+                deskSwitches[it] = DeskSwitch(displayId, from, to)
+            }
+        } else {
+            deskSwitchTransitionHandler.startTransition(wct, repo.userId, displayId, from, to)
+        }
         runOnStart?.invoke(transition)
     }
 
@@ -411,11 +629,11 @@ class HyprTileController(
             }
             wct.setBounds(task.token, Rect(b.left + dx, b.top + dy, b.right + dx, b.bottom + dy))
         }
-        if (!wct.isEmpty) transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        if (!wct.isEmpty) startChange(wct)
     }
 
-    private fun toggleFloating() {
-        val task = focusedTask() ?: return
+    private fun toggleFloating(task: RunningTaskInfo? = focusedTask()) {
+        task ?: return
         val id = task.taskId
         val deskId = repository.getDeskIdForTask(id) ?: return
         val area = workArea(task.displayId) ?: return
@@ -440,7 +658,7 @@ class HyprTileController(
             tile.toggleFloating(id, deskId, focused)
         }
         addBounds(deskId, task.displayId, wct, task)
-        if (!wct.isEmpty) transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        if (!wct.isEmpty) startChange(wct)
     }
 
     private fun toggleSplit() {
@@ -450,7 +668,7 @@ class HyprTileController(
         layout.toggleSplit(task.taskId)
         val wct = WindowContainerTransaction()
         addBounds(deskId, task.displayId, wct)
-        if (!wct.isEmpty) transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        if (!wct.isEmpty) startChange(wct)
     }
 
     /**
@@ -474,7 +692,7 @@ class HyprTileController(
             wct.setBounds(task.token, stable)
             wct.reorder(task.token, true)
         }
-        transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        startChange(wct)
     }
 
     /** Hyprland's `fullscreen 0`: Shell's real fullscreen, out of the desk and back. */
@@ -519,7 +737,129 @@ class HyprTileController(
         applied.remove(id)
         val wct = WindowContainerTransaction()
         addBounds(deskId, task.displayId, wct, task)
-        if (!wct.isEmpty) transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        if (!wct.isEmpty) startChange(wct)
+    }
+
+    // ---- mouse binds (HyprMouse) ----
+
+    /**
+     * MOD + a mouse button went down at ([x], [y]) on [displayId]: [button] is
+     * MotionEvent.BUTTON_PRIMARY (move), BUTTON_SECONDARY (resize) or BUTTON_TERTIARY (toggle
+     * floating). Returns true when it hit a desktop window of the active desk, which then gets
+     * the gesture.
+     */
+    fun mouseDown(displayId: Int, x: Float, y: Float, button: Int): Boolean {
+        if (!enabled) return false
+        val deskId = repository.getActiveDeskId(displayId) ?: return false
+        val task = repository.getExpandedTasksIdsInDeskOrdered(deskId).asSequence()
+            .mapNotNull { taskOrganizer.getRunningTaskInfo(it) }
+            .firstOrNull { it.isFreeform && it.bounds().let { b -> x >= b.left && x < b.right && y >= b.top && y < b.bottom } }
+            ?: return false
+        if (button == MotionEvent.BUTTON_TERTIARY) {
+            toggleFloating(task)
+            return true
+        }
+        val b = task.configuration.windowConfiguration.bounds
+        mouseDrag = MouseDrag(
+            task = task,
+            resize = button == MotionEvent.BUTTON_SECONDARY,
+            x0 = x,
+            y0 = y,
+            bounds = Rect(b),
+            right = x >= b.exactCenterX(),
+            bottom = y >= b.exactCenterY(),
+            leash = decorations.surfaceOf(task.taskId),
+        )
+        Log.d(TAG, "mouse ${if (button == MotionEvent.BUTTON_SECONDARY) "resize" else "move"} " +
+            "task ${task.taskId} from $b")
+        return true
+    }
+
+    fun mouseMove(x: Float, y: Float) {
+        val d = mouseDrag ?: return
+        val dx = (x - d.x0).toInt()
+        val dy = (y - d.y0).toInt()
+        if (!d.resize) {
+            // Moving follows the pointer on the surface; bounds change when the button is up.
+            val leash = d.leash ?: return
+            val p = d.task.positionInParent
+            SurfaceControl.Transaction().setPosition(leash, (p.x + dx).toFloat(), (p.y + dy).toFloat())
+                .apply()
+            d.current = Rect(d.bounds).apply { offset(dx, dy) }
+            return
+        }
+        // Resizing lands when the button is up, in one animated transition: bounds changed
+        // outside a transition reach WindowManager but not the task surfaces (Shell sets their
+        // position and crop in transitions only).
+        val id = d.task.taskId
+        if (tile.isTiled(id)) {
+            val gx = (if (d.right) dx else -dx) - (if (d.right) d.lastDx else -d.lastDx)
+            val gy = (if (d.bottom) dy else -dy) - (if (d.bottom) d.lastDy else -d.lastDy)
+            if (gx == 0 && gy == 0) return
+            tile.resize(id, gx, gy)
+        } else {
+            d.current = resized(d, dx, dy)
+        }
+        d.lastDx = dx
+        d.lastDy = dy
+    }
+
+    /** The button is up (or the gesture was cancelled): the window lands. */
+    fun mouseUp(x: Float, y: Float, cancelled: Boolean) {
+        val d = mouseDrag ?: return
+        mouseDrag = null
+        val id = d.task.taskId
+        val deskId = repository.getDeskIdForTask(id) ?: return
+        if (d.resize) {
+            val wct = WindowContainerTransaction()
+            if (tile.isTiled(id)) {
+                maximized -= id
+                tile.workspaceOf(id)?.let { addBounds(it, d.task.displayId, wct) }
+            } else if (d.current != d.bounds) {
+                wct.setBounds(d.task.token, d.current)
+            }
+            if (!wct.isEmpty) startChange(wct)
+            return
+        }
+        val leash = d.leash
+        val dragged = d.current
+        val wct = WindowContainerTransaction()
+        if (tile.isTiled(id)) {
+            // Dropped on another tiled window: they swap places. Else it goes back to its tile.
+            val target = if (cancelled) null else repository.getExpandedTasksIdsInDeskOrdered(deskId)
+                .firstOrNull { other ->
+                    other != id && tile.isTiled(other) && tile.workspaceOf(other) == deskId &&
+                        taskOrganizer.getRunningTaskInfo(other)?.bounds()
+                            ?.let { x >= it.left && x < it.right && y >= it.top && y < it.bottom } == true
+                }
+            if (target != null) {
+                tile.swap(id, target)
+                maximized -= id
+                applied.remove(id)
+                startOverride[id] = dragged
+                addBounds(deskId, d.task.displayId, wct)
+            } else if (leash != null) {
+                val p = d.task.positionInParent
+                val home = Rect(d.bounds).apply { offsetTo(p.x, p.y) }
+                val now = Rect(dragged).apply { offset(p.x - d.bounds.left, p.y - d.bounds.top) }
+                animator.animateLeash(leash, now, home)
+            }
+        } else if (dragged != d.bounds) {
+            startOverride[id] = dragged
+            wct.setBounds(d.task.token, dragged)
+        }
+        if (!wct.isEmpty) startChange(wct)
+    }
+
+    /** Floating resize: the corner nearest to the press follows the pointer. */
+    private fun resized(d: MouseDrag, dx: Int, dy: Int): Rect {
+        val b = d.bounds
+        val minW = d.task.topActivityInfo?.windowLayout?.minWidth?.takeIf { it > 0 } ?: MIN_SIZE
+        val minH = d.task.topActivityInfo?.windowLayout?.minHeight?.takeIf { it > 0 } ?: MIN_SIZE
+        val r = Rect(b)
+        if (d.right) r.right = maxOf(b.left + minW, b.right + dx) else r.left = minOf(b.right - minW, b.left + dx)
+        if (d.bottom) r.bottom = maxOf(b.top + minH, b.bottom + dy) else r.top = minOf(b.bottom - minH, b.top + dy)
+        return r
     }
 
     private fun workArea(displayId: Int): Box? {
@@ -590,6 +930,9 @@ class HyprTileController(
 
     /** Reads the persist.hypr.* properties (stand-ins for the Lua configuration of D5). */
     private fun updateConfig(): Boolean {
+        decorations.setConfig(HyprStyleProps.decoration())
+        animator.config = HyprStyleProps.animations()
+        animationsEnabled = HyprStyleProps.animationsEnabled()
         val fresh = readConfig()
         if (fresh == tile.config) return false
         tile.config = fresh
@@ -602,6 +945,8 @@ class HyprTileController(
         const val PROP_ENABLED = "persist.hypr.tiling"
         const val SYNC_DELAY_MS = 100L
         const val MAX_WORKSPACES = 9
+        /** Smallest floating window a mouse resize makes, unless the app asks for more. */
+        const val MIN_SIZE = 200
 
         fun readConfig(): TileConfig {
             val d = TileConfig()

@@ -5,7 +5,10 @@ SystemUI with unchanged behaviour; its findings are in "Shell extension points (
 `hyprtile` (dwindle and master) tiles desktop tasks on open, close and minimize, checked on
 Waydroid ("`hyprtile` and dynamic tiling (D1)"). D2 done: one layout per desk as Hyprland
 workspaces 1-9, Hyprland's dispatchers on ALT keybinds, Shell's snapping routed to hyprtile
-("Workspaces and keybinds (D2)"). This note
+("Workspaces and keybinds (D2)"). D3 done: no caption on tiled windows, rounded corners,
+gradient borders, opacity, Hyprland-style bezier animations for opening, closing, re-tiling
+and workspace switches, mouse binds; one Shell extension point
+("Decoration and animation (D3)"). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -532,6 +535,201 @@ Known limits:
   `pseudo` and mouse binds (`bindm` move/resize) are not there yet.
 - A window the user drags (not to an edge) or resizes still keeps its bounds until the next
   layout change (D1).
+
+## Decoration and animation (D3)
+
+Code: `PcSystemUI/src/com/android/systemui/wmshell/` (`HyprDecorations.kt`, `HyprAnimator.kt`,
+`HyprMouse.kt`, `HyprStyleProps.kt`, wired into `HyprTileController`), in the engine
+`Style.kt` (colours, gradients, `DecorationConfig`) and `Animation.kt` (`Bezier`,
+`AnimationConfig`), and one small extension point in Shell
+([tools/patches/aosp17-shell-decor-style.patch](../tools/patches/aosp17-shell-decor-style.patch)).
+
+### Which decoration Shell runs, and the extension point
+
+This release ships `enable_window_decoration_refactor` on, so desktop windows are decorated by
+`DefaultWindowDecoration` (`WindowDecoration2`), not by `DesktopModeWindowDecoration`. Its
+corner radius, SurfaceFlinger border (`BorderSettings`, a solid stroke) and shadows come from
+fixed resources and are set on the task surface in every transition-driven relayout, and the
+caption type is decided inside `getRelayoutParams()`. Replacing the view model would have
+meant forking `WMShellModule` (D0) and copying a 2000-line decoration; setting our values from
+outside fights Shell's relayouts. So D3 adds one extension point instead, `WindowDecorStyle`
+(`libs/WindowManager/Shell/.../windowdecor/WindowDecorStyle.kt`, a static `instance`):
+
+| Hook | Called from | Used for |
+|---|---|---|
+| `hidesCaption(taskInfo)` | `DefaultWindowDecoration.getRelayoutParams()` (freeform tasks) and its non-transition `relayout()` | caption type `NO_CAPTION` for tiled windows |
+| `onRelayout(taskInfo, taskSurface, hasGlobalFocus, inSyncWithTransition, startT, finishT)` | `WindowDecoration2.relayout()`, right after Shell set the task surface's outline | corner radius, opacity, border layers, turning Shell's border off |
+| `onClosed(taskId)` | `WindowDecoration2.close()` | releasing the border layers |
+
+The patch is applied to the tree with
+`git -C aosp/frameworks/base apply ../../tools/patches/aosp17-shell-decor-style.patch`.
+Shell is a static library of the SystemUI APK, so the patch only rebuilds `PcSystemUI`
+(`STEPS=PcSystemUI tools/aosp17-build.sh`); nothing in the system image changes. With no
+`instance` set (AOSP's SystemUI), Shell behaves as before.
+
+Found on the way: a freeform task's non-transition relayout (focus changes, task info changes)
+builds its transaction with `applyStartTransactionOnDraw`, i.e. the caption's view applies it
+when it next draws. A task with `NO_CAPTION` has no view, so the transaction was dropped: the
+old window kept the active border after losing focus and a swapped window kept its old border
+size. The patch applies the transaction at once when the style hides the caption.
+
+### Decoration
+
+`HyprDecorations` implements `WindowDecorStyle`:
+
+- **Caption.** `caption = floating` (default): tiled windows have no caption (Hyprland), a
+  floating window keeps Shell's header (app menu, minimize, maximize, close, drag), so a
+  floating window can still be closed and moved with the mouse alone. `none` drops it
+  everywhere, `all` keeps it everywhere. The caption follows `togglefloating`, since floating
+  changes start a transition that relayouts the decoration.
+- **Corners and opacity** are set on the task surface in Shell's own start and finish
+  transactions after Shell's values, so they win and change in the same frame as Shell's
+  geometry. A task leaving freeform gets radius 0 and alpha 1 back.
+- **Border.** Four buffer layers per window, children of the task surface above the content
+  and the caption (`HyprBorder#<task>.<i>`, no input): top and bottom strips as tall as the
+  corner radius (they hold the rounded corners) and two side strips. Each strip is drawn in
+  software with the gradient of the whole window and uploaded as a `HardwareBuffer`
+  (`Transaction.setBuffer`), a few kilobytes instead of a window-sized buffer. The stroke runs
+  inside the window, its outer edge on the task's rounded clip, so the corners match exactly.
+  Buffers are cached per focus state until the size or configuration changes, so a focus
+  change only swaps buffers. Hyprland draws the border outside the window; inside, it covers
+  `border_size` pixels of the app's edge, which keeps it clipped and moving with the task
+  surface in every Shell animation without a second surface to keep in step.
+- **Gradient.** Hyprland's syntax (`rgba(33ccffee) rgba(00ff99ee) 45deg`, also `rgb()`,
+  `0xAARRGGBB`, `#RRGGBB[AA]`), colours spread evenly, the angle evaluated exactly as
+  Hyprland's border shader does (folded into 0-90 degrees, progress `y*sin + x*(1-sin)`);
+  `Gradient.line()` turns that linear function into the two points of an Android
+  `LinearGradient`, so the colours land where Hyprland puts them (unit-tested).
+- **Shell's own outline.** Where Shell sets its border (floating windows with a caption, box
+  shadows v2 on), a zero-width `BorderSettings` replaces it; its drop shadow stays unless
+  `shadow = false`. Tiled windows have no caption, so Shell sets no outline on them at all.
+- **Opacity.** Shell's animations end with alpha 1 in their finish transaction, which is
+  applied after the decoration's; the controller sets every visible window's opacity again
+  right after each transition finishes.
+
+### Animations
+
+`HyprAnimator` plays all animations on transition leashes with one `ValueAnimator` per
+transition; every surface is a track with its own duration and curve, and the transition
+finishes when the longest track ends. Curves are evaluated by `Bezier.value()` (cubic bezier,
+Newton then bisection, overshoot allowed), so Lua (D5) and the unit tests see the same curves.
+`HyprTileController` is the newest transition handler, so it is asked first:
+
+| Transition | Who animates | Animation |
+|---|---|---|
+| Re-tiling it starts itself (`togglefloating`, `movewindow`, `togglesplit`, `fullscreen 1`, sync after Shell's minimize/close, mouse swap) | hyprtile (`startTransition(..., this)`) | `windowsMove`: position and size interpolated, the content (already at its new size) scaled to the current size, as Hyprland stretches it |
+| Workspace switch (`workspace N`, `movetoworkspace N`) | hyprtile: the same `TRANSIT_DESKTOP_MODE_DESK_TO_DESK_SWITCH` with the same desk-activation WCT as Shell's `DeskSwitchTransitionHandler`, plus `SnapController`'s desk-switch callbacks | `workspacesIn`/`workspacesOut`: `slide` (100 % of the display), `slidevert`, `fade`, `slidefade[vert] N%` |
+| A window opening or coming back (request from the core, on the active desk) | hyprtile, also when Shell's mixed handler has a pending launch for it (it is told `onTransitionConsumed`, which drops its state) | `windowsIn` + `fadeIn`: `popin N%` (grow from N % around the centre), `slide [edge]` or `fade`; neighbours `windowsMove` |
+| A window closing or going to back by request (app finishing, `am force-stop`) | hyprtile | `windowsOut` + `fadeOut`, the reverse |
+| Shell-started closes and minimizes (caption buttons, `killactive`, back on a desk's last activity), entering or leaving the desk, home, fullscreen | Shell, as before | Shell's; the re-tile after it is hyprtile's |
+
+A transition is only taken when every change is a standard freeform task on a desk (or the desk
+root moving to front): anything else (activities inside a task, wallpaper, display changes, the
+first window of a desk, which also activates it) is left to Shell, with a log line saying why.
+A closing task can already be gone from `DesktopRepository` when its transition is ready, so a
+task whose parent is a desk root counts too. A window dragged with the mouse starts its
+animation where it was dropped (`startOverride`), not at its old tile.
+
+Defaults are Hyprland's example configuration: `windows 4.79 easeOutQuint`,
+`windowsIn 4.1 easeOutQuint popin 87%`, `windowsOut 1.49 linear popin 87%`, `fadeIn 1.73` and
+`fadeOut 1.46 almostLinear`, except workspaces: `2.5 easeOutQuint slide` (Hyprland's default
+style, a quarter second) instead of the example's fade.
+
+### Mouse binds
+
+Without captions on tiled windows, Hyprland's `bindm` binds are the mouse way to manage them.
+`HyprMouse` is a gesture monitor on the display: a press with the main modifier
+(`persist.hypr.mod`, ALT) on a desktop window of the active desk pilfers the pointer (the app
+gets a cancel) and:
+
+- **left drag** moves the window: it follows the pointer on its surface; a tiled window dropped
+  on another tiled window swaps with it (animated from where it was dropped), dropped elsewhere
+  it slides back to its tile; a floating window lands where it is dropped;
+- **right drag** resizes from the corner nearest to the press: a floating window (minimum
+  200 px or the app's minimum), a tiled one by moving the split lines next to it
+  (`HyprTile.resize`: dwindle moves the nearest split of that direction, master changes mfact;
+  also Hyprland's `resizeactive`). The new bounds land in one animated transition when the
+  button is up;
+- **middle click** toggles floating (a floating window gets its caption back, with close).
+
+### Configuration
+
+`DecorationConfig` and `AnimationConfig` are the objects D5's Lua will fill; until then
+`HyprStyleProps` reads them from properties, re-read with the tiling properties after every
+transition (a bad value is logged and its default kept):
+
+| Property | Hyprland | Default |
+|---|---|---|
+| `persist.hypr.rounding` | `decoration:rounding` | 10 |
+| `persist.hypr.border_size` | `general:border_size` | 2 |
+| `persist.hypr.col.active_border` | `general:col.active_border` | `rgba(33ccffee) rgba(00ff99ee) 45deg` |
+| `persist.hypr.col.inactive_border` | `general:col.inactive_border` | `rgba(595959aa)` |
+| `persist.hypr.active_opacity`, `inactive_opacity` | `decoration:*_opacity` | 1.0, 1.0 |
+| `persist.hypr.caption` | (none) | `floating` (`none`, `all`) |
+| `persist.hypr.shadow` | `decoration:shadow:enabled` | true (floating windows) |
+| `persist.hypr.animations` | `animations:enabled` | true (false: Shell's animations) |
+| `persist.hypr.bezier.1`..`.16` | `bezier = NAME, X0, Y0, X1, Y1` | Hyprland's example curves |
+| `persist.hypr.animation.1`..`.32` | `animation = NAME, ONOFF, SPEED, CURVE[, STYLE]` | above |
+
+Animation names follow Hyprland's tree (`global` > `windows` > `windowsIn`/`windowsOut`/
+`windowsMove`, `fade` > `fadeIn`/`fadeOut`/`fadeSwitch`, `border`, `workspaces` >
+`workspacesIn`/`workspacesOut`); a node not set takes its parent's settings, an empty style its
+parent's style; speed is in deciseconds as in Hyprland.
+
+### Checked on Waydroid (2026-11-21)
+
+Waydroid is the test target (as for D1 and D2; Cuttlefish was not started): `PcSystemUI.apk`
+through the overlay, the empty test data directory, 2538x1058 at density 180, the window
+alone on host workspace 4. Mouse binds could not be driven with a modifier from outside
+(`input` injects no meta state, and events written into Waydroid's `wl_pointer_events` pipe
+move the pointer without producing drag moves), so they were checked with the test hook
+`debug.hypr.bindm_test` (`move`, `resize`, `float`: every press acts so, no modifier) and
+`input mouse swipe`; ALT plus a press was checked through the pipe (`ALT` + left press and
+release on a window swapped it with the one under the release).
+
+| Check | Result |
+|---|---|
+| Three to six apps tiled | no caption on tiled windows, rounded corners (10 px), 2 px border: focused window `rgba(33ccffee) -> rgba(00ff99ee) 45deg` (cyan at top left, green at bottom right), others grey; a floating window (Contacts' permission dialog task) keeps Shell's caption |
+| Focus moves between windows | only the focused window has the gradient (after the patch's fix for caption-less relayouts) |
+| Desk restored at boot | windows tiled where Shell put them get their caption removed by the controller's relayout (`caption of task N out of date`) |
+| A new app opens (Contacts, Calendar) | `animating request: OPEN, MOVE`: popin from 87 % with fade-in, the neighbours move in the same transition |
+| A window closes by request (`am force-stop` of Clock) | `CLOSE, MOVE, MOVE`: shrinks to 87 % and fades in ~150 ms while the neighbours grow |
+| `togglefloating` twice, `togglesplit`, swaps | `animating change: MOVE, ...`: the window grows from its tile to the centred float rect and back, bezier `easeOutQuint` |
+| `workspace 2` / `workspace 1` | own desk-switch transition, the desks slide by the full display width in 250 ms, both directions |
+| MOD + left drag (Calendar onto microG) | they swap; the animation starts where the window was dropped |
+| MOD + right drag on a tiled window (Files' right edge, +300 px) | the split moves, all six windows re-tile in one animated transition |
+| MOD + right drag on a floating window, MOD + middle click | floating resize lands animated; middle click puts the floating window back into the layout |
+| `persist.hypr.rounding 20`, `border_size 4`, `col.active_border` three colours `90deg`, `inactive_opacity 0.85` | applied at the next transition: red-yellow-blue top to bottom on the focused window, unfocused windows translucent |
+| SurfaceFlinger timestats over 8 s of re-tiling and desk switches (`dumpsys SurfaceFlinger --timestats`) | 516 frames composited, 0 missed, 0 janky timeline frames at 150 Hz; SurfaceFlinger's frame duration under 2 ms |
+
+Screenshots and recordings: `out/hypr-d3/` (`open3.png`, `corner-*.png`, `t5.png`,
+`config1.png`, `resize3.png`, `anim3.mp4`, `close.mp4`, `resize3.mp4`; contact sheets
+`s3-open.png`, `s3-float.png`, `s3-ws1.png`, `s3-ws2.png`, `s6-close.png`).
+
+Found and fixed on the way: Shell's mixed handler holds a pending launch for desktop opens
+(the open was Shell's animation until hyprtile took it and called `onTransitionConsumed`);
+a closing task is gone from the repository before its transition is ready; Shell relaunched
+an app into the desk it last lived on, not the active one, and the sync now re-tiles a task
+found on another desk than hyprtile thought; bounds applied with `applyTransaction` outside a
+transition reach WindowManager but not the task surfaces, so mouse resizes land in one
+transition when the button is up.
+
+Known limits:
+
+- Resizing with the mouse is not live: the window (and its neighbours) change when the button
+  is up, animated. Live resizing needs Shell's drag-resize path (`setDragResizing` and the
+  decoration setting position and crop while resizing).
+- Shell-started closes and minimizes (caption buttons, `killactive`, back on the last activity)
+  keep Shell's own animation; only the re-tile after them is hyprtile's. Taking them means
+  replacing `DesktopMixedTransitionHandler`'s close and minimize paths.
+- The border is drawn inside the window (Hyprland draws it outside) and does not animate its
+  colour or angle (`border`, `borderangle`).
+- The first window of a desk (which also activates the desk) keeps Shell's animation.
+- The configuration is read again after transitions, not when a property changes; D5 pushes it
+  through `IHyprShell`.
+- Cuttlefish at 2560x1080/160 was not run for D3: Waydroid replaced it as the test target, and
+  the shell code is the same APK.
+
 
 ## Configuration sketch
 

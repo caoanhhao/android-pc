@@ -8,6 +8,7 @@ import com.android.wm.shell.common.DisplayController;
 import com.android.wm.shell.common.ShellExecutor;
 import com.android.wm.shell.dagger.WMShellModule;
 import com.android.wm.shell.dagger.WMSingleton;
+import com.android.wm.shell.desktopmode.DesktopMixedTransitionHandler;
 import com.android.wm.shell.desktopmode.DesktopModeKeyGestureHandler;
 import com.android.wm.shell.desktopmode.DesktopTasksController;
 import com.android.wm.shell.desktopmode.DesktopUserRepositories;
@@ -27,7 +28,8 @@ import java.util.Optional;
 /**
  * WM Shell bindings of PcSystemUI: AOSP's handheld WMShellModule plus the hyprtile pieces,
  * which are added next to Shell's own objects (Phase D1: the controller; D2: keybinds and the
- * snap handler that keeps Shell's two-window tiling out of the way).
+ * snap handler that keeps Shell's two-window tiling out of the way; D3: decorations, animations
+ * and mouse binds, owned by the controller).
  *
  * Dagger cannot override a binding, so replacing one that WMShellModule provides (the desktop
  * task controller, the window decoration view model) means including WMShellBaseModule and the
@@ -51,10 +53,15 @@ public abstract class PcWMShellModule {
             DeskSwitchTransitionHandler deskSwitchTransitionHandler,
             FocusTransitionObserver focusTransitionObserver,
             Optional<DesktopModeKeyGestureHandler> shellKeyGestureHandler,
-            @ShellMainThread ShellExecutor mainExecutor) {
+            @ShellMainThread ShellExecutor mainExecutor,
+            SnapController snapController,
+            Optional<DesktopMixedTransitionHandler> mixedHandler,
+            InputManager inputManager,
+            Optional<DesktopModeWindowDecorViewModel> decorViewModel) {
         return new HyprTileController(context, shellInit, transitions, taskOrganizer, displayController,
                 userRepositories, desktopTasksController, deskSwitchTransitionHandler,
-                focusTransitionObserver, shellKeyGestureHandler, mainExecutor);
+                focusTransitionObserver, shellKeyGestureHandler, mainExecutor, snapController,
+                mixedHandler, inputManager, decorViewModel);
     }
 
     @WMSingleton

@@ -78,6 +78,12 @@ class HyprTile(config: TileConfig = TileConfig()) {
         return layout.arrange(display.inset(config.reserved), config)
     }
 
+    /** Hyprland's `resizeactive` for a tiled window: [dx] wider, [dy] taller. */
+    fun resize(id: Int, dx: Int, dy: Int) {
+        val ws = workspaceOf[id] ?: return
+        layouts[ws]?.resize(id, dx, dy)
+    }
+
     /** The layout of [workspace], for layout-specific dispatchers (togglesplit, ...). */
     fun layout(workspace: Int): TileLayout? = layouts[workspace]
 

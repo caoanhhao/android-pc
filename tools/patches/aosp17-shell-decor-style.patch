@@ -1,0 +1,113 @@
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
+index 2233fc581..68cf8d112 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
+@@ -349,7 +349,9 @@ constructor(
+         // transaction (that applies task crop) is synced with the buffer transaction (that draws
+         // the View). Both will be shown on screen at the same, whereas applying them independently
+         // causes flickering. See b/270202228.
+-        val applyTransactionOnDraw = taskInfo.isFreeform
++        // A freeform task without a caption (WindowDecorStyle) has no view to draw.
++        val applyTransactionOnDraw =
++            taskInfo.isFreeform && WindowDecorStyle.instance?.hidesCaption(taskInfo) != true
+         relayout(
+             taskInfo,
+             t,
+@@ -489,6 +491,9 @@ constructor(
+             when {
+                 !shouldCreateCaption -> CaptionController.CaptionType.NO_CAPTION
+                 isPinnedLayer -> CaptionController.CaptionType.APP_PINNED
++                taskInfo.isFreeform &&
++                    WindowDecorStyle.instance?.hidesCaption(taskInfo) == true ->
++                    CaptionController.CaptionType.NO_CAPTION
+                 taskInfo.isFreeform -> CaptionController.CaptionType.APP_HEADER
+                 isFullscreenDesktop(taskInfo) -> CaptionController.CaptionType.FULLSCREEN_HEADER
+                 else -> CaptionController.CaptionType.APP_HANDLE
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt
+new file mode 100644
+index 000000000..d42d49bd2
+--- /dev/null
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.wm.shell.windowdecor
++
++import android.app.ActivityManager.RunningTaskInfo
++import android.view.SurfaceControl
++
++/**
++ * Extension point for a SystemUI variant that styles desktop window decorations itself
++ * (android-pc's PcSystemUI). With no [instance] set, Shell behaves as before.
++ *
++ * Called on Shell's main thread.
++ */
++interface WindowDecorStyle {
++    /** Whether the freeform [taskInfo] gets no caption (no app header). */
++    fun hidesCaption(taskInfo: RunningTaskInfo): Boolean = false
++
++    /**
++     * Called at the end of every surface update of a decoration, after Shell set the task
++     * surface's outline (corner radius, border, shadows), with the same transactions: whatever
++     * is set on [taskSurface] here wins over Shell's values. [inSyncWithTransition] is true when
++     * the relayout comes from a transition, where [startT] is applied when it starts animating
++     * and [finishT] when it finishes; otherwise both are the same transaction, applied at once.
++     */
++    fun onRelayout(
++        taskInfo: RunningTaskInfo,
++        taskSurface: SurfaceControl,
++        hasGlobalFocus: Boolean,
++        inSyncWithTransition: Boolean,
++        startT: SurfaceControl.Transaction,
++        finishT: SurfaceControl.Transaction,
++    ) {}
++
++    /** The decoration of [taskId] is gone (task vanished or no longer decorated). */
++    fun onClosed(taskId: Int) {}
++
++    companion object {
++        /** The variant's style, set once when its Shell initializes. */
++        @JvmStatic @Volatile var instance: WindowDecorStyle? = null
++    }
++}
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration2.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration2.kt
+index 91596257e..07625ed84 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration2.kt
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecoration2.kt
+@@ -270,6 +270,14 @@ abstract class WindowDecoration2<T>(
+                     shadowRadius,
+                     cornerRadius,
+                 )
++                WindowDecorStyle.instance?.onRelayout(
++                    taskInfo,
++                    taskSurface,
++                    params.hasGlobalFocus,
++                    params.inSyncWithTransition,
++                    startT,
++                    finishT,
++                )
+             }
+ 
+             val controller = getOrCreateCaptionController(params.captionType, wct, startT)
+@@ -637,6 +645,7 @@ abstract class WindowDecoration2<T>(
+                     transitions.startTransition(TRANSIT_CHANGE, wct, /* handler= */ null)
+                 }
+             }
++            WindowDecorStyle.instance?.onClosed(taskInfo.taskId)
+             taskSurface.release()
+         }
+ 

@@ -21,6 +21,13 @@ interface TileLayout {
 
     /** Window boxes inside [area] (the display minus reserved space), gaps applied. */
     fun arrange(area: Box, cfg: TileConfig): Map<Int, Box>
+
+    /**
+     * Hyprland's `resizeactive`: makes [id] [dx] pixels wider and [dy] taller (negative shrinks)
+     * by moving the split lines next to it, as of the last [arrange]. Splits stay within their
+     * allowed ratios.
+     */
+    fun resize(id: Int, dx: Int, dy: Int) {}
 }
 
 fun newLayout(kind: LayoutKind): TileLayout = when (kind) {
