@@ -150,6 +150,12 @@ Dock's bar shows (hidden while Settings is in front, as before: docs/desktop-mod
 crash buffer is empty (the only ANRs are the known `com.android.phone` ones of Cuttlefish
 without a modem).
 
+Not yet checked in Waydroid (the user allowed Waydroid tests for Phase D after D0 was
+verified). Trying `PcSystemUI` there needs the overlay to add
+`/system_ext/priv-app/PcSystemUI` and hide `/system_ext/priv-app/SystemUI` (an overlayfs
+whiteout), or a repacked image (docs/waydroid-aosp17.md); the next sub-phase that boots
+Waydroid does it.
+
 Build note: SystemUI's keep rules must be passed in `proguard_flags_files`
 (`:sysui_proguard_common_and_kotlin`). In `included_proguard_flags_files` they are only
 dependencies for a flags file that `-include`s them, so R8 dropped
