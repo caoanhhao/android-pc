@@ -5,8 +5,13 @@ USB stick. The product is `aosp_pc_x86_64` (`aosp-device/`): the stock **GKI and
 kernel plus vendor modules built from source, and the PC's hardware served by **vendor HALs
 written in Rust** (health, power, thermal, Bluetooth, audio, camera, Wi-Fi, the NVIDIA GPU's
 Vulkan driver glue). It also ships ARM64 app support (libndk_translation), microG with the
-Play Store, a desktop-mode UI and NVIDIA's own driver for the RTX 4070. Apps and games see
-that GPU as a Qualcomm **Adreno 850** by default, so mobile games rank it as a high-end phone
+Play Store, NVIDIA's own driver for the RTX 4070 and a **Hyprland-style desktop shell** in
+place of Android's launcher and taskbar (Phase D, [docs/hypr-desktop.md](docs/hypr-desktop.md)):
+dwindle and master tiling with gaps, workspaces 1-9, rounded corners and gradient borders,
+bezier animations, Hyprland's keybinds and mouse binds, a waybar-like bar, a rofi-like app
+launcher, a hyprexpo-like overview, touch gestures, and a hot-reloaded `init.lua` written in a
+subset of Hyprland 0.57's own Lua API ([docs/hypr-lua.md](docs/hypr-lua.md)). Apps and games see the
+RTX 4070 as a Qualcomm **Adreno 850** by default, so mobile games rank it as a high-end phone
 GPU ([docs/gpu-identity.md](docs/gpu-identity.md)).
 
 Target machine: Gigabyte Z790, i7-13700K, RTX 4070, 2560x1080 monitor
@@ -224,7 +229,7 @@ stick in use: that wipes `userdata`.
 | [docs/rust-hals.md](docs/rust-hals.md) | The Rust HALs and `libpchal` |
 | [docs/arm-translation.md](docs/arm-translation.md) | ARM64 apps, microG, Play Store, games |
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
-| [docs/hypr-desktop.md](docs/hypr-desktop.md) | Phase D: the Hyprland-style desktop shell (design) |
+| [docs/hypr-desktop.md](docs/hypr-desktop.md) | Phase D: the Hyprland-style desktop shell (`PcSystemUI` with `hyprtile`, `HyprLauncher`): design, how it is built, tests, known limits, Waydroid and the host's SUPER key |
 | [docs/hypr-lua.md](docs/hypr-lua.md) | Phase D: the shell's Lua configuration (`/sdcard/Documents/hypr/init.lua`), every option and an example |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md), [docs/gpu-identity.md](docs/gpu-identity.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`); how that driver fits Android's games: apps see an Adreno 850 by default (changing it, root over adb, the Where Winds Meet example) |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |

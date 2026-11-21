@@ -7,4 +7,8 @@
     <dimen name="status_bar_height_default">0dp</dimen>
     <dimen name="status_bar_height_portrait">0dp</dimen>
     <dimen name="status_bar_height_landscape">0dp</dimen>
+    <!-- Phase D7: no taskbar either. Shell's DisplayLayout.getStableBoundsForDesktopMode()
+         keeps a taskbar's height (56dp) free at the bottom whenever it differs from the
+         navigation bar's (none here), which left an empty strip under every tile. -->
+    <dimen name="taskbar_frame_height">0dp</dimen>
 </resources>

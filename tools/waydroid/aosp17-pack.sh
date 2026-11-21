@@ -20,6 +20,7 @@ for i in system system_ext product odm vendor; do
 done
 [ -x "$MKFS" ] || { echo "aosp17-pack: no $MKFS" >&2; exit 1; }
 
+mkdir -p "$ROOT/out/waydroid-aosp17"
 work=$(mktemp -d "$ROOT/out/waydroid-aosp17/pack.XXXXXX")
 cleanup() {
     for m in "$work"/mnt/*; do mountpoint -q "$m" && $SUDO umount "$m"; done

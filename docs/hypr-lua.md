@@ -141,8 +141,12 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   (InputManager's key gestures fire once, on release of the trigger).
 - Binds are InputManager custom key gestures (docs/hypr-desktop.md, "Keybinds without a
   framework patch"): keys that a user shortcut or AOSP (all META shortcuts, ALT+TAB) already
-  uses are skipped with a log line in SystemUI (`HyprKeybinds`). On Waydroid, `ALT + S` minimized the focused window before the
-  bind ran (not found yet); prefer other keys for it.
+  uses are skipped with a log line in SystemUI (`HyprKeybinds`). With `main_mod = "SUPER"`
+  five default binds hit AOSP's own META shortcuts and are skipped: `SUPER + E` (email),
+  `+ C` (calendar), `+ F` (files) are AOSP's app bookmarks, `+ SPACE` the assistant and
+  `+ left` BACK; bind those dispatchers to other keys (below, "Waydroid and the host's SUPER
+  key"). D5 saw `ALT + S` minimize a window on Waydroid; in D7 it did nothing without a game
+  pad passed into the container, so it was the pad (docs/hypr-desktop.md, D7).
 - Mouse binds: `mouse:272` (left) only with `hl.dsp.window.drag()`, `mouse:273` (right) only
   with `hl.dsp.window.resize()`, `mouse:274` (middle) only with `hl.dsp.window.float()`;
   their modifier is the one modifier of all mouse binds (`main_mod` without them). Wheel
@@ -166,6 +170,63 @@ Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 | `$mod + grave` | `hl.dsp.overview()` |
 
 With `shell.default_binds` the default touch gestures are bound too (next section).
+
+## Waydroid and the host's SUPER key
+
+Under Waydroid the host's compositor sees every key first. With the default `main_mod = "ALT"`
+the binds reach Android, except what the host binds itself: on this host's Hyprland that is
+`ALT + TAB` (window cycling), `ALT + F2`/`F3`/`F11`/`F12` and `CTRL + ALT + P`
+(`hyprctl binds`), so in the Waydroid window use `ALT + grave` (overview) instead of Android's
+`ALT + TAB`. To use SUPER as in Hyprland, set it here and let the host pass SUPER through while
+the Waydroid window has focus:
+
+```lua
+-- init.lua (Android)
+local mainMod = "SUPER"
+hl.config({ shell = { main_mod = mainMod } })
+-- the defaults AOSP keeps for itself (E, C, F, SPACE, left), on other keys:
+hl.bind(mainMod .. " + W", hl.dsp.window.close())
+hl.bind(mainMod .. " + R", hl.dsp.launcher())
+hl.bind(mainMod .. " + Z", hl.dsp.window.fullscreen({ mode = "maximized" }))
+hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("com.android.documentsui"))
+hl.bind(mainMod .. " + comma", hl.dsp.focus({ direction = "left" }))
+```
+
+On the host, a submap with no binds but its own way out, entered whenever the Waydroid window
+is focused (Hyprland 0.57 Lua; add it to the host's own configuration, e.g. a new file
+`require`d from `~/.config/hypr/hyprland.lua`; this repo does not edit it):
+
+```lua
+-- ~/.config/hypr/... (host): SUPER goes to Waydroid while its window has focus
+hl.define_submap("waydroid", function()
+    hl.bind("SUPER + ALT + Escape", hl.dsp.submap("reset"))   -- leave without unfocusing
+end)
+hl.on("window.active", function()
+    local w = hl.get_active_window()
+    local inWaydroid = w ~= nil and w.class == "Waydroid"
+    local current = hl.get_current_submap()
+    if inWaydroid and current ~= "waydroid" then
+        hl.dispatch(hl.dsp.submap("waydroid"))
+    elseif not inWaydroid and current == "waydroid" then
+        hl.dispatch(hl.dsp.submap("reset"))
+    end
+end)
+```
+
+In the submap the host's own SUPER binds (workspaces, terminal, ...) are off, so switch away
+with the mouse, `SUPER + ALT + Escape` and then the usual bind, or a bind added inside the
+submap (for example `hl.bind("SUPER + ALT + 1", hl.dsp.focus({ workspace = 1 }))`). Waydroid's
+window class is `Waydroid` (`hyprctl clients`; its multi-window mode uses one class per app
+instead). Checked: `hl.define_submap` with a bind inside loads through `hyprctl eval` on
+Hyprland 0.57.2 and the bind lists under its submap; on the Android side this init.lua loads
+with 35 binds installed (the five defaults skipped), and `META + 2`, `META + comma` and
+`META + W` switch workspace, move focus and close.
+
+SUPER keys AOSP keeps (system shortcuts and app bookmarks, checked by binding every key on
+Waydroid): `A B C E F H I L M N P Q S U`, `Tab`, `Return`, `Escape`, `slash`, `space` and
+`left`. Free: `D G J K O R T V W X Y Z`, digits, `grave`, `comma`, `period`, `right`, `up`,
+`down`; with SHIFT the ones tried were free (`SUPER + SHIFT + Q`, `+ S`, `+ 1`, `+ left`),
+with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 
 ## Touch gestures
 

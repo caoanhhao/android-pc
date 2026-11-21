@@ -686,7 +686,8 @@ re-grants permissions and recompiles code; that first boot is slower.
 ### Commands
 
 Build, then make an image of the new build with the **same** `mkusb` options the stick
-was made with (the user's stick, flashed from f9f: `--menu`), but without `--disk` and with
+was made with (the user's stick, flashed from f9f with `--menu`; that option is gone since
+Phase L, which boots one entry), but without `--disk` and with
 a tiny `userdata` (the update never copies it). Name it after the release; the F9 release
 is `out/aosp17-usb-f9.img`:
 
@@ -694,7 +695,7 @@ is `out/aosp17-usb-f9.img`:
 tools/aosp17-build.sh
 ```
 ```bash
-tools/mkusb-aosp17.sh --menu --userdata 64 out/aosp17-usb-f9.img
+tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-f9.img
 ```
 
 Find the stick (a SanDisk of about 57 GB on `usb`; `/dev/sda` on the build host so far):

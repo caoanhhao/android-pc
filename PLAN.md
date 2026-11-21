@@ -725,7 +725,25 @@ docs/hypr-desktop.md.
   entries, and scrolling, taps, long-presses and pinches inside apps unchanged; 8 new host tests.
   Details and limits in docs/hypr-desktop.md, "Touch gestures (D6)".
 - **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
-  Hyprland), with the user's OK to start Waydroid.
+  Hyprland), with the user's OK to start Waydroid. Status (2026-11-21): done. The full image
+  (build `eng.caoanh.20261121.2248`) packed for Waydroid replaced the D1-D6 overlay APKs (moved
+  to `/var/lib/waydroid/overlay-phase-d-tests.*`). On the user's backed-up data it boots with
+  HyprLauncher as HOME and PcSystemUI connected, up to the user's own lock screen; on the test
+  data, end to end: launcher, tiling and re-tiling, workspaces 1-9, ALT binds, borders,
+  animations, bar, overview, Lua hot reload, touch gestures, Settings, Play Store, Chromium
+  and a game in tiles, and 10 minutes of scripted use with no crash. Fixed: an empty strip
+  under the tiles (Shell reserved a taskbar's height; the hypr RRO sets
+  `taskbar_frame_height` to 0). ALT stays the default modifier (the host binds only
+  `ALT + TAB` among the default combinations); SUPER works with a documented host
+  pass-through submap and replacement binds for the keys AOSP keeps (docs/hypr-lua.md). D5's
+  `ALT + S` minimize was the host's game pad passed into the container. The stick build makes
+  an image (`out/aosp17-usb-d7.img`); the stick itself was not updated. Details, the pieces as
+  built and every known limit: docs/hypr-desktop.md, "Waydroid and wrap-up (D7)", "As built",
+  "Known limits".
+
+**Phase D status: done (2026-11-21).** Commits: D0 `a4f4992`/`4aa1eed`, D1 `9012cfd`/`4b2f2b4`,
+D2 `ae112f0`/`4281300`, D3 `d96384b`/`43f178f`, D4 `99667d1`/`020d238`, D5 `9f03915`/`e14afc1`,
+D6 `44560e8`/`5f01c60`, D7 "phase-d: D7 done" (design: `ff69d39`).
 
 ## Phase R — public releases
 

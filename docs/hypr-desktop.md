@@ -1,25 +1,18 @@
 # A Hyprland-style desktop shell (Phase D)
 
-Status (2026-11-21): D0 done, the `PcSystemUI` skeleton (`aosp-device/hypr/`) replaces
-SystemUI with unchanged behaviour; its findings are in "Shell extension points (D0)". D1 done:
-`hyprtile` (dwindle and master) tiles desktop tasks on open, close and minimize, checked on
-Waydroid ("`hyprtile` and dynamic tiling (D1)"). D2 done: one layout per desk as Hyprland
-workspaces 1-9, Hyprland's dispatchers on ALT keybinds, Shell's snapping routed to hyprtile
-("Workspaces and keybinds (D2)"). D3 done: no caption on tiled windows, rounded corners,
-gradient borders, opacity, Hyprland-style bezier animations for opening, closing, re-tiling
-and workspace switches, mouse binds; one Shell extension point
-("Decoration and animation (D3)"). D4 done: `HyprLauncher` is home and recents provider in place
-of Smart Dock and Launcher3, with a waybar-like bar, a rofi-like launcher and a hyprexpo-like
-overview, talking to the shell through `IHyprShell` ("`HyprLauncher` (D4)"). D5 done: the
-Lua configuration, `/sdcard/Documents/hypr/init.lua` with a subset of Hyprland 0.57's own Lua
-API, hot reload and Hyprland's error strip ("Lua configuration (D5)", reference
-docs/hypr-lua.md). D6 done: touch gestures in the style of HarmonyOS's PC mode (edge swipes for
-the launcher, workspaces, notifications and quick settings; pinch and three-finger swipe for the
-overview; a long-press on a window's frame to drag it or open a window menu), bindable from Lua,
-without taking touches from apps ("Touch gestures (D6)"). This note
-records what was decided in the
-brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
-one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
+Status (2026-11-21): **Phase D done** (D0-D7). The shell is part of the `aosp_pc_x86_64`
+image, for the USB stick and Waydroid alike: `PcSystemUI` replaces SystemUI and hosts the
+`hyprtile` layout engine in WM Shell (dwindle and master tiling, workspaces 1-9 on Shell's
+desks, Hyprland's dispatchers and keybinds, borders, corners, bezier animations, mouse binds
+and touch gestures), and `HyprLauncher` replaces Smart Dock and Launcher3 as home and recents
+provider (bar, app launcher, overview, the Lua configuration). It was checked end to end on
+Waydroid with the full image (D7, "Waydroid and wrap-up (D7)"); "As built" sums up the
+pieces and "Known limits" collects what is left. Sub-phase notes: "`PcSystemUI` skeleton
+(D0)", "Shell extension points (D0)", "`hyprtile` and dynamic tiling (D1)", "Workspaces and
+keybinds (D2)", "Decoration and animation (D3)", "`HyprLauncher` (D4)", "Lua configuration
+(D5)" (reference docs/hypr-lua.md), "Touch gestures (D6)". This note also records what was
+decided in the brainstorm that started in `~/projects/hyprland-android` (an empty repo, now
+folded into this one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
 
 ## Goal
 
@@ -166,8 +159,8 @@ Dock's bar shows (hidden while Settings is in front, as before: docs/desktop-mod
 crash buffer is empty (the only ANRs are the known `com.android.phone` ones of Cuttlefish
 without a modem).
 
-Not yet checked in Waydroid (the user allowed Waydroid tests for Phase D after D0 was
-verified). Trying `PcSystemUI` there needs the overlay to add
+Not checked in Waydroid in D0 (the user allowed Waydroid tests for Phase D after D0 was
+verified; D1 did it through the overlay, D7 with the full image). Trying `PcSystemUI` there needs the overlay to add
 `/system_ext/priv-app/PcSystemUI` and hide `/system_ext/priv-app/SystemUI` (an overlayfs
 whiteout), or a repacked image (docs/waydroid-aosp17.md); the next sub-phase that boots
 Waydroid does it.
@@ -1096,16 +1089,154 @@ Known limits:
   stacked windows, but the region updates asynchronously (a gesture right after a window
   moved can see the old region).
 
-## Waydroid
+## Waydroid and wrap-up (D7)
 
-- The host's Hyprland takes SUPER bindings before Waydroid sees them. Either the shell uses
-  another modifier by default (ALT above) or the host gets a pass-through submap while the
-  Waydroid window has focus.
+### The full image on Waydroid
+
+D1-D6 tried new APKs through Waydroid's overlay (`/var/lib/waydroid/overlay`). D7 built the
+whole product once more (`tools/aosp17-build.sh`, image steps up to `super.img`, build
+`eng.caoanh.20261121.2248`), packed it for Waydroid (`tools/waydroid/aosp17-pack.sh`, which
+now creates `out/waydroid-aosp17/` itself) and copied `system.img` and `vendor.img` into
+`/var/lib/waydroid/images-aosp17/` (`aosp17-switch.sh install` does the same plus the switch
+from LineageOS 20; Waydroid already ran this image, so a copy was enough). The overlay's D1-D6
+test entries (`PcSystemUI`, `HyprLauncher`, the hypr RRO, the permissions file and the
+whiteouts for `SystemUI`, `Launcher3QuickStep` and `SmartDock`) and a hand-built
+`pc_overlay_frameworks_base_core.apk` from 2026-11-19 that shadowed the image's newer one were
+moved to `/var/lib/waydroid/overlay-phase-d-tests.20261121-2228/`, so the image's own copies
+run. Left in the overlay: the pieces `aosp17-switch.sh` puts there (`vendor/waydroid.prop`, the
+LXC mount points) and `vendor/lib64/hw/vulkan.nvidia.so` (identical to the image's).
+
+### End-to-end check (2026-11-21)
+
+The user's data (backed up first, `~/.local/share/waydroid-backup/aosp17-20261121-1716`): the
+new fingerprint booted, PackageManager upgraded the system apps, the HOME role is
+`com.android.hyprlauncher`, `PcSystemUI` is SystemUI, the hypr RRO is enabled, SystemUI
+connected to the launcher (`onInitialize` with `IHyprShell` and Shell's 12 other interfaces),
+and the bar hides under the keyguard. The user stays `RUNNING_LOCKED`: the lock credential is
+the user's own, so everything behind the lock screen was checked on the test data
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`, unlocked) with the same image, plus the Play
+Store from the user's Google extras (`data/vendor/pc-extras` copied over). Keys were sent with
+`input keycombination` inside Android, touches with `input touchscreen`; helpers in
+`out/hypr-d7/` (`k.sh`, `sc.sh`, `tasks.sh`, `soak.sh`), screenshots there too.
+
+| Check | Result |
+|---|---|
+| HOME | HyprLauncher's empty workspace with the bar (Apps, workspaces, clock, notification and quick settings entries) |
+| Launcher (`ALT + D`, type, Enter) | Settings, Play Store and Chromium open tiled, one after another, neighbours re-tile in the same transition; Landroid (the Easter Egg's space game, the one game on the test data) from `am start` (not a launcher entry) |
+| Tiling | six windows in dwindle (`tiled5.png`), `ALT` arrows move focus, `ALT SHIFT` arrow swaps, `ALT V` floats and back, `ALT J` flips a split, `ALT F` maximizes and back |
+| Workspaces | `ALT SHIFT 3` moves the focused window (Play Store) to workspace 3 and follows it; `ALT 1`..`9` each slide to that desk (desks 4-9 created on demand); the bar marks active, occupied and empty ones |
+| Overview (`ALT + grave`) | nine cells, workspace 1 with five snapshots, 2 with Calendar and microG, 3 with the Play Store (`overview.png`) |
+| Lua hot reload | an edited init.lua (`gaps_in 10`, `gaps_out 30`, `border_size 5`, red-yellow 90deg border, `rounding 20`) loaded in about 0.3 s and every window re-tiled and redrawn (`lua-edit.png`); the original file restored the same way |
+| Touch | bottom edge → launcher, right/left edge → workspace e+1/e-1, top edge → notification shade |
+| Apps in tiles | Settings navigates (Network & internet) in its tile; Landroid runs its autopilot (input and rendering in a tile); Chromium draws its first-run screen at tile and maximized sizes (not completed: it asks to accept Google's terms, left to the user); the Play Store opens and tiles but stays blank on the test data, which has no Google account (its GMS calls time out) |
+| ~10 minutes of use (`soak.sh 600`: 15 rounds of focus, move, float, split, maximize, open, move to workspace 4, close, overview, launcher, edge swipes, workspace switches) | crash buffer empty, `SystemUI` and `HyprLauncher` kept their pids, no `E` lines from any `Hypr*` tag |
+| `SUPER` as `main_mod` | five default binds collide with AOSP's META shortcuts and are skipped; the documented replacement binds work (`META + 2`, `+ comma`, `+ W`); docs/hypr-lua.md, "Waydroid and the host's SUPER key" |
+| The final image on the user's data | as at the top of this section; then `waydroid session stop`, `waydroid-container` inactive and disabled |
+
+Fixed in D7:
+
+- **An empty strip under every tile.** Shell's `DisplayLayout.getStableBoundsForDesktopMode()`
+  keeps `taskbar_frame_height` (56 dp, 63 px at Waydroid's density 180) free at the bottom
+  whenever it differs from the navigation bar's height, and this product has neither. The hypr
+  RRO sets `taskbar_frame_height` to 0: tiles now end at `gaps_out` above the bottom edge
+  (`[12,45][1264,1046]` instead of `...983]`), and Shell's own placement of floating windows
+  gains the space too. Nothing else in the tree reads it but an accessibility panel's
+  position.
+- `aosp17-pack.sh` failed on a checkout without `out/waydroid-aosp17/`.
+
+Found, not caused by the shell:
+
+- **The host's game pad reaches Android** (already seen in D2). Waydroid passes the user's
+  Xbox controller (`/dev/input/event7`, `js0`) into the container and brings it back when the
+  pad reconnects; with the user playing on another host workspace during the check, its B
+  button sent BACK to the focused Android window, which closed windows and backed out of
+  desks in the middle of the soak test. Removing the nodes inside the container stops it until
+  the pad reconnects. D5's "`ALT + S` minimizes the focused window" did not happen again
+  without the pad: it was the pad, not a key gesture.
+- `com.android.phone` and `com.android.nfc` restart every few seconds with "failed to complete
+  startup" ANRs: the telephony stack waits for a radio HAL that the container does not have
+  (`RIL.getRadioServiceProxy` → `waitForDeclaredService`). It predates Phase D on this image
+  (Cuttlefish without a modem shows the same) and does not touch the shell.
+- The user's data has DeskClock crashing on a database from LineageOS 20 (a downgrade), as in D4.
+
+### Keybinds next to the host's Hyprland
+
+`main_mod` stays ALT (D2's decision holds): the host's Hyprland binds SUPER for itself, and of
+the ALT combinations it binds only `ALT + TAB`, `ALT + F2`/`F3`/`F11`/`F12` and
+`CTRL + ALT + P` (`hyprctl binds`), none of them a default bind here. So in the Waydroid
+window every default bind reaches Android except Android's own `ALT + TAB` switcher, which
+stays the host's (`ALT + grave` opens the overview instead). Users who want SUPER set
+`main_mod = "SUPER"` and add a pass-through submap to the host's configuration: an empty
+submap entered while the Waydroid window is focused, with an example and the SUPER keys AOSP
+keeps in docs/hypr-lua.md, "Waydroid and the host's SUPER key". The repository does not edit
+`~/.config/hypr`. Not checked: keys typed on the host's physical keyboard into the Waydroid
+window during D7 (the user was in a full-screen game on the host, and keys sent to an
+unfocused window through Hyprland's `sendshortcut` did not reach Android); the path is the
+one D2-D6 used, and the injected keys go through the same InputManager key gestures.
+
+### The USB stick build
+
+The same product builds for the stick: the D7 build's `super.img`, boot images and vbmeta
+came out of the same run, and `tools/mkusb-aosp17.sh --userdata 64 out/aosp17-usb-d7.img`
+made an 8.7 GiB stick image whose `android/build.txt` names build `eng.caoanh.20261121.2248`
+(patch level 2026-06-05, unchanged). The stick itself was not touched; the image is ready for
+`tools/update-usb-aosp17.sh` (docs/usb-boot-aosp17.md, §10).
+
+## As built
+
+| Piece | Where | Process | What it does |
+|---|---|---|---|
+| `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
+| `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
+| `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types; Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
+| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; MOD + mouse binds |
+| `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
+| `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
+| `hyprtile` | `aosp-device/hypr/hyprtile/` (plain Kotlin, 70 host tests) | (library) | dwindle, master, gaps, rules, binds, gestures, colours, beziers, fuzzy matching |
+| `HyprLauncher` | `aosp-device/hypr/HyprLauncher/` (system_ext, privileged, platform key, overrides Launcher3) | its own | HOME, recents provider (`QUICKSTEP_SERVICE`), bar, app launcher, overview, Alt+Tab, notifications and the error strip |
+| `hyprlua` | `aosp-device/hypr/hyprlua/` (Lua 5.4 from `external/lua`, JNI, 25 host tests) | HyprLauncher | `init.lua` with Hyprland 0.57's Lua API subset → the configuration Bundle; hooks, timers, bar modules |
+| `hyprshell-aidl` | `aosp-device/hypr/hyprshell-aidl/` | | `IHyprShell`, `IHyprShellListener` |
+| `hypr_overlay_frameworks_base_core` | `aosp-device/hypr/rro/` (vendor) | | recents component, no status bar height, no taskbar height |
+| `hypr.mk` | `aosp-device/hypr/` | | adds the above, drops Smart Dock |
+
+Changes outside `aosp-device/`: one Shell patch (`WindowDecorStyle`, applied to
+`aosp/frameworks/base` and built into the `PcSystemUI` APK only) and none in the system image.
+
+## Known limits
+
+Collected from D1-D7 (details in each sub-phase's section):
+
+- **Tiling.** An app's minimum size wins over its tile (it can overlap its neighbour); a
+  window the user drags or resizes keeps its bounds until the next layout change; the first
+  window of a desk is placed by the observer just after Shell placed it, with Shell's
+  animation.
+- **Workspaces.** Desks have no numbers of their own (workspace N = the N-th desk) and empty
+  ones stay; no special workspaces, groups, `pseudo` or submaps; binds are installed for
+  user 0 only.
+- **Decoration and animation.** The border is drawn inside the window and does not animate;
+  mouse and touch resizes land on release, not live; Shell-started closes and minimizes keep
+  Shell's animation.
+- **Launcher.** The overview is static while open (no window drag between workspaces); the
+  bar has no status icons (battery, network: in the shade); bar, panels and touch gestures are
+  on the default display only; events come from 50 ms state pushes, so two changes in that
+  time merge.
+- **Lua.** No spring curves, submaps, special workspaces, groups, layer rules or plugins; a
+  window rule's workspace applies once, after the window opened.
+- **Touch.** Checked only with injected events (no touchscreen on the host); workspace swipes
+  are discrete.
+- **Waydroid.** `ALT + TAB` belongs to the host; SUPER needs the host submap above and loses
+  the keys AOSP keeps; the host's game pad reaches Android; the user's own data was checked
+  up to its lock screen only (its credential is the user's).
+- **Not checked:** Cuttlefish at 2560x1080/160 after D0, the real PC with the stick (the
+  stick was not updated in Phase D), CDD/CTS expectations for desktop windowing.
+
+## Waydroid notes
+
 - Waydroid overlay-mounts `/var/lib/waydroid/overlay` on the rootfs and `/vendor`, so a new
-  `PcSystemUI` or `HyprLauncher` APK can be tried without repacking the image: checked in D1
-  (the APK under `overlay/system_ext/priv-app/PcSystemUI/`, a whiteout hiding `SystemUI`), and
-  in D4 for `HyprLauncher`, its permissions file, the RRO under `overlay/vendor/overlay/`, and
-  whiteouts for `Launcher3QuickStep` and `product/app/SmartDock`.
+  `PcSystemUI` or `HyprLauncher` APK can be tried without repacking the image (D1-D6): the APK
+  under `overlay/system_ext/priv-app/<name>/`, overlayfs whiteouts (`mknod c 0 0`) to hide the
+  image's `SystemUI`, `Launcher3QuickStep` or `SmartDock`. Remove such entries again once the
+  image has the new code (D7 did), or they shadow it.
 - The user allowed Waydroid for every Phase D step (2026-11-21) and made it the test target in
   place of Cuttlefish (`tools/waydroid/container-guard.sh check` first).
 - init.lua lives in the container's shared storage (`/sdcard/Documents/hypr/`); write it with
@@ -1116,6 +1247,9 @@ Known limits:
 - The host's Hyprland tiles the Waydroid window too; move it alone onto a workspace
   (`hyprctl dispatch 'hl.dsp.window.move({ workspace = 4, follow = false, window =
   "address:0x..." })'`) to get the full 2538x1058.
+- Remove the passed-through game pad inside the container before tests
+  (`sudo waydroid shell -- rm -f /dev/input/event7 /dev/input/js0`; the host's node is
+  untouched, a reconnect brings it back).
 
 ## Other devices
 
@@ -1130,8 +1264,8 @@ planned.
 
 - ~~Which Shell classes `PcWMShellModule` can replace without touching `frameworks/base`~~:
   answered in "Shell extension points (D0)".
-- How Shell's own snapping, tiling and drag-to-desktop interact with `hyprtile`; they may have
-  to be turned off in the variant.
+- ~~How Shell's own snapping, tiling and drag-to-desktop interact with `hyprtile`~~: snapping
+  and its two-window tiling are routed to hyprtile ("Workspaces and keybinds (D2)").
 - ~~Quickstep's recents interfaces are large~~: HyprLauncher implements the few
   `ILauncherProxy` calls a desktop needs ("`HyprLauncher` (D4)").
 - CDD and CTS expectations for desktop windowing (configuration changes, insets, multi-window
