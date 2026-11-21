@@ -13,7 +13,10 @@ of Smart Dock and Launcher3, with a waybar-like bar, a rofi-like launcher and a 
 overview, talking to the shell through `IHyprShell` ("`HyprLauncher` (D4)"). D5 done: the
 Lua configuration, `/sdcard/Documents/hypr/init.lua` with a subset of Hyprland 0.57's own Lua
 API, hot reload and Hyprland's error strip ("Lua configuration (D5)", reference
-docs/hypr-lua.md). This note
+docs/hypr-lua.md). D6 done: touch gestures in the style of HarmonyOS's PC mode (edge swipes for
+the launcher, workspaces, notifications and quick settings; pinch and three-finger swipe for the
+overview; a long-press on a window's frame to drag it or open a window menu), bindable from Lua,
+without taking touches from apps ("Touch gestures (D6)"). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -85,7 +88,7 @@ through Dagger (`CarSystemUIInitializer` extends `SystemUIInitializer`; `CarWMCo
 - a `WindowDecorViewModel` that draws gaps, rounded corners, the gradient active border and a
   minimal caption (or none);
 - keybinds from the configuration, through `KeyGestureEvent`;
-- edge-swipe and pinch gestures for touch.
+- edge-swipe and pinch gestures for touch (`HyprTouch`, D6).
 
 `hyprtile` takes only declarative configuration (gaps, colours, beziers, layout, rules). Lua
 never runs in the SystemUI process, so a broken script cannot take SystemUI down. The layout
@@ -985,6 +988,113 @@ Known limits:
   avoid it for binds until found).
 - Spring curves, submaps, special workspaces, groups, layer rules and plugin APIs are not
   supported; their calls warn or fail with a clear message (docs/hypr-lua.md).
+
+## Touch gestures (D6)
+
+Code: `PcSystemUI/.../wmshell/HyprTouch.kt` (the gesture monitor), `HyprWindowMenu.kt` (the
+window menu), touch helpers in `HyprTileController` (`windowAt`, `frameAt`, `touchHold`,
+`touchDrop`, `dispatchOn`), the recognizer and gesture names in the engine (`Touch.kt`, plain
+Kotlin, unit-tested), gesture binds in `hyprlua` (`ConfigBuilder`, `prelude.lua`), and a test
+injector (`aosp-device/hypr/tools/touchinject/`). Still no `frameworks/base` change.
+
+### Decisions
+
+- **In the shell, not an accessibility service.** `HyprTouch` is a second gesture monitor on
+  the display next to `HyprMouse`'s (`InputManager.monitorGestureInput`): it sees every touch
+  in parallel with the window under the finger and only takes one (`pilferPointers`, the app
+  gets `ACTION_CANCEL`) once it has recognized a gesture that has a bind. Taps, scrolls,
+  flings, long-presses and pinches inside apps are untouched: the gestures are one finger
+  from a screen edge, a held finger on a window's frame, three or more fingers, or a pinch
+  off the windows.
+- **Gestures are binds.** A gesture is a bind with no modifiers and the key
+  `GESTURE:<NAME>` (Lua `hl.bind("gesture:edge_bottom", ...)`), so it travels in the
+  existing `binds` list of `IHyprShell.setConfig`, takes any dispatcher or Lua function and is
+  removed with `hl.unbind`. `HyprKeybinds` skips them; Hyprland's `hl.gesture` lines (touchpad
+  gestures there) are turned into the same binds. Without a Lua configuration the defaults
+  apply. Reference: docs/hypr-lua.md, "Touch gestures".
+- **HarmonyOS PC mode's layout of edges**: bottom edge → app launcher, left/right edge →
+  previous/next workspace, top edge → notifications, its right third → quick settings
+  (HarmonyOS opens its control centre from the top right). Two new dispatchers,
+  `notifications` and `quicksettings` (`StatusBarManager.expandNotificationsPanel` /
+  `expandSettingsPanel`, SystemUI holds `EXPAND_STATUS_BAR`). Overview: pinch in on the
+  wallpaper or the bar, or three fingers up anywhere; a tap on a window in the overview
+  focuses it (the overview's click handler, unchanged).
+- **System gesture exclusion respected.** `HyprTouch` registers an
+  `ISystemGestureExclusionListener` (as SystemUI's back gesture does): an edge swipe never
+  starts in the region WindowManager grants the apps (limited to 200 dp per side edge), and
+  no gesture at all starts in the unrestricted region (an app's own swipe area). HyprLauncher's
+  overview and app launcher declare themselves excluded, so a long-press in the overview does
+  not pick up the window drawn under it. Edge zones are measured from the display's edges; the
+  bar's strip at the top is a window like any other (a swipe from the top edge over it opens
+  the shade; the bar gets a cancel). On the lock screen only the top edge acts.
+- **Window frame long-press.** HarmonyOS moves a window by long-pressing its title bar. Tiled
+  windows here have no caption, so the "frame" is 14 dp inside a window's edges, the gap next
+  to it, and on floating windows Shell's 40 dp caption. A tiled window's top is its app's
+  (toolbars), so only its border counts there. A still finger there for 350 ms
+  (`persist.hypr.touch_hold`, below the 400 ms of apps' own long-press, so the app gets a
+  cancel before it acts) picks the window up: it follows the finger on its surface (the D3
+  mouse-drag path) and on release swaps with the tiled window under the finger, slides back to
+  its tile, or (floating) lands there; a floating window dropped on the left or right screen
+  edge joins the layout on that side (`onSnap`, as Shell's drag-to-snap does since D2). Released
+  without moving, it opens the window menu.
+- **Window menu.** A small no-focus system window (`TYPE_SYSTEM_DIALOG`) at the finger: Float
+  or Tile, Maximize (tiled; `fullscreen 1`), Fullscreen (Shell's fullscreen), Workspace 1..N+1
+  (`movetoworkspacesilent`: the window goes, the view stays), Close. Entries run on that window,
+  not the focused one (`dispatchOn`; close goes through Shell's `closeTask`, fullscreen through
+  `moveToFullscreen`). A touch outside closes it.
+- **Discrete swipes.** A workspace swipe switches once it is recognized, with the D3 slide;
+  the workspace does not follow the finger (that would need a desk-switch transition driven by
+  the finger, which Shell's desk switch handler cannot do).
+- **A floating window's caption stays Shell's.** Shell's caption takes a press on it for its
+  own drag (and pilfers the pointer), so a long-press there moves the window with Shell's drag
+  instead of opening the menu; dropped on the left or right screen edge it joins the layout
+  through the D2 snap routing. The menu of a floating window opens from its border.
+
+### Checked on Waydroid (2026-11-21)
+
+Test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`), APKs through the overlay as in D4,
+2538x1058 at density 180, five windows on workspace 1 (Files, Contacts, Settings, a second
+Files, Clock) and Calendar with microG's sign-in on workspace 2. The host has no touchscreen, so
+touches were injected: one finger with `input touchscreen swipe/tap`, several fingers and
+holds with `touchinject.dex` (`aosp-device/hypr/tools/touchinject/`, `build.sh`; `CLASSPATH=/data/local/tmp/touchinject.dex
+app_process / TouchInject swipe|pinch|hold|tap ...`, `InputManagerGlobal.injectInputEvent` as
+shell, touchscreen source, finger tool type).
+
+| Check | Result |
+|---|---|
+| Swipe up from the bottom edge | `gesture EDGE_BOTTOM -> launcher`, the launcher has focus |
+| From the right edge / the left edge | workspace 1 → 2 → 3 with the slide; from the left edge on workspace 1 the dispatcher refuses (no workspace 0), nothing happens |
+| From the top edge / its right third | the notification shade / quick settings open |
+| Pinch on workspace 2's windows (Calendar, microG) | nothing: the pinch is the app's |
+| Pinch in on empty workspace 3 | the overview opens; a tap on Contacts in it focuses it (`focuswindow 18`, back to workspace 1) |
+| Three fingers up over app windows | the overview |
+| Long-press in the overview where a window's frame lies under it | nothing picked up (the overview's exclusion rect); the press is the overview's click |
+| Long-press in the gap between Files and Contacts, release | the window menu for Files at the finger; Float floats it (centred, with Shell's caption) |
+| Long-press on the floating Files' caption, drag to the left screen edge | Shell's caption drag; dropped on the edge, Files joins the layout on the left |
+| Long-press on Contacts' bottom border, drag onto Settings | they swap, animated from the drop point |
+| Menu → Workspace 2 on Contacts | `movetoworkspacesilent 2`: Contacts goes to workspace 2, workspace 1 re-tiles, the view stays |
+| Menu → Close on Clock | Clock closes (Shell's `closeTask`), the layout closes the hole |
+| Scroll in Settings, tap Battery, long-press an item, a fast swipe starting on a window's border | the list scrolls, Battery opens, the item's own long-click, the app gets the swipe; `HyprTouch` logs nothing for any of them |
+| init.lua `hl.bind("gesture:edge_bottom", hl.dsp.overview())`, `hl.bind("gesture:swipe_4_down", function() hl.notify(...) end)` | loaded at once (43 binds); the bottom edge opens the overview, four fingers down show the Lua notification |
+| `shell = { touch = false }` | the bottom edge swipe does nothing; restoring the file brings the gestures back |
+| Crashes | none (`logcat -b crash` empty) |
+
+Screenshots: `out/hypr-d6/` (`edge-topright.png`, `pinch-overview.png`, `menu.png`,
+`menu-float.png`, `menu-label.png`, `drag-snap.png`, `drag-swap.png`, `scroll-compare.png`, `lua-notify.png`).
+Host tests: 70 hyprtile (8 new in `TouchTest`), 25 hyprlua.
+
+Known limits:
+
+- Not checked with a real touchscreen (the host has none); injected events have the same
+  source and tool type as a touchscreen's. On the PC, a touchscreen is a desktop-mode extra.
+- Workspace swipes are discrete (above); no live resize by touch (D3's mouse resize lands on
+  release too, and it has no touch trigger).
+- The menu is plain text entries (no icons), on the default display only; `HyprTouch` watches
+  the default display only.
+- An app's gesture exclusion region is the one WindowManager reports for the whole display:
+  a window above an app that set exclusion rects subtracts its own area, so it works for
+  stacked windows, but the region updates asynchronously (a gesture right after a window
+  moved can see the old region).
 
 ## Waydroid
 

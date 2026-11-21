@@ -711,7 +711,19 @@ docs/hypr-desktop.md.
   the error and keep the old config, window and workspace rules, silent moves; 24 Lua host
   tests. Reference: docs/hypr-lua.md; details and limits in docs/hypr-desktop.md, "Lua
   configuration (D5)".
-- **D6 — touch:** edge swipes, drag-to-snap, pinch for the overview.
+- **D6 — touch:** edge swipes, drag-to-snap, pinch for the overview. Status (2026-11-21):
+  done. `HyprTouch` in `PcSystemUI`, a gesture monitor next to the mouse binds' (no
+  accessibility service, no `frameworks/base` change), takes a touch only once it recognized a
+  bound gesture: one finger from the bottom edge opens the launcher, from the left/right edge
+  switches workspace, from the top the shade (its right third quick settings); pinch in on the
+  wallpaper or the bar and three fingers up open the overview; a long-press on a window's frame
+  (border, gap, floating caption) picks it up to swap with a tile or snap at the screen edges,
+  or opens a window menu (float, maximize, fullscreen, workspace, close). Apps' system gesture
+  exclusion is respected (the overview and launcher declare theirs). Gestures are binds
+  (`hl.bind("gesture:edge_bottom", ...)`, `hl.gesture` lines, `shell.touch`), docs/hypr-lua.md.
+  Checked on Waydroid with injected touches (`aosp-device/hypr/tools/touchinject/`): every gesture, the menu
+  entries, and scrolling, taps, long-presses and pinches inside apps unchanged; 8 new host tests.
+  Details and limits in docs/hypr-desktop.md, "Touch gestures (D6)".
 - **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
   Hyprland), with the user's OK to start Waydroid.
 

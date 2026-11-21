@@ -74,6 +74,7 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.file_manager` | package | `com.android.documentsui` | `main_mod + E` |
 | `shell.caption` | `"none"`, `"floating"`, `"all"` | `floating` | which windows keep Shell's title bar (close, maximize, drag) |
 | `shell.tiling` | bool | true | false: no tiling, Shell's own desktop windowing |
+| `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
 `ALT`, `SUPER` (`META`, `WIN`), `CTRL`, `SHIFT`, joined by spaces or `+`.
@@ -164,6 +165,49 @@ Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 | `$mod + D`, `$mod + SPACE` | `hl.dsp.launcher()` |
 | `$mod + grave` | `hl.dsp.overview()` |
 
+With `shell.default_binds` the default touch gestures are bound too (next section).
+
+## Touch gestures
+
+```lua
+hl.bind("gesture:edge_bottom", hl.dsp.launcher())
+hl.bind("gesture:swipe_4_down", function() hl.notify("four fingers") end)
+hl.unbind("gesture:edge_top_right")          -- the whole top edge opens notifications
+hl.config({ shell = { touch = true } })
+```
+
+A gesture is bound like a key: `gesture:<name>`, no modifiers, any dispatcher or a Lua
+function. `hl.unbind` frees it (an unbound gesture leaves the touch to the app).
+
+| Gesture | What | Default |
+|---|---|---|
+| `edge_bottom` | one finger swiping up from the bottom edge | `hl.dsp.launcher()` |
+| `edge_left` | from the left edge, to the right | `hl.dsp.focus({ workspace = "e-1" })` |
+| `edge_right` | from the right edge, to the left | `hl.dsp.focus({ workspace = "e+1" })` |
+| `edge_top` | from the top edge, down | `hl.dsp.notifications()` |
+| `edge_top_right` | from the right third of the top edge (when unbound, `edge_top`) | `hl.dsp.quick_settings()` |
+| `swipe_<N>_<dir>` | N = 3, 4 or 5 fingers swiping `up`, `down`, `left` or `right`, anywhere | `swipe_3_up`: `hl.dsp.overview()` |
+| `pinch_in`, `pinch_out` | two fingers on the wallpaper or the bar (on a window a pinch is the app's zoom) | `pinch_in`: `hl.dsp.overview()` |
+
+- An edge swipe starts within 20 dp of the edge and goes 72 dp inward within 0.7 s. Where an
+  app asked for priority (`View.setSystemGestureExclusionRects`, as WindowManager limits it on
+  the side edges) there is no edge swipe and no other gesture. The lock screen takes only
+  `edge_top`/`edge_top_right`.
+- `hl.dsp.notifications()` and `hl.dsp.quick_settings()` open SystemUI's shade (also usable on
+  keys).
+- Not a bind: a long-press (350 ms, `persist.hypr.touch_hold`) on a window's frame (14 dp inside
+  its edges, the gap next to it, a floating window's caption) picks the window up. Dragging it
+  swaps it with the tiled window under the finger (a floating window lands where it is
+  dropped, or joins the layout when dropped on the left or right screen edge); releasing
+  without moving opens the window menu: Float/Tile, Maximize (tiled), Fullscreen, Workspace
+  1..N (moves it there, the view stays), Close.
+- `hl.gesture` lines (Hyprland's touchpad gestures) become these binds: `fingers` 3..5 with
+  `up`, `down`, `left`, `right`, `horizontal`, `vertical` or `swipe`, or `fingers = 2` with
+  `pinch`/`pinchin`/`pinchout`; action `workspace` (swipe left or up: next workspace, right or
+  down: previous), `close`, `fullscreen`, `float`, a dispatcher or a function. Swipes are
+  discrete (the action runs once the swipe is recognized; the workspace does not follow the
+  finger).
+
 ## Dispatchers: `hl.dsp`
 
 A dispatcher is a value for `hl.bind`, `hl.dispatch`, `on_click` and gestures. Hyprland
@@ -188,6 +232,8 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.exec_cmd("com.termux")` | `exec` | start a package's launcher activity (a package name, not a shell command); it opens on the active workspace |
 | `hl.dsp.launcher()` | `launcher` | the rofi-like app launcher |
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
+| `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |
+| `hl.dsp.quick_settings()` | `quicksettings` | SystemUI's quick settings |
 | `hl.dsp.raw(name, arg)` | any of the above | by Hyprland's name: `hl.dsp.raw("movefocus", "l")` |
 | a Lua function | `lua` | runs in the launcher's Lua state |
 
@@ -243,8 +289,8 @@ hl.monitor({ output = "", reserved = { top = 0, bottom = 40 } })
 
 - `hl.gesture`: `fingers` 2..5, `direction` `left`, `right`, `up`, `down`, `horizontal`,
   `vertical`, `swipe`, `pinch`, `pinchin`, `pinchout`, `action` a Hyprland gesture action name,
-  a dispatcher or a function, `mods`. Checked and sent to the shell; they are played by the
-  touch support (D6).
+  a dispatcher or a function. Played as touch gesture binds ("Touch gestures" above); two-finger
+  swipes (app scrolling) and `mods` are errors.
 - `hl.monitor`: only `reserved`/`reserved_area` (a number or `{ top, bottom }`, px) is used,
   space kept free besides the bar; `mode`, `position`, `scale`, ... are Android's and warn.
 
