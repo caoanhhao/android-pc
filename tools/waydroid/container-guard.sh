@@ -21,6 +21,12 @@
 #   container-guard.sh test      run a throwaway LXC container (not Waydroid) with the guard
 #                                and probe it (tools/waydroid/guard/guardtest.c);
 #                                NOGUARD=1 runs it without the guard as a control
+#   container-guard.sh gamepads [on|off]
+#                                let the host's game pads into the container or keep them out
+#                                (the default): a device cgroup rule on evdev/joydev (char
+#                                major 13), kept across `waydroid upgrade` and package
+#                                updates; a running container follows at once. No argument:
+#                                show the setting
 # Run as your user: it asks for the sudo password itself.
 set -euo pipefail
 
@@ -30,6 +36,9 @@ INSTALLED=/usr/local/lib/android-pc/waydroid-container-guard.sh
 HOOK=/etc/pacman.d/hooks/waydroid-container-guard.hook
 BEGIN="# android-pc container guard begin"
 END="# android-pc container guard end"
+PADS_STATE=/var/lib/waydroid/android-pc-gamepads
+PADS_BEGIN="# android-pc game pads off begin"
+PADS_END="# android-pc game pads off end"
 SUDO=sudo
 [ "$(id -u)" = 0 ] && SUDO=
 
@@ -80,6 +89,94 @@ apply() {
     add_guard "$TEMPLATES/config_base" config_block
     add_guard "$LXC/waydroid.seccomp" seccomp_block
     add_guard "$LXC/config" config_block
+    pads_sync "$TEMPLATES/config_base"
+    pads_sync "$LXC/config"
+}
+
+# Game pads (docs/waydroid-aosp17.md, "Host game pads"). The container gets every host uevent,
+# and its ueventd makes /dev/input nodes for game pads and joysticks, so a pad the user plays
+# with on the host also drives Android (B = BACK). Off, the device cgroup refuses the input
+# char devices (major 13: event*, js*, mouse*): ueventd's mknod fails and nothing in the
+# container can open one. The composer's wl_*_events are FIFOs and the virtual pads apps make
+# go through /dev/uinput and /dev/uhid (other majors), so none of that changes.
+pads_state() { cat "$PADS_STATE" 2>/dev/null || echo off; }
+
+pads_block() {
+    echo "$PADS_BEGIN"
+    echo "lxc.cgroup2.devices.deny = c 13:* rwm"
+    echo "$PADS_END"
+}
+
+# pads_sync FILE: the block in FILE as the setting asks (root)
+pads_sync() {
+    local f=$1
+    [ -f "$f" ] || return 0
+    if grep -qxF "$PADS_BEGIN" "$f"; then
+        [ "$(pads_state)" = off ] && return 0
+        sed -i "/^$PADS_BEGIN\$/,/^$PADS_END\$/d" "$f"
+    else
+        [ "$(pads_state)" = on ] && return 0
+        pads_block >> "$f"
+    fi
+}
+
+# The input nodes for the host's game pads and joysticks, as the image's ueventd picks them
+# (a key in BTN_JOYSTICK..BTN_THUMBR): "name major minor" per line.
+host_pads() {
+    python3 -I - <<'EOF'
+import glob, os
+for dev in sorted(glob.glob("/sys/class/input/event*") + glob.glob("/sys/class/input/js*")):
+    try:
+        words = open(dev + "/device/capabilities/key").read().split()
+        major, minor = open(dev + "/dev").read().strip().split(":")
+    except OSError:
+        continue
+    bits = int("".join(w.rjust(16, "0") for w in words), 16)
+    if bits >> 0x120 & (1 << 0x20) - 1:
+        print(os.path.basename(dev), major, minor)
+EOF
+}
+
+# A running container follows the setting at once: the device cgroup rule is changed live,
+# and the nodes are removed or made from the host through the container init's root (works
+# also while Waydroid has the container frozen). EventHub sees the nodes go or come.
+pads_live() {
+    local lxcpath pid name major minor
+    lxcpath=$(dirname "$LXC")
+    pid=$($SUDO lxc-info -P "$lxcpath" -n waydroid -pH 2>/dev/null) || return 0
+    [ -n "$pid" ] || return 0
+    local dev=/proc/$pid/root/dev/input
+    if [ "$(pads_state)" = off ]; then
+        $SUDO lxc-cgroup -P "$lxcpath" -n waydroid devices.deny "c 13:* rwm"
+        for name in $($SUDO find "$dev" -maxdepth 1 -type c -printf '%f\n' 2>/dev/null); do
+            $SUDO /usr/bin/rm -f "$dev/$name"
+            echo "container-guard: removed /dev/input/$name in the container"
+        done
+    else
+        $SUDO lxc-cgroup -P "$lxcpath" -n waydroid devices.allow "c 13:* rwm"
+        $SUDO test -d "$dev" || return 0
+        host_pads | while read -r name major minor; do
+            $SUDO test -e "$dev/$name" && continue
+            # ueventd.rc: /dev/input/* 0660 root input (AID_INPUT 1004). Made with that group
+            # at once: EventHub opens the node on IN_CREATE, before a chown could run.
+            $SUDO setpriv --regid 1004 --clear-groups mknod -m 0660 "$dev/$name" c "$major" "$minor"
+            echo "container-guard: made /dev/input/$name in the container"
+        done
+    fi
+}
+
+gamepads() {
+    case ${1:-} in
+        "") echo "container-guard: host game pads in the container: $(pads_state)"; return ;;
+        on|off) ;;
+        *) die "gamepads on|off" ;;
+    esac
+    echo "$1" | $SUDO tee "$PADS_STATE" >/dev/null
+    # The pacman hook runs the installed copy: keep it the one that knows the setting.
+    $SUDO install -D -m 755 "$0" "$INSTALLED"
+    $SUDO "$INSTALLED" apply
+    pads_live
+    echo "container-guard: host game pads in the container: $1"
 }
 
 check() {
@@ -93,6 +190,7 @@ check() {
     done
     [ -f "$HOOK" ] || { echo "container-guard: MISSING $HOOK" >&2; bad=1; }
     [ $bad = 0 ] && echo "container-guard: present"
+    echo "container-guard: host game pads in the container: $(pads_state)"
     return $bad
 }
 
@@ -162,5 +260,6 @@ case ${1:-} in
     apply) apply ;;
     check) check ;;
     test) test_guard ;;
+    gamepads) gamepads "${2:-}" ;;
     *) sed -n '2,/^set -e/p' "$0" | sed '$d'; exit 1 ;;
 esac

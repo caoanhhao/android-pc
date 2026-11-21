@@ -86,6 +86,45 @@ still mount a new proc or sysfs and write the host kernel's settings or `/proc/s
 Closing that needs AppArmor/SELinux on the host, or a user namespace, which Waydroid does not
 support. The image side therefore also keeps init away from those paths (below).
 
+## Host game pads
+
+The container receives every host uevent, and the image's ueventd makes `/dev/input` nodes
+for game pads and joysticks (table below), so that a pad can play Android games. The same pad
+then also drives Android while the user plays on the host: in Phase D7 padctl's virtual
+"Xbox Elite Series 2" (host `event7`, `js0`) sent BACK on its B button to the focused Android
+window from a game on another host workspace, and it came back after every reconnect.
+
+Host game pads are therefore **off by default** and switched on when wanted:
+
+```bash
+tools/waydroid/container-guard.sh gamepads        # show: on/off
+tools/waydroid/container-guard.sh gamepads on     # let the host's pads in
+tools/waydroid/container-guard.sh gamepads off    # keep them out (default)
+```
+
+- **Off** is a device cgroup rule in Waydroid's LXC config, next to the container guard:
+  `lxc.cgroup2.devices.deny = c 13:* rwm` (evdev and joydev, char major 13). ueventd's
+  `mknod` of a hotplugged pad fails with `EPERM`, and nothing in the container can open one.
+  The composer's `wl_*_events` input is FIFOs, and virtual devices made inside Android
+  (`/dev/uinput`, `/dev/uhid`) have other majors, so keyboard, mouse, touch and those keep
+  working. It is a host-side rule: it holds whatever image runs.
+- The setting lives in `/var/lib/waydroid/android-pc-gamepads`. The rule goes into
+  `config_base` (copied by every `waydroid init/upgrade`) and the current
+  `/var/lib/waydroid/lxc/waydroid/config`; the guard's pacman hook puts it back after a
+  waydroid package update.
+- **A running container follows at once:** the rule is changed live (`lxc-cgroup`), and the
+  nodes are removed, or made for the host's current pads (a key in BTN_JOYSTICK..BTN_THUMBR,
+  as ueventd picks them), through the container init's `/proc/<pid>/root/dev/input`. EventHub
+  sees them go or come over inotify. The nodes are made with group `input` at once (`setpriv
+  --regid 1004 mknod`): EventHub opens a new node on `IN_CREATE`, before a `chown` could run.
+
+Checked 2026-11-21 on the test data, padctl's pad present: off, the container had only the four
+`wl_*_events` FIFOs, a uinput test pad hotplugged on the host got no node, and `mknod` inside
+the container failed with "Operation not permitted"; `gamepads on` while running made `event7`
+and `js0` (EventHub: "New device ... Xbox Elite Series 2", classes `KEYBOARD | GAMEPAD |
+JOYSTICK`), and the hotplugged test pad got `event256` from ueventd; `gamepads off` removed
+them ("Removed device ... due to inotify event").
+
 ## What the PC image carries for Waydroid
 
 Everything is dormant on the PC; it acts only when `/vendor/waydroid.prop` exists (code) or
@@ -97,7 +136,10 @@ PC's `/vendor` is a read-only, verified image, and `ro.boot.*` comes from its bo
   `ro.hardware.*` come from `[properties]` of `waydroid.cfg` (`properties.aosp17`, written by
   `tools/waydroid/aosp17-switch.sh`): software KeyMint and gatekeeper, no composer APEX
   (`ro.boot.vendor.apex.com.android.hardware.graphics.composer=none`), minigbm, ANGLE,
-  `ro.hardware.vulkan=nvidia`, Skia on Vulkan.
+  `ro.hardware.vulkan=nvidia`, Skia on Vulkan. Cuttlefish HALs that need a host behind
+  `/dev/hvc*` or vsock are switched off the same way (boot control, oemlock, UWB, Thread, the
+  radio and NFC; see "Telephony and NFC" under "Status"). `aosp17-switch.sh props` adds
+  properties a newer script sets to an existing install.
 - **Composer** (`aosp-device/waydroid/waydroid.mk`): Waydroid's `hwcomposer.waydroid` (a Wayland
   client: one xdg toplevel for the full UI, dma-bufs with their DRM modifier through
   `zwp_linux_dmabuf_v1`, the mouse cursor as `wl_shm`, input to `/dev/input/wl_*_events`) in
@@ -145,7 +187,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | hardware/interfaces hwc2on1adapter | a hotplug of the primary display re-reads its configs and reaches SurfaceFlinger as a reconnect (upstream Waydroid's "hwc2on1: Handle primary hotplugs") | the hwcomposer reports a host window resize as a primary hotplug; the stock adapter drops it ("non-external display"), so Android kept the size the window had at boot (half the screen) |
 | (ours) aosp-device/hals/audio | the Rust audio HAL plays to the desktop session's PulseAudio server (`src/pulse.rs`, the native protocol over the socket Waydroid binds at `/run/xdg/pulse/native`) when a stream has no ALSA PCM and that socket exists, and captures from its default source the same way | the container has no `/dev/snd`, so every stream went to the HAL's null device: Waydroid had no sound and a silent microphone |
-| system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`) |
+| system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`). The host side keeps pads out unless switched on ("Host game pads") |
 | system/core init keychords | only character devices in /dev/input are opened | init watches /dev/input for keychords and opens new nodes blocking; the composer's FIFOs there (wl_*_events) hung init (stuck after `vdc keymaster earlyBootEnded`, a zombie vdc never reaped) once /dev/input existed early in boot |
 | system/libvintf | the runtime check skips the kernel SELinux policy version in the container when it reads 0 | the host kernel has no SELinux; `VintfObject.verifyBuildAtBoot()` failed ("kernelSepolicyVersion = 0 but required >= 30") and `Build.isBuildConsistent()` made system_server show "There's an internal problem with your device" at every boot (on Android 17 this check is VINTF, not the partition fingerprints) |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
@@ -217,6 +259,13 @@ tools/waydroid/aosp17-switch.sh use lineage20
 ```
 
 `restore` keeps the AOSP 17 userdata as `~/.local/share/waydroid/data.aosp17-<date>`.
+
+After an update of `aosp17-switch.sh` that adds properties (`aosp17_props`), an existing
+install gets them with `tools/waydroid/aosp17-switch.sh props`: it adds the missing keys to
+`properties.aosp17` (keys already there keep their value) and, when AOSP 17 is active, saves its
+current `[properties]` first, stops Waydroid and switches to it again. Waydroid writes
+`[properties]` into `waydroid_base.prop` only at `waydroid upgrade`, so editing `waydroid.cfg`
+alone changes nothing until then.
 
 ## NVIDIA driver from the host
 
@@ -446,3 +495,22 @@ vendor image and a new system:
     workspace Android went to sleep and paused the game.
   - Earlier runs during the image swap died with SIGILL in `libnvidia-gpucomp.so` and SIGSEGV
     (the game's own handler swallows it, empty minidump); on the new image neither came back.
+- **2026-11-21, telephony and NFC:** `com.android.phone` and `com.android.nfc` were killed every
+  5-15 s as "failed to complete startup" ANRs (`am_anr` ... `bg anr`). Cuttlefish's radio APEX
+  (`com.google.cf.rild`) declares `IRadio*` in VINTF and its service talks to a modem simulator
+  over vsock, which the container lacks; `RIL.getRadioServiceProxy` waits in
+  `ServiceManager.waitForDeclaredService`, and NFC waits for `com.google.cf.nfc`'s HAL the same
+  way. `properties.aosp17` now has `ro.boot.vendor.apex.com.google.cf.rild = none` and
+  `ro.boot.vendor.apex.com.google.cf.nfc = none` (applied with `aosp17-switch.sh props`): apexd
+  skips both APEXes, so their VINTF declarations and their `android.hardware.telephony.*` and
+  `nfc*` features go, and the image is a Wi-Fi-only device in the container. The PC and
+  Cuttlefish are unchanged (they set no such `ro.boot` property). Test data, 90 s after boot:
+  no `am_anr`, both processes alive and idle, `pm list features` without telephony or NFC.
+  Left as it is: Cuttlefish's Bluetooth HAL `bt_hci` panics on its missing `/dev/hvc5` and
+  init restarts it every 5 s. Turning its APEX off (`com.google.cf.bt = none`) was tried and
+  undone: `handheld_core_hardware.xml` still declares `android.hardware.bluetooth`, and the
+  Bluetooth stack then aborts in a crash loop with no HAL (`hci_backend_hidl.cc: assert failed:
+  hci_ != nullptr`). A quiet fix needs the image (stop `bt_hci` and drop the feature in the
+  container), as does `seriallogging` (logcat to Cuttlefish's `/dev/hvc2`), which init also
+  restarts every 5 s.
+- **2026-11-21, host game pads** kept out by default, switchable: see "Host game pads".

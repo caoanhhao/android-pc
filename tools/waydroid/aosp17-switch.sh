@@ -10,6 +10,10 @@
 #                                       switch images, overlay and [properties]
 #   aosp17-switch.sh restore BACKUP     put a backup's userdata back (lineage20 needs this:
 #                                       Android cannot boot an older system on upgraded data)
+#   aosp17-switch.sh props              add the PC properties a newer version of this script
+#                                       sets to an existing install (properties.aosp17; when
+#                                       AOSP 17 is active, it stops Waydroid and switches to it
+#                                       again, so the next start has them)
 #   aosp17-switch.sh status
 #
 # Layout under /var/lib/waydroid: images/ (LineageOS 20, never written here), images-aosp17/,
@@ -57,6 +61,57 @@ else:
     with open(wd + "/waydroid.cfg", "w") as f:
         cfg.write(f)
 EOF
+}
+
+# The PC configuration for the container, added to the user's own [properties] ("key = value").
+# No boot-control HAL in the container (no misc partition: it aborts, and vold's checkpoint step
+# waits for it forever, which stalls post-fs-data), and none of the Cuttlefish HALs that talk to
+# a host over /dev/hvc* or vsock (oemlock, UWB, Thread, the radio, NFC): they abort, and the
+# framework waits for the declared ones (com.android.phone in RIL.getRadioServiceProxy,
+# com.android.nfc for its HAL, both killed as "failed to complete startup" every few seconds).
+# With these APEXes off their VINTF declarations and their android.hardware.telephony.* /
+# nfc.* features go too, so telephony and NFC stay off as on a Wi-Fi tablet. Bluetooth's
+# APEX (com.google.cf.bt) stays: handheld_core_hardware.xml declares the Bluetooth feature
+# anyway, and with no HAL the Bluetooth stack aborts (hci_backend_hidl.cc "hci_ != nullptr")
+# in a crash loop, worse than bt_hci panicking on its missing /dev/hvc5 every 5 s. No
+# frp partition either: an empty ro.frp.pst keeps PersistentDataBlockService off.
+# Waydroid sets debug.stagefright.ccodec=0 when the host has no gralloc HAL, for images with OMX
+# codecs; this one has only Codec2, so 4 (the default) keeps the codec list. The composer dozes
+# Android 10 s after its window loses focus even while it stays on screen (meant for task
+# cards), which blacks out the full UI: unfocused_doze_ms=0 leaves dozing to the window being
+# hidden. The virtual fingerprint HAL matches a touch on its sensor only when enrollment_hit
+# names an enrolled finger; it is not persistent, so without this every touch fails
+# (docs/lockdown-biometric.md).
+# The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in Waydroid they
+# come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the container pieces
+# (aosp-device/waydroid/init/init.waydroid.vendor.rc).
+aosp17_props() {
+    printf '%s\n' \
+        'ro.boot.android_pc.waydroid = 1' \
+        'ro.boot.vendor.apex.com.android.hardware.graphics.composer = none' \
+        'ro.boot.vendor.apex.com.android.hardware.keymint = com.android.hardware.keymint.rust_nonsecure' \
+        'ro.boot.vendor.apex.com.android.hardware.gatekeeper = com.android.hardware.gatekeeper.nonsecure' \
+        'ro.boot.vendor.apex.com.android.hardware.strongbox = none' \
+        'ro.boot.vendor.apex.com.android.hardware.secure_element = com.android.hardware.secure_element' \
+        'ro.boot.vendor.apex.com.google.emulated.camera.provider.hal = none' \
+        'ro.boot.vendor.apex.com.android.hardware.boot = none' \
+        'ro.boot.vendor.apex.com.google.cf.oemlock = none' \
+        'ro.boot.vendor.apex.com.android.hardware.uwb = none' \
+        'ro.boot.vendor.apex.com.android.hardware.threadnetwork = none' \
+        'ro.boot.vendor.apex.com.google.cf.rild = none' \
+        'ro.boot.vendor.apex.com.google.cf.nfc = none' \
+        'ro.hardware.hwcomposer = waydroid' \
+        'ro.hardware.gralloc = minigbm' \
+        'ro.hardware.egl = angle' \
+        'ro.hardware.vulkan = nvidia' \
+        'ro.hardware.camera = ' \
+        'ro.frp.pst = ' \
+        'debug.stagefright.ccodec = 4' \
+        'persist.waydroid.unfocused_doze_ms = 0' \
+        'vendor.fingerprint.virtual.enrollment_hit = 1' \
+        'ro.opengles.version = 196609' \
+        'debug.hwui.renderer = skiavk' \
+        'ro.zygote.disable_gl_preload = true'
 }
 
 images_of() { case $1 in lineage20) echo "$WD/images";; aosp17) echo "$WD/images-aosp17";; *) die "unknown image $1";; esac; }
@@ -159,49 +214,36 @@ install_aosp17() {
         # end up in waydroid.prop and would override the vendor's properties.
         $SUDO sed -E '/^(ro\.dalvik\.vm\.native\.bridge|ro\.enable\.native\.bridge\.exec|ro\.dalvik\.vm\.isa\.arm(64)?|ro\.product\.cpu\.abilist(32|64)?|ro\.hardware\.(gralloc|egl|vulkan)|gralloc\.gbm\.[a-z]*|debug\.angle\.[a-z_]*|ro\.zygote\.disable_gl_preload|debug\.nvvk\.pipeline_cache_max|ro\.opengles\.version|debug\.hwui\.renderer) =/d' \
             "$WD/properties.lineage20" | $SUDO tee "$WD/properties.aosp17" >/dev/null
-        # No boot-control HAL in the container (no misc partition: it aborts, and vold's
-        # checkpoint step waits for it forever, which stalls post-fs-data), and none of the
-        # Cuttlefish HALs that talk to a host over /dev/hvc* (oemlock, UWB, Thread): they abort,
-        # and system_server waits for the declared ones. No frp partition either: an empty
-        # ro.frp.pst keeps PersistentDataBlockService off. Waydroid sets
-        # debug.stagefright.ccodec=0 when the host has no gralloc HAL, for images with OMX
-        # codecs; this one has only Codec2, so 4 (the default) keeps the codec list. The
-        # composer dozes Android 10 s after its window loses focus even while it stays on
-        # screen (meant for task cards), which blacks out the full UI: unfocused_doze_ms=0
-        # leaves dozing to the window being hidden.
-        # The virtual fingerprint HAL matches a touch on its sensor only when enrollment_hit
-        # names an enrolled finger; it is not persistent, so without this every touch fails
-        # (docs/lockdown-biometric.md).
-        # The PC images are configured by androidboot.* (ro.boot.*) like Cuttlefish; in
-        # Waydroid they come from waydroid.prop. ro.boot.android_pc.waydroid=1 turns on the
-        # container pieces (aosp-device/waydroid/init/init.waydroid.vendor.rc).
-        printf '%s\n' \
-            'ro.boot.android_pc.waydroid = 1' \
-            'ro.boot.vendor.apex.com.android.hardware.graphics.composer = none' \
-            'ro.boot.vendor.apex.com.android.hardware.keymint = com.android.hardware.keymint.rust_nonsecure' \
-            'ro.boot.vendor.apex.com.android.hardware.gatekeeper = com.android.hardware.gatekeeper.nonsecure' \
-            'ro.boot.vendor.apex.com.android.hardware.strongbox = none' \
-            'ro.boot.vendor.apex.com.android.hardware.secure_element = com.android.hardware.secure_element' \
-            'ro.boot.vendor.apex.com.google.emulated.camera.provider.hal = none' \
-            'ro.boot.vendor.apex.com.android.hardware.boot = none' \
-            'ro.boot.vendor.apex.com.google.cf.oemlock = none' \
-            'ro.boot.vendor.apex.com.android.hardware.uwb = none' \
-            'ro.boot.vendor.apex.com.android.hardware.threadnetwork = none' \
-            'ro.hardware.hwcomposer = waydroid' \
-            'ro.hardware.gralloc = minigbm' \
-            'ro.hardware.egl = angle' \
-            'ro.hardware.vulkan = nvidia' \
-            'ro.hardware.camera = ' \
-            'ro.frp.pst = ' \
-            'debug.stagefright.ccodec = 4' \
-            'persist.waydroid.unfocused_doze_ms = 0' \
-            'vendor.fingerprint.virtual.enrollment_hit = 1' \
-            'ro.opengles.version = 196609' \
-            'debug.hwui.renderer = skiavk' \
-            'ro.zygote.disable_gl_preload = true' \
-            | $SUDO tee -a "$WD/properties.aosp17" >/dev/null
+        aosp17_props | $SUDO tee -a "$WD/properties.aosp17" >/dev/null
     fi
     use aosp17
+}
+
+# props: add the keys of aosp17_props an older install lacks to properties.aosp17 (keys already
+# there keep their value). When AOSP 17 is active, its current [properties] are saved first and
+# it is switched to again: Waydroid writes [properties] into waydroid_base.prop only at
+# `waydroid upgrade`.
+props() {
+    [ -f "$WD/properties.aosp17" ] || die "no $WD/properties.aosp17: run install first"
+    [ "$(active)" = aosp17 ] && cfg_props save aosp17
+    $SUDO python3 -I - "$WD/properties.aosp17" "$(aosp17_props)" <<'EOF'
+import configparser, sys
+path, wanted = sys.argv[1:3]
+cfg = configparser.ConfigParser(strict=False)
+cfg.optionxform = str
+cfg.read(path)
+added = []
+for line in wanted.splitlines():
+    key, _, value = line.partition(" = ")
+    if key not in cfg["properties"]:
+        cfg["properties"][key] = value
+        added.append(key)
+if added:
+    with open(path, "w") as f:
+        cfg.write(f)
+print("%s: %s" % (path, ", ".join(added) or "nothing to add"))
+EOF
+    if [ "$(active)" = aosp17 ]; then use aosp17; fi
 }
 
 status() {
@@ -216,6 +258,7 @@ case ${1:-} in
     install) install_aosp17 "${2:?DIR}" ;;
     use) use "${2:?aosp17|lineage20}" ;;
     restore) restore "${2:?BACKUP_DIR}" ;;
+    props) props ;;
     status) status ;;
-    *) sed -n '2,15p' "$0"; exit 1 ;;
+    *) sed -n '2,19p' "$0"; exit 1 ;;
 esac

@@ -1153,10 +1153,15 @@ Found, not caused by the shell:
   desks in the middle of the soak test. Removing the nodes inside the container stops it until
   the pad reconnects. D5's "`ALT + S` minimizes the focused window" did not happen again
   without the pad: it was the pad, not a key gesture.
+  Since fixed on the host side: host pads stay out of the container unless switched on
+  (`tools/waydroid/container-guard.sh gamepads on`; docs/waydroid-aosp17.md, "Host game pads").
 - `com.android.phone` and `com.android.nfc` restart every few seconds with "failed to complete
   startup" ANRs: the telephony stack waits for a radio HAL that the container does not have
   (`RIL.getRadioServiceProxy` → `waitForDeclaredService`). It predates Phase D on this image
   (Cuttlefish without a modem shows the same) and does not touch the shell.
+  Since fixed for Waydroid: the radio and NFC APEXes are off in the container
+  (`ro.boot.vendor.apex.com.google.cf.{rild,nfc} = none`, docs/waydroid-aosp17.md, Status
+  2026-11-21).
 - The user's data has DeskClock crashing on a database from LineageOS 20 (a downgrade), as in D4.
 
 ### Keybinds next to the host's Hyprland
