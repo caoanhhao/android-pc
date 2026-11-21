@@ -10,7 +10,10 @@ gradient borders, opacity, Hyprland-style bezier animations for opening, closing
 and workspace switches, mouse binds; one Shell extension point
 ("Decoration and animation (D3)"). D4 done: `HyprLauncher` is home and recents provider in place
 of Smart Dock and Launcher3, with a waybar-like bar, a rofi-like launcher and a hyprexpo-like
-overview, talking to the shell through `IHyprShell` ("`HyprLauncher` (D4)"). This note
+overview, talking to the shell through `IHyprShell` ("`HyprLauncher` (D4)"). D5 done: the
+Lua configuration, `/sdcard/Documents/hypr/init.lua` with a subset of Hyprland 0.57's own Lua
+API, hot reload and Hyprland's error strip ("Lua configuration (D5)", reference
+docs/hypr-lua.md). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -100,8 +103,9 @@ should be limited to opening extension points (visibility, a hook) where Shell h
   app launcher, the overview, the configuration error screen.
 - The Lua runtime: reads `init.lua`, turns it into a Parcelable configuration for
   `hyprtile`, reloads on save (`FileObserver`), keeps the last good configuration on errors.
-  Event hooks (`hl.on("openwindow", ...)`) run here, asynchronously. Engine: LuaJava (Lua 5.4
-  over JNI) unless something better fits; `os` and `io` are not exposed.
+  Event hooks (`hl.on("window.open", ...)`) run here, asynchronously. Engine: the tree's
+  `external/lua` (5.4) with a small JNI binding (D5); `os`, `io`, `debug` and `package` are
+  not exposed.
 
 ### `IHyprShell`
 
@@ -888,33 +892,99 @@ Known limits:
 - Not checked: unlocking the user's own data (their credential), and Cuttlefish at
   2560x1080/160.
 
-## Configuration sketch
+## Lua configuration (D5)
 
-```lua
-local hl = require("hypr")
+Reference with every option and an example: docs/hypr-lua.md. Code:
+`aosp-device/hypr/hyprlua/` (engine, `hl` API, translation, tests), `HyprLauncher/.../LuaConfig.kt`
+and `Notifier.kt`, and the shell side in `PcSystemUI` (`HyprTileController`, `HyprStyleProps`,
+`HyprKeybinds`, `HyprMouse`).
 
-hl.general {
-  gaps_in = 5, gaps_out = 12, border_size = 2,
-  active_border = { "#33ccffee", "#00ff99ee", angle = 45 },
-  layout = "dwindle",
-}
-hl.decoration { rounding = 10, inactive_opacity = 0.95 }
+### Decisions
 
-hl.bezier("snappy", 0.05, 0.9, 0.1, 1.05)
-hl.animation("windows", { speed = 4, curve = "snappy", style = "popin 80%" })
-hl.animation("workspaces", { speed = 5, curve = "snappy", style = "slide" })
+- **Engine: `external/lua` (Lua 5.4.1) with our own JNI binding** (`libhyprlua_jni`, built
+  from `:liblua-sources` plus `jni/hyprlua_jni.c`, about 350 lines). Tried and dropped:
+  LuaJava and LuaJ are not in the tree (a download, and LuaJ is Lua 5.2 in pure Java with no
+  instruction hook); the tree's Lua is what CarService's ScriptExecutor sandboxes the same
+  way. The binding opens only base, coroutine, table, string, math and utf8, keeps
+  `os.time/date/clock` as `hl.time/date/clock`, drops `dofile`, `loadfile`, `string.dump`,
+  compiles text only, caps memory (32 MB allocator) and instructions (a count hook: 20 M for
+  init.lua, 2 M per hook call, plus a 2 s deadline; once spent it raises on every instruction,
+  so `pcall` cannot swallow it). Strings cross JNI as UTF-8 byte arrays: `NewStringUTF`
+  aborts under CheckJNI on bytes a Lua string may hold.
+- **API: Hyprland 0.57's own Lua API**, not the names sketched earlier: the host runs
+  Hyprland 0.57.2 with a Lua configuration (`hl.config({ general = { ... } })`, `hl.curve`,
+  `hl.animation({ leaf = ... })`, `hl.bind("SUPER + Q", hl.dsp.window.close())`,
+  `hl.window_rule({ match = { class = ... } })`, `hl.on("window.open", fn)`, generated stubs in
+  `/usr/share/hypr/stubs/hl.meta.lua`). Implementing a subset of it means a Hyprland
+  configuration loads here with warnings for what Android lacks; Hyprland's option names (407,
+  from the stubs) are accepted with a warning, others are errors. This shell's own settings sit
+  under `shell.*` (`main_mod`, `default_binds`, `terminal`, `caption`, `tiling`); the bar is
+  `hl.bar`/`hl.bar_module`. The old socket event names (`openwindow`, ...) and the sketch's
+  `hl.bezier`, `hl.animation(name, opts)` and `require("hypr")` work too.
+- **`init.lua` at `/sdcard/Documents/hypr/`** (shared storage, any editor, `adb push`, MTP),
+  the default copied on first run; `require` reads files next to it (no `..`, no absolute
+  paths). The launcher grants itself all-files access (`MANAGE_EXTERNAL_STORAGE` app op, set
+  with `MANAGE_APP_OPS_MODES`, platform key). The last good configuration is kept in
+  device-protected storage and sent before the user is unlocked.
+- **Reload**: FileObserver on the directory and its sub-directories, and a 3 s
+  modification-time poll for writes that bypass FUSE; 300 ms debounce. An error keeps the last
+  good state (the old Lua state keeps running its hooks and bar modules) and shows Hyprland's
+  red error strip under the bar until a save loads; hook errors and `hl.notify` are
+  notifications at the top left (`Notifier`, a no-input window).
+- **Wire format**: `IHyprShell.setConfig` keeps D4's Bundle (strings under the
+  `persist.hypr.*` names) and gains string arrays (`bezier`, `animation`, `binds`,
+  `windowrule`, `workspace`, `gesture`); a Lua configuration is complete (defaults filled), so
+  stale properties from D1-D3 never leak in. `binds` is the whole list: the default binds are
+  computed in the launcher, so `hl.unbind` and replacing a default work; the shell reinstalls
+  its custom key gestures when the list changes. A Lua function bind is dispatcher `lua <id>`,
+  which the shell sends back to the launcher (`onDispatch`), so Lua never runs in SystemUI.
+- **New in the shell**: window rules (float/tile through `shouldFloat`, workspace once for a
+  window opened since the last sync, per-window opacity through `HyprDecorations`), workspace
+  rules (per-workspace layout and gaps in `HyprTile.workspaceRules`, by desk), dispatchers
+  `movetoworkspacesilent` (a raw WCT plus `DesktopRepository.addTaskToDesk`: Shell records desk
+  moves in its own transition handlers only) and `resizeactive`, the mouse binds' modifier
+  (`mouse_mod`), and dwindle/master options that were properties only.
+- Workspace names and `on_created_empty` are handled in the launcher (bar, events); gestures
+  are checked and carried for D6.
 
-hl.bind("ALT, Return", hl.exec("com.termux"))
-hl.bind("ALT, Q", hl.dispatch("killactive"))
-hl.bind("ALT, 1", hl.dispatch("workspace", 1))
-hl.bind("gesture:edge_bottom", hl.dispatch("launcher"))
+### Checked on Waydroid (2026-11-21)
 
-hl.windowrule("org.mozilla.firefox", { workspace = 2 })
+Test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`), APKs through the overlay as in D4;
+init.lua edited live with `cat file | sudo waydroid shell -- sh -c 'cat > /sdcard/...'`.
+Host tests: 24 hyprlua tests with real Lua (`run-tests.sh` and Soong's `hyprlua-tests`), 62
+hyprtile tests.
 
-hl.on("workspace", function(ws) hl.notify("Workspace " .. ws.id) end)
-```
+| Check | Result |
+|---|---|
+| First start | default init.lua written to `/sdcard/Documents/hypr/`, `init.lua loaded: 35 binds, 0 warnings`, tiling as before |
+| Live edit: `gaps_in 15`, `gaps_out 40`, `border_size 6`, red-yellow 90deg gradient, blue inactive, `rounding 0`, `inactive_opacity 0.8` | applied about 0.3 s after the write, no restart: windows re-tiled with the new gaps in one animated change, borders and corners redrawn |
+| New binds | `ALT+B` (a Lua function: `hl.notify` with `#hl.get_windows()`) shows "Lua bind: 4 windows"; `ALT+G` switches to workspace 2, firing the `workspace.active` hook |
+| Animation | `workspaces` 8 ds with a custom `slowpoke` curve and `slidevert`: mid-switch screenshot shows the old desk sliding up |
+| Bar | Lua module with a 1 s timer (`lua 14:40:16` ticking), workspace 2 named `web` by a workspace rule |
+| Broken file (`gaps_in = "wide"` on line 122, then a syntax error) | red strip `init.lua:122: general.gaps_in: expected a whole number, got 'wide'` / `init.lua:2: unexpected symbol near <eof>`; the old configuration and its Lua module keep working |
+| Fixed file with `require("extra")` (master, `mfact 0.6`, gaps 8, window rules) | loads, strip gone; editing `extra.lua` alone reloads too |
+| Window rules | Clock (`float = true`) opens floating with its caption; Calendar (`workspace = "3"`) is moved to a new workspace 3 |
+| `resizeactive 200 0`, `movetoworkspacesilent 2` | master column 200 px wider; Settings moves to workspace 2 while workspace 1 stays and re-tiles without a hole |
 
-Whether the names should follow Hyprland's own Lua configuration closely is still open.
+Screenshots: `out/hypr-d5/shots/`.
+
+Found on the way: right after unlock MediaProvider has no `external_primary` volume yet (writes
+fail with EPERM), so the first load retries every 2 s; PackageManager keeps a system app's
+native ABI from its last scan while the fingerprint stays the same, so an APK that newly embeds
+the library gets none (`primaryCpuAbi=null`) on an existing userdata: `LuaState` falls back to
+`System.load("<apk>!/lib/<abi>/libhyprlua_jni.so")`; `waydroid shell` makes a file given as
+its stdin root-owned, like its stdout (pipe it).
+
+Known limits:
+
+- Events come from the shell's 50 ms state pushes; two changes in that time give one event.
+- A window rule's workspace applies once, after the window opened (it opens on the current
+  workspace and moves; with an app that keeps relaunching an activity, as Calendar does with
+  microG's sign-in, focus can come back to the old workspace).
+- `ALT+S` minimized the focused window on Waydroid before our bind ran (not from this code;
+  avoid it for binds until found).
+- Spring curves, submaps, special workspaces, groups, layer rules and plugin APIs are not
+  supported; their calls warn or fail with a clear message (docs/hypr-lua.md).
 
 ## Waydroid
 
@@ -928,6 +998,9 @@ Whether the names should follow Hyprland's own Lua configuration closely is stil
   whiteouts for `Launcher3QuickStep` and `product/app/SmartDock`.
 - The user allowed Waydroid for every Phase D step (2026-11-21) and made it the test target in
   place of Cuttlefish (`tools/waydroid/container-guard.sh check` first).
+- init.lua lives in the container's shared storage (`/sdcard/Documents/hypr/`); write it with
+  `cat init.lua | sudo waydroid shell -- sh -c 'cat > /sdcard/Documents/hypr/init.lua'`
+  (redirecting the file into `waydroid shell` makes it root-owned).
 - `waydroid shell` (lxc-attach) makes its stdout and stderr root-owned when they are files:
   pipe its output (`... </dev/null 2>&1 | cat`) when a tool captures it to a file.
 - The host's Hyprland tiles the Waydroid window too; move it alone onto a workspace

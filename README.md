@@ -225,6 +225,7 @@ stick in use: that wipes `userdata`.
 | [docs/arm-translation.md](docs/arm-translation.md) | ARM64 apps, microG, Play Store, games |
 | [docs/desktop-mode.md](docs/desktop-mode.md), [docs/mouse-input.md](docs/mouse-input.md) | Desktop UI, mouse as touch |
 | [docs/hypr-desktop.md](docs/hypr-desktop.md) | Phase D: the Hyprland-style desktop shell (design) |
+| [docs/hypr-lua.md](docs/hypr-lua.md) | Phase D: the shell's Lua configuration (`/sdcard/Documents/hypr/init.lua`), every option and an example |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md), [docs/gpu-identity.md](docs/gpu-identity.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`); how that driver fits Android's games: apps see an Adreno 850 by default (changing it, root over adb, the Where Winds Meet example) |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
 | [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint still unlocks after the power menu's Lockdown; the security tradeoff |

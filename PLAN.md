@@ -697,7 +697,20 @@ docs/hypr-desktop.md.
   fresh and existing userdata. Checked on Waydroid (test data fresh and existing, and the user's
   data up to its lock screen); details and limits in docs/hypr-desktop.md, "`HyprLauncher` (D4)".
 - **D5 — Lua configuration:** `init.lua` with hot reload, error screen, window rules, event
-  hooks.
+  hooks. Status (2026-11-21): done. `/sdcard/Documents/hypr/init.lua` (default written on first
+  run, `require` for files next to it) in HyprLauncher, on the tree's `external/lua` 5.4 with a
+  small JNI binding (`aosp-device/hypr/hyprlua/`): no os/io/debug/package, text-only `load`,
+  32 MB and instruction/time limits that `pcall` cannot swallow. The API is a subset of
+  Hyprland 0.57's own Lua API (`hl.config`, `hl.curve`, `hl.animation`, `hl.bind`/`hl.unbind`
+  with `hl.dsp.*` or Lua functions, `hl.window_rule`, `hl.workspace_rule`, `hl.gesture`,
+  `hl.monitor`, `hl.on`, `hl.notify`, `hl.timer`, `hl.get_*`) plus `hl.bar`/`hl.bar_module`;
+  it becomes the complete Bundle of `IHyprShell.setConfig` (binds, rules, decoration,
+  animations), so Lua never runs in SystemUI. Hot reload on save; an error keeps the last good
+  configuration and shows Hyprland's red error strip with the line. Checked on Waydroid: gaps,
+  colours, rounding, opacity, binds, animations, bar modules change live, broken files show
+  the error and keep the old config, window and workspace rules, silent moves; 24 Lua host
+  tests. Reference: docs/hypr-lua.md; details and limits in docs/hypr-desktop.md, "Lua
+  configuration (D5)".
 - **D6 — touch:** edge swipes, drag-to-snap, pinch for the overview.
 - **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
   Hyprland), with the user's OK to start Waydroid.
