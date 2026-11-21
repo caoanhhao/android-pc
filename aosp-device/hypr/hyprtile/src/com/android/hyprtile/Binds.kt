@@ -126,4 +126,5 @@ val DISPATCHERS = setOf(
     "workspace", "movetoworkspace", "movetoworkspacesilent", "movefocus", "movewindow",
     "togglefloating", "togglesplit", "fullscreen", "killactive", "exec", "focuswindow",
     "resizeactive", "launcher", "overview", "hyprexpo:expo", "lua",
+    "notifications", "quicksettings",
 )

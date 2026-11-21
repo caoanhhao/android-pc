@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.KeyEvent
 import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
+import com.android.hyprtile.TouchGesture
 import com.android.hyprtile.androidKeyName
 import com.android.hyprtile.defaultBinds
 import com.android.hyprtile.parseBind
@@ -85,7 +86,8 @@ class HyprKeybinds(
         val list = readBinds()
         wanted = list
         val installed = ArrayList<Bind>()
-        for (bind in list.take(MAX_BINDS)) {
+        // Gesture binds (GESTURE:...) are HyprTouch's.
+        for (bind in list.filterNot { TouchGesture.isGestureKey(it.key) }.take(MAX_BINDS)) {
             val keycode = keyCode(bind.key)
             if (keycode == KeyEvent.KEYCODE_UNKNOWN) {
                 Log.w(TAG, "bind $bind: unknown key ${bind.key}")

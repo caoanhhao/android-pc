@@ -243,6 +243,33 @@ class HyprLuaTest {
     }
 
     @Test
+    fun gestureBinds() {
+        val c = load("""
+            hl.bind("gesture:edge_bottom", hl.dsp.overview())
+            hl.unbind("gesture:edge_top_right")
+            hl.bind("gesture:swipe_4_down", function() hl.notify("down") end)
+            hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
+            hl.gesture({ fingers = 2, direction = "pinchout", action = hl.dsp.launcher() })
+            hl.config({ shell = { touch = false } })
+        """)
+        val g = binds(c).filter { it.key.startsWith("GESTURE:") }.associate { it.key.removePrefix("GESTURE:") to it }
+        assertEquals("overview", g.getValue("EDGE_BOTTOM").dispatcher)
+        assertFalse("EDGE_TOP_RIGHT" in g)
+        assertEquals("notifications", g.getValue("EDGE_TOP").dispatcher)
+        assertEquals("lua", g.getValue("SWIPE_4_DOWN").dispatcher)
+        assertEquals("e+1", g.getValue("SWIPE_3_LEFT").arg)
+        assertEquals("e-1", g.getValue("SWIPE_3_RIGHT").arg)
+        assertEquals("launcher", g.getValue("PINCH_OUT").dispatcher)
+        assertEquals("overview", g.getValue("PINCH_IN").dispatcher)
+        assertEquals("false", c.wire.values["touch"])
+        assertTrue(error("hl.bind('gesture:wiggle', hl.dsp.overview())").contains("unknown gesture WIGGLE"))
+        assertTrue(error("hl.bind('ALT + gesture:edge_left', hl.dsp.overview())").contains("no modifiers"))
+        assertTrue(error("hl.gesture({ fingers = 2, direction = 'up', action = 'workspace' })").contains("3 to 5 fingers"))
+        val qs = load("hl.bind('gesture:edge_left', hl.dsp.quick_settings())")
+        assertEquals("quicksettings", binds(qs).single { it.key == "GESTURE:EDGE_LEFT" }.dispatcher)
+    }
+
+    @Test
     fun mouseBindsSetTheMouseModifier() {
         val c = load("""
             hl.bind("CTRL + mouse:272", hl.dsp.window.drag(), { mouse = true })

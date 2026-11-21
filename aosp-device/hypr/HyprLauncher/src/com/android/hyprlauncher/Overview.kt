@@ -36,7 +36,11 @@ class Overview(private val desktop: Desktop) {
         .createWindowContext(TYPE_SYSTEM_DIALOG, null)
     private val wm = ctx.getSystemService(WindowManager::class.java)
     private val grid = object : ViewGroup(ctx) {
-        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) = layoutCells(r - l, b - t)
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            // The shell's touch gestures (D6) leave the overview's touches alone.
+            systemGestureExclusionRects = listOf(Rect(0, 0, r - l, b - t))
+            layoutCells(r - l, b - t)
+        }
         override fun dispatchKeyEvent(event: KeyEvent): Boolean =
             onKey(event) || super.dispatchKeyEvent(event)
     }

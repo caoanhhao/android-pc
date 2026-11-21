@@ -100,5 +100,9 @@ hl.bar({
 ---- EVENTS ----
 ----------------
 
+-- Touch gestures (docs/hypr-lua.md): edges, 3-5 finger swipes, pinches on the wallpaper.
+-- hl.bind("gesture:edge_bottom", hl.dsp.launcher())
+-- hl.bind("gesture:swipe_3_down", hl.dsp.window.close())
+
 -- hl.on("workspace.active", function(ws) hl.notify("Workspace " .. ws.name) end)
 -- hl.on("window.open", function(w) print("opened " .. w.class) end)

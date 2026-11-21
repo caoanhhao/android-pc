@@ -238,6 +238,9 @@ hl.dsp = namespace("hl.dsp", {
   -- HyprLauncher's own: the rofi-like launcher and the hyprexpo-like overview.
   launcher = function() return dsp("launcher") end,
   overview = function() return dsp("overview") end,
+  -- SystemUI's notification shade and quick settings (the touch gestures' top edge).
+  notifications = function() return dsp("notifications") end,
+  quick_settings = function() return dsp("quicksettings") end,
   -- Any dispatcher by its Hyprland name: hl.dsp.raw("movefocus", "l").
   raw = function(name, arg) return dsp(tostring(name), arg) end,
   window = window,

@@ -1,6 +1,7 @@
 package com.android.systemui.wmshell
 
 import android.app.ActivityManager.RunningTaskInfo
+import android.app.StatusBarManager
 import android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD
 import android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM
 import android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED
@@ -154,6 +155,9 @@ class HyprTileController(
     private val animator = HyprAnimator()
     private var animationsEnabled = HyprStyleProps.animationsEnabled(Bundle())
     private val mouse = HyprMouse(inputManager, this)
+    private val touch = HyprTouch(context, inputManager, this, mainExecutor)
+    /** The window a dispatcher acts on instead of the focused one (the touch window menu). */
+    private var dispatchTarget: RunningTaskInfo? = null
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
     private val ownChanges = HashSet<IBinder>()
     /** Desk switches this controller started and animates. */
@@ -204,6 +208,7 @@ class HyprTileController(
         transitions.registerObserver(this)
         decorations.install()
         mouse.start()
+        touch.start()
         // Window titles change without a transition; the bar shows the focused one.
         taskOrganizer.addTaskInfoChangedListener(object : ShellTaskOrganizer.TaskInfoChangedListener {
             override fun onTaskInfoChanged(taskInfo: RunningTaskInfo) {
@@ -624,7 +629,18 @@ class HyprTileController(
             "togglefloating" -> toggleFloating()
             "togglesplit" -> toggleSplit()
             "fullscreen" -> if (arg.trim() == "1") toggleMaximize() else toggleFullscreen()
-            "killactive" -> shellKeyGestureHandler.ifPresent { it.quitFocusedDesktopTask() }
+            "killactive" -> {
+                val target = dispatchTarget
+                if (target != null) {
+                    decorViewModel.ifPresent { it.closeTask(target) }
+                } else {
+                    shellKeyGestureHandler.ifPresent { it.quitFocusedDesktopTask() }
+                }
+            }
+            "notifications" ->
+                context.getSystemService(StatusBarManager::class.java)?.expandNotificationsPanel()
+            "quicksettings" ->
+                context.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
             "exec" -> exec(arg.trim())
             "focuswindow" -> focusWindow(arg.trim().removePrefix("taskid:").toIntOrNull()
                 ?: return false)
@@ -634,6 +650,20 @@ class HyprTileController(
             else -> return false
         }
         return true
+    }
+
+    /**
+     * Runs [name] on window [taskId] instead of the focused one (the touch window menu): the
+     * dispatchers that act on "the focused window" take it. Main thread.
+     */
+    fun dispatchOn(taskId: Int, name: String, arg: String = ""): Boolean {
+        val task = taskOrganizer.getRunningTaskInfo(taskId) ?: return false
+        dispatchTarget = task
+        try {
+            return dispatch(name, arg)
+        } finally {
+            dispatchTarget = null
+        }
     }
 
     /**
@@ -655,7 +685,7 @@ class HyprTileController(
             ?: DEFAULT_DISPLAY
 
     /** The focused task when it is a desktop task of the active desk. */
-    private fun focusedTask(): RunningTaskInfo? = taskOrganizer.getRunningTasks().find {
+    private fun focusedTask(): RunningTaskInfo? = dispatchTarget ?: taskOrganizer.getRunningTasks().find {
         repository.isActiveTask(it.taskId) && focusTransitionObserver.hasGlobalFocus(it)
     }
 
@@ -867,6 +897,11 @@ class HyprTileController(
 
     /** Hyprland's `fullscreen 0`: Shell's real fullscreen, out of the desk and back. */
     private fun toggleFullscreen() {
+        dispatchTarget?.let { target ->
+            desktopTasksController.orElse(null)?.moveToFullscreen(
+                target.taskId, DesktopModeTransitionSource.KEYBOARD_SHORTCUT)
+            return
+        }
         desktopTasksController.orElse(null)?.toggleFocusedTaskFullscreenState(
             displayId = focusedDisplayId(),
             userId = repository.userId,
@@ -910,6 +945,70 @@ class HyprTileController(
         if (!wct.isEmpty) startChange(wct)
     }
 
+    // ---- touch (HyprTouch) ----
+
+    /** The topmost desktop window of the active desk under ([x], [y]), if any. */
+    fun windowAt(displayId: Int, x: Float, y: Float): RunningTaskInfo? {
+        if (!enabled) return null
+        val deskId = repository.getActiveDeskId(displayId) ?: return null
+        return repository.getExpandedTasksIdsInDeskOrdered(deskId).asSequence()
+            .mapNotNull { taskOrganizer.getRunningTaskInfo(it) }
+            .firstOrNull { it.isFreeform && it.bounds().let { b -> x >= b.left && x < b.right && y >= b.top && y < b.bottom } }
+    }
+
+    /**
+     * The window whose frame ([border] pixels inside its edges, the gap next to them, and
+     * [caption] pixels at its top) is under ([x], [y]): where a touch long-press opens the
+     * window menu. The topmost window under the point wins; a point in the middle of a window
+     * belongs to its app.
+     */
+    fun frameAt(displayId: Int, x: Float, y: Float, border: Int, caption: Int): RunningTaskInfo? {
+        if (!enabled) return null
+        val deskId = repository.getActiveDeskId(displayId) ?: return null
+        val tasks = repository.getExpandedTasksIdsInDeskOrdered(deskId)
+            .mapNotNull { taskOrganizer.getRunningTaskInfo(it) }.filter { it.isFreeform }
+        val under = tasks.firstOrNull { it.bounds().let { b -> x >= b.left && x < b.right && y >= b.top && y < b.bottom } }
+        if (under != null) {
+            val b = under.bounds()
+            // Tiled windows have no caption: their top belongs to the app (toolbars).
+            val top = if (tile.isTiled(under.taskId)) border else maxOf(border, caption)
+            val inFrame = x < b.left + border || x >= b.right - border || y >= b.bottom - border ||
+                y < b.top + top
+            return under.takeIf { inFrame }
+        }
+        // In a gap: the nearest window within reach.
+        return tasks.filter {
+            val b = it.bounds()
+            x >= b.left - border && x < b.right + border && y >= b.top - border && y < b.bottom + border
+        }.minByOrNull {
+            val b = it.bounds()
+            maxOf(b.left - x, x - b.right, 0f) + maxOf(b.top - y, y - b.bottom, 0f)
+        }
+    }
+
+    /** What the window menu needs: workspaces of the display and the window's own. */
+    fun menuState(task: RunningTaskInfo): Triple<Int, Int, Boolean> {
+        val desks = orderedDesks(task.displayId)
+        val ws = repository.getDeskIdForTask(task.taskId)?.let { desks.indexOf(it) + 1 } ?: 0
+        return Triple(desks.size, ws, tile.isTiled(task.taskId))
+    }
+
+    /** A window dragged by touch was dropped: as [mouseUp], plus snapping at the screen edges. */
+    fun touchDrop(x: Float, y: Float, edge: Int) {
+        val d = mouseDrag
+        if (d != null && !d.resize && !tile.isTiled(d.task.taskId)) {
+            val width = displayController.getDisplayLayout(d.task.displayId)?.width() ?: 0
+            if (width > 0 && (x < edge || x >= width - edge)) {
+                // A floating window dropped on the left or right edge joins the layout there.
+                mouseDrag = null
+                startOverride[d.task.taskId] = d.current
+                onSnap(d.task, left = x < edge)
+                return
+            }
+        }
+        mouseUp(x, y, cancelled = false)
+    }
+
     // ---- mouse binds (HyprMouse) ----
 
     /**
@@ -929,10 +1028,20 @@ class HyprTileController(
             toggleFloating(task)
             return true
         }
+        startDrag(task, x, y, resize = button == MotionEvent.BUTTON_SECONDARY)
+        return true
+    }
+
+    /** A touch long-press on [task]'s frame: it follows the finger like a MOD + left drag. */
+    fun touchHold(task: RunningTaskInfo, x: Float, y: Float) {
+        if (enabled) startDrag(task, x, y, resize = false)
+    }
+
+    private fun startDrag(task: RunningTaskInfo, x: Float, y: Float, resize: Boolean) {
         val b = task.configuration.windowConfiguration.bounds
         mouseDrag = MouseDrag(
             task = task,
-            resize = button == MotionEvent.BUTTON_SECONDARY,
+            resize = resize,
             x0 = x,
             y0 = y,
             bounds = Rect(b),
@@ -940,9 +1049,7 @@ class HyprTileController(
             bottom = y >= b.exactCenterY(),
             leash = decorations.surfaceOf(task.taskId),
         )
-        Log.d(TAG, "mouse ${if (button == MotionEvent.BUTTON_SECONDARY) "resize" else "move"} " +
-            "task ${task.taskId} from $b")
-        return true
+        Log.d(TAG, "drag ${if (resize) "resize" else "move"} task ${task.taskId} from $b")
     }
 
     fun mouseMove(x: Float, y: Float) {

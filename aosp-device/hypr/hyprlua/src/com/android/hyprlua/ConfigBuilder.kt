@@ -7,6 +7,9 @@ import com.android.hyprtile.DISPATCHERS
 import com.android.hyprtile.DecorationConfig
 import com.android.hyprtile.Direction
 import com.android.hyprtile.Gesture
+import com.android.hyprtile.TouchGesture
+import com.android.hyprtile.defaultTouchBinds
+import com.android.hyprtile.gestureBinds
 import com.android.hyprtile.Gradient
 import com.android.hyprtile.Mod
 import com.android.hyprtile.TileConfig
@@ -169,6 +172,14 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         val parsed = checked("bind '$keys'") { parseKeys(keys) }
         val (mods, key) = parsed
         if (flags.isNotEmpty()) warn("bind '$keys': ${flags.replace(",", ", ")} not supported, ignored")
+        if (TouchGesture.isGestureKey(key)) {
+            if (mods.isNotEmpty()) fail("bind '$keys': gestures take no modifiers")
+            val name = checked("bind '$keys'") { TouchGesture.nameOf(key) }
+            if (dispatcher == "__drag" || dispatcher == "__resize") fail("bind '$keys': drag and resize are mouse binds")
+            checkDispatcher(dispatcher, arg)?.let { fail("bind '$keys': $it") }
+            val k = TouchGesture.key(name)
+            return addOp(mods to k, Bind(mods, k, dispatcher, arg))
+        }
         if (key.startsWith("MOUSE:") || mouse) {
             val expected = when (key) {
                 "MOUSE:272" -> "__drag"
@@ -308,7 +319,13 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         }
         val mods = fields["mods"] ?: ""
         checked("gesture") { parseMods(mods) }
-        gestures += checked("gesture") { Gesture(fingers, direction, action, mods) }
+        val g = checked("gesture") { Gesture(fingers, direction, action, mods) }
+        gestures += g
+        // Played as gesture binds; a bind on the same gesture made later replaces it.
+        for (b in checked("gesture") { gestureBinds(g) }) {
+            checkDispatcher(b.dispatcher, b.arg)?.let { fail("gesture: $it") }
+            addOp(b.mods to b.key, b)
+        }
         dirty = true
     }
 
@@ -384,6 +401,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         val binds = LinkedHashMap<Pair<Set<Mod>, String>, Bind>()
         if (opt("shell.default_binds") == "true") {
             for (b in defaultBinds(mainMod, terminal, fileManager)) binds[b.mods to b.key] = b
+            for (b in defaultTouchBinds()) binds[b.mods to b.key] = b
         }
         for (op in bindOps) {
             if (op.removed || op.keys == null) continue
@@ -497,6 +515,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "master.new_on_top" to "new_on_top",
             "shell.caption" to "caption",
             "shell.tiling" to "tiling",
+            "shell.touch" to "touch",
         )
 
         private val tile = TileConfig()
@@ -527,6 +546,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.default_binds" to "true",
             "shell.caption" to "floating",
             "shell.tiling" to "true",
+            "shell.touch" to "true",
         )
 
         private fun intIn(range: IntRange): (String, String) -> String = { v, t ->
@@ -586,6 +606,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.default_binds" to boolOpt,
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
+            "shell.touch" to boolOpt,
         )
 
         /** Why [arg] does not suit [dispatcher], or null when it does. */

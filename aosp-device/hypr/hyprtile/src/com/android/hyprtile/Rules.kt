@@ -152,8 +152,8 @@ fun parseLayout(text: String): LayoutKind = when (text.trim().lowercase()) {
 
 /**
  * A touch gesture, Hyprland's `gesture`: [fingers] fingers swiping in [direction] run [action]
- * (a dispatcher line, `workspace` for Hyprland's workspace swipe). Recorded here for the touch
- * sub-phase (D6), which plays them.
+ * (a dispatcher line, `workspace` for Hyprland's workspace swipe). Played as touch gesture binds
+ * ([gestureBinds], Touch.kt).
  */
 data class Gesture(val fingers: Int, val direction: String, val action: String, val mods: String = "") {
     init {

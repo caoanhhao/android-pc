@@ -3,6 +3,7 @@ package com.android.hyprlauncher
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.TextWatcher
@@ -60,6 +61,10 @@ class AppLauncher(private val desktop: Desktop) {
         }
         val pad = desktop.dp(10f)
         root.setPadding(pad, pad, pad, pad)
+        // The shell's touch gestures (D6) leave the launcher's touches alone.
+        root.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            v.systemGestureExclusionRects = listOf(Rect(0, 0, v.width, v.height))
+        }
 
         search.hint = "Run…"
         search.setHintTextColor(Bar.DIM)
