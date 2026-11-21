@@ -1,0 +1,27 @@
+// hyprtile: the layout engine of the Phase D desktop shell (docs/hypr-desktop.md). Plain
+// Kotlin with no Android types, so it runs in PcSystemUI and in host unit tests alike.
+
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64/hypr:__subpackages__"],
+}
+
+java_library {
+    name: "hyprtile",
+    host_supported: true,
+    srcs: ["src/**/*.kt"],
+    static_libs: ["kotlin-stdlib"],
+    sdk_version: "core_current",
+}
+
+// Host-side unit tests: `atest hyprtile-tests`, or run-tests.sh without Soong.
+java_test_host {
+    name: "hyprtile-tests",
+    srcs: ["tests/src/**/*.kt"],
+    static_libs: [
+        "hyprtile",
+        "junit",
+    ],
+    test_options: {
+        unit_test: true,
+    },
+}
