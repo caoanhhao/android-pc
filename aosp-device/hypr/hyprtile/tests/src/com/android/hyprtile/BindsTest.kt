@@ -33,6 +33,8 @@ class BindsTest {
         assertTrue(Bind(setOf(Mod.ALT), "5", "workspace", "5") in binds)
         assertTrue(Bind(setOf(Mod.ALT, Mod.SHIFT), "9", "movetoworkspace", "9") in binds)
         assertTrue(Bind(setOf(Mod.ALT), "Q", "exec", "com.termux") in binds)
+        assertTrue(Bind(setOf(Mod.ALT), "D", "launcher") in binds)
+        assertTrue(Bind(setOf(Mod.ALT), "GRAVE", "overview") in binds)
         assertTrue(defaultBinds(setOf(Mod.SUPER)).none { it.key == "Q" })
     }
 

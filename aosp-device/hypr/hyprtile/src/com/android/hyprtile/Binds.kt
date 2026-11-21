@@ -39,7 +39,8 @@ fun parseBind(line: String): Bind {
  * The default binds, after Hyprland's example configuration with [mainMod] as `$mainMod`:
  * workspaces 1-9, movefocus/movewindow on the arrows, C killactive, V togglefloating,
  * J togglesplit, F maximize (`fullscreen 1`), SHIFT F fullscreen, E the file manager and,
- * when [terminal] is set, Q the terminal.
+ * when [terminal] is set, Q the terminal. D and SPACE open HyprLauncher's app launcher (rofi's
+ * usual binds), GRAVE its overview (hyprexpo's).
  */
 fun defaultBinds(
     mainMod: Set<Mod>,
@@ -50,6 +51,9 @@ fun defaultBinds(
     val binds = ArrayList<Bind>()
     if (!terminal.isNullOrEmpty()) binds += Bind(mainMod, "Q", "exec", terminal)
     if (!fileManager.isNullOrEmpty()) binds += Bind(mainMod, "E", "exec", fileManager)
+    binds += Bind(mainMod, "D", "launcher")
+    binds += Bind(mainMod, "SPACE", "launcher")
+    binds += Bind(mainMod, "GRAVE", "overview")
     binds += Bind(mainMod, "C", "killactive")
     binds += Bind(mainMod, "V", "togglefloating")
     binds += Bind(mainMod, "J", "togglesplit")

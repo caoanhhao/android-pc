@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.hardware.input.InputManager
+import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemProperties
 import android.os.UserHandle
@@ -42,6 +43,7 @@ import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
 import com.android.wm.shell.common.ShellExecutor
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.EnterReason
+import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.UnminimizeReason
 import com.android.wm.shell.desktopmode.DesktopMixedTransitionHandler
 import com.android.wm.shell.desktopmode.DesktopModeKeyGestureHandler
 import com.android.wm.shell.desktopmode.DesktopModeTransitionTypes.TRANSIT_DESKTOP_MODE_DESK_TO_DESK_SWITCH
@@ -86,6 +88,10 @@ import java.util.Optional
  * closing): as the newest handler it is asked before Shell's own animations. [HyprMouse] adds
  * Hyprland's mouse binds (MOD + left drag moves, MOD + right drag resizes, MOD + middle click
  * toggles floating).
+ *
+ * Phase D4: [HyprShell] hands HyprLauncher (home, bar, launcher, overview) the dispatchers and
+ * a [state] of the workspaces and windows; the bar's strip is kept out of the layout
+ * ([setBarReserved]), and the `launcher` and `overview` dispatchers go to the launcher.
  */
 class HyprTileController(
     private val context: Context,
@@ -105,7 +111,14 @@ class HyprTileController(
     private val decorViewModel: Optional<DesktopModeWindowDecorViewModel>,
 ) : Transitions.TransitionHandler, Transitions.TransitionObserver {
 
-    private val tile = HyprTile(readConfig())
+    /** Configuration pushed by the launcher (IHyprShell.setConfig), over the properties. */
+    @Volatile
+    var configOverrides: Bundle = Bundle()
+        set(value) {
+            field = value
+            mainExecutor.execute(syncRunnable)
+        }
+    private val tile = HyprTile(readConfig(Bundle()))
     /** Bounds hyprtile last gave each task; a task is only moved when its tile changes. */
     private val applied = HashMap<Int, Rect>()
     private val syncRunnable = Runnable { sync() }
@@ -134,6 +147,13 @@ class HyprTileController(
     /** Where a window really is when a transition starts (a mouse-dragged window), absolute. */
     private val startOverride = HashMap<Int, Rect>()
     private var mouseDrag: MouseDrag? = null
+    /** Strips the launcher's bar keeps per display: top and bottom heights (Phase D4). */
+    private val barReserved = HashMap<Int, Pair<Int, Int>>()
+
+    /** Dispatchers the launcher runs (`launcher`, `overview`); set by [HyprShell]. */
+    var launcherDispatch: ((String, String) -> Boolean)? = null
+    /** Called on Shell's main thread when workspaces, windows or focus may have changed. */
+    var onStateChanged: (() -> Unit)? = null
 
     private data class DeskSwitch(val displayId: Int, val from: Int, val to: Int)
 
@@ -168,6 +188,12 @@ class HyprTileController(
         transitions.registerObserver(this)
         decorations.install()
         mouse.start()
+        // Window titles change without a transition; the bar shows the focused one.
+        taskOrganizer.addTaskInfoChangedListener(object : ShellTaskOrganizer.TaskInfoChangedListener {
+            override fun onTaskInfoChanged(taskInfo: RunningTaskInfo) {
+                onStateChanged?.invoke()
+            }
+        })
         Log.i(TAG, "hyprtile ready: ${tile.config}, animations " +
             (if (animationsEnabled) "on" else "off"))
     }
@@ -416,7 +442,10 @@ class HyprTileController(
     }
 
     private fun sync() {
-        if (!enabled) return
+        if (!enabled) {
+            onStateChanged?.invoke()
+            return
+        }
         val configChanged = updateConfig()
         val repo = repository
         val displays = repo.getAllDeskIds()
@@ -458,6 +487,7 @@ class HyprTileController(
         maximized.retainAll { tile.isTiled(it) }
         refreshCaptions()
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
+        onStateChanged?.invoke()
     }
 
     // ---- dispatchers (Hyprland's names; Phase D2) ----
@@ -490,9 +520,28 @@ class HyprTileController(
             "fullscreen" -> if (arg.trim() == "1") toggleMaximize() else toggleFullscreen()
             "killactive" -> shellKeyGestureHandler.ifPresent { it.quitFocusedDesktopTask() }
             "exec" -> exec(arg.trim())
+            "focuswindow" -> focusWindow(arg.trim().removePrefix("taskid:").toIntOrNull()
+                ?: return false)
+            // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview).
+            "launcher", "overview", "hyprexpo:expo" ->
+                return launcherDispatch?.invoke(name, arg) ?: false
             else -> return false
         }
         return true
+    }
+
+    /**
+     * Hyprland's `focuswindow`, by task id: switches to the window's workspace if needed and
+     * brings it to front (a minimized window comes back), with Shell's own transition.
+     */
+    private fun focusWindow(taskId: Int) {
+        val controller = desktopTasksController.orElse(null) ?: return
+        val task = taskOrganizer.getRunningTaskInfo(taskId)
+        if (task == null) {
+            controller.moveTaskToFront(taskId, repository.userId, null, UnminimizeReason.TASKBAR_TAP)
+        } else {
+            controller.moveTaskToFront(task, null, UnminimizeReason.TASKBAR_TAP)
+        }
     }
 
     private fun focusedDisplayId(): Int =
@@ -679,10 +728,7 @@ class HyprTileController(
         val task = focusedTask() ?: return
         val id = task.taskId
         val deskId = tile.workspaceOf(id) ?: return
-        val stable = Rect().also {
-            displayController.getDisplayLayout(task.displayId)?.getStableBoundsForDesktopMode(it)
-                ?: return
-        }
+        val stable = desktopBounds(task.displayId) ?: return
         val wct = WindowContainerTransaction()
         if (maximized.remove(id)) {
             applied.remove(id)
@@ -863,10 +909,96 @@ class HyprTileController(
     }
 
     private fun workArea(displayId: Int): Box? {
-        val layout = displayController.getDisplayLayout(displayId) ?: return null
-        val stable = Rect().also { layout.getStableBoundsForDesktopMode(it) }
+        val stable = desktopBounds(displayId) ?: return null
         return Box(stable.left, stable.top, stable.right, stable.bottom)
     }
+
+    /**
+     * Shell's stable bounds for desktop windows without the launcher's bar: the bar provides
+     * its own insets, which Shell's [com.android.wm.shell.common.DisplayLayout] does not count
+     * (it only takes the navigation bar and the status bar's resource height).
+     */
+    private fun desktopBounds(displayId: Int): Rect? {
+        val layout = displayController.getDisplayLayout(displayId) ?: return null
+        val stable = Rect().also { layout.getStableBoundsForDesktopMode(it) }
+        barReserved[displayId]?.let { (top, bottom) ->
+            stable.top = maxOf(stable.top, top)
+            stable.bottom = minOf(stable.bottom, layout.height() - bottom)
+        }
+        return stable
+    }
+
+    /**
+     * The launcher's bar keeps [top] and [bottom] pixels of [displayId] (Hyprland's
+     * `reserved`, set by the bar itself as waybar's exclusive zone is). Re-tiles at once.
+     */
+    fun setBarReserved(displayId: Int, top: Int, bottom: Int) {
+        val value = top.coerceAtLeast(0) to bottom.coerceAtLeast(0)
+        if (barReserved[displayId] == value) return
+        Log.i(TAG, "bar reserves top=$top bottom=$bottom on display $displayId")
+        barReserved[displayId] = value
+        applied.clear()
+        mainExecutor.removeCallbacks(syncRunnable)
+        mainExecutor.execute(syncRunnable)
+    }
+
+    /**
+     * The workspaces and windows of [displayId] for the launcher's bar and overview (Phase D4):
+     * `workspaces` (count), `active` (1-based, 0 = none: home), `focusedTask`, and per window
+     * the parallel arrays `taskIds`, `taskWorkspaces`, `taskPackages`, `taskTitles`,
+     * `taskBounds` (left, top, right, bottom each), `taskFloating`, `taskMinimized`, ordered
+     * front to back within each workspace.
+     */
+    fun state(displayId: Int): Bundle {
+        val out = Bundle()
+        if (!userRepositories.isPresent) return out
+        val repo = repository
+        val desks = orderedDesks(displayId)
+        val active = repo.getActiveDeskId(displayId)
+        out.putInt("workspaces", desks.size)
+        out.putInt("active", active?.let { desks.indexOf(it) + 1 } ?: 0)
+        val focused = focusedTask()
+        out.putInt("focusedTask", focused?.taskId ?: -1)
+        out.putString("focusedPackage", focused?.let { packageOf(it) })
+        out.putString("focusedTitle", focused?.let { titleOf(it) })
+        val ids = ArrayList<Int>()
+        val ws = ArrayList<Int>()
+        val pkgs = ArrayList<String>()
+        val titles = ArrayList<String>()
+        val bounds = ArrayList<Int>()
+        val floating = ArrayList<Boolean>()
+        val minimized = ArrayList<Boolean>()
+        for ((i, deskId) in desks.withIndex()) {
+            val visible = repo.getExpandedTasksIdsInDeskOrdered(deskId)
+            val all = visible + repo.getActiveTaskIdsInDesk(deskId).filter { it !in visible }
+            for (id in all) {
+                val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+                if (task.activityType != ACTIVITY_TYPE_STANDARD) continue
+                ids += id
+                ws += i + 1
+                pkgs += packageOf(task) ?: ""
+                titles += titleOf(task) ?: ""
+                val b = task.configuration.windowConfiguration.bounds
+                bounds += listOf(b.left, b.top, b.right, b.bottom)
+                floating += !tile.isTiled(id)
+                minimized += repo.isMinimizedTask(id)
+            }
+        }
+        out.putIntArray("taskIds", ids.toIntArray())
+        out.putIntArray("taskWorkspaces", ws.toIntArray())
+        out.putStringArray("taskPackages", pkgs.toTypedArray())
+        out.putStringArray("taskTitles", titles.toTypedArray())
+        out.putIntArray("taskBounds", bounds.toIntArray())
+        out.putBooleanArray("taskFloating", floating.toBooleanArray())
+        out.putBooleanArray("taskMinimized", minimized.toBooleanArray())
+        return out
+    }
+
+    private fun packageOf(task: RunningTaskInfo): String? =
+        (task.baseActivity ?: task.topActivity)?.packageName
+
+    private fun titleOf(task: RunningTaskInfo): String? =
+        task.taskDescription?.label?.takeIf { it.isNotEmpty() }
 
     /** How far apart two neighbours may be: the gaps between them and a little more. */
     private fun slack() = 2 * tile.config.gapsIn + 4
@@ -886,8 +1018,7 @@ class HyprTileController(
         wct: WindowContainerTransaction,
         trigger: RunningTaskInfo? = null,
     ) {
-        val layout = displayController.getDisplayLayout(displayId) ?: return
-        val stable = Rect().also { layout.getStableBoundsForDesktopMode(it) }
+        val stable = desktopBounds(displayId) ?: return
         val boxes = tile.arrange(deskId, Box(stable.left, stable.top, stable.right, stable.bottom))
         for ((id, box) in boxes) {
             if (id in maximized) continue
@@ -933,7 +1064,7 @@ class HyprTileController(
         decorations.setConfig(HyprStyleProps.decoration())
         animator.config = HyprStyleProps.animations()
         animationsEnabled = HyprStyleProps.animationsEnabled()
-        val fresh = readConfig()
+        val fresh = readConfig(configOverrides)
         if (fresh == tile.config) return false
         tile.config = fresh
         applied.clear()
@@ -948,11 +1079,16 @@ class HyprTileController(
         /** Smallest floating window a mouse resize makes, unless the app asks for more. */
         const val MIN_SIZE = 200
 
-        fun readConfig(): TileConfig {
+        /**
+         * The tiling configuration: [overrides] (string values under the property names without
+         * `persist.hypr.`, from IHyprShell.setConfig) first, then the persist.hypr.* properties.
+         */
+        fun readConfig(overrides: Bundle): TileConfig {
             val d = TileConfig()
-            fun int(name: String, def: Int) = SystemProperties.getInt("persist.hypr.$name", def)
+            fun str(name: String) = overrides.getString(name) ?: SystemProperties.get("persist.hypr.$name")
+            fun int(name: String, def: Int) = str(name).trim().toIntOrNull() ?: def
             return d.copy(
-                layout = if (SystemProperties.get("persist.hypr.layout") == "master") {
+                layout = if (str("layout") == "master") {
                     LayoutKind.MASTER
                 } else {
                     LayoutKind.DWINDLE
@@ -960,7 +1096,7 @@ class HyprTileController(
                 gapsIn = int("gaps_in", d.gapsIn).coerceAtLeast(0),
                 gapsOut = int("gaps_out", d.gapsOut).coerceAtLeast(0),
                 reserved = Insets(top = int("reserved_top", 0), bottom = int("reserved_bottom", 0)),
-                floatPackages = SystemProperties.get("persist.hypr.float_packages")
+                floatPackages = str("float_packages")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
             )
         }

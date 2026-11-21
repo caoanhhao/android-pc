@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="android.pc.hypr.overlay">
+
+    <application android:hasCode="false" />
+
+    <!-- Above the desktop overlay (10) and Cuttlefish's phone overlay (2). -->
+    <overlay
+      android:targetPackage="android"
+      android:isStatic="true"
+      android:priority="11"
+      />
+</manifest>

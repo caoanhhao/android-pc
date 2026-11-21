@@ -28,6 +28,9 @@ public interface PcWMComponent extends WMComponent {
     /** Routes Shell's snap events to hyprtile instead of Shell's two-window tiling. */
     HyprSnapHandler getHyprSnapHandler();
 
+    /** IHyprShell, handed to HyprLauncher with Shell's other external interfaces. */
+    HyprShell getHyprShell();
+
     /**
      * Creates the hyprtile controller after all of Shell's objects (getShell() pulls in the
      * whole graph), so its ShellInit callback runs last and its transition handler is the newest
@@ -39,6 +42,7 @@ public interface PcWMComponent extends WMComponent {
         getHyprTileController();
         getHyprKeybinds();
         getHyprSnapHandler();
+        getHyprShell();
         WMComponent.super.init();
     }
 }

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HyprLauncher (Phase D4, docs/hypr-desktop.md): the HOME activity and the recents provider
+     (config_recentsComponentName names it; SystemUI binds its QUICKSTEP_SERVICE and hands it
+     WM Shell's interfaces, IHyprShell among them). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="com.android.hyprlauncher">
+
+    <uses-permission android:name="android.permission.STATUS_BAR_SERVICE"/>
+    <uses-permission android:name="android.permission.INTERNAL_SYSTEM_WINDOW"/>
+    <uses-permission android:name="android.permission.MANAGE_ACTIVITY_TASKS"/>
+    <uses-permission android:name="android.permission.READ_FRAME_BUFFER"/>
+    <uses-permission android:name="android.permission.MANAGE_ROLE_HOLDERS"/>
+    <uses-permission android:name="android.permission.REAL_GET_TASKS"/>
+    <uses-permission android:name="android.permission.START_TASKS_FROM_RECENTS"/>
+    <uses-permission android:name="android.permission.STATUS_BAR"/>
+    <uses-permission android:name="android.permission.EXPAND_STATUS_BAR"/>
+    <uses-permission android:name="android.permission.MANAGE_KEY_GESTURES"/>
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".HomeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:clearTaskOnLaunch="true"
+            android:stateNotNeeded="true"
+            android:excludeFromRecents="true"
+            android:resumeWhilePausing="true"
+            android:resizeableActivity="true"
+            android:configChanges="keyboard|keyboardHidden|mcc|mnc|navigation|orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode"
+            android:theme="@style/HomeTheme">
+            <!-- Above Settings' FallbackHome (-1000) and any HOME left at the default 0. -->
+            <intent-filter android:priority="1">
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.HOME"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.LAUNCHER_APP"/>
+            </intent-filter>
+        </activity>
+
+        <!-- Bound by SystemUI's LauncherProxyService (ILauncherProxy), as Quickstep's
+             TouchInteractionService is. Direct boot aware like Quickstep's: SystemUI decides
+             once, at its start, whether the service resolves, and with a lock credential that
+             is before the user is unlocked. -->
+        <service
+            android:name=".LauncherService"
+            android:directBootAware="true"
+            android:permission="android.permission.STATUS_BAR_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.QUICKSTEP_SERVICE"/>
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

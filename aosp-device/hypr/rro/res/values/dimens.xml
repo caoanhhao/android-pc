@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase D4: SystemUI's status bar is folded into HyprLauncher's bar (workspaces, title, apps,
+     notification and quick settings entries, clock), so it gets no height: its window and its
+     insets are empty, and the notification shade and quick settings still open from the bar
+     (StatusBarManager). docs/hypr-desktop.md, "The status bar". -->
+<resources>
+    <dimen name="status_bar_height_default">0dp</dimen>
+    <dimen name="status_bar_height_portrait">0dp</dimen>
+    <dimen name="status_bar_height_landscape">0dp</dimen>
+</resources>

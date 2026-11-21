@@ -1,5 +1,5 @@
 # Desktop mode (phase F9f, docs/desktop-mode.md): AOSP's own desktop windowing on the
-# primary display (freeform windows with caption bars, Launcher3's taskbar), landscape only.
+# primary display (freeform windows), landscape only; the shell on top is Phase D's.
 
 # Freeform windows: without this feature WindowManager refuses WINDOWING_MODE_FREEFORM.
 PRODUCT_COPY_FILES += \
@@ -20,10 +20,9 @@ DEVICE_PACKAGE_OVERLAYS += $(PC_DEVICE_DIR)/desktop/overlay
 PRODUCT_PRODUCT_PROPERTIES += \
     persist.wm.debug.force_desktop_first_on_default_display_for_testing=true
 
-# Smart Dock (cu.axel.smartdock, from tools/fetch-apps.sh; pc.mk installs it) is the default
-# launcher: smartdock-setup.sh makes it the home app and grants its permissions once per
-# userdata (phase H4). Launcher3 stays installed only as the recents provider (phase I2):
-# tools/patches/aosp17-launcher3-recents-only.patch disables its home activity, and the
-# pc_desktop_overlay_frameworks_base_core RRO turns the navigation bar off, so it draws no
-# taskbar.
-PRODUCT_PACKAGES += init.desktop.rc smartdock-setup.sh pc_desktop_overlay_frameworks_base_core
+# No navigation bar (phase I2): the pc_desktop_overlay_frameworks_base_core RRO turns it off.
+# Smart Dock (H4) and Launcher3 as recents provider only (I2) were the launcher until Phase D4;
+# HyprLauncher replaces both (hypr/hypr.mk), so smartdock-setup.sh and init.desktop.rc are no
+# longer installed (docs/desktop-mode.md, "Smart Dock" and "Launcher3 only as the recents
+# provider", kept for the record).
+PRODUCT_PACKAGES += pc_desktop_overlay_frameworks_base_core

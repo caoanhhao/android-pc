@@ -8,7 +8,9 @@ workspaces 1-9, Hyprland's dispatchers on ALT keybinds, Shell's snapping routed 
 ("Workspaces and keybinds (D2)"). D3 done: no caption on tiled windows, rounded corners,
 gradient borders, opacity, Hyprland-style bezier animations for opening, closing, re-tiling
 and workspace switches, mouse binds; one Shell extension point
-("Decoration and animation (D3)"). This note
+("Decoration and animation (D3)"). D4 done: `HyprLauncher` is home and recents provider in place
+of Smart Dock and Launcher3, with a waybar-like bar, a rofi-like launcher and a hyprexpo-like
+overview, talking to the shell through `IHyprShell` ("`HyprLauncher` (D4)"). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -731,6 +733,161 @@ Known limits:
   the shell code is the same APK.
 
 
+## `HyprLauncher` (D4)
+
+Code: `aosp-device/hypr/HyprLauncher/` (Kotlin, `android_app`, `system_ext`, privileged,
+platform key, `privapp_whitelist_com.android.hyprlauncher`), `aosp-device/hypr/hyprshell-aidl/`
+(`IHyprShell`, `IHyprShellListener`), `PcSystemUI/.../wmshell/HyprShell.kt` (the Shell side),
+`aosp-device/hypr/rro/` (`hypr_overlay_frameworks_base_core`) and, in the engine, `Fuzzy.kt`.
+Still no `frameworks/base` change.
+
+### Home and recents provider
+
+| Piece | How |
+|---|---|
+| HOME | `HomeActivity` (HOME filter at priority 1, above Settings' `FallbackHome`): the wallpaper, an empty Hyprland workspace, with a one-line key hint. Back does nothing, HOME again closes the launcher and the overview |
+| Recents provider | `config_recentsComponentName` = `com.android.hyprlauncher/.RecentsActivity` in the RRO. SystemUI only uses the package (it binds the package's `QUICKSTEP_SERVICE`); WindowManager gives the package's uid the `recents` permissions and lets it provide insets. The class does not exist on purpose: naming `HomeActivity` would make WindowManager type home as recents, and the overview is a window, not an activity |
+| `LauncherService` | the `QUICKSTEP_SERVICE` (permission `STATUS_BAR_SERVICE`, like Quickstep's `TouchInteractionService`), an `ILauncherProxy.Stub`. Of the 29 calls it implements `onInitialize`, `onOverviewToggle`/`Shown`/`Hidden`, `onSystemUiStateChanged` (keyguard) and `onUnbind`; the rest are navigation bar, taskbar and assistant callbacks that a desktop without them never needs. The AIDL is a copy of SystemUI's (`src/com/android/systemui/shared/recents/`), not `SystemUISharedLib`, which would pull most of SystemUI's shared code into the launcher |
+| Direct boot | the service is `directBootAware`, as Quickstep's is: `LauncherProxyService` resolves the service once, when SystemUI starts, and with a lock credential that is before the user is unlocked; a non-aware service was never bound (`mIsEnabled=false`). Its preferences live in device-protected storage; the app list reloads at `USER_UNLOCKED` |
+| Key gestures | in AOSP 17 Quickstep, not `PhoneWindowManager`, handles Alt+Tab (`KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER`, "gesture 54 is not supported" without it), META+Tab (`RECENT_APPS`) and the all-apps key (`ALL_APPS`); HyprLauncher registers them (`MANAGE_KEY_GESTURES`, `signature\|recents`) |
+
+### `IHyprShell`
+
+`PcSystemUI`'s `HyprShell` registers an `IHyprShell.Stub` with `ShellController.addExternalInterface()`
+under its descriptor, so `LauncherProxyService` puts it into the Bundle of
+`ILauncherProxy.onInitialize()` next to `IDesktopMode`, `IRecentTasks` and Shell's other
+interfaces (the launcher logs the keys it got). Calls check `MANAGE_ACTIVITY_TASKS`, as Shell's
+own interfaces do, which the recents provider holds; no permission of our own.
+
+| Call | What |
+|---|---|
+| `dispatch(name, arg)` | `HyprTileController.dispatch`, plus `focuswindow <task id>` (new: switches to the window's workspace and brings it to front, minimized or not, through `DesktopTasksController.moveTaskToFront`) |
+| `setReserved(display, top, bottom)` | the bar's strip (waybar's exclusive zone). Shell's `DisplayLayout.getStableBoundsForDesktopMode()` counts only the navigation bar and the status bar's resource height, not insets other windows provide, so hyprtile takes the larger of Shell's top and the bar's |
+| `setConfig(Bundle)` | string values under the `persist.hypr.*` names (`layout`, `gaps_in`, `gaps_out`, `reserved_*`, `float_packages`) over the properties; D5's Lua fills it, and the decoration and animation settings join it then |
+| `getState(display)`, listener `onStateChanged` | workspaces (count, active), focused task, and per window its task id, workspace, package, title (`TaskDescription` label), bounds, floating and minimized flags. Pushed 50 ms after every layout sync and every task-info change (titles change without a transition) |
+| listener `onEvent` | Hyprland's socket events derived from consecutive states: `workspace>>N`, `activewindow>>package,title`, `openwindow>>id,package`, `closewindow>>id` (for D5's `hl.on`) |
+| listener `onDispatch` | the `launcher` and `overview` (`hyprexpo:expo`) dispatchers, which the launcher runs |
+
+New default binds (hyprtile `Binds.kt`): `$mod D` and `$mod SPACE` → `launcher`, `$mod GRAVE`
+→ `overview`.
+
+### The bar
+
+A `TYPE_STATUS_BAR_ADDITIONAL` window across the top, 30 dp (33 px on Waydroid's density 180):
+
+- **Apps** button (the launcher), **workspaces** 1..N (N = the desks that exist; the active one
+  filled, occupied ones bright, empty ones dim; click switches, the mouse wheel over the bar
+  steps `e±1` as in waybar), the **focused window's title** (task label, else the app's name),
+  **running apps** (one icon per window, all workspaces; dimmed when not on the active one or
+  minimized; click focuses it, switching workspace), **notifications** and **quick settings**
+  (`StatusBarManager.expandNotificationsPanel()` / `expandSettingsPanel()`), the **clock**.
+- **Window type.** Launcher3's taskbar uses `TYPE_NAVIGATION_BAR_PANEL`, but that layer (25) is
+  above the notification shade and the keyguard (17); `STATUS_BAR_ADDITIONAL` (16) is above apps
+  and the launcher's panels (system dialogs, 6) and below the shade, where a status bar belongs.
+  The keyguard is see-through, so the bar hides while it shows (`onSystemUiStateChanged`,
+  keyguard showing and not occluded).
+- **Insets.** It provides `statusBars` and `tappableElement` insets of its height (the recents
+  provider may), so an app that takes the whole screen lays out below it and an immersive one
+  hides it; and it tells hyprtile through `setReserved` (above). Tiles start at
+  33 + `gaps_out`.
+
+### The status bar of SystemUI: hidden
+
+Decided: SystemUI's status bar has no height (`status_bar_height_default`, `_portrait`,
+`_landscape` = 0 in the RRO). The bar has what a desktop needs from it (clock, notification and
+quick settings entries); a second strip above or below it would cost space and duplicate the
+clock. Its window and insets are empty; the shade, quick settings, heads-up notifications and the
+keyguard still work (they are the notification shade window, opened from the bar). Not kept:
+SystemUI's status icons (battery, network, the notification icons); the notification entry and
+quick settings show them. A tray with icons is D5 material (bar modules in Lua).
+
+### App launcher
+
+rofi-like: a centred box (system dialog window, dim behind), search field, list of apps
+(`queryIntentActivities` MAIN/LAUNCHER, reloaded on package changes). Fuzzy matching is
+hyprtile's `fuzzyScore`/`fuzzyFilter` (characters in order, bonuses for consecutive matches, word
+starts and the first letter, small penalties for gaps; unit-tested). Keyboard driven: type,
+Up/Down or Tab, Page Up/Down, Enter starts, Esc closes; a click starts, a click outside or losing
+focus closes. The app starts on the default display; desktop mode puts it on the active
+workspace and hyprtile tiles it. Bound to `$mod D`, `$mod SPACE`, the bar's Apps button and the
+all-apps key.
+
+### Overview
+
+After hyprexpo: a full-screen panel with every workspace as a display-shaped cell in a grid (up
+to 3 columns), each window drawn at its real place from its task snapshot
+(`TaskSnapshotManager.takeTaskSnapshot` for visible windows, the cached one for others, the app
+icon when there is none; `READ_FRAME_BUFFER` comes with the recents role). Click a window: focus
+it (switching workspace); click a cell: that workspace; 1-9 switch; arrows/Tab move the
+selection, Enter focuses it, Esc or `` ` `` closes. Bound to `$mod GRAVE`, META+Tab and the
+recents key (`onOverviewToggle`). Alt+Tab opens it on the next window (the active workspace's
+windows front to back, then the others), Tab steps on, releasing Alt focuses the selection.
+
+### HOME on fresh and existing userdata
+
+- **Fresh userdata:** the role controller picks the only HOME activity besides `FallbackHome`;
+  no chooser.
+- **Existing userdata** (Smart Dock the HOME role holder, set by H4's setup script): the build
+  no longer has Smart Dock or Launcher3, Android drops them at the first boot (new
+  fingerprint), and the role controller gives the role to HyprLauncher. `HomeRole.kt` is the
+  safety net: once per user, if the holder is empty, Smart Dock, Launcher3 or not installed, it
+  takes the role (`MANAGE_ROLE_HOLDERS`, platform key) and starts HOME; a launcher the user chose
+  later is kept.
+- Smart Dock's other first-boot grants (notification listener, overlay and usage app ops,
+  `WRITE_SECURE_SETTINGS`, its accessibility service in `enabled_accessibility_services`) stay
+  in such a userdata, pointing at a package that is gone; harmless.
+
+### What left the product
+
+`HyprLauncher` overrides `Launcher3`, `Launcher3QuickStep` (and the Go variants), `hypr.mk`
+filters `SmartDock` out of `PRODUCT_PACKAGES`, and `desktop.mk` no longer installs
+`smartdock-setup.sh` and `init.desktop.rc` (kept in `aosp-device/desktop/` for the record). The
+Launcher3 patches (`aosp17-launcher3-recents-only.patch`, `aosp17-launcher3-taskbar-npe.patch`)
+stay in `tools/patches/`, superseded: they only matter for a build that ships Launcher3.
+`config_showNavigationBar=false` (I2) and `config_disableLockscreenByDefault` (H4) stay.
+`tools/fetch-apps.sh smartdock` still downloads it; it is not installed. Checked on the built
+images (`system_ext.img`, `product.img`, `vendor.img`, extracted with `fsck.erofs`):
+`HyprLauncher.apk` and its permissions file on system_ext, the RRO on vendor, no Launcher3,
+`SmartDock`, `smartdock-setup.sh` or `init.desktop.rc`.
+
+### Checked on Waydroid (2026-11-21)
+
+Waydroid is the test target (the user, 2026-11-21; Cuttlefish was not started). Through the
+overlay as for D1-D3: `system_ext/priv-app/{PcSystemUI,HyprLauncher}`,
+`system_ext/etc/permissions/com.android.hyprlauncher.xml`,
+`vendor/overlay/hypr_overlay_frameworks_base_core.apk`, and overlayfs whiteouts (`mknod c 0 0`)
+for `system_ext/priv-app/Launcher3QuickStep` and `product/app/SmartDock` (with `SystemUI`'s from
+D1). 2538x1058 at density 180.
+
+| Check | Result |
+|---|---|
+| D1-D3 test data (existing) | HOME role `com.android.hyprlauncher`, `HomeActivity` resumed, Smart Dock and Launcher3 not installed, the RRO enabled |
+| Empty test data (fresh) | the same, no chooser; `query-activities ... HOME` lists only `HomeActivity` and `FallbackHome` |
+| The user's data (existing, Smart Dock the holder in `roles.xml`, a lock credential) | after the boot the holder is `com.android.hyprlauncher`; the user is `RUNNING_LOCKED`, so `FallbackHome` until the user unlocks (not done: the credential is the user's); SystemUI is connected to the launcher already (direct boot) and the bar hides under the keyguard |
+| SystemUI → launcher | `LauncherProxyService isConnected=true`; `onInitialize` carries `IHyprShell` with Shell's 11 interfaces; `bar reserves top=33` in hyprtile |
+| Bar | workspaces, title, running apps, clock; SystemUI's status bar strip gone; clicks switch workspaces (`dispatch workspace 1`) and focus windows; the bell and the gear open the shade and quick settings |
+| Launcher | ALT+D and ALT+SPACE open it with focus (`mCurrentFocus=HyprLauncher`), `sett` → Settings first, Enter opens apps that tile below the bar (`[12,45]` top-left) |
+| Overview | ALT+` shows workspaces 1-3 with snapshots; a click on a window of another workspace switches there and focuses it (`dispatch focuswindow 41`); Esc closes |
+| Alt+Tab | switches between the two most recent windows (`dispatch focuswindow 47`); the recents key toggles the overview |
+| Crashes | none from SystemUI or HyprLauncher (the user's data has a DeskClock database downgrade crash from LineageOS 20, unrelated) |
+
+Screenshots: `out/hypr-d4/` (`home.png`, `launcher.png`, `tiled3.png`, `overview.png`,
+`shade.png`, `qs.png`, `fresh-tiled.png`, `fresh-overview.png`, `real-keyguard.png`).
+
+Found on the way: the service has to be direct boot aware (above); Launcher3's window type puts
+the bar over the keyguard; Alt+Tab is the recents provider's key gesture in this release.
+
+Known limits:
+
+- The overview is static while open (snapshots load once; window moves update the layout
+  through the listener). No drag of windows between workspaces in it yet (Hyprexpo has it).
+- The bar's tray is two entries, not status icons; battery, network and notification icons are
+  in the shade.
+- The bar and panels are on the default display only.
+- `onEvent` events come from state differences, so two changes inside 50 ms merge.
+- Not checked: unlocking the user's own data (their credential), and Cuttlefish at
+  2560x1080/160.
+
 ## Configuration sketch
 
 ```lua
@@ -766,7 +923,9 @@ Whether the names should follow Hyprland's own Lua configuration closely is stil
   Waydroid window has focus.
 - Waydroid overlay-mounts `/var/lib/waydroid/overlay` on the rootfs and `/vendor`, so a new
   `PcSystemUI` or `HyprLauncher` APK can be tried without repacking the image: checked in D1
-  (the APK under `overlay/system_ext/priv-app/PcSystemUI/`, a whiteout hiding `SystemUI`).
+  (the APK under `overlay/system_ext/priv-app/PcSystemUI/`, a whiteout hiding `SystemUI`), and
+  in D4 for `HyprLauncher`, its permissions file, the RRO under `overlay/vendor/overlay/`, and
+  whiteouts for `Launcher3QuickStep` and `product/app/SmartDock`.
 - The user allowed Waydroid for every Phase D step (2026-11-21) and made it the test target in
   place of Cuttlefish (`tools/waydroid/container-guard.sh check` first).
 - `waydroid shell` (lxc-attach) makes its stdout and stderr root-owned when they are files:
@@ -790,7 +949,7 @@ planned.
   answered in "Shell extension points (D0)".
 - How Shell's own snapping, tiling and drag-to-desktop interact with `hyprtile`; they may have
   to be turned off in the variant.
-- Quickstep's recents interfaces are large; HyprLauncher needs only the part SystemUI requires
-  to bind it.
+- ~~Quickstep's recents interfaces are large~~: HyprLauncher implements the few
+  `ILauncherProxy` calls a desktop needs ("`HyprLauncher` (D4)").
 - CDD and CTS expectations for desktop windowing (configuration changes, insets, multi-window
   callbacks) were not checked yet. Tiling must go through Shell transitions, not shortcuts.

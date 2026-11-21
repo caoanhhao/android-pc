@@ -18,7 +18,7 @@ include $(PC_DEVICE_DIR)/ndk_translation.mk
 # microG (Google Play services replacement) and Google Play Store, preinstalled and enabled.
 include $(PC_DEVICE_DIR)/microg.mk
 
-# Desktop mode: freeform windows and Launcher3's taskbar, landscape only (phase F9f).
+# Desktop mode: freeform windows, landscape only (phase F9f).
 include $(PC_DEVICE_DIR)/desktop/desktop.mk
 
 # Phase D, a Hyprland-style desktop shell: PcSystemUI in place of SystemUI (docs/hypr-desktop.md).

@@ -280,7 +280,7 @@ webcam. Other UEFI x86_64 PCs may boot; NVIDIA GPUs other than Ada (RTX 40) are 
 - Rust vendor HALs (phases F1-F9): health, power, thermal, light, audio, camera (V4L2),
   Bluetooth, Wi-Fi (nl80211), plus the NVIDIA display and GPU pieces below.
 - Boots from USB with Limine on UEFI, GKI 6.18 kernel; updates keep user data.
-- Desktop mode: freeform windows, taskbar and Smart Dock, landscape, mouse and keyboard.
+- Desktop mode: a Hyprland-style shell (tiling, workspaces, bar, app launcher, overview), landscape, mouse and keyboard.
 - NVIDIA's own driver (phases K/L): nvidia-open kernel modules, NVIDIA's Vulkan driver as
   the device GPU driver through a glibc sidecar, drm_hwcomposer on nvidia-drm.
 - microG, F-Droid, Chromium and Termux preinstalled; AOSP's WebView.

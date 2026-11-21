@@ -2,9 +2,12 @@
 
 The PC is driven with a mouse and keyboard on a 2560x1080 ultrawide monitor, so
 `aosp_pc_x86_64` boots into AOSP 17's own desktop windowing on its primary display,
-locked to landscape. The window manager draws the window captions. The default launcher is
-Smart Dock (H4, below); AOSP's Launcher3 (Quickstep) stays installed only as the recents
-provider, with no home screen and no taskbar (I2).
+locked to landscape. The window manager draws the window captions. Since Phase D4 the home
+app and recents provider is `HyprLauncher`, part of the Hyprland-style shell (tiling,
+workspaces, a top bar, an app launcher and an overview: docs/hypr-desktop.md, "`HyprLauncher`
+(D4)"); it replaced Smart Dock (H4) and Launcher3 as recents provider only (I2), whose sections
+below are kept for the record of older builds. SystemUI's status bar has no height since D4:
+the launcher's bar takes its place.
 
 Everything is in `aosp-device/desktop/` (included by `aosp_pc_x86_64.mk`), and the boot
 resolution is a `tools/mkusb-aosp17.sh` default.
@@ -32,17 +35,23 @@ get the touch-first behaviour back. With touch-first, desktop mode still works, 
 enters it per app (the app handle at the top of a fullscreen app → "Desktop", or dragging a
 window).
 
-Using it: apps open as resizable windows with a caption bar (minimize, maximize, close,
-and the app-handle menu for fullscreen/split). Smart Dock's dock along the bottom shows
-pinned and running apps (until I2 it was Launcher3's taskbar); the wallpaper sits behind
-the windows. `adb shell dumpsys
+Using it: apps open as resizable windows; since Phase D they are tiled by hyprtile, with a
+caption bar only when floating, and HyprLauncher's bar along the top shows workspaces, the
+focused window and running apps (H4 to D3: Smart Dock's dock along the bottom; before I2:
+Launcher3's taskbar); the wallpaper sits behind the windows. `adb shell dumpsys
 activity containers` shows the tasks as `mode=freeform`.
 
 Why not `android.hardware.type.pc`: on a "pc" device WindowManager forces freeform too,
 but the feature also changes how the Play Store filters apps and how some apps behave,
 which would undo F9's Play Store work.
 
-## Smart Dock, the default launcher (H4)
+## Smart Dock, the default launcher (H4) — superseded by HyprLauncher (D4)
+
+Not installed since Phase D4: `aosp-device/hypr/hypr.mk` filters `SmartDock` out and
+`desktop.mk` no longer installs `smartdock-setup.sh` and `init.desktop.rc` (the files stay).
+On a userdata from an H4..D3 build the HOME role moves from Smart Dock to HyprLauncher at the
+first boot of a D4 build (docs/hypr-desktop.md, "HOME on fresh and existing userdata").
+`config_disableLockscreenByDefault` stays: a desktop without a swipe lock screen is still wanted.
 
 [Smart Dock](https://github.com/axel358/smartdock) (`cu.axel.smartdock`, GPL-3.0) is a
 desktop launcher: a dock with a start menu, pinned and running apps, a notification panel
@@ -100,7 +109,12 @@ default launcher on 2026-11-15.
   chosen as home (I2, below); another launcher installed from F-Droid or Play can, in
   Settings → Apps → Default apps → Home app.
 
-## Launcher3 only as the recents provider (I2)
+## Launcher3 only as the recents provider (I2) — superseded by HyprLauncher (D4)
+
+Since Phase D4 `HyprLauncher` overrides `Launcher3QuickStep` and is the recents provider
+(`config_recentsComponentName` in `hypr_overlay_frameworks_base_core`), so Launcher3 is not in
+the image. The two Launcher3 patches stay in `tools/patches/` unused (they only matter for a
+build that ships Launcher3); `config_showNavigationBar=false` stays.
 
 On the real PC with the H3 build (`out/pclog-h3/boot-9`), Smart Dock was the HOME role
 holder and the resumed home activity, but Launcher3's taskbar (window `Taskbar`, a trusted

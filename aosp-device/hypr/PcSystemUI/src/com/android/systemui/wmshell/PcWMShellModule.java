@@ -15,6 +15,7 @@ import com.android.wm.shell.desktopmode.DesktopUserRepositories;
 import com.android.wm.shell.desktopmode.SnapController;
 import com.android.wm.shell.desktopmode.multidesks.DeskSwitchTransitionHandler;
 import com.android.wm.shell.shared.annotations.ShellMainThread;
+import com.android.wm.shell.sysui.ShellController;
 import com.android.wm.shell.sysui.ShellInit;
 import com.android.wm.shell.transition.FocusTransitionObserver;
 import com.android.wm.shell.transition.Transitions;
@@ -29,7 +30,7 @@ import java.util.Optional;
  * WM Shell bindings of PcSystemUI: AOSP's handheld WMShellModule plus the hyprtile pieces,
  * which are added next to Shell's own objects (Phase D1: the controller; D2: keybinds and the
  * snap handler that keeps Shell's two-window tiling out of the way; D3: decorations, animations
- * and mouse binds, owned by the controller).
+ * and mouse binds, owned by the controller; D4: IHyprShell for HyprLauncher).
  *
  * Dagger cannot override a binding, so replacing one that WMShellModule provides (the desktop
  * task controller, the window decoration view model) means including WMShellBaseModule and the
@@ -84,5 +85,16 @@ public abstract class PcWMShellModule {
             Optional<DesktopModeWindowDecorViewModel> decorViewModel,
             HyprTileController controller) {
         return new HyprSnapHandler(shellInit, snapController, decorViewModel, controller);
+    }
+
+    @WMSingleton
+    @Provides
+    static HyprShell provideHyprShell(
+            Context context,
+            ShellInit shellInit,
+            ShellController shellController,
+            HyprTileController controller,
+            @ShellMainThread ShellExecutor mainExecutor) {
+        return new HyprShell(context, shellInit, shellController, controller, mainExecutor);
     }
 }

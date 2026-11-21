@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase D4, docs/hypr-desktop.md, "HyprLauncher (D4)". -->
+<resources>
+    <!-- The recents provider: SystemUI binds the QUICKSTEP_SERVICE of this package and gives
+         it WM Shell's interfaces (IHyprShell among them); WindowManager gives its uid the
+         "recents" permissions and lets it provide insets (the bar). Only the package is used:
+         the overview is a window of HyprLauncher, not an activity, so the class does not
+         exist (naming HomeActivity would make WindowManager treat home as recents). -->
+    <string name="config_recentsComponentName" translatable="false">com.android.hyprlauncher/.RecentsActivity</string>
+</resources>

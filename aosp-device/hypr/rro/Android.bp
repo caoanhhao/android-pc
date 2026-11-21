@@ -1,0 +1,13 @@
+// Phase D4 (docs/hypr-desktop.md): HyprLauncher is the recents provider, and SystemUI's status
+// bar has no height (HyprLauncher's bar takes its place).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "hypr_overlay_frameworks_base_core",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

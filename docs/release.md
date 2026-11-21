@@ -30,7 +30,7 @@ computer to take the two extras from Google's images.
 | glibc, libglvnd, libdrm, libepoxy, expat, libgbm, virglrenderer (nvsidecar) | LGPL / MIT | Yes (LGPL: point to the Arch packages' sources) |
 | microG GmsCore | Apache 2.0 | Yes |
 | Chromium (AndroidDesktop_x64 snapshot) | BSD + third-party open licences | Yes |
-| F-Droid, Termux, Termux:API, Termux:Boot, Smart Dock | GPL-3.0 | Yes (F-Droid builds; link the sources) |
+| F-Droid, Termux, Termux:API, Termux:Boot | GPL-3.0 | Yes (F-Droid builds; link the sources) |
 | AOSP test keys (platform/APK `testkey`, AVB `testkey_rsa4096`) | Public, in AOSP | See "Secrets" |
 
 ## Secrets

@@ -1,0 +1,16 @@
+// IHyprShell: what PcSystemUI's WM Shell hands HyprLauncher (Phase D4, docs/hypr-desktop.md).
+// SystemUI puts it into the Bundle of ILauncherProxy.onInitialize() next to Shell's other
+// external interfaces (IDesktopMode, IRecentTasks, ...), keyed by its descriptor.
+
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64/hypr:__subpackages__"],
+}
+
+java_library {
+    name: "hyprshell-aidl",
+    srcs: ["src/**/*.aidl"],
+    aidl: {
+        local_include_dirs: ["src"],
+    },
+    sdk_version: "current",
+}

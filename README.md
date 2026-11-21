@@ -77,7 +77,7 @@ resets that project. The `nvidia-open-*` patches are applied by `tools/nvidia-bu
 | `aosp17-microg-signature-spoofing.patch` | `frameworks/base` | lets microG stand in for Google Play services |
 | `aosp17-credman-empty-ui.patch` | `frameworks/base` | Credential Manager answers when all entries are dropped (TikTok sign-in) |
 | `aosp17-input-mouse-as-touch.patch` | `frameworks/native` | mouse clicks reach touch-only games |
-| `aosp17-launcher3-recents-only.patch`, `aosp17-launcher3-taskbar-npe.patch` | `packages/apps/Launcher3` | Launcher3 kept for recents only, Smart Dock is the home app |
+| `aosp17-launcher3-recents-only.patch`, `aosp17-launcher3-taskbar-npe.patch` | `packages/apps/Launcher3` | superseded by HyprLauncher (Phase D4): Launcher3 is no longer in the image; kept for older builds |
 | `aosp17-minigbm-nvidia.patch`, `aosp17-minigbm-drop-master.patch`, `aosp17-minigbm-rw-lock.patch` | `external/minigbm` | gralloc on nvidia-drm |
 | `aosp17-angle-astcenc.patch` | `external/angle` | ASTC support |
 | `aosp17-vold-pc-disk-guard.patch` | `system/vold` | vold never touches the PC's own disks |
@@ -94,7 +94,7 @@ These are downloaded on the build machine, checked against pinned hashes and cer
 and never committed; images built with them are for personal use only.
 
 ```bash
-tools/fetch-apps.sh                 # Chromium, F-Droid, microG, Play Store, Termux, WebView, Smart Dock
+tools/fetch-apps.sh                 # Chromium, F-Droid, microG, Play Store, Termux, WebView (Smart Dock: not installed since D4)
 tools/fetch-ndk-translation.sh      # Google's ARM64 -> x86_64 translator
 tools/nvidia-userspace-build.sh     # NVIDIA's userspace Vulkan driver (from the host or the .run)
 ```

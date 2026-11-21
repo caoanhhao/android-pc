@@ -1,0 +1,49 @@
+// HyprLauncher: home, recents provider, bar, app launcher and overview of the Phase D desktop
+// shell (docs/hypr-desktop.md, "HyprLauncher (D4)"). It replaces Smart Dock and Launcher3.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+android_app {
+    name: "HyprLauncher",
+    srcs: [
+        "src/**/*.kt",
+        "src/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["src"],
+    },
+    resource_dirs: ["res"],
+    static_libs: [
+        "hyprshell-aidl",
+        "hyprtile",
+    ],
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    privileged: true,
+    // HOME and recents both move here (the HOME role migration is HomeRole.kt).
+    overrides: [
+        "Launcher3",
+        "Launcher3QuickStep",
+        "Launcher3Go",
+        "Launcher3QuickStepGo",
+    ],
+    optimize: {
+        enabled: false,
+    },
+    dex_preopt: {
+        enabled: false,
+    },
+    required: ["privapp_whitelist_com.android.hyprlauncher"],
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "privapp_whitelist_com.android.hyprlauncher",
+    src: "privapp-permissions-hyprlauncher.xml",
+    sub_dir: "permissions",
+    filename: "com.android.hyprlauncher.xml",
+    system_ext_specific: true,
+}

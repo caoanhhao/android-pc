@@ -685,7 +685,17 @@ docs/hypr-desktop.md.
   (mouse resize lands on release, Shell-started closes keep Shell's animation) in
   docs/hypr-desktop.md, "Decoration and animation (D3)".
 - **D4 — `HyprLauncher`:** home and recents provider (replaces Smart Dock and Launcher3),
-  `IHyprShell` through Shell's external interfaces, bar, app launcher, overview.
+  `IHyprShell` through Shell's external interfaces, bar, app launcher, overview. Status
+  (2026-11-21): done. `aosp-device/hypr/HyprLauncher/` (Kotlin, system_ext, privileged, platform
+  key) is HOME and the recents provider (`config_recentsComponentName` RRO); SystemUI binds its
+  direct-boot-aware `QUICKSTEP_SERVICE` and hands it `IHyprShell` (dispatch, setReserved,
+  setConfig, state and event listener) with Shell's other interfaces. A waybar-like top bar
+  (workspaces, title, running apps, notification and quick settings entries, clock) reserves its
+  strip for hyprtile; SystemUI's status bar has no height. rofi-like fuzzy launcher on ALT+D /
+  ALT+SPACE, hyprexpo-like overview with snapshots on ALT+` / recents key, Alt+Tab. Smart Dock,
+  its setup script and Launcher3 are out of the product; the HOME role moves to HyprLauncher on
+  fresh and existing userdata. Checked on Waydroid (test data fresh and existing, and the user's
+  data up to its lock screen); details and limits in docs/hypr-desktop.md, "`HyprLauncher` (D4)".
 - **D5 — Lua configuration:** `init.lua` with hot reload, error screen, window rules, event
   hooks.
 - **D6 — touch:** edge swipes, drag-to-snap, pinch for the overview.
