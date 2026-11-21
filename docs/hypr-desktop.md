@@ -3,7 +3,9 @@
 Status (2026-11-21): D0 done, the `PcSystemUI` skeleton (`aosp-device/hypr/`) replaces
 SystemUI with unchanged behaviour; its findings are in "Shell extension points (D0)". D1 done:
 `hyprtile` (dwindle and master) tiles desktop tasks on open, close and minimize, checked on
-Waydroid ("`hyprtile` and dynamic tiling (D1)"). This note
+Waydroid ("`hyprtile` and dynamic tiling (D1)"). D2 done: one layout per desk as Hyprland
+workspaces 1-9, Hyprland's dispatchers on ALT keybinds, Shell's snapping routed to hyprtile
+("Workspaces and keybinds (D2)"). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -369,7 +371,167 @@ Known limits (left for later sub-phases):
 - A window the user maximizes, drags or resizes keeps its bounds until the next layout change
   re-tiles it; `togglefloating`, `movewindow` and resizing tiles are D2.
 - The first window of a desk is placed by the observer, a moment after Shell placed it.
-- Only the active desk of each display is tiled; one tree per desk is D2.
+- Only the active desk of each display is tiled; one tree per desk is D2 (done there).
+
+## Workspaces and keybinds (D2)
+
+Code: `PcSystemUI/src/com/android/systemui/wmshell/` (`HyprTileController.kt` dispatchers,
+`HyprKeybinds.kt`, `HyprSnapHandler.kt`, provided by `PcWMShellModule` and created by
+`PcWMComponent.init()`), and in the engine `Direction.kt` (`movefocus` geometry) and
+`Binds.kt` (bind parsing, the default binds, workspace arguments). Still no `frameworks/base`
+change.
+
+### Workspaces are desks
+
+- Workspace N of a display is its N-th desk in Shell's order (`DesktopRepository.getDeskPosition`),
+  so Shell's desk-switch slide goes the right way. A missing desk is created on demand
+  (`DesktopTasksController.createDesk(enforceDeskLimit = false)`); going to workspace 5 with
+  two desks creates desks 3, 4 and 5 (desks have no numbers of their own; the empty ones stay
+  until used). Workspaces 1-9 (Hyprland allows more; the binds stop at 9). Empty desks are not
+  removed when left (Hyprland removes empty workspaces; Shell keeps desks, which D4's bar will
+  show as empty).
+- Each desk keeps its own hyprtile layout (D1's `HyprTile` already held one per desk id; D1
+  only synced the active one). A desk's layout can change while it is hidden (`movetoworkspace`
+  from it); the sync writes its tiles when it shows again.
+- `workspace N`: `addDeskActivationChanges()` and `DeskSwitchTransitionHandler.startTransition()`,
+  the same calls Shell's `activateNextDesk()` makes, so the switch is Shell's lateral slide, plus
+  the target desk's tiles in the same `WindowContainerTransaction`. Relative arguments `e+1`,
+  `e-1`, `+1`, `-1` work. With no desk active (home), Shell's `activateDesk()`.
+- `movetoworkspace N` follows the window, as in Hyprland: one desk-switch transition that
+  activates the target desk, reparents the task (`addMoveToDeskTaskChanges()`, public), and
+  carries the new tiles of both desks; the old desk closes the gap and the window lands in its
+  tile on the new one, with the slide. A floating window stays floating.
+
+### Dispatchers
+
+`HyprTileController.dispatch(name, arg)` (Hyprland's names; D4's `IHyprShell.dispatch` will
+call the same method):
+
+| Dispatcher | What it does |
+|---|---|
+| `workspace N` / `e±1` | switch desks with the slide (above) |
+| `movetoworkspace N` | move the focused window and follow it |
+| `movefocus l/r/u/d` | brings the neighbour to front (focus follows): the closest window beyond that edge that overlaps on the other axis, ties to the larger overlap; with none, the nearest window wholly beyond the edge (floating ones); nothing at the layout's edge |
+| `movewindow l/r/u/d` | tiled: swaps with that neighbour in the layout tree; floating: moves to that edge of the work area |
+| `togglefloating` | tiled → floating, centred, half the work area's width and two thirds of its height; floating → back into the layout next to the newest tiled window. A window the user floated stays floating (the sync and float rules leave it); non-resizeable windows stay floating |
+| `togglesplit` | dwindle: flips the split that holds the focused window |
+| `fullscreen 1` | maximize inside the desk: the work area without gaps, the tile is kept; again, and the window goes back to its tile |
+| `fullscreen` / `fullscreen 0` | Shell's real fullscreen (`toggleFocusedTaskFullscreenState`), out of the desk and back |
+| `killactive` | Shell's `quitFocusedDesktopTask()` (what its close key gesture does) |
+| `exec <package>` | starts the package's launcher activity as the current user; desktop mode puts it on the active desk, where it is tiled |
+
+The focused window is the globally focused task of the active desk
+(`FocusTransitionObserver`), as for Shell's own key gestures.
+
+### Keybinds without a framework patch
+
+`InputManager`'s key gestures have fixed types (`KeyGestureEvent.KEY_GESTURE_TYPE_*`), none of
+them "workspace 3" or "move focus left". But the server never checks the type: a "custom input
+gesture" (the shortcuts a user can define in Settings, `addCustomInputGesture`) maps a key
+trigger to any int, `interceptKeyBeforeDispatching` matches it before the focused app sees the
+key, and the gesture goes to the process that registered a handler for that int. So
+`HyprKeybinds` gives every bind a private type (`0x48590000` + its index, 128 slots), registers
+one `KeyGestureEventHandler` for all of them, and maps a gesture back to its dispatcher. The
+SystemUI process already holds `MANAGE_KEY_GESTURES`; the
+`enable_customizable_input_gestures` flag is on in this release. InputManager stores custom
+gestures per user on disk; `HyprKeybinds` removes its own (by type) and adds the current list
+at every start, so a changed modifier or bind replaces the old one. A bind whose keys a user
+shortcut already uses, or that AOSP reserves (all of AOSP's system shortcuts use META, plus
+ALT+TAB), is skipped with a log line.
+
+**Default modifier: ALT.** On Waydroid the host's Hyprland takes SUPER before Android sees it,
+and every AOSP system shortcut (`InputGestureManager`) is on META, so ALT is the one modifier
+free on both. It is one setting, `persist.hypr.mod` (`ALT`, `SUPER`, `CTRL ALT`, ...); D5's Lua
+sets it. Default binds, after Hyprland's example configuration (`$mod` = ALT):
+
+| Keys | Dispatcher |
+|---|---|
+| `$mod 1`..`9` | `workspace 1`..`9` |
+| `$mod SHIFT 1`..`9` | `movetoworkspace 1`..`9` |
+| `$mod` arrows | `movefocus l/r/u/d` |
+| `$mod SHIFT` arrows | `movewindow l/r/u/d` |
+| `$mod C` | `killactive` |
+| `$mod V` | `togglefloating` |
+| `$mod J` | `togglesplit` |
+| `$mod F` / `$mod SHIFT F` | `fullscreen 1` / `fullscreen 0` |
+| `$mod E` | `exec com.android.documentsui` (Files) |
+| `$mod Q` | `exec` of `persist.hypr.terminal`, when set (AOSP has no terminal) |
+
+Extra binds until D5: `persist.hypr.bind.1` .. `.32`, one Hyprland bind line each
+(`ALT SHIFT, Q, exec, com.termux`, `$mod` allowed); one replaces a default on the same keys.
+A single property for all binds does not work: a property value holds at most 92 bytes. Key
+names are Android's (`KEYCODE_` dropped) with xkb's common ones mapped (`LEFT` → `DPAD_LEFT`,
+`RETURN` → `ENTER`, `BACKSPACE` → `DEL`, ...). The list is read at SystemUI start; D5 will push
+changes through `IHyprShell` and call `installBinds()` again.
+
+### Shell's own shortcuts and snapping
+
+- **Key gestures.** `DesktopModeKeyGestureHandler` registers nine gesture types, and a type
+  can have only one handler per process, so `HyprKeybinds` unregisters Shell's handler
+  (`InputManager.unregisterKeyGestureEventHandler`, Shell's handler object comes from Dagger)
+  and registers those types itself: snap left/right (META `[` / `]`) → `movewindow l/r`, toggle
+  maximize (META `=`) → `fullscreen 1`, previous/next desk (META CTRL `[` / `]`) →
+  `workspace e-1/e+1`; minimize, close, fullscreen and move-to-next-display go back to Shell's
+  handler (`handleKeyGestureEvent` is public), as does everything while `persist.hypr.tiling`
+  is false.
+- **Snapping and two-window tiling.** Every snap (the caption menu's snap buttons, dragging a
+  window to the left or right screen edge, the snap key gestures) ends in
+  `SnapController.snapToHalfScreen()`, which forwards to the one `SnapEventHandler` given to
+  its public `start()`; `DesktopModeWindowDecorViewModel` passes itself. `HyprSnapHandler`
+  calls `start()` again at ShellInit and so comes first: a snap of a tiled window swaps it with
+  its neighbour on that side, a floating one joins the layout, and the window's tile is written
+  again (the drag moved it). Shell's `DesktopTilingDecorViewModel` never gets a pair, so no
+  divider and no half-screen pair fight the layout. Everything else is forwarded to Shell's
+  handler, and everything is while tiling is off. Left as is: Shell's drag indicator (the
+  half-screen preview while dragging to an edge) still shows; D3 owns the decorations.
+
+### Checked on Waydroid (2026-11-21)
+
+PcSystemUI through the overlay as in D1, empty test data, 2538x1058, `gaps_in` 5,
+`gaps_out` 12, keys sent with `input keycombination KEYCODE_ALT_LEFT ...`:
+
+| Step | Result |
+|---|---|
+| Settings, Clock, Files on workspace 1 | dwindle tiles; `HyprKeybinds: 32 binds installed, main modifier [ALT]` |
+| ALT arrows | focus moves left/right/up/down between tiles; at the layout's edge nothing happens |
+| ALT SHIFT LEFT on Files | Files and Settings swap tiles |
+| ALT V twice | Files floats centred at `[634,188][1903,833]`, the others re-tile; again and it is back in the layout |
+| ALT F twice | Files `[0,27][2538,995]`, then back to `[1909,516][2526,983]` |
+| ALT J | the right column's split flips to side by side |
+| ALT SHIFT 2 | desk 2 is created; Files lands on it at `[12,39][2526,983]`, desk 1 closes the gap, one transition with Shell's lateral slide (`DeskSwitchTransitionHandler ... direction=RIGHT`) |
+| ALT 1 / ALT 2 | slide between the desks, each with its own layout |
+| ALT C | the focused window closes, the rest re-tile |
+| ALT E | a new Files window opens tiled on the active desk |
+| META CTRL `[`, META `[` | routed: `workspace e-1`, `movewindow l` |
+| Settings dragged by its caption to the left edge | swaps with its left neighbour; no Shell tiling divider |
+| ALT SHIFT 5 | desks 3, 4, 5 created; the window moves to 5; moved back with ALT SHIFT 2 it tiles next to Files on desk 2 |
+
+Screenshots: `out/hypr-d2/` (`ws1-three.png`, `float.png`, `maximize.png`,
+`ws2-moved.png`, `ws1-after-move.png`, `drag-snap-left.png`, `ws5.png`, `ws2-two.png`).
+Host tests: 38 (`run-tests.sh`), with bind parsing, workspace arguments and `movefocus`
+geometry.
+
+Found on the way:
+
+- **The host's gamepad reaches Waydroid.** An empty desk kept switching back to home a few
+  seconds after it was shown: the wallpaper activity of the empty desk takes focus, and its
+  back callback moves it to back, which deactivates the desk. The BACK came from the user's
+  Xbox controller (Waydroid passes `/dev/input/event7` into the container; a gamepad's B is
+  BACK), used for a game on another host workspace. For the test the node was removed inside
+  the container (its own `/dev` tmpfs; the host's node is untouched; a new session brings it
+  back). On the real PC, BACK on an empty desk going home is Shell's behaviour; Hyprland
+  would stay on the empty workspace. D4's launcher, as home, can change that.
+- `movefocus` first fell back to any window in the half-plane, which jumped diagonally;
+  the fallback now only takes windows wholly beyond the edge.
+
+Known limits:
+
+- Binds are installed for user 0 (SystemUI's user); another user would need them added for
+  that user on a user switch.
+- Hyprland's `special` workspaces, `movetoworkspacesilent`, `swapnext`, `resizeactive`,
+  `pseudo` and mouse binds (`bindm` move/resize) are not there yet.
+- A window the user drags (not to an edge) or resizes still keeps its bounds until the next
+  layout change (D1).
 
 ## Configuration sketch
 

@@ -1,16 +1,23 @@
 package com.android.systemui.wmshell;
 
 import android.content.Context;
+import android.hardware.input.InputManager;
 
 import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.common.DisplayController;
 import com.android.wm.shell.common.ShellExecutor;
 import com.android.wm.shell.dagger.WMShellModule;
 import com.android.wm.shell.dagger.WMSingleton;
+import com.android.wm.shell.desktopmode.DesktopModeKeyGestureHandler;
+import com.android.wm.shell.desktopmode.DesktopTasksController;
 import com.android.wm.shell.desktopmode.DesktopUserRepositories;
+import com.android.wm.shell.desktopmode.SnapController;
+import com.android.wm.shell.desktopmode.multidesks.DeskSwitchTransitionHandler;
 import com.android.wm.shell.shared.annotations.ShellMainThread;
 import com.android.wm.shell.sysui.ShellInit;
+import com.android.wm.shell.transition.FocusTransitionObserver;
 import com.android.wm.shell.transition.Transitions;
+import com.android.wm.shell.windowdecor.DesktopModeWindowDecorViewModel;
 
 import dagger.Module;
 import dagger.Provides;
@@ -19,7 +26,8 @@ import java.util.Optional;
 
 /**
  * WM Shell bindings of PcSystemUI: AOSP's handheld WMShellModule plus the hyprtile pieces,
- * which are added next to Shell's own objects (Phase D1).
+ * which are added next to Shell's own objects (Phase D1: the controller; D2: keybinds and the
+ * snap handler that keeps Shell's two-window tiling out of the way).
  *
  * Dagger cannot override a binding, so replacing one that WMShellModule provides (the desktop
  * task controller, the window decoration view model) means including WMShellBaseModule and the
@@ -39,8 +47,35 @@ public abstract class PcWMShellModule {
             ShellTaskOrganizer taskOrganizer,
             DisplayController displayController,
             Optional<DesktopUserRepositories> userRepositories,
+            Optional<DesktopTasksController> desktopTasksController,
+            DeskSwitchTransitionHandler deskSwitchTransitionHandler,
+            FocusTransitionObserver focusTransitionObserver,
+            Optional<DesktopModeKeyGestureHandler> shellKeyGestureHandler,
             @ShellMainThread ShellExecutor mainExecutor) {
         return new HyprTileController(context, shellInit, transitions, taskOrganizer, displayController,
-                userRepositories, mainExecutor);
+                userRepositories, desktopTasksController, deskSwitchTransitionHandler,
+                focusTransitionObserver, shellKeyGestureHandler, mainExecutor);
+    }
+
+    @WMSingleton
+    @Provides
+    static HyprKeybinds provideHyprKeybinds(
+            ShellInit shellInit,
+            InputManager inputManager,
+            HyprTileController controller,
+            Optional<DesktopModeKeyGestureHandler> shellKeyGestureHandler,
+            @ShellMainThread ShellExecutor mainExecutor) {
+        return new HyprKeybinds(shellInit, inputManager, controller, shellKeyGestureHandler,
+                mainExecutor);
+    }
+
+    @WMSingleton
+    @Provides
+    static HyprSnapHandler provideHyprSnapHandler(
+            ShellInit shellInit,
+            SnapController snapController,
+            Optional<DesktopModeWindowDecorViewModel> decorViewModel,
+            HyprTileController controller) {
+        return new HyprSnapHandler(shellInit, snapController, decorViewModel, controller);
     }
 }

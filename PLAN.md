@@ -661,7 +661,15 @@ docs/hypr-desktop.md.
   desk) in docs/hypr-desktop.md, "`hyprtile` and dynamic tiling (D1)".
 - **D2 — workspaces and keybinds:** one layout tree per desk (`multidesks`); dispatchers
   (`workspace`, `movetoworkspace`, `movefocus`, `movewindow`, `togglefloating`, `killactive`)
-  bound through `KeyGestureEvent`.
+  bound through `KeyGestureEvent`. Status (2026-11-21): done. Workspace N = the N-th desk, created on
+  demand, switched with Shell's desk-switch slide; one hyprtile layout per desk;
+  `movetoworkspace` follows the window in one transition. Dispatchers `workspace`,
+  `movetoworkspace`, `movefocus`, `movewindow`, `togglefloating`, `togglesplit`, `fullscreen`,
+  `killactive`, `exec` on ALT binds (`persist.hypr.mod`; SUPER belongs to the host's Hyprland
+  under Waydroid), installed as custom input gestures with private gesture types, so no
+  `frameworks/base` change. Shell's snap/desk key gestures and drag-to-snap are routed to
+  hyprtile (Shell's two-window tiling never starts). Checked on Waydroid; details and limits in
+  docs/hypr-desktop.md, "Workspaces and keybinds (D2)".
 - **D3 — decoration and animation:** rounded corners, gradient active border, minimal caption,
   bezier curves for window and workspace animations.
 - **D4 — `HyprLauncher`:** home and recents provider (replaces Smart Dock and Launcher3),
