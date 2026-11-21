@@ -1,6 +1,8 @@
 # A Hyprland-style desktop shell (Phase D)
 
-Status (2026-11-21): design only, nothing built. This note records what was decided in the
+Status (2026-11-21): D0 done, the `PcSystemUI` skeleton (`aosp-device/hypr/`) replaces
+SystemUI with unchanged behaviour; its findings are in "Shell extension points (D0)". This note
+records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
 
@@ -112,6 +114,125 @@ Device-tree home: a new `aosp-device/hypr/` (`hypr.mk`, included by `aosp_pc_x86
 place of the Smart Dock pieces of `desktop.mk`), with `PcSystemUI/`, `HyprLauncher/`,
 `hyprtile/` and the RROs.
 
+## `PcSystemUI` skeleton (D0)
+
+`aosp-device/hypr/PcSystemUI/`, added to the product by `hypr/hypr.mk` (included from
+`aosp_pc_x86_64.mk`; Smart Dock and Launcher3 stay as they are):
+
+| File | Role | AOSP counterpart |
+|---|---|---|
+| `Android.bp` | `PcSystemUI-application` (Dagger graph, KSP, same flags) + `android_app PcSystemUI` (`overrides: ["SystemUI"]`, `system_ext_specific`, `privileged`, platform key) | `SystemUI-application` + `SystemUI` |
+| `AndroidManifest.xml` | `tools:replace="android:appComponentFactory"` → `PcSystemUIAppComponentFactory` | `.PhoneSystemUIAppComponentFactory` |
+| `PcSystemUIAppComponentFactory.kt` | creates `PcSystemUIInitializer` | `PhoneSystemUIAppComponentFactory` |
+| `PcSystemUIInitializer.kt` | returns `DaggerPcGlobalRootComponent.builder()` | `SystemUIInitializerImpl`, `CarSystemUIInitializer` |
+| `PcGlobalRootComponent.java` | root component, `getWMComponentBuilder()` → `PcWMComponent.Builder` | `ReferenceGlobalRootComponent`, `CarGlobalRootComponent` |
+| `PcSysUIComponent.java` | SysUI subcomponent, same module list as the reference | `ReferenceSysUIComponent` |
+| `wmshell/PcWMComponent.java` | Shell subcomponent on `PcWMShellModule` | `WMComponent`, `CarWMComponent`, `TvWMComponent` |
+| `wmshell/PcWMShellModule.java` | D0: `@Module(includes = WMShellModule.class)`, nothing else | `WMShellModule`, `CarWMShellModule`, `TvWMShellModule` |
+
+How SystemUI picks its variant: there is no resource or property. The APK's manifest names an
+`appComponentFactory` (a `SystemUIAppComponentFactoryBase`), whose
+`createSystemUIInitializer()` returns the `SystemUIInitializer`; the initializer's
+`getGlobalRootComponentBuilder()` returns the root Dagger component, and the root component's
+`getWMComponentBuilder()` return type decides which Shell subcomponent (and so which Shell
+module) is built. `SystemUIInitializer.init()` then hands the subcomponent's `WMComponent`
+getters (`getShell()`, `getDesktopMode()`, ...) to the SysUI subcomponent. A variant can grab
+its own Shell objects through extra getters on its `WMComponent` and an override of
+`prepareSysUIComponentBuilder()` (CarSystemUI calls `initWmComponents()` there to create its
+controllers eagerly). The variant APK keeps the package name `com.android.systemui` and the
+`android.uid.systemui` shared UID, and `overrides` keeps AOSP's SystemUI out of the image.
+
+Checked on Cuttlefish (2026-11-21, `--display0=width=2560,height=1080,dpi=160`, fresh
+userdata): `pm path com.android.systemui` is `/system_ext/priv-app/PcSystemUI/PcSystemUI.apk`,
+the image has no `SystemUI` any more, a heap dump of the SystemUI process contains
+`DaggerPcGlobalRootComponent`, Settings and Clock open freeform with Shell's caption, Smart
+Dock's bar shows (hidden while Settings is in front, as before: docs/desktop-mode.md), and the
+crash buffer is empty (the only ANRs are the known `com.android.phone` ones of Cuttlefish
+without a modem).
+
+Build note: SystemUI's keep rules must be passed in `proguard_flags_files`
+(`:sysui_proguard_common_and_kotlin`). In `included_proguard_flags_files` they are only
+dependencies for a flags file that `-include`s them, so R8 dropped
+`com.android.systemui.VendorServices` (created by reflection from
+`config_systemUIVendorServiceComponent`) and SystemUI crash-looped with
+`ClassNotFoundException`.
+
+## Shell extension points (D0)
+
+How Shell's Dagger graph is built (`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/`):
+
+- `WMShellBaseModule` holds what every form factor shares and declares the variable pieces as
+  `@BindsOptionalOf @DynamicOverride` (`FullscreenTaskListener`, `FreeformComponents`,
+  `SplitScreenController`, `MixedTransitionHandler`, `StartingWindowTypeAlgorithm`,
+  `DesktopMode`, `DesktopTasksController`, `DesktopUserRepositories`, `DesksOrganizer`,
+  `PackageUpdateController`, `InteractiveTasksTransitionObserver`, ...), plus
+  `Optional<X>` providers that return them only when the feature is on.
+- A product module supplies those `@DynamicOverride` bindings: `WMShellModule` (handheld,
+  includes `WMShellBaseModule`, `PipModule`, `ShellBackAnimationModule`, `LetterboxModule`,
+  `PinnedLayerModule`, `DesktopModule`, `HandheldContainersModule`, `BubbleModule`),
+  `TvWMShellModule` (TvSystemUI), `CarWMShellModule` (CarSystemUI, includes
+  `WMShellBaseModule` and its own automotive modules, not `WMShellModule`).
+- `UsedDownstream` only marks code used by such downstream variants.
+- Dagger cannot override a binding: a second `@Provides` for the same key is a duplicate-binding
+  error. So the `@DynamicOverride` slots are override points only for a module that does **not**
+  include `WMShellModule`. A variant that includes `WMShellModule` (D0) can only add bindings.
+
+What this means for `PcWMShellModule`:
+
+| Piece | Where it is bound | Replaceable from `PcSystemUI`? |
+|---|---|---|
+| Any new object (hyprtile controller, a `TransitionHandler`, a `TransitionObserver`, an `ITransitionPlanner`, key gesture handler, desk listeners) | new `@Provides` in `PcWMShellModule`, created eagerly from `PcWMComponent` | **Yes**, additive, D0 layout works as is |
+| `DesktopTasksController` (desktop task placement: `handleRequest` → `getInitialBounds` → `calculateInitialBounds` in `DesktopModeUtils.kt`) | `@DynamicOverride` in `WMShellModule` | Binding: yes, with a forked module (below). Behaviour: **no**, it is a final Kotlin class (~7000 lines, 60 constructor arguments) and placement is in final methods, so a replacement is a full copy of the class |
+| `WindowDecorViewModel` (captions, borders, corners) | plain `@Provides` in `WMShellModule` (returns `DesktopModeWindowDecorViewModel` when desktop mode is on, else `CaptionWindowDecorViewModel`) | **Yes** with a forked module: `WindowDecorViewModel` is a public interface; `DesktopModeWindowDecorViewModel` is a public, non-final Java class that can be wrapped or subclassed |
+| `DesktopModeWindowDecorViewModel` itself, `AppToWebRepository`, `DesktopModeKeyGestureHandler` | plain `@Provides` in `WMShellModule` | Yes with a forked module; the key gesture handler is final, but a second handler can register its own `KeyGestureEvent`s additively |
+| `DesksController` (desk bookkeeping) | `DesktopModule` (included by `WMShellModule`) | Yes with a forked module that leaves `DesktopModule` out and copies it; final Kotlin class |
+| `DeskSwitchTransitionHandler` (desk switch animation) | plain `@Provides` in `WMShellModule` | Binding yes with a forked module; final Kotlin class, so a new handler, not a subclass. Easier: a higher-priority `TransitionHandler` added after it (`Transitions` asks handlers newest first) that claims desk-switch transitions |
+| `DesksOrganizer` (desk roots in WM) | `@DynamicOverride` in `WMShellModule` | Yes with a forked module; `DesksOrganizer` is an interface |
+| `FreeformComponents`, `MixedTransitionHandler`, `SplitScreenController` | `@DynamicOverride` in `WMShellModule` | Yes with a forked module |
+
+"Forked module" = `PcWMShellModule` stops including `WMShellModule`, includes
+`WMShellBaseModule` and `WMShellModule`'s other includes (or copies of them), and carries a copy
+of `WMShellModule`'s ~2400 lines of bindings with the few it replaces changed. That is what
+CarSystemUI does, it needs no change in `frameworks/base` (everything `WMShellModule` calls is
+public; Kotlin `internal` classes are public in bytecode), and it stays correct because the tree
+is fixed to `android-17.0.0_r1`. The cost is that the copy must be refreshed by hand on an AOSP
+update.
+
+Runtime hooks Shell already offers without replacing anything (enough for D1):
+
+- `Transitions.addHandler()`: handlers are asked in reverse order of registration, so a handler
+  added at `ShellInit` after Shell's own wins `handleRequest`/`startAnimation` for the
+  transitions it claims (e.g. task open and close in a desk), and can return a
+  `WindowContainerTransaction` with tiled bounds.
+- `Transitions.registerObserver()` (task open/close/move seen by everyone) and
+  `Transitions.addPlanner()` (`ITransitionPlanner`, newest first) for animation plans.
+- `DesktopTasksController.addVisibleTasksListener`, `addDeskChangeListener`, and the public
+  `moveTaskToDesk`, `minimizeTask`, `activateDesk`, `createDesk`, `removeDesk`; `IDesktopMode`
+  for the launcher side.
+- Not available: a second `ShellTaskOrganizer` listener for the freeform type (one listener per
+  type, `addListenerForType` throws on a second one).
+
+Where `frameworks/base` would need an extension point (a small patch in
+`libs/WindowManager/Shell`, kept in `tools/patches/`):
+
+- **Initial placement of a desktop task.** `getInitialBounds()` is final and applies remembered
+  bounds, cascading and gravity. Without a hook, hyprtile re-tiles right after the open
+  transition (a visible second move) or claims the open transition itself and loses Shell's
+  desk bookkeeping for it. The clean fix is an optional `DesktopTaskPlacementPolicy` interface
+  (`@BindsOptionalOf` in `WMShellBaseModule`, consulted first by `getInitialBounds()` and the
+  re-layout paths on close/minimize).
+- **Turning off Shell's own snapping and two-window tiling** (`windowdecor/tiling/`,
+  `SnapController`, drag-to-snap visual indicator) where they fight hyprtile: today this is
+  flag-driven (`DesktopExperienceFlags`), and per-feature switches are not all exposed; a forked
+  module can rebind `DesktopTilingDecorViewModel`, but `DesktopModeWindowDecorViewModel` takes
+  it as a concrete class, so dropping it means a decoration view model of our own (D3).
+- **Desk switch animation** if the higher-priority handler turns out to race
+  `DesktopTasksController`'s own desk-activation transition (to be checked in D2).
+
+Plan from here: D1 adds a hyprtile controller additively (handler + observer, D0 layout) and
+first tries placement without a patch; if the second move is visible, it adds the placement
+hook. D3 is the first sub-phase that needs the forked module (its own `WindowDecorViewModel`).
+
 ## Configuration sketch
 
 ```lua
@@ -161,8 +282,8 @@ planned.
 
 ## Open questions and risks
 
-- Exactly which Shell classes `PcWMShellModule` can replace without touching
-  `frameworks/base` (desktop task placement, window decoration, desk switching).
+- ~~Which Shell classes `PcWMShellModule` can replace without touching `frameworks/base`~~:
+  answered in "Shell extension points (D0)".
 - How Shell's own snapping, tiling and drag-to-desktop interact with `hyprtile`; they may have
   to be turned off in the variant.
 - Quickstep's recents interfaces are large; HyprLauncher needs only the part SystemUI requires

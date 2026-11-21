@@ -1,0 +1,76 @@
+// PcSystemUI: SystemUI for aosp_pc_x86_64 with its own WM Shell Dagger module (Phase D,
+// docs/hypr-desktop.md). Built the way frameworks/base/packages/SystemUI builds AOSP's
+// SystemUI (SystemUI-application + android_app) and packages/apps/Car/SystemUI builds
+// CarSystemUI (overrides SystemUI, own initializer and WMComponent).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// The Dagger graph: PcGlobalRootComponent with PcWMComponent (PcWMShellModule) and
+// PcSysUIComponent, compiled with the same Dagger setup as SystemUI-application.
+android_library {
+    name: "PcSystemUI-application",
+    srcs: [
+        "src/**/*.java",
+        "src/**/*.kt",
+    ],
+    manifest: "AndroidManifest.xml",
+    use_resource_processor: true,
+    resource_dirs: [],
+    static_libs: [
+        "SystemUI-application",
+        "dagger2",
+    ],
+    libs: [
+        "keepanno-annotations",
+    ],
+    kotlincflags: [
+        "-Xjvm-default=all",
+        "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
+    ],
+    plugins: ["dagger2-compiler"],
+    enable_ksp: true,
+    annotation_processor_flags: [
+        "dagger.fastInit=enabled",
+        "dagger.explicitBindingConflictsWithInject=ERROR",
+        "dagger.strictMultibindingValidation=enabled",
+        "dagger.useBindingGraphFix=ENABLED",
+    ],
+}
+
+android_app {
+    name: "PcSystemUI",
+    defaults: [
+        "platform_app_defaults",
+        "SystemUI_optimized_defaults",
+        "wmshell_defaults",
+    ],
+    static_libs: [
+        "PcSystemUI-application",
+    ],
+    resource_dirs: [],
+    enable_ksp: true,
+
+    use_resource_processor: true,
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    privileged: true,
+    overrides: ["SystemUI"],
+
+    kotlincflags: ["-Xjvm-default=all"],
+
+    dxflags: ["--multi-dex"],
+    optimize: {
+        // SystemUI's own keep rules (VendorServices and other reflectively created classes):
+        // included_proguard_flags_files only tracks files that a flags file -includes.
+        proguard_flags_files: [
+            ":sysui_proguard_common_and_kotlin",
+            "proguard.flags",
+        ],
+    },
+    required: [
+        "privapp_whitelist_com.android.systemui",
+    ],
+}

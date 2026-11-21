@@ -644,7 +644,12 @@ docs/hypr-desktop.md.
 - **D0 — `PcSystemUI` skeleton:** a SystemUI variant in `aosp-device/hypr/` that overrides
   `SystemUI` and boots on Cuttlefish with unchanged behaviour (its own initializer,
   `PcWMComponent`, `PcWMShellModule`). Records which Shell classes can be replaced without
-  touching `frameworks/base`.
+  touching `frameworks/base`. Status (2026-11-21): done. `aosp-device/hypr/` builds
+  `PcSystemUI` (overrides SystemUI, `PcWMShellModule` = AOSP's `WMShellModule` for now); on
+  Cuttlefish at 2560x1080 it is the running SystemUI (`DaggerPcGlobalRootComponent` live),
+  apps open freeform with captions, Smart Dock shows, no SystemUI crash. Findings: which Shell
+  pieces a forked `PcWMShellModule` can replace, the runtime hooks D1 can use without a patch,
+  and the one likely `frameworks/base` hook (desktop task placement), in docs/hypr-desktop.md.
 - **D1 — `hyprtile` dwindle:** layout engine (plain Kotlin, unit-tested); desktop tasks are
   placed and re-tiled on open and close, with gaps, through Shell transitions.
 - **D2 — workspaces and keybinds:** one layout tree per desk (`multidesks`); dispatchers

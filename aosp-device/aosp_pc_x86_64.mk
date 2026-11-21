@@ -21,6 +21,9 @@ include $(PC_DEVICE_DIR)/microg.mk
 # Desktop mode: freeform windows and Launcher3's taskbar, landscape only (phase F9f).
 include $(PC_DEVICE_DIR)/desktop/desktop.mk
 
+# Phase D, a Hyprland-style desktop shell: PcSystemUI in place of SystemUI (docs/hypr-desktop.md).
+include $(PC_DEVICE_DIR)/hypr/hypr.mk
+
 # Play Store and libndk_translation as user-added extras, not built in (docs/google-extras.md).
 include $(PC_DEVICE_DIR)/google_extras/extras.mk
 

@@ -1,0 +1,5 @@
+-keep class com.android.systemui.PcSystemUIInitializer {
+    *;
+}
+
+-keep,allowoptimization,allowaccessmodification class com.android.systemui.DaggerPcGlobalRootComponent** { !synthetic *; }
