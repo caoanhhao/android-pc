@@ -22,8 +22,9 @@
 #                                and probe it (tools/waydroid/guard/guardtest.c);
 #                                NOGUARD=1 runs it without the guard as a control
 #   container-guard.sh gamepads [on|off]
-#                                let the host's game pads into the container or keep them out
-#                                (the default): a device cgroup rule on evdev/joydev (char
+#                                let the host's game pads into the container (the default,
+#                                for playing Android games) or keep them out (while playing
+#                                on the host): a device cgroup rule on evdev/joydev (char
 #                                major 13), kept across `waydroid upgrade` and package
 #                                updates; a running container follows at once. No argument:
 #                                show the setting
@@ -99,7 +100,7 @@ apply() {
 # char devices (major 13: event*, js*, mouse*): ueventd's mknod fails and nothing in the
 # container can open one. The composer's wl_*_events are FIFOs and the virtual pads apps make
 # go through /dev/uinput and /dev/uhid (other majors), so none of that changes.
-pads_state() { cat "$PADS_STATE" 2>/dev/null || echo off; }
+pads_state() { cat "$PADS_STATE" 2>/dev/null || echo on; }
 
 pads_block() {
     echo "$PADS_BEGIN"

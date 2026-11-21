@@ -94,12 +94,13 @@ then also drives Android while the user plays on the host: in Phase D7 padctl's 
 "Xbox Elite Series 2" (host `event7`, `js0`) sent BACK on its B button to the focused Android
 window from a game on another host workspace, and it came back after every reconnect.
 
-Host game pads are therefore **off by default** and switched on when wanted:
+Host game pads are **on by default** (the user plays Android games with the pad) and can be
+switched off, e.g. while playing on the host with Waydroid open:
 
 ```bash
 tools/waydroid/container-guard.sh gamepads        # show: on/off
-tools/waydroid/container-guard.sh gamepads on     # let the host's pads in
-tools/waydroid/container-guard.sh gamepads off    # keep them out (default)
+tools/waydroid/container-guard.sh gamepads on     # let the host's pads in (default)
+tools/waydroid/container-guard.sh gamepads off    # keep them out
 ```
 
 - **Off** is a device cgroup rule in Waydroid's LXC config, next to the container guard:
@@ -187,7 +188,7 @@ run-time branch (`tools/waydroid/aosp17-patches/`, applied by `aosp17-setup.sh`)
 | frameworks/native libbinder, system/libhwbinder | no `FLAT_BINDER_FLAG_TXN_SECURITY_CTX` in the container | the host kernel has no LSM context to hand over, so binder fails every transaction to servicemanager |
 | hardware/interfaces hwc2on1adapter | a hotplug of the primary display re-reads its configs and reaches SurfaceFlinger as a reconnect (upstream Waydroid's "hwc2on1: Handle primary hotplugs") | the hwcomposer reports a host window resize as a primary hotplug; the stock adapter drops it ("non-external display"), so Android kept the size the window had at boot (half the screen) |
 | (ours) aosp-device/hals/audio | the Rust audio HAL plays to the desktop session's PulseAudio server (`src/pulse.rs`, the native protocol over the socket Waydroid binds at `/run/xdg/pulse/native`) when a stream has no ALSA PCM and that socket exists, and captures from its default source the same way | the container has no `/dev/snd`, so every stream went to the HAL's null device: Waydroid had no sound and a silent microphone |
-| system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`). The host side keeps pads out unless switched on ("Host game pads") |
+| system/core ueventd | in the container, input devices get `/dev/input` nodes only if they are gamepads or joysticks (a key in BTN_JOYSTICK..BTN_THUMBR in `/sys/.../capabilities/key`), and those present before the container started are added from `/sys/class/input` | the container receives every host uevent; Android has the desktop keyboard and mouse through the Wayland seat, so their raw devices would type and click twice. padctl's virtual pad ("Xbox Elite Series 2", 045e:0b00, AOSP's `Vendor_045e_Product_0b00.kl`) must reach Android, also when it existed before Waydroid started (cold boot cannot regenerate uevents on the host's read-only `/sys`). The host side can keep pads out ("Host game pads") |
 | system/core init keychords | only character devices in /dev/input are opened | init watches /dev/input for keychords and opens new nodes blocking; the composer's FIFOs there (wl_*_events) hung init (stuck after `vdc keymaster earlyBootEnded`, a zombie vdc never reaped) once /dev/input existed early in boot |
 | system/libvintf | the runtime check skips the kernel SELinux policy version in the container when it reads 0 | the host kernel has no SELinux; `VintfObject.verifyBuildAtBoot()` failed ("kernelSepolicyVersion = 0 but required >= 30") and `Build.isBuildConsistent()` made system_server show "There's an internal problem with your device" at every boot (on Android 17 this check is VINTF, not the partition fingerprints) |
 | external/wayland-protocols | fractional-scale-v1 added to the client protocols library | hwcomposer.waydroid uses it |
@@ -513,4 +514,5 @@ vendor image and a new system:
   hci_ != nullptr`). A quiet fix needs the image (stop `bt_hci` and drop the feature in the
   container), as does `seriallogging` (logcat to Cuttlefish's `/dev/hvc2`), which init also
   restarts every 5 s.
-- **2026-11-21, host game pads** kept out by default, switchable: see "Host game pads".
+- **2026-11-21, host game pads** switchable on the host side (on by default, the user's choice): see
+  "Host game pads".

@@ -1153,8 +1153,9 @@ Found, not caused by the shell:
   desks in the middle of the soak test. Removing the nodes inside the container stops it until
   the pad reconnects. D5's "`ALT + S` minimizes the focused window" did not happen again
   without the pad: it was the pad, not a key gesture.
-  Since fixed on the host side: host pads stay out of the container unless switched on
-  (`tools/waydroid/container-guard.sh gamepads on`; docs/waydroid-aosp17.md, "Host game pads").
+  Since then switchable on the host side: the pad stays in by default (the user plays Android
+  games with it), and `tools/waydroid/container-guard.sh gamepads off` keeps host pads out
+  while playing on the host (docs/waydroid-aosp17.md, "Host game pads").
 - `com.android.phone` and `com.android.nfc` restart every few seconds with "failed to complete
   startup" ANRs: the telephony stack waits for a radio HAL that the container does not have
   (`RIL.getRadioServiceProxy` → `waitForDeclaredService`). It predates Phase D on this image
