@@ -1,7 +1,9 @@
 # A Hyprland-style desktop shell (Phase D)
 
 Status (2026-11-21): D0 done, the `PcSystemUI` skeleton (`aosp-device/hypr/`) replaces
-SystemUI with unchanged behaviour; its findings are in "Shell extension points (D0)". This note
+SystemUI with unchanged behaviour; its findings are in "Shell extension points (D0)". D1 done:
+`hyprtile` (dwindle and master) tiles desktop tasks on open, close and minimize, checked on
+Waydroid ("`hyprtile` and dynamic tiling (D1)"). This note
 records what was decided in the
 brainstorm that started in `~/projects/hyprland-android` (an empty repo, now folded into this
 one) and what AOSP 17 already offers. Plan and sub-phases: PLAN.md, "Phase D".
@@ -238,6 +240,136 @@ Where `frameworks/base` would need an extension point (a small patch in
 Plan from here: D1 adds a hyprtile controller additively (handler + observer, D0 layout) and
 first tries placement without a patch; if the second move is visible, it adds the placement
 hook. D3 is the first sub-phase that needs the forked module (its own `WindowDecorViewModel`).
+D1 needed no hook (below, "`hyprtile` and dynamic tiling (D1)").
+
+## `hyprtile` and dynamic tiling (D1)
+
+### The engine
+
+`aosp-device/hypr/hyprtile/`, plain Kotlin with no Android types (`java_library hyprtile`,
+host and device), package `com.android.hyprtile`:
+
+| File | What |
+|---|---|
+| `Geometry.kt` | `Box` (a Rect with exclusive right/bottom), `Insets`, `applyGaps` |
+| `TileConfig.kt` | the declarative configuration: `layout`, `gapsIn`, `gapsOut`, `reserved` (bar space), dwindle's `splitWidthMultiplier`, `defaultSplitRatio`, `preserveSplit`, `forceSplit`, master's `masterFactor`, `newIsMaster`, `newOnTop`, `floatPackages` |
+| `DwindleLayout.kt` | Hyprland's dwindle: a binary tree; a new window splits the target window's box (the focused one, else the newest); top/bottom when `height * split_width_multiplier > width`, else side by side, recomputed on every arrange unless `preserve_split`; closing gives the box to the sibling; `togglesplit`, `swap`, `splitratio` |
+| `MasterLayout.kt` | Hyprland's master, orientation left: master takes `mfact` of the width, the stack shares the rest in rows; closing the master promotes the top of the stack |
+| `HyprTile.kt` | one layout per workspace (an AOSP desk), floating windows, `open`/`close`/`toggleFloating`/`swap`/`arrange`; switching the layout kind keeps the windows |
+| `FloatRules.kt` | `shouldFloat`: not resizeable, translucent, dialog-themed (`windowIsFloating`), listed in `floatPackages`, or a minimum size larger than the work area |
+
+Gaps follow Hyprland: the work area is the display's stable bounds minus `reserved`; a window
+side on the work area's edge gets `gaps_out`, an inner side `gaps_in`, so neighbours are
+`2 * gaps_in` apart. Split positions are rounded once and shared by both children, so tiles
+never overlap and never leave a stray pixel.
+
+Tests: 32 JUnit tests in `hyprtile/tests/` (exact boxes on 2560x1080 and 1920x1080, ratios,
+preserve/toggle split, swap, workspaces, floating, layout switch, float rules, and 2000
+random open/close steps that check the tiles stay inside the area and never overlap).
+`aosp-device/hypr/hyprtile/run-tests.sh` compiles and runs them with the tree's kotlinc and
+JDK in a few seconds without Soong; under Soong they are `java_test_host hyprtile-tests`
+(`m hyprtile-tests`, or `atest hyprtile-tests`). Both pass.
+
+### Wiring into Shell (no `frameworks/base` change)
+
+`PcSystemUI/src/com/android/systemui/wmshell/HyprTileController.kt`, provided by
+`PcWMShellModule` and created by `PcWMComponent.init()` after `getShell()` (so that its
+ShellInit callback runs after Shell's own and its handler is the newest). It uses only the
+runtime hooks D0 listed:
+
+- **Request path.** As the newest `Transitions.TransitionHandler` it sees every
+  `TRANSIT_OPEN`/`TO_FRONT`/`CLOSE`/`TO_BACK` request of a standard task on a display with an
+  active desk first. It lets the other handlers answer (`Transitions.dispatchRequest(...,
+  skip = this)`, so `DesktopTasksController` still does all of its desk bookkeeping), updates
+  hyprtile, and adds `setBounds` for every tiled task whose tile moved to *their*
+  `WindowContainerTransaction`; it returns their `RequestResult` unchanged otherwise, so the
+  handler that would have animated still animates. The new window and its neighbours move in
+  one Shell transition, with no second move. It never animates itself.
+  Mixed handlers dispatch the request again from inside their own `handleRequest`, which comes
+  back to this handler; the nested call steps aside (found on Waydroid: without the guard the
+  request was handled twice). A task moved into a desk gets windowing mode `UNDEFINED` in the
+  WCT (it inherits `FREEFORM` from the desk root); that counts as freeform.
+- **Observer path.** As a `TransitionObserver`, 100 ms after any transition finishes (the
+  repository learns about tasks from task-info callbacks that can come just after), it
+  compares the active desk's expanded tasks (`DesktopRepository.getExpandedTasksIdsInDeskOrdered`,
+  closing tasks and non-freeform tasks left out) with the layout and, if they differ, starts
+  one `TRANSIT_CHANGE` with the new bounds. This catches what comes without a request:
+  Shell's own minimize and close buttons, `moveTaskToDesk`, desks restored at boot, and the
+  first window of a desk (the desk becomes active only with that transition, so the request
+  path sees no active desk yet).
+- Bounds are written only when a task's tile changes, so a window the user drags or resizes
+  stays where it was put until the next layout change (and the observer cannot loop on an
+  app that refuses a size).
+- Floating: decided when the task first appears, and checked again on every sync while it
+  floats, because a task can open behind a translucent activity (Contacts' permission dialog)
+  and then become a normal window. Floating tasks keep Shell's own placement.
+- Configuration until D5's Lua: system properties, read on each request and sync:
+  `persist.hypr.tiling` (default true; false turns tiling off), `persist.hypr.layout`
+  (`dwindle`/`master`), `persist.hypr.gaps_in` (5), `persist.hypr.gaps_out` (12),
+  `persist.hypr.reserved_top`/`reserved_bottom` (0), `persist.hypr.float_packages`
+  (comma-separated). The work area is `DisplayLayout.getStableBoundsForDesktopMode()` (status
+  bar and taskbar already excluded).
+
+Decided: no placement hook in `frameworks/base` for D1. The request path puts the new window
+straight into its tile inside the open transition, so the extension point D0 anticipated
+(`DesktopTaskPlacementPolicy`) is not needed; `tools/patches/` gets nothing.
+
+### Checked on Waydroid (2026-11-21)
+
+Waydroid replaced Cuttlefish as the test target (user, 2026-11-21). `PcSystemUI.apk` went into
+the AOSP 17 image through the overlay, without repacking:
+`/var/lib/waydroid/overlay/system_ext/priv-app/PcSystemUI/PcSystemUI.apk` plus an overlayfs
+whiteout (`mknod c 0 0`) at `/var/lib/waydroid/overlay/system_ext/priv-app/SystemUI`, which
+hides the image's SystemUI (removing both entries brings it back). `pm path com.android.systemui`
+is then the overlay's APK. Tested on an empty data directory
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`), since the user's data sits at a locked
+keyguard (`RUNNING_LOCKED`, a lock credential), with the Waydroid window alone on host
+workspace 4 (the user's data also had `persist.waydroid.width` at 394, saved while the
+window was tiled narrow on the host; it is back at 2560): display 2538x1058, density 180 (Waydroid's; the 2560x1080/160 of the plan is
+Cuttlefish's). Stable bounds are `[0,27][2538,995]`, so with `gaps_out` 12 the work area is
+`[12,39][2526,983]`.
+
+Opening Settings, Contacts, Calendar (which also opened microG's sign-in activity, a task of
+its own), Files and Clock one after another, then closing two and minimizing one
+(`adb`-equivalent: `waydroid shell`, `dumpsys activity containers`, `screencap -p`):
+
+| Step | Tiled task bounds |
+|---|---|
+| Settings | `[12,39][2526,983]` |
+| + Contacts | Settings `[12,39][1264,983]`, Contacts `[1274,39][2526,983]` |
+| + Calendar, microG sign-in | Contacts `[1274,39][1899,983]`, Calendar `[1909,39][2526,506]`, microG `[1909,516][2526,983]` (the right half is still wider than tall, so it split side by side, then top/bottom) |
+| + Files | microG `[1909,516][2216,983]`, Files `[2226,516][2526,983]` |
+| + Clock | Files `[2226,516][2526,763]`, Clock `[2226,758][2526,1005]` (Clock's minimum height, see below) |
+| Files closed (`am force-stop`) | Clock takes Files' box, `[2226,516][2526,983]`, in the close transition |
+| Calendar closed | the right column re-tiles: microG `[1909,39][2526,506]`, Clock `[1909,516][2526,983]` |
+| Settings minimized (caption button) | Contacts `[12,39][1264,983]`, microG `[1274,39][1899,983]`, Clock `[1909,39][2526,983]` |
+| Settings brought back (`am start`) | tiled again next to the focused Clock: `[1909,516][2526,983]` |
+| `persist.hypr.layout=master`, Messaging opened | master `[12,39][1391,983]` (mfact 0.55), four stack rows on the right |
+| `dwindle`, gaps 0, Messaging closed | `[0,27][1269,995]`, `[1269,27][1904,995]`, ... (exact halves, no gaps) |
+
+From the second window on, the new window lands in its tile inside its own open transition
+and the neighbours move in the same transition; closes from the app side (`force-stop`) go
+the same way. The first window of a desk, the caption's minimize and close buttons go through
+the observer (one `TRANSIT_CHANGE` right after). Contacts' notification-permission dialog,
+which opens on top of the tiled Contacts task, does not make it float. No SystemUI crash.
+Screenshots: `out/hypr-d1/` (`open1..5.png`, `close1..2.png`, `min1.png`, `restore1.png`,
+`master.png`).
+
+Bugs found on the way and fixed: the request was handled twice (mixed handlers dispatch it
+again), a task entering a desk has mode `UNDEFINED` in the WCT, a new task is not known to
+`ShellTaskOrganizer` at request time (its bounds were skipped and Shell's default
+`[355,128][2182,889]` stayed; the request's own `TaskInfo` is used now), and a permission
+dialog on top of a tiled task floated the whole task.
+
+Known limits (left for later sub-phases):
+
+- An app's minimum size wins over its tile: DeskClock asks for more height than a quarter
+  tile, so WindowManager makes it taller and it overlaps its neighbour by a few pixels at the
+  bottom. A layout that knows minimum sizes (or floats such a window) is a later refinement.
+- A window the user maximizes, drags or resizes keeps its bounds until the next layout change
+  re-tiles it; `togglefloating`, `movewindow` and resizing tiles are D2.
+- The first window of a desk is placed by the observer, a moment after Shell placed it.
+- Only the active desk of each display is tiled; one tree per desk is D2.
 
 ## Configuration sketch
 
@@ -272,10 +404,16 @@ Whether the names should follow Hyprland's own Lua configuration closely is stil
 - The host's Hyprland takes SUPER bindings before Waydroid sees them. Either the shell uses
   another modifier by default (ALT above) or the host gets a pass-through submap while the
   Waydroid window has focus.
-- Waydroid overlay-mounts `/var/lib/waydroid/overlay` on `/system` and `/vendor`, so a new
-  `PcSystemUI` or `HyprLauncher` APK could be tried without repacking the image. Not checked.
-- Waydroid still starts only with the user's explicit OK (CLAUDE.md); early tests run on
-  Cuttlefish at 2560x1080.
+- Waydroid overlay-mounts `/var/lib/waydroid/overlay` on the rootfs and `/vendor`, so a new
+  `PcSystemUI` or `HyprLauncher` APK can be tried without repacking the image: checked in D1
+  (the APK under `overlay/system_ext/priv-app/PcSystemUI/`, a whiteout hiding `SystemUI`).
+- The user allowed Waydroid for every Phase D step (2026-11-21) and made it the test target in
+  place of Cuttlefish (`tools/waydroid/container-guard.sh check` first).
+- `waydroid shell` (lxc-attach) makes its stdout and stderr root-owned when they are files:
+  pipe its output (`... </dev/null 2>&1 | cat`) when a tool captures it to a file.
+- The host's Hyprland tiles the Waydroid window too; move it alone onto a workspace
+  (`hyprctl dispatch 'hl.dsp.window.move({ workspace = 4, follow = false, window =
+  "address:0x..." })'`) to get the full 2538x1058.
 
 ## Other devices
 

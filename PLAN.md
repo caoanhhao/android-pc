@@ -651,7 +651,14 @@ docs/hypr-desktop.md.
   pieces a forked `PcWMShellModule` can replace, the runtime hooks D1 can use without a patch,
   and the one likely `frameworks/base` hook (desktop task placement), in docs/hypr-desktop.md.
 - **D1 — `hyprtile` dwindle:** layout engine (plain Kotlin, unit-tested); desktop tasks are
-  placed and re-tiled on open and close, with gaps, through Shell transitions.
+  placed and re-tiled on open and close, with gaps, through Shell transitions. Status
+  (2026-11-21): done. `aosp-device/hypr/hyprtile/` has dwindle and master, gaps, a reserved bar
+  area and float rules (32 host tests pass, `run-tests.sh` or `hyprtile-tests`);
+  `HyprTileController` in `PcSystemUI` tiles the active desk through Shell's transition
+  handler and observer hooks, with no `frameworks/base` change. Checked on Waydroid (the test
+  target now) at 2538x1058: 1-6 apps tiled, closed, minimized and restored, master layout via
+  `persist.hypr.layout`. Known limits (app minimum sizes, user-moved windows, one tree per
+  desk) in docs/hypr-desktop.md, "`hyprtile` and dynamic tiling (D1)".
 - **D2 — workspaces and keybinds:** one layout tree per desk (`multidesks`); dispatchers
   (`workspace`, `movetoworkspace`, `movefocus`, `movewindow`, `togglefloating`, `killactive`)
   bound through `KeyGestureEvent`.

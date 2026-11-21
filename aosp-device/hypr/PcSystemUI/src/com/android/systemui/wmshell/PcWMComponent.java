@@ -18,4 +18,19 @@ public interface PcWMComponent extends WMComponent {
     interface Builder extends WMComponent.Builder {
         PcWMComponent build();
     }
+
+    /** The hyprtile controller; created before Shell initializes so it can register itself. */
+    HyprTileController getHyprTileController();
+
+    /**
+     * Creates the hyprtile controller after all of Shell's objects (getShell() pulls in the
+     * whole graph), so its ShellInit callback runs last and its transition handler is the newest
+     * one, the first that Transitions asks.
+     */
+    @Override
+    default void init() {
+        getShell();
+        getHyprTileController();
+        WMComponent.super.init();
+    }
 }

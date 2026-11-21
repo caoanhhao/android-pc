@@ -97,6 +97,7 @@ class HyprTileTest {
         assertFalse(shouldFloat(WindowTraits("com.android.settings"), cfg))
         assertTrue(shouldFloat(WindowTraits(resizeable = false), cfg))
         assertTrue(shouldFloat(WindowTraits(translucent = true), cfg))
+        assertTrue(shouldFloat(WindowTraits(dialog = true), cfg))
         assertTrue(shouldFloat(WindowTraits("com.example.calc"), cfg))
         assertTrue(shouldFloat(WindowTraits(minWidth = 3000), cfg, wide))
         assertFalse(shouldFloat(WindowTraits(minWidth = 800), cfg, wide))
