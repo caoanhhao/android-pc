@@ -630,6 +630,36 @@ AOSP). Notes and results: docs/waydroid-aosp17.md.
   fits here); Waydroid's `IPlatform` service for app lists and `waydroid app launch`.
 - **W5 — Where Winds Meet** on NVIDIA's Vulkan in the container.
 
+## Phase D — a Hyprland-style desktop shell
+
+Decided 2026-11-21 (user): a desktop shell that looks and works like Hyprland (dynamic tiling,
+workspaces, borders, bezier animations, keybinds, bar, app launcher, Lua configuration),
+mouse and keyboard first with simple touch gestures, replacing Smart Dock and Launcher3. It
+is part of the ROM, fixed to this tree's AOSP 17, with no Shizuku or root tricks, and built
+the way Google builds SystemUI variants (CarSystemUI): a `PcSystemUI` that overrides
+`SystemUI` with its own WM Shell module, plus `HyprLauncher` as home and recents provider.
+The earlier `~/projects/hyprland-android` repo (empty) is folded into this one. Design:
+docs/hypr-desktop.md.
+
+- **D0 — `PcSystemUI` skeleton:** a SystemUI variant in `aosp-device/hypr/` that overrides
+  `SystemUI` and boots on Cuttlefish with unchanged behaviour (its own initializer,
+  `PcWMComponent`, `PcWMShellModule`). Records which Shell classes can be replaced without
+  touching `frameworks/base`.
+- **D1 — `hyprtile` dwindle:** layout engine (plain Kotlin, unit-tested); desktop tasks are
+  placed and re-tiled on open and close, with gaps, through Shell transitions.
+- **D2 — workspaces and keybinds:** one layout tree per desk (`multidesks`); dispatchers
+  (`workspace`, `movetoworkspace`, `movefocus`, `movewindow`, `togglefloating`, `killactive`)
+  bound through `KeyGestureEvent`.
+- **D3 — decoration and animation:** rounded corners, gradient active border, minimal caption,
+  bezier curves for window and workspace animations.
+- **D4 — `HyprLauncher`:** home and recents provider (replaces Smart Dock and Launcher3),
+  `IHyprShell` through Shell's external interfaces, bar, app launcher, overview.
+- **D5 — Lua configuration:** `init.lua` with hot reload, error screen, window rules, event
+  hooks.
+- **D6 — touch:** edge swipes, drag-to-snap, pinch for the overview.
+- **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
+  Hyprland), with the user's OK to start Waydroid.
+
 ## Phase R — public releases
 
 Goal: GitHub releases of the stick image that contain nothing we may not redistribute
