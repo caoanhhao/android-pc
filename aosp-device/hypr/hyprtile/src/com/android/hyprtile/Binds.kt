@@ -82,3 +82,48 @@ fun resolveWorkspace(arg: String, current: Int): Int? {
     }
     return n?.takeIf { it >= 1 }
 }
+
+/**
+ * Parses the keys of a bind as Hyprland's Lua configuration writes them, `SUPER + SHIFT + Q`
+ * (modifiers and the key joined by `+`), or as its old configuration did, `SUPER SHIFT, Q`.
+ * Returns the modifiers and the key name, upper case. Throws on an unknown modifier or no key.
+ */
+fun parseKeys(text: String): Pair<Set<Mod>, String> {
+    val comma = text.indexOf(',')
+    val (mods, key) = if (comma >= 0) {
+        text.substring(0, comma) to text.substring(comma + 1).trim()
+    } else {
+        val parts = text.split('+').map { it.trim() }.filter { it.isNotEmpty() }
+        require(parts.isNotEmpty()) { "no key in '$text'" }
+        parts.dropLast(1).joinToString(" ") to parts.last()
+    }
+    require(key.isNotEmpty() && !key.contains(' ')) { "bad key '$key' in '$text'" }
+    return parseMods(mods) to key.uppercase()
+}
+
+/**
+ * Android's key code name (without `KEYCODE_`) for a key as Hyprland configurations name it
+ * (xkb names, any case): `LEFT` is `DPAD_LEFT`, `RETURN` is `ENTER`, `HOME` is `MOVE_HOME`, ...;
+ * names Android shares (`Q`, `1`, `F5`, `TAB`, `SPACE`, `GRAVE`) and `KEYCODE_` names pass through.
+ */
+fun androidKeyName(key: String): String {
+    val k = key.uppercase()
+    return KEY_ALIASES[k] ?: k.removePrefix("KEYCODE_")
+}
+
+private val KEY_ALIASES = mapOf(
+    "LEFT" to "DPAD_LEFT", "RIGHT" to "DPAD_RIGHT", "UP" to "DPAD_UP", "DOWN" to "DPAD_DOWN",
+    "RETURN" to "ENTER", "KP_ENTER" to "NUMPAD_ENTER", "ESC" to "ESCAPE",
+    "PRIOR" to "PAGE_UP", "NEXT" to "PAGE_DOWN", "PAGEUP" to "PAGE_UP", "PAGEDOWN" to "PAGE_DOWN",
+    "DELETE" to "FORWARD_DEL", "BACKSPACE" to "DEL", "PRINT" to "SYSRQ",
+    "HOME" to "MOVE_HOME", "END" to "MOVE_END",
+    "EQUAL" to "EQUALS", "BRACKETLEFT" to "LEFT_BRACKET", "BRACKETRIGHT" to "RIGHT_BRACKET",
+    "SUPER_L" to "META_LEFT", "SUPER_R" to "META_RIGHT", "CAPS_LOCK" to "CAPS_LOCK",
+)
+
+/** The dispatchers the shell and HyprLauncher run (Hyprland's names, `lua` for Lua functions). */
+val DISPATCHERS = setOf(
+    "workspace", "movetoworkspace", "movetoworkspacesilent", "movefocus", "movewindow",
+    "togglefloating", "togglesplit", "fullscreen", "killactive", "exec", "focuswindow",
+    "resizeactive", "launcher", "overview", "hyprexpo:expo", "lua",
+)

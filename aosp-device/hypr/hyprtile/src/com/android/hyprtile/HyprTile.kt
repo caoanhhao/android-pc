@@ -8,10 +8,19 @@ package com.android.hyprtile
 class HyprTile(config: TileConfig = TileConfig()) {
     var config: TileConfig = config
         set(value) {
-            val relayout = value.layout != field.layout
             field = value
-            if (relayout) rebuildLayouts()
-            layouts.values.forEach { it.configure(value) }
+            reconfigure()
+        }
+
+    /**
+     * Hyprland's workspace rules (own layout and gaps), keyed like the workspaces here (the
+     * Shell side maps workspace numbers to desks).
+     */
+    var workspaceRules: Map<Int, WorkspaceRule> = emptyMap()
+        set(value) {
+            if (value == field) return
+            field = value
+            reconfigure()
         }
 
     private val layouts = HashMap<Int, TileLayout>()
@@ -39,8 +48,9 @@ class HyprTile(config: TileConfig = TileConfig()) {
         }
         if (workspaceOf[id] == workspace) return false
         close(id)
-        val layout = layouts.getOrPut(workspace) { newLayout(config.layout) }
-        layout.configure(config)
+        val cfg = configOf(workspace)
+        val layout = layouts.getOrPut(workspace) { newLayout(cfg.layout) }
+        layout.configure(cfg)
         layout.add(id, focused?.takeIf { workspaceOf[it] == workspace })
         workspaceOf[id] = workspace
         return true
@@ -75,7 +85,8 @@ class HyprTile(config: TileConfig = TileConfig()) {
     /** Window boxes of [workspace] on a display of the given bounds. */
     fun arrange(workspace: Int, display: Box): Map<Int, Box> {
         val layout = layouts[workspace] ?: return emptyMap()
-        return layout.arrange(display.inset(config.reserved), config)
+        val cfg = configOf(workspace)
+        return layout.arrange(display.inset(cfg.reserved), cfg)
     }
 
     /** Hyprland's `resizeactive` for a tiled window: [dx] wider, [dy] taller. */
@@ -87,9 +98,19 @@ class HyprTile(config: TileConfig = TileConfig()) {
     /** The layout of [workspace], for layout-specific dispatchers (togglesplit, ...). */
     fun layout(workspace: Int): TileLayout? = layouts[workspace]
 
-    private fun rebuildLayouts() {
+    /** The configuration of [workspace]: [config] with its workspace rule applied. */
+    fun configOf(workspace: Int): TileConfig = workspaceRules[workspace]?.apply(config) ?: config
+
+    /** Applies the configuration to every layout; one whose kind changed is rebuilt, windows kept. */
+    private fun reconfigure() {
         for ((ws, old) in layouts.entries.toList()) {
-            val fresh = newLayout(config.layout).also { it.configure(config) }
+            val cfg = configOf(ws)
+            val kind = if (old is MasterLayout) LayoutKind.MASTER else LayoutKind.DWINDLE
+            if (kind == cfg.layout) {
+                old.configure(cfg)
+                continue
+            }
+            val fresh = newLayout(cfg.layout).also { it.configure(cfg) }
             old.ids.forEach { fresh.add(it) }
             layouts[ws] = fresh
         }

@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.KeyEvent
 import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
+import com.android.hyprtile.androidKeyName
 import com.android.hyprtile.defaultBinds
 import com.android.hyprtile.parseBind
 import com.android.hyprtile.parseMods
@@ -35,10 +36,11 @@ import java.util.Optional
  * [DesktopModeKeyGestureHandler] and routes them to hyprtile; the gestures it does not change
  * (minimize, close, fullscreen, move to next display) go back to Shell's handler.
  *
- * Configuration until D5's Lua: `persist.hypr.mod` (the main modifier, default ALT),
- * `persist.hypr.terminal` (package for MOD+Q), `persist.hypr.bind.1` to `.32` (extra binds,
- * each `MODS, key, dispatcher[, arg]`, `$mod` standing for the main modifier; one replaces a
- * default bind on the same keys).
+ * Configuration: HyprLauncher's Lua (D5) sends the whole bind list (`binds`, defaults
+ * included, in IHyprShell.setConfig); it is installed again whenever it changes. Without it:
+ * `persist.hypr.mod` (the main modifier, default ALT), `persist.hypr.terminal` (package for
+ * MOD+Q), `persist.hypr.bind.1` to `.32` (extra binds, each `MODS, key, dispatcher[, arg]`,
+ * `$mod` standing for the main modifier; one replaces a default bind on the same keys).
  */
 class HyprKeybinds(
     shellInit: ShellInit,
@@ -51,6 +53,8 @@ class HyprKeybinds(
     /** The binds in force; index i is gesture type TYPE_BASE + i. */
     @Volatile
     private var binds: List<Bind> = emptyList()
+    /** The bind list [binds] was installed from. */
+    private var wanted: List<Bind>? = null
 
     init {
         shellInit.addInitCallback(::onInit, this)
@@ -65,6 +69,10 @@ class HyprKeybinds(
         val types = SHELL_TYPES + (0 until MAX_BINDS).map { TYPE_BASE + it }
         inputManager.registerKeyGestureEventHandler(types, this)
         installBinds()
+        controller.onConfigChanged = {
+            val list = readBinds()
+            if (list != wanted) installBinds()
+        }
     }
 
     /** Replaces the custom input gestures of earlier starts with the current bind list. */
@@ -75,6 +83,7 @@ class HyprKeybinds(
             }
         }
         val list = readBinds()
+        wanted = list
         val installed = ArrayList<Bind>()
         for (bind in list.take(MAX_BINDS)) {
             val keycode = keyCode(bind.key)
@@ -126,10 +135,16 @@ class HyprKeybinds(
     }
 
     private fun mainMod(): Set<Mod> =
-        runCatching { parseMods(SystemProperties.get(PROP_MOD, DEFAULT_MOD)) }
+        runCatching { parseMods(controller.configOverrides.getString("mod") ?: SystemProperties.get(PROP_MOD, DEFAULT_MOD)) }
             .getOrNull()?.takeIf { it.isNotEmpty() } ?: parseMods(DEFAULT_MOD)
 
     private fun readBinds(): List<Bind> {
+        controller.configOverrides.getStringArray("binds")?.let { lines ->
+            return lines.mapNotNull { line ->
+                runCatching { parseBind(line) }.onFailure { Log.w(TAG, "bad bind '$line': ${it.message}") }
+                    .getOrNull()
+            }
+        }
         val mod = mainMod()
         val terminal = SystemProperties.get(PROP_TERMINAL).takeIf { it.isNotEmpty() }
         val extra = (1..MAX_EXTRA_BINDS).map { SystemProperties.get("$PROP_BIND_PREFIX$it").trim() }
@@ -145,10 +160,7 @@ class HyprKeybinds(
     }
 
     /** Android's key code for a Hyprland key name (`LEFT`, `RETURN`, `Q`, `KEYCODE_...`). */
-    private fun keyCode(key: String): Int {
-        val name = KEY_ALIASES[key] ?: key.removePrefix("KEYCODE_")
-        return KeyEvent.keyCodeFromString("KEYCODE_$name")
-    }
+    private fun keyCode(key: String): Int = KeyEvent.keyCodeFromString("KEYCODE_${androidKeyName(key)}")
 
     private fun metaState(mods: Set<Mod>): Int {
         var meta = 0
@@ -174,14 +186,6 @@ class HyprKeybinds(
         /** "HY" << 16: far from AOSP's gesture types (below 100). */
         const val TYPE_BASE = 0x48590000
         const val MAX_BINDS = 128
-
-        /** xkb names Hyprland configurations use where Android's differ. */
-        val KEY_ALIASES = mapOf(
-            "LEFT" to "DPAD_LEFT", "RIGHT" to "DPAD_RIGHT", "UP" to "DPAD_UP",
-            "DOWN" to "DPAD_DOWN", "RETURN" to "ENTER", "ESCAPE" to "ESCAPE",
-            "PRIOR" to "PAGE_UP", "NEXT" to "PAGE_DOWN", "DELETE" to "FORWARD_DEL",
-            "BACKSPACE" to "DEL", "PRINT" to "SYSRQ",
-        )
 
         /** The types DesktopModeKeyGestureHandler registers; this handler takes them over. */
         val SHELL_TYPES = listOf(

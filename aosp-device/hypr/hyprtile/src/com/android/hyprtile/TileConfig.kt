@@ -29,8 +29,10 @@ data class TileConfig(
     val newIsMaster: Boolean = false,
     /** master:new_on_top: a new stack window goes to the top of the stack. */
     val newOnTop: Boolean = false,
-    /** Packages that always float (a stand-in for window rules until D5). */
+    /** Packages that always float (`persist.hypr.float_packages`; Lua has window rules). */
     val floatPackages: Set<String> = emptySet(),
+    /** Hyprland's window rules (float, tile, workspace, opacity), later ones win. */
+    val windowRules: List<WindowRule> = emptyList(),
 ) {
     init {
         require(gapsIn >= 0 && gapsOut >= 0) { "gaps must not be negative" }

@@ -91,7 +91,8 @@ class HyprMouse(
 
     /** Meta state bits of the main modifier, read at each press (it can change at runtime). */
     private fun modMask(): Int {
-        val mods = runCatching { parseMods(SystemProperties.get("persist.hypr.mod", "ALT")) }
+        val o = controller.configOverrides
+        val mods = runCatching { parseMods(o.getString("mouse_mod") ?: SystemProperties.get("persist.hypr.mod", "ALT")) }
             .getOrNull()?.takeIf { it.isNotEmpty() } ?: setOf(Mod.ALT)
         var meta = 0
         if (Mod.SHIFT in mods) meta = meta or KeyEvent.META_SHIFT_ON

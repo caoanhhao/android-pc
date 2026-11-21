@@ -17,8 +17,12 @@ android_app {
     resource_dirs: ["res"],
     static_libs: [
         "hyprshell-aidl",
+        "hyprlua",
         "hyprtile",
     ],
+    // The Lua configuration's engine (Phase D5), inside the APK.
+    jni_libs: ["libhyprlua_jni"],
+    use_embedded_native_libs: true,
     platform_apis: true,
     system_ext_specific: true,
     certificate: "platform",

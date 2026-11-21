@@ -12,15 +12,16 @@ import android.os.RemoteException
 import android.util.Log
 import android.util.TypedValue
 import android.view.Display
+import com.android.hyprlua.BarConfig
 import com.android.hyprshell.IHyprShell
 import com.android.hyprshell.IHyprShellListener
 import java.util.concurrent.Executors
 
 /**
  * HyprLauncher's desktop on the default display (Phase D4): the bar, the app launcher and the
- * overview, and the connection to PcSystemUI's IHyprShell. One per process, used on the main
- * thread; calls into the shell go through a background thread so the UI never waits on
- * SystemUI.
+ * overview, and the connection to PcSystemUI's IHyprShell; the Lua configuration and its
+ * messages (Phase D5). One per process, used on the main thread; calls into the shell go
+ * through a background thread so the UI never waits on SystemUI.
  */
 class Desktop private constructor(context: Context) {
     val context: Context = context.applicationContext
@@ -28,6 +29,7 @@ class Desktop private constructor(context: Context) {
     val display: Display = this.context.getSystemService(DisplayManager::class.java)
         .getDisplay(Display.DEFAULT_DISPLAY)
     val apps = AppCatalog(this.context)
+    @Volatile
     var state = ShellState.EMPTY
         private set
 
@@ -39,6 +41,8 @@ class Desktop private constructor(context: Context) {
     val bar = Bar(this)
     val launcher = AppLauncher(this)
     val overview = Overview(this)
+    val notifier = Notifier(this)
+    val lua = LuaConfig(this)
 
     private val listener = object : IHyprShellListener.Stub() {
         override fun onStateChanged(displayId: Int, state: Bundle) {
@@ -49,6 +53,7 @@ class Desktop private constructor(context: Context) {
 
         override fun onEvent(name: String, data: String) {
             Log.d(TAG, "event $name>>$data")
+            lua.onEvent(name, data)
         }
 
         override fun onDispatch(name: String, arg: String) {
@@ -56,6 +61,7 @@ class Desktop private constructor(context: Context) {
                 when (name) {
                     "launcher" -> launcher.toggle()
                     "overview", "hyprexpo:expo" -> overview.toggle()
+                    "lua" -> lua.callBind(arg)
                 }
             }
         }
@@ -67,7 +73,9 @@ class Desktop private constructor(context: Context) {
         started = true
         apps.load()
         bar.show()
+        notifier.setTop(bar.reservedTop)
         registerKeyGestures()
+        lua.start()
     }
 
     /**
@@ -113,9 +121,20 @@ class Desktop private constructor(context: Context) {
         shell = s
         Log.i(TAG, "IHyprShell ${if (s != null) "connected" else "missing"}")
         if (s == null) return
+        val top = bar.reservedTop
         shellCall {
             it.addListener(listener)
-            it.setReserved(Display.DEFAULT_DISPLAY, bar.reservedTop, 0)
+            it.setReserved(Display.DEFAULT_DISPLAY, top, 0)
+        }
+        lua.onShellAttached()
+    }
+
+    /** The bar's part of init.lua; a new height moves the reserved strip and the messages. */
+    fun applyBar(cfg: BarConfig, workspaceNames: Map<Int, String>) {
+        if (bar.configure(cfg, workspaceNames)) {
+            val top = bar.reservedTop
+            notifier.setTop(top)
+            shellCall { it.setReserved(Display.DEFAULT_DISPLAY, top, 0) }
         }
     }
 

@@ -44,9 +44,11 @@ class HyprDecorations(
     private val enabled: () -> Boolean,
     private val isTiled: (Int) -> Boolean,
     private val isVisible: (Int) -> Boolean,
+    /** A window rule's opacity for a task (active, inactive), or null for the configuration's. */
+    private val opacityRule: (Int) -> Pair<Float, Float>? = { null },
 ) : WindowDecorStyle {
 
-    var config: DecorationConfig = HyprStyleProps.decoration()
+    var config: DecorationConfig = HyprStyleProps.decoration(android.os.Bundle())
         private set
 
     private val windows = HashMap<Int, Window>()
@@ -71,12 +73,15 @@ class HyprDecorations(
         t.apply()
     }
 
-    /** The opacity a window should have. */
-    fun opacity(focused: Boolean) = if (focused) config.activeOpacity else config.inactiveOpacity
+    /** The opacity window [taskId] should have: its window rule's, else the configuration's. */
+    fun opacity(taskId: Int, focused: Boolean): Float {
+        val rule = opacityRule(taskId)
+        return if (focused) rule?.first ?: config.activeOpacity else rule?.second ?: config.inactiveOpacity
+    }
 
     /** The opacity of [taskId] as last decorated (1 when unknown). */
     fun opacityOf(taskId: Int): Float =
-        windows[taskId]?.takeIf { it.freeform && enabled() }?.let { opacity(it.focused) } ?: 1f
+        windows[taskId]?.takeIf { it.freeform && enabled() }?.let { opacity(taskId, it.focused) } ?: 1f
 
     /**
      * Sets the opacity of every visible desktop window again. Shell's animations end with
@@ -89,7 +94,7 @@ class HyprDecorations(
         for (w in windows.values) {
             val s = w.surface ?: continue
             if (!w.freeform || !isVisible(w.taskId)) continue
-            t.setAlpha(s, opacity(w.focused))
+            t.setAlpha(s, opacity(w.taskId, w.focused))
             any = true
         }
         if (any) t.apply()
@@ -189,7 +194,7 @@ class HyprDecorations(
                 return
             }
             styled = true
-            val alpha = opacity(focused)
+            val alpha = opacity(taskId, focused)
             for (t in arrayOf(startT, finishT)) {
                 t.setCornerRadius(s, cfg.rounding.toFloat())
                 t.setAlpha(s, alpha)

@@ -35,7 +35,10 @@ import com.android.hyprtile.HyprTile
 import com.android.hyprtile.Insets
 import com.android.hyprtile.LayoutKind
 import com.android.hyprtile.TileConfig
+import com.android.hyprtile.WindowRule
 import com.android.hyprtile.WindowTraits
+import com.android.hyprtile.WorkspaceRule
+import com.android.hyprtile.effect
 import com.android.hyprtile.neighbor
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
@@ -111,13 +114,21 @@ class HyprTileController(
     private val decorViewModel: Optional<DesktopModeWindowDecorViewModel>,
 ) : Transitions.TransitionHandler, Transitions.TransitionObserver {
 
-    /** Configuration pushed by the launcher (IHyprShell.setConfig), over the properties. */
+    /**
+     * Configuration pushed by the launcher (IHyprShell.setConfig), over the properties; from
+     * HyprLauncher's Lua (D5) it is complete (`source` = `lua`).
+     */
     @Volatile
     var configOverrides: Bundle = Bundle()
         set(value) {
             field = value
-            mainExecutor.execute(syncRunnable)
+            mainExecutor.execute {
+                onConfigChanged?.invoke()
+                sync()
+            }
         }
+    /** Called on Shell's main thread after [configOverrides] changed (binds, mouse modifier). */
+    var onConfigChanged: (() -> Unit)? = null
     private val tile = HyprTile(readConfig(Bundle()))
     /** Bounds hyprtile last gave each task; a task is only moved when its tile changes. */
     private val applied = HashMap<Int, Rect>()
@@ -129,14 +140,19 @@ class HyprTileController(
     private val userFloated = HashSet<Int>()
     /** Tiled tasks maximized with `fullscreen 1`; they keep their tile in the layout. */
     private val maximized = HashSet<Int>()
+    /** Tasks opened since the last sync: window rules with a workspace apply to them once. */
+    private val newTasks = HashSet<Int>()
+    /** Opacity of tasks a window rule gives one (active, inactive). */
+    private val ruleOpacity = HashMap<Int, Pair<Float, Float>>()
 
     val decorations = HyprDecorations(
         enabled = { enabled },
         isTiled = { tile.isTiled(it) },
         isVisible = { userRepositories.isPresent && repository.isVisibleTask(it) },
+        opacityRule = { ruleOpacity[it] },
     )
     private val animator = HyprAnimator()
-    private var animationsEnabled = HyprStyleProps.animationsEnabled()
+    private var animationsEnabled = HyprStyleProps.animationsEnabled(Bundle())
     private val mouse = HyprMouse(inputManager, this)
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
     private val ownChanges = HashSet<IBinder>()
@@ -198,8 +214,10 @@ class HyprTileController(
             (if (animationsEnabled) "on" else "off"))
     }
 
-    /** Tiling is on (persist.hypr.tiling); with it off, Shell's own behaviour comes back. */
-    val enabled get() = userRepositories.isPresent && SystemProperties.getBoolean(PROP_ENABLED, true)
+    /** Tiling is on (persist.hypr.tiling, Lua's shell.tiling); off, Shell's own behaviour comes back. */
+    val enabled get() = userRepositories.isPresent &&
+        (configOverrides.getString("tiling")?.toBooleanStrictOrNull()
+            ?: SystemProperties.getBoolean(PROP_ENABLED, true))
 
     private val repository: DesktopRepository get() = userRepositories.get().current
 
@@ -244,6 +262,7 @@ class HyprTileController(
             } else {
                 val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId)
                     .firstOrNull { it != task.taskId && tile.isTiled(it) }
+                newTasks += task.taskId
                 tile.open(task.taskId, deskId, focused,
                     float = task.taskId in userFloated || floats(task))
             }
@@ -342,7 +361,7 @@ class HyprTileController(
                 return null
             }
             val (from, to) = HyprAnimator.relBounds(c)
-            val alpha = decorations.opacity(task.isFocused)
+            val alpha = decorations.opacity(task.taskId, task.isFocused)
             val kind = when (c.mode) {
                 TRANSIT_OPEN -> HyprAnimator.WindowChange.Kind.OPEN
                 TRANSIT_TO_FRONT ->
@@ -386,7 +405,9 @@ class HyprTileController(
         val toPos = repo.getDeskPosition(desk.to) ?: return false
         Log.d(TAG, "animating desk switch ${desk.from} -> ${desk.to}")
         snapController.onDeskSwitchAnimationStarting(desk.displayId, desk.from, desk.to)
-        val toAlphas = toTasks.map { it.leash to decorations.opacity(it.taskInfo?.isFocused == true) }
+        val toAlphas = toTasks.map {
+            it.leash to decorations.opacity(it.taskInfo?.taskId ?: -1, it.taskInfo?.isFocused == true)
+        }
         // As Shell's switch: the old desk's tasks end hidden, the new desk's shown.
         fromDesk?.let { finishT.setPosition(it.leash, display.left.toFloat(), display.top.toFloat()) }
         toDesk?.let { finishT.setPosition(it.leash, display.left.toFloat(), display.top.toFloat()) }
@@ -487,7 +508,81 @@ class HyprTileController(
         maximized.retainAll { tile.isTiled(it) }
         refreshCaptions()
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
+        applyWindowRules()
         onStateChanged?.invoke()
+    }
+
+    /**
+     * Window rules: the opacity of every desktop task, and, once for a task opened since the
+     * last sync, the workspace it belongs on (moved there and followed, or moved silently).
+     */
+    private fun applyWindowRules() {
+        val rules = tile.config.windowRules
+        ruleOpacity.clear()
+        val opened = newTasks.toList()
+        newTasks.clear()
+        if (rules.isEmpty()) return
+        for (task in taskOrganizer.getRunningTasks()) {
+            if (repository.getDeskIdForTask(task.taskId) == null) continue
+            val pkg = task.baseActivity?.packageName
+            val title = task.taskDescription?.label?.toString()
+            val active = rules.effect(pkg, title) { it.opacityActive }
+            val inactive = rules.effect(pkg, title) { it.opacityInactive }
+            if (active != null || inactive != null) {
+                ruleOpacity[task.taskId] = (active ?: decorations.config.activeOpacity) to
+                    (inactive ?: decorations.config.inactiveOpacity)
+            }
+        }
+        for (id in opened) {
+            val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+            val pkg = task.baseActivity?.packageName
+            val title = task.taskDescription?.label?.toString()
+            val rule = rules.lastOrNull { it.workspace != null && it.matches(pkg, title) } ?: continue
+            val n = rule.workspace ?: continue
+            if (n > MAX_WORKSPACES || currentWorkspaceOf(task) == n) continue
+            Log.d(TAG, "window rule ${rule.name}: task $id to workspace $n" + if (rule.silent) " (silent)" else "")
+            withWorkspaceDesk(task.displayId, n) { desk ->
+                if (rule.silent) moveSilently(task, desk) else switchToDesk(task.displayId, desk, moving = task)
+            }
+            // One move per sync: the next sync, after its transition, takes the next one.
+            opened.drop(opened.indexOf(id) + 1).let { newTasks.addAll(it) }
+            break
+        }
+        decorations.reapplyOpacity()
+    }
+
+    /** The workspace number of [task]'s desk, 0 when it is on none. */
+    private fun currentWorkspaceOf(task: RunningTaskInfo): Int {
+        val desk = repository.getDeskIdForTask(task.taskId) ?: return 0
+        return orderedDesks(task.displayId).indexOf(desk) + 1
+    }
+
+    /**
+     * Hyprland's `movetoworkspacesilent`: [task] goes to [deskId] without switching to it; the
+     * desk it leaves re-tiles in the same transition.
+     */
+    private fun moveSilently(task: RunningTaskInfo, deskId: Int) {
+        val controller = desktopTasksController.orElse(null) ?: return
+        val from = repository.getDeskIdForTask(task.taskId) ?: return
+        if (from == deskId) return
+        val id = task.taskId
+        val floating = tile.isFloating(id) || id in userFloated
+        val wct = WindowContainerTransaction()
+        controller.addMoveToDeskTaskChanges(wct, task, deskId)
+        maximized -= id
+        applied.remove(id)
+        tile.close(id)
+        addBounds(from, task.displayId, wct)
+        val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId).firstOrNull { tile.isTiled(it) }
+        tile.open(id, deskId, focused, float = floating)
+        addBounds(deskId, task.displayId, wct, task)
+        Log.d(TAG, "move task $id silently: desk $from -> $deskId")
+        startChange(wct)
+        // Shell's own moves record the new desk in their transition handlers; this one is ours,
+        // and without it the repository keeps the task on the old desk (whose layout would
+        // keep a hole for it).
+        repository.addTaskToDesk(task.displayId, deskId, id, isVisible = false,
+            taskBounds = Rect(task.configuration.windowConfiguration.bounds))
     }
 
     // ---- dispatchers (Hyprland's names; Phase D2) ----
@@ -513,6 +608,17 @@ class HyprTileController(
                     ?.takeIf { it <= MAX_WORKSPACES } ?: return false
                 withWorkspaceDesk(task.displayId, n) { switchToDesk(task.displayId, it, moving = task) }
             }
+            "movetoworkspacesilent" -> {
+                val task = focusedTask() ?: return true
+                val n = resolveWorkspace(arg, currentWorkspace(task.displayId))
+                    ?.takeIf { it <= MAX_WORKSPACES } ?: return false
+                withWorkspaceDesk(task.displayId, n) { moveSilently(task, it) }
+            }
+            "resizeactive" -> {
+                val p = arg.trim().split(Regex("\\s+")).map { it.toIntOrNull() ?: return false }
+                if (p.size != 2) return false
+                resizeActive(p[0], p[1])
+            }
             "movefocus" -> moveFocus(Direction.parse(arg) ?: return false)
             "movewindow" -> moveWindow(Direction.parse(arg) ?: return false)
             "togglefloating" -> toggleFloating()
@@ -522,8 +628,8 @@ class HyprTileController(
             "exec" -> exec(arg.trim())
             "focuswindow" -> focusWindow(arg.trim().removePrefix("taskid:").toIntOrNull()
                 ?: return false)
-            // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview).
-            "launcher", "overview", "hyprexpo:expo" ->
+            // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
+            "launcher", "overview", "hyprexpo:expo", "lua" ->
                 return launcherDispatch?.invoke(name, arg) ?: false
             else -> return false
         }
@@ -707,6 +813,24 @@ class HyprTileController(
             tile.toggleFloating(id, deskId, focused)
         }
         addBounds(deskId, task.displayId, wct, task)
+        if (!wct.isEmpty) startChange(wct)
+    }
+
+    /** Hyprland's `resizeactive DX DY`: a tiled window moves its splits, a floating one grows. */
+    private fun resizeActive(dx: Int, dy: Int) {
+        val task = focusedTask() ?: return
+        val id = task.taskId
+        val wct = WindowContainerTransaction()
+        if (tile.isTiled(id)) {
+            maximized -= id
+            tile.resize(id, dx, dy)
+            tile.workspaceOf(id)?.let { addBounds(it, task.displayId, wct) }
+        } else {
+            val box = task.bounds()
+            val b = Rect(box.left, box.top, maxOf(box.left + MIN_SIZE, box.right + dx),
+                maxOf(box.top + MIN_SIZE, box.bottom + dy))
+            wct.setBounds(task.token, b)
+        }
         if (!wct.isEmpty) startChange(wct)
     }
 
@@ -1036,6 +1160,7 @@ class HyprTileController(
         return shouldFloat(
             WindowTraits(
                 packageName = task.baseActivity?.packageName,
+                title = task.taskDescription?.label?.toString(),
                 resizeable = task.isResizeable,
                 translucent = task.isTopActivityTransparent,
                 dialog = task.topActivityInfo?.let { isDialogTheme(it) } ?: false,
@@ -1059,14 +1184,35 @@ class HyprTileController(
             }
         }
 
-    /** Reads the persist.hypr.* properties (stand-ins for the Lua configuration of D5). */
+    /**
+     * Reads the configuration: the launcher's (Lua, IHyprShell.setConfig) over the
+     * persist.hypr.* properties. Returns true when the tiling changed.
+     */
     private fun updateConfig(): Boolean {
-        decorations.setConfig(HyprStyleProps.decoration())
-        animator.config = HyprStyleProps.animations()
-        animationsEnabled = HyprStyleProps.animationsEnabled()
-        val fresh = readConfig(configOverrides)
-        if (fresh == tile.config) return false
+        val o = configOverrides
+        decorations.setConfig(HyprStyleProps.decoration(o))
+        animator.config = HyprStyleProps.animations(o)
+        animationsEnabled = HyprStyleProps.animationsEnabled(o)
+        val fresh = readConfig(o)
+        // Workspace rules are by number; the layouts are by desk.
+        val byDesk = HashMap<Int, WorkspaceRule>()
+        val rules = o.getStringArray("workspace")?.mapNotNull {
+            runCatching { WorkspaceRule.decode(it) }.onFailure { e -> Log.w(TAG, "bad workspace rule: $e") }
+                .getOrNull()
+        } ?: emptyList()
+        if (rules.isNotEmpty() && userRepositories.isPresent) {
+            val repo = repository
+            for (displayId in repo.getAllDeskIds().mapNotNull {
+                runCatching { repo.getDisplayForDesk(it) }.getOrNull()
+            }.toSet()) {
+                val desks = orderedDesks(displayId)
+                for (r in rules) desks.getOrNull(r.workspace - 1)?.let { byDesk[it] = r }
+            }
+        }
+        val rulesChanged = byDesk != tile.workspaceRules
+        if (fresh == tile.config && !rulesChanged) return false
         tile.config = fresh
+        tile.workspaceRules = byDesk
         applied.clear()
         return true
     }
@@ -1087,7 +1233,21 @@ class HyprTileController(
             val d = TileConfig()
             fun str(name: String) = overrides.getString(name) ?: SystemProperties.get("persist.hypr.$name")
             fun int(name: String, def: Int) = str(name).trim().toIntOrNull() ?: def
+            fun float(name: String, def: Float, range: ClosedFloatingPointRange<Float>) =
+                str(name).trim().toFloatOrNull()?.takeIf { it in range } ?: def
+            fun bool(name: String, def: Boolean) = str(name).trim().toBooleanStrictOrNull() ?: def
             return d.copy(
+                splitWidthMultiplier = float("split_width_multiplier", d.splitWidthMultiplier, 0.1f..10f),
+                defaultSplitRatio = float("default_split_ratio", d.defaultSplitRatio, 0.1f..1.9f),
+                preserveSplit = bool("preserve_split", d.preserveSplit),
+                forceSplit = int("force_split", d.forceSplit).takeIf { it in 1..2 } ?: d.forceSplit,
+                masterFactor = float("mfact", d.masterFactor, 0.05f..0.95f),
+                newIsMaster = str("new_status").trim() == "master",
+                newOnTop = bool("new_on_top", d.newOnTop),
+                windowRules = overrides.getStringArray("windowrule")?.mapNotNull {
+                    runCatching { WindowRule.decode(it) }.onFailure { e -> Log.w(TAG, "bad window rule: $e") }
+                        .getOrNull()
+                } ?: emptyList(),
                 layout = if (str("layout") == "master") {
                     LayoutKind.MASTER
                 } else {

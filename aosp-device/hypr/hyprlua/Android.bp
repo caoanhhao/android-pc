@@ -1,0 +1,53 @@
+// hyprlua: HyprLauncher's Lua configuration (Phase D5, docs/hypr-lua.md). A sandboxed Lua 5.4
+// state from the tree's external/lua with a small JNI binding, the `hl` API (prelude.lua) and
+// the translation of init.lua into the configuration IHyprShell.setConfig carries.
+
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64/hypr:__subpackages__"],
+}
+
+cc_library_shared {
+    name: "libhyprlua_jni",
+    host_supported: true,
+    srcs: [
+        "jni/hyprlua_jni.c",
+        ":liblua-sources",
+    ],
+    include_dirs: ["external/lua/src"],
+    header_libs: ["jni_headers"],
+    // As liblua, without LUA_USE_LINUX: no dlopen (package.loadlib is never opened anyway).
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-deprecated-declarations",
+        "-Wno-string-plus-int",
+        "-Wno-unused-parameter",
+        "-O2",
+        "-DLUA_COMPAT_5_3",
+    ],
+    stl: "none",
+    sdk_version: "current",
+}
+
+java_library {
+    name: "hyprlua",
+    host_supported: true,
+    srcs: ["src/**/*.kt"],
+    java_resource_dirs: ["res"],
+    static_libs: ["hyprtile"],
+    sdk_version: "core_current",
+}
+
+// Host-side unit tests against real Lua: `atest hyprlua-tests`, or run-tests.sh without Soong.
+java_test_host {
+    name: "hyprlua-tests",
+    srcs: ["tests/src/**/*.kt"],
+    static_libs: [
+        "hyprlua",
+        "junit",
+    ],
+    jni_libs: ["libhyprlua_jni"],
+    test_options: {
+        unit_test: true,
+    },
+}

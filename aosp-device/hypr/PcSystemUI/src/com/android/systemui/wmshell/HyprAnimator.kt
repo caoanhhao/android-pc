@@ -31,7 +31,7 @@ import kotlin.math.min
  * Runs on Shell's main thread, where transitions are started and finished.
  */
 class HyprAnimator {
-    var config: AnimationConfig = HyprStyleProps.animations()
+    var config: AnimationConfig = HyprStyleProps.animations(android.os.Bundle())
 
     /** One animated surface: [apply] sets its state at [elapsedMs] into the transaction. */
     private class Track(val durationMs: Long, val apply: (SurfaceControl.Transaction, Long) -> Unit)

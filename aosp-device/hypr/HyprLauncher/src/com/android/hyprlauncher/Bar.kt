@@ -28,11 +28,14 @@ import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
 import android.view.InsetsFrameProvider
+import com.android.hyprlua.BarConfig
 
 /**
  * The waybar-like bar along the top of the default display (Phase D4): an Apps button,
  * workspaces (click to switch, scroll to step), the focused window's title, running apps
- * (click to focus), the notification and quick settings entries, and the clock.
+ * (click to focus), the notification and quick settings entries, and the clock. Which modules
+ * sit left, centre and right, the colours, the clock format and modules written in Lua come
+ * from init.lua (`hl.bar`, `hl.bar_module`, Phase D5).
  *
  * It is a TYPE_STATUS_BAR_ADDITIONAL window: above apps and the launcher's panels, below the
  * notification shade and the keyguard (Launcher3's taskbar type, NAVIGATION_BAR_PANEL, is
@@ -48,50 +51,38 @@ class Bar(private val desktop: Desktop) {
         .createWindowContext(TYPE_STATUS_BAR_ADDITIONAL, null)
     private val wm = ctx.getSystemService(WindowManager::class.java)
     private val insetsOwner = Binder()
-    val reservedTop = desktop.dp(HEIGHT_DP)
+    var config = BarConfig()
+        private set
+    var reservedTop = desktop.dp(config.heightDp.toFloat())
+        private set
+    private var names: Map<Int, String> = emptyMap()
+    private var state = ShellState.EMPTY
 
     private val root = LinearLayout(ctx)
     private val workspaces = LinearLayout(ctx)
     private val title = TextView(ctx)
     private val running = LinearLayout(ctx)
+    private val clock = TextClock(ctx)
+    /** Lua modules' views by name; their text comes from [setModuleText]. */
+    private val custom = HashMap<String, TextView>()
     private var shown = false
 
     init {
         root.orientation = LinearLayout.HORIZONTAL
         root.gravity = Gravity.CENTER_VERTICAL
-        root.setBackgroundColor(BG)
         root.setPadding(desktop.dp(6f), 0, desktop.dp(6f), 0)
 
-        root.addView(button("▦  Apps") { desktop.launcher.toggle() })
         workspaces.orientation = LinearLayout.HORIZONTAL
         workspaces.gravity = Gravity.CENTER_VERTICAL
-        root.addView(workspaces, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT))
-
-        title.setTextColor(FG)
         title.textSize = 13f
         title.isSingleLine = true
         title.ellipsize = TextUtils.TruncateAt.END
         title.gravity = Gravity.CENTER
-        root.addView(title, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
-
         running.orientation = LinearLayout.HORIZONTAL
         running.gravity = Gravity.CENTER_VERTICAL
-        root.addView(running, LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT))
-
-        root.addView(iconButton(android.R.drawable.ic_popup_reminder, "Notifications") {
-            ctx.getSystemService(StatusBarManager::class.java)?.expandNotificationsPanel()
-        })
-        root.addView(iconButton(android.R.drawable.ic_menu_preferences, "Quick settings") {
-            ctx.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
-        })
-        val clock = TextClock(ctx)
-        clock.format24Hour = "EEE d MMM  HH:mm"
-        clock.format12Hour = "EEE d MMM  h:mm a"
-        clock.setTextColor(FG)
         clock.textSize = 13f
         clock.typeface = Typeface.DEFAULT_BOLD
         clock.setPadding(desktop.dp(10f), 0, desktop.dp(6f), 0)
-        root.addView(clock, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
 
         // waybar: scrolling over the workspaces steps through them.
         root.setOnGenericMotionListener { _, ev ->
@@ -104,7 +95,84 @@ class Bar(private val desktop: Desktop) {
                 false
             }
         }
-        update(ShellState.EMPTY)
+        layoutModules()
+    }
+
+    /**
+     * Takes the bar's configuration from init.lua and [workspaceNames] (workspace rules'
+     * names); returns true when its height changed (the reserved strip must follow).
+     */
+    fun configure(cfg: BarConfig, workspaceNames: Map<Int, String>): Boolean {
+        names = workspaceNames
+        if (cfg == config) {
+            update(state)
+            return false
+        }
+        val heightChanged = cfg.heightDp != config.heightDp
+        config = cfg
+        reservedTop = desktop.dp(cfg.heightDp.toFloat())
+        layoutModules()
+        if (shown && heightChanged) wm.updateViewLayout(root, params())
+        return heightChanged
+    }
+
+    /** The text of the Lua module [name]. */
+    fun setModuleText(name: String, text: String) {
+        custom[name]?.text = text
+    }
+
+    /** Puts the modules of the three groups into the bar, the centre one taking the room left. */
+    private fun layoutModules() {
+        val c = config
+        for (v in listOf(workspaces, title, running, clock)) (v.parent as? LinearLayout)?.removeView(v)
+        root.removeAllViews()
+        custom.clear()
+        root.setBackgroundColor(c.background)
+        title.setTextColor(c.foreground)
+        clock.setTextColor(c.foreground)
+        clock.format24Hour = c.clockFormat
+        clock.format12Hour = c.clockFormat
+        fun group(names: List<String>, weight: Float, gravity: Int): LinearLayout {
+            val g = LinearLayout(ctx)
+            g.orientation = LinearLayout.HORIZONTAL
+            g.gravity = gravity or Gravity.CENTER_VERTICAL
+            for (n in names) module(n)?.let { g.addView(it) }
+            root.addView(g, LinearLayout.LayoutParams(if (weight > 0) 0 else WRAP_CONTENT, MATCH_PARENT, weight))
+            return g
+        }
+        group(c.left, 0f, Gravity.START)
+        group(c.center, 1f, Gravity.CENTER_HORIZONTAL)
+        group(c.right, 0f, Gravity.END)
+        update(state)
+    }
+
+    private fun module(name: String): View? = when (name) {
+        "apps" -> button("▦  Apps") { desktop.launcher.toggle() }
+        "workspaces" -> workspaces.also { it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT) }
+        "title" -> title.also { it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT) }
+        "windows" -> running.also { it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT) }
+        "notifications" -> notificationsButton()
+        "quicksettings" -> quickSettingsButton()
+        "tray" -> LinearLayout(ctx).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(notificationsButton())
+            addView(quickSettingsButton())
+        }
+        "clock" -> clock.also { it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT) }
+        else -> config.modules[name]?.let { m ->
+            button(m.text ?: "") { desktop.lua.click(m) }.also {
+                it.tooltipText = m.tooltip
+                custom[name] = it
+            }
+        }
+    }
+
+    private fun notificationsButton() = iconButton(android.R.drawable.ic_popup_reminder, "Notifications") {
+        ctx.getSystemService(StatusBarManager::class.java)?.expandNotificationsPanel()
+    }
+
+    private fun quickSettingsButton() = iconButton(android.R.drawable.ic_menu_preferences, "Quick settings") {
+        ctx.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
     }
 
     /**
@@ -143,19 +211,20 @@ class Bar(private val desktop: Desktop) {
 
     /** Redraws workspaces, title and running apps from the shell's state. */
     fun update(s: ShellState) {
+        state = s
         workspaces.removeAllViews()
         val count = maxOf(s.workspaces, s.active, 1)
         for (n in 1..count) {
             val occupied = s.windows.any { it.workspace == n }
-            val b = button("$n") { desktop.dispatch("workspace", "$n") }
+            val b = button(names[n] ?: "$n") { desktop.dispatch("workspace", "$n") }
             b.minWidth = desktop.dp(26f)
             b.gravity = Gravity.CENTER
             when {
                 n == s.active -> {
-                    b.background = pill(ACCENT)
-                    b.setTextColor(BG_SOLID)
+                    b.background = pill(config.accent)
+                    b.setTextColor(config.background or 0xff000000.toInt())
                 }
-                occupied -> b.setTextColor(FG)
+                occupied -> b.setTextColor(config.foreground)
                 else -> b.setTextColor(DIM)
             }
             workspaces.addView(b, LinearLayout.LayoutParams(WRAP_CONTENT, desktop.dp(22f)).apply {
@@ -165,7 +234,7 @@ class Bar(private val desktop: Desktop) {
 
         val focused = s.windows.find { it.taskId == s.focusedTask }
         title.text = when {
-            focused == null -> if (s.active == 0) "" else "workspace ${s.active}"
+            focused == null -> if (s.active == 0) "" else "workspace ${names[s.active] ?: s.active}"
             focused.title.isNotEmpty() -> focused.title
             else -> desktop.apps.label(focused.packageName)
         }
@@ -191,7 +260,7 @@ class Bar(private val desktop: Desktop) {
     private fun button(text: String, onClick: () -> Unit): TextView {
         val b = TextView(ctx)
         b.text = text
-        b.setTextColor(FG)
+        b.setTextColor(config.foreground)
         b.textSize = 13f
         b.typeface = Typeface.DEFAULT_BOLD
         b.gravity = Gravity.CENTER_VERTICAL
@@ -203,7 +272,7 @@ class Bar(private val desktop: Desktop) {
     private fun iconButton(res: Int, label: String, onClick: () -> Unit): View {
         val v = ImageView(ctx)
         v.setImageResource(res)
-        v.imageTintList = ColorStateList.valueOf(FG)
+        v.imageTintList = ColorStateList.valueOf(config.foreground)
         val pad = desktop.dp(5f)
         v.setPadding(pad, pad, pad, pad)
         v.contentDescription = label
