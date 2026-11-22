@@ -6,6 +6,7 @@ import com.android.hyprtile.MouseBind
 import com.android.hyprtile.MouseInput
 import com.android.hyprtile.defaultMouseBinds
 import com.android.hyprtile.CaptionMode
+import com.android.hyprtile.AltTabMode
 import com.android.hyprtile.DISPATCHERS
 import com.android.hyprtile.parsePin
 import com.android.hyprtile.clampZoom
@@ -547,6 +548,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.pass_mouse_when_bound" to "pass_mouse_when_bound",
             "binds.scroll_event_delay" to "scroll_event_delay",
             "shell.workspaces" to "workspaces",
+            "shell.alt_tab" to "alt_tab",
             "cursor.zoom_factor" to "zoom_factor",
         )
 
@@ -584,6 +586,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.pass_mouse_when_bound" to "false",
             "binds.scroll_event_delay" to "300",
             "shell.workspaces" to "$DEFAULT_WORKSPACES",
+            "shell.alt_tab" to "switcher",
             "cursor.zoom_factor" to "1.0",
         )
 
@@ -659,6 +662,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.pass_mouse_when_bound" to boolOpt,
             "binds.scroll_event_delay" to intIn(0..2000),
             "shell.workspaces" to intIn(1..MAX_WORKSPACES),
+            // What ALT + Tab does (E4): switcher, cycle, bind, overview or off.
+            "shell.alt_tab" to { v, _ -> AltTabMode.parse(v).wireName },
         )
 
         /** Why [arg] does not suit [dispatcher], or null when it does. */

@@ -1576,6 +1576,102 @@ a second display; a workspace rule on a workspace made later (a test rule with `
 `default_name` on workspace 15 showed neither; its name is missing from the bar too, which
 HyprLauncher takes from the Lua configuration directly, so the cause is still open).
 
+## ALT + Tab switcher (E4)
+
+Phase E4 (PLAN.md, "Phase E"): the host binds `ALT + TAB` to `cyclenext` plus `alterzorder
+top` and `SUPER + TAB` to the last window. On the real PC no host compositor takes `ALT + TAB`,
+so the shell owns it; with `main_mod = ALT` the two host binds land on one key.
+
+### Decision: one key, the Hyprland way
+
+Hyprland itself has no switcher: `ALT + TAB` there is a bind, and a switcher is an add-on
+(hyprswitch and the like) that shows on the first press, steps on the following ones and
+commits on the modifier's release (a `bindr` on `ALT_L`). E4 does the same on `ALT + Tab`, and makes the
+first step of the walk exactly E3's bind, so nothing is lost by putting both on one key:
+
+- **A quick tap** (`ALT` down, `Tab`, `ALT` up) focuses the window focused before:
+  the switcher's first selection is the focus history's second entry, which is what
+  `focuscurrentorlast` focuses (with nothing focused, the desktop in front, the most recent
+  window). The strip shows only 120 ms after the first Tab, so a tap does not flash it.
+- **Holding ALT** and pressing Tab again walks deeper into the focus history (most recently
+  focused first; windows the history does not know yet follow in opening order, on every
+  workspace of the display, minimized ones dimmed); `SHIFT + Tab` (also `grave`, left) goes
+  back, right goes on, both wrapping. Releasing ALT focuses the selection (`focuswindow`: its
+  workspace becomes active, it comes to front, a minimized one comes back); Esc or a click
+  outside the strip closes without switching, a click on a window focuses it at once.
+- `shell.alt_tab` (Lua, default `"switcher"`) chooses: `"cycle"` is the host's `ALT + TAB`
+  (every Tab while ALT is held runs `cyclenext`; `SHIFT + Tab` `cyclenext prev`; focusing a
+  window brings it to front here, which is the host's `alterzorder top`: sent right behind
+  `cyclenext`, `alterzorder top` ran before the focus had moved and raised the window that had
+  it, so it is left out); `"bind"` runs the configuration's bind on `ALT + Tab` on every Tab
+  (`ALT + SHIFT + Tab`'s bind for SHIFT when there is one), E3's behaviour, and the overview
+  when there is no such bind; `"overview"` is D4's overview on the next window; `"off"` leaves
+  the key alone.
+
+### How
+
+- `KeyGestureController` sends `RECENT_APPS_SWITCHER` START when Tab goes down with ALT held
+  and COMPLETE when ALT is released (it eats that release); a Tab pressed again while ALT is
+  still down is no gesture (`mPendingHideRecentSwitcher`) and goes to the focused window. So
+  `AltTabSwitcher` (HyprLauncher) adds a focusable `TYPE_SYSTEM_DIALOG` window at START and
+  keeps it for the whole ALT press: the full-screen, transparent switcher window with the strip
+  in the middle, or for `cycle`/`bind` a 1x1 untouchable one that only catches the Tabs. Its
+  key handler steps on Tab; a key without ALT in its meta state (should the COMPLETE ever be
+  lost) ends the press as a release would. A window losing the focus to something else (a
+  dialog, a click elsewhere) closes the switcher without switching.
+- The order and the selection are hyprtile's `AltTabSession` (host tests, `AltTabTest`): the
+  history from `ShellState.focusHistory` (E3's `focusHistory` Bundle key), the open windows,
+  the focused task. A window that opens or closes while the strip is up joins at the end or
+  drops out; the order of the others is kept and the selection stays on its window.
+- The strip uses the bar's colours (`hl.bar` `background`, `foreground`, `accent`): rounded
+  panel with an accent border, each window its app icon (48 dp), its title (two lines) and its
+  workspace number, the selected one on the bar's focus colour with an accent border, and the
+  full title of the selection under the row. With many windows the items narrow to 72 dp and
+  the row scrolls to keep the selection in view.
+- `Desktop.registerKeyGestures` passes the gesture to `AltTabSwitcher.onGesture`; META + Tab
+  (`RECENT_APPS`) stays as E3 left it. ConfigBuilder checks `shell.alt_tab` and sends it on the
+  wire as `alt_tab` (`AltTabLuaTest`).
+- Only keyboard keys count: Waydroid passes the host's game pads into the container, and a
+  pad's D-pad and buttons (sources `GAMEPAD`/`JOYSTICK`) arrived while ALT was held; taken as
+  keys without ALT they ended the press at once. D4's overview has the same weakness (a pad's
+  button A clicks it shut); its `alt_tab = "overview"` check ran with the pad removed.
+- Known limits: the first press cannot go backwards: `KeyGestureController` reports
+  `ALT + SHIFT + Tab` as the same START with `META_ALT_ON` only, and HyprLauncher cannot read
+  the keyboard's state; SHIFT works from the second Tab on. Binds on `ALT + <key>` still run
+  while the switcher is up (InputManager matches them before any window sees the key): with the
+  example binds `ALT + Escape` opens the user switcher instead of closing the strip. To leave
+  without switching, step back to the first entry (the current window) and release ALT, or
+  click outside the strip.
+
+### Waydroid and the real PC
+
+The host's Hyprland keeps `ALT + TAB`, so in the Waydroid window the key never reaches Android.
+The switcher was tested with injected keys: `TouchInject keys` (new in E4,
+`aosp-device/hypr/tools/touchinject`) holds modifiers across steps, e.g.
+`keys +ALT_LEFT TAB @400 TAB +SHIFT_LEFT TAB -SHIFT_LEFT @300 -ALT_LEFT`, which `input
+keycombination` cannot (it presses everything once). On the real PC (`aosp_pc_x86_64` on the
+stick) no compositor sits in front of Android: the keyboard's ALT + Tab goes through the same
+InputManager path and the switcher works natively.
+
+### Checked on Waydroid (2026-11-22)
+
+HyprLauncher through the overlay, on the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`,
+the user's data stays `RUNNING_LOCKED` after a restart), keys injected with `TouchInject keys`,
+the mode switched with a test file required from init.lua (helpers in `out/hypr-e4/`).
+
+| Check | Result |
+|---|---|
+| Tap `ALT + Tab` | Files (128) and Clock (129) swap focus on each tap, no strip shown (`focuscurrentorlast`'s result) |
+| Hold, Tab Tab, release | the strip shows Clock, Files, Settings (icon, title, workspace number), Settings selected; release focuses Settings (126) |
+| Across workspaces | Settings and Clock on 1, Contacts on 12: Tab Tab selects Contacts, release switches to workspace 12 |
+| `SHIFT + Tab` while held | Tab Tab SHIFT+Tab ends on the second entry; Tab Tab Tab wraps back to the current window |
+| Click | a click on an entry focuses it; a click outside the strip closes it without switching |
+| `ALT + Escape` while held | the example's user-switcher bind runs (InputManager first), the strip commits on release (known limit) |
+| Game pad | before the fix, the pad's D-pad noise closed the strip at once; with it ignored the strip stays |
+| `alt_tab = "cycle"` | Settings and Clock on workspace 1: one, two, three Tabs end on Clock, Settings, Clock (`cyclenext` each time) |
+| `alt_tab = "bind"` | every Tab while ALT is held runs the example's `ALT + Tab` bind (`focuscurrentorlast`) |
+| `alt_tab = "overview"`, `"off"` | the overview on the next window, focused on release; nothing |
+
 ## As built
 
 | Piece | Where | Process | What it does |

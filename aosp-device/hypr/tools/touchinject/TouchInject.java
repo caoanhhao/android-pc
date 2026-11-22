@@ -1,6 +1,8 @@
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 
 import java.lang.reflect.Method;
@@ -16,6 +18,11 @@ import java.lang.reflect.Method;
  *   pinch CX CY R0 R1 MS        two fingers on a horizontal line around (CX, CY), from R0 to R1
  *   hold X Y MS [X2 Y2 MS2]     one finger held still for MS, then optionally dragged to (X2, Y2)
  *   tap X Y
+ *   keys STEP...                key presses with modifiers held across them (Phase E4: ALT held
+ *                               while Tab is pressed again, which `input` cannot do). A step is
+ *                               `+KEY` (down), `-KEY` (up), `KEY` (down and up) or `@MS` (wait);
+ *                               KEY is a KeyEvent name without KEYCODE_. Example:
+ *                               keys +ALT_LEFT TAB @300 TAB +SHIFT_LEFT TAB -SHIFT_LEFT @500 -ALT_LEFT
  */
 public final class TouchInject {
     private static Object sInput;
@@ -56,6 +63,9 @@ public final class TouchInject {
             case "tap":
                 gesture(new float[][] {{f(args[1]), f(args[2])}},
                         new float[][] {{f(args[1]), f(args[2])}}, 50, 0);
+                break;
+            case "keys":
+                keys(args);
                 break;
             default:
                 throw new IllegalArgumentException("unknown command " + args[0]);
@@ -114,6 +124,52 @@ public final class TouchInject {
                 coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
         sInject.invoke(sInput, e, 0);
         e.recycle();
+    }
+
+    private static int sMeta;
+
+    private static void keys(String[] args) throws Exception {
+        for (int i = 1; i < args.length; i++) {
+            String a = args[i];
+            if (a.startsWith("@")) {
+                Thread.sleep(Long.parseLong(a.substring(1)));
+            } else if (a.startsWith("+")) {
+                key(a.substring(1), KeyEvent.ACTION_DOWN);
+            } else if (a.startsWith("-")) {
+                key(a.substring(1), KeyEvent.ACTION_UP);
+            } else {
+                key(a, KeyEvent.ACTION_DOWN);
+                Thread.sleep(30);
+                key(a, KeyEvent.ACTION_UP);
+            }
+            Thread.sleep(30);
+        }
+    }
+
+    private static void key(String name, int action) throws Exception {
+        int code = KeyEvent.keyCodeFromString("KEYCODE_" + name);
+        if (code == KeyEvent.KEYCODE_UNKNOWN) throw new IllegalArgumentException("unknown key " + name);
+        int bit = metaOf(code);
+        if (action == KeyEvent.ACTION_DOWN) sMeta |= bit;
+        long now = SystemClock.uptimeMillis();
+        KeyEvent e = new KeyEvent(now, now, action, code, 0, sMeta, KeyCharacterMap.VIRTUAL_KEYBOARD,
+                0, 0, InputDevice.SOURCE_KEYBOARD);
+        if (action == KeyEvent.ACTION_UP) sMeta &= ~bit;
+        sInject.invoke(sInput, e, 2); // wait for the event to be handled
+    }
+
+    private static int metaOf(int code) {
+        switch (code) {
+            case KeyEvent.KEYCODE_ALT_LEFT: return KeyEvent.META_ALT_ON | KeyEvent.META_ALT_LEFT_ON;
+            case KeyEvent.KEYCODE_ALT_RIGHT: return KeyEvent.META_ALT_ON | KeyEvent.META_ALT_RIGHT_ON;
+            case KeyEvent.KEYCODE_SHIFT_LEFT: return KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON;
+            case KeyEvent.KEYCODE_SHIFT_RIGHT: return KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_RIGHT_ON;
+            case KeyEvent.KEYCODE_CTRL_LEFT: return KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+            case KeyEvent.KEYCODE_CTRL_RIGHT: return KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_RIGHT_ON;
+            case KeyEvent.KEYCODE_META_LEFT: return KeyEvent.META_META_ON | KeyEvent.META_META_LEFT_ON;
+            case KeyEvent.KEYCODE_META_RIGHT: return KeyEvent.META_META_ON | KeyEvent.META_META_RIGHT_ON;
+            default: return 0;
+        }
     }
 
     private static float f(String s) {

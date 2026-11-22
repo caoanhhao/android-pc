@@ -45,6 +45,7 @@ class Desktop private constructor(context: Context) {
     val bar = Bar(this)
     val launcher = AppLauncher(this)
     val overview = Overview(this)
+    val altTab = AltTabSwitcher(this)
     val notifier = Notifier(this)
     val lua = LuaConfig(this)
 
@@ -89,10 +90,9 @@ class Desktop private constructor(context: Context) {
      * they are registered one by one; one that someone else holds is skipped.
      *
      * InputManager keeps ALT + Tab (and ALT + SHIFT + Tab) and META + Tab for these gestures, so
-     * HyprKeybinds cannot install binds on them; a bind on `ALT + Tab` or `SUPER + Tab` runs
-     * here instead, when Tab goes down (Phase E3: the default `ALT + Tab` is
-     * `focuscurrentorlast`). Without one, Alt+Tab shows the overview on the next window and
-     * focuses it when Alt is released, META+Tab toggles the overview.
+     * HyprKeybinds cannot install binds on them. ALT + Tab is [AltTabSwitcher]'s (Phase E4,
+     * `shell.alt_tab`: the switcher, or the bind on `ALT + Tab` as in E3, ...); a bind on
+     * `SUPER + Tab` runs here when Tab goes down, without one META+Tab toggles the overview.
      */
     private fun registerKeyGestures() {
         val im = context.getSystemService(InputManager::class.java) ?: return
@@ -101,16 +101,8 @@ class Desktop private constructor(context: Context) {
             val complete = event.action == KeyGestureEvent.ACTION_GESTURE_COMPLETE && !event.isCancelled
             handler.post {
                 when (event.keyGestureType) {
-                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER -> {
-                        val bind = tabBind(setOf(Mod.ALT)) ?: tabBind(setOf(Mod.ALT, Mod.SHIFT))
-                        if (bind != null) {
-                            if (start) runBind(bind)
-                        } else if (start) {
-                            overview.show(altTab = true)
-                        } else {
-                            overview.commitAltTab()
-                        }
-                    }
+                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER ->
+                        altTab.onGesture(start, cancelled = event.isCancelled)
                     KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS -> if (complete) {
                         tabBind(setOf(Mod.SUPER))?.let { runBind(it) } ?: overview.toggle()
                     }
@@ -168,6 +160,16 @@ class Desktop private constructor(context: Context) {
         return binds.lastOrNull { it.key == "TAB" && it.mods == mods }
     }
 
+    /** Whether the configuration binds `ALT + Tab` or `ALT + SHIFT + Tab` (`shell.alt_tab = "bind"`). */
+    fun hasTabBind() = tabBind(setOf(Mod.ALT)) != null || tabBind(setOf(Mod.ALT, Mod.SHIFT)) != null
+
+    /** Runs the bind on `ALT + Tab`, with [shift] the one on `ALT + SHIFT + Tab` when there is one. */
+    fun runTabBind(shift: Boolean) {
+        val bind = (if (shift) tabBind(setOf(Mod.ALT, Mod.SHIFT)) else null)
+            ?: tabBind(setOf(Mod.ALT)) ?: tabBind(setOf(Mod.ALT, Mod.SHIFT)) ?: return
+        runBind(bind)
+    }
+
     private fun runBind(bind: Bind) {
         Log.d(TAG, "key gesture bind $bind")
         if (bind.dispatcher == "lua") lua.callBind(bind.arg) else dispatch(bind.dispatcher, bind.arg)
@@ -195,6 +197,7 @@ class Desktop private constructor(context: Context) {
         state = s
         bar.update(s)
         overview.update(s)
+        altTab.update(s)
     }
 
     /** Closes the launcher and the overview (HOME pressed, an app opened). */

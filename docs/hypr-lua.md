@@ -78,6 +78,7 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.tiling` | bool | true | false: no tiling, Shell's own desktop windowing |
 | `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
 | `shell.workspaces` | 1..1000 | 10 | how many workspaces there are (E2); binds and rules past it load with a warning and do nothing |
+| `shell.alt_tab` | `"switcher"`, `"cycle"`, `"bind"`, `"overview"`, `"off"` | `switcher` | what `ALT + Tab` does (E4): `switcher` holds ALT and walks the focus history in a strip of icons and titles, releasing ALT focuses the selection, a quick tap is the window focused before; `cycle` runs `cyclenext` on every Tab (SHIFT: `cyclenext prev`), as the host binds `ALT + TAB`; `bind` runs the bind on `ALT + Tab` on every Tab (E3's way; the overview when there is none); `overview` is D4's overview on the next window; `off` nothing. See "ALT + Tab" below |
 | `cursor.zoom_factor` | number, 1 or more | 1.0 | Hyprland's zoom: magnifies the screen around the pointer (Phase E10; above 8 acts as 8). A change applies at once, so the host's `hl.config({ cursor = { zoom_factor = z } })` bind functions work; binds are better off with `hl.dsp.zoom` |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
@@ -148,9 +149,10 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
 - Binds are InputManager custom key gestures (docs/hypr-desktop.md, "Keybinds without a
   framework patch"): keys that a user shortcut or AOSP (all META shortcuts) already
   uses are skipped with a log line in SystemUI (`HyprKeybinds`). `ALT + Tab`, `ALT + SHIFT +
-  Tab` and `SUPER + Tab` are InputManager's recents gestures: a bind on them runs in
-  HyprLauncher when Tab goes down (E3, docs/hypr-desktop.md, "ALT + Tab"); `ALT + SHIFT + Tab`
-  only when `ALT + Tab` has no bind, as InputManager reports both alike. With `main_mod = "SUPER"`
+  Tab` and `SUPER + Tab` are InputManager's recents gestures, handled in HyprLauncher: `ALT +
+  Tab` belongs to `shell.alt_tab` (E4, "ALT + Tab" below), and a bind on it runs only with
+  `alt_tab = "bind"`; a bind on `SUPER + Tab` runs when Tab goes down (E3, docs/hypr-desktop.md,
+  "ALT + Tab"). With `main_mod = "SUPER"`
   five default binds hit AOSP's own META shortcuts and are skipped: `SUPER + E` (email),
   `+ C` (calendar), `+ F` (files) are AOSP's app bookmarks, `+ SPACE` the assistant and
   `+ left` BACK; bind those dispatchers to other keys (below, "Waydroid and the host's SUPER
@@ -177,7 +179,33 @@ Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 | `$mod + Q` | `hl.dsp.exec_cmd(shell.terminal)`, when set |
 | `$mod + D`, `$mod + SPACE` | `hl.dsp.launcher()` |
 | `$mod + grave` | `hl.dsp.overview()` |
-| `$mod + Tab` | `hl.dsp.focus({ last = true })`, the window focused before (E3; runs in HyprLauncher, see "Binds") |
+| `$mod + Tab` | `hl.dsp.focus({ last = true })`, the window focused before (E3; runs in HyprLauncher, see "Binds"). With the default `main_mod = "ALT"` the switcher (`shell.alt_tab`) owns the key and a quick tap does the same |
+
+### ALT + Tab
+
+`ALT + Tab` is InputManager's recents gesture (it starts when Tab goes down and ends when ALT
+is released); HyprLauncher handles it as `shell.alt_tab` says (Phase E4, docs/hypr-desktop.md,
+"ALT + Tab switcher"). With the default `"switcher"`:
+
+| Keys | What |
+|---|---|
+| `ALT + Tab` tapped | the window focused before (as `focuscurrentorlast`), no strip shown |
+| hold `ALT`, `Tab` again | a strip of the display's windows (icon, title, workspace; most recently focused first) shows; each Tab selects the next one, deeper into the history |
+| `SHIFT + Tab` (or `grave`, left/right) while `ALT` is held | back / forward |
+| release `ALT` | focus the selected window (its workspace becomes active, it comes to front) |
+| `Esc` while `ALT` is held, a click outside | close without switching; a click on a window focuses it |
+
+The first press cannot go backwards: InputManager reports `ALT + SHIFT + Tab` as `ALT + Tab`.
+Binds on `ALT + <key>` still run while the strip is up (with the example binds `ALT + Escape`
+is the user switcher, so there Esc does not close the strip: step back to the current window,
+the first entry, and release ALT, or click outside).
+`"cycle"` gives the host's own `ALT + TAB` (`cyclenext`, which brings the window to front as
+the host's `alterzorder top`, on every Tab while ALT is held; `SHIFT + Tab` goes back); `"bind"`
+runs your bind on `ALT + Tab` (and on `ALT + SHIFT + Tab` for SHIFT) on every Tab, e.g.
+`hl.bind("ALT + Tab", hl.dsp.window.cycle_next({ hist = true }))`. On Waydroid the host's
+compositor keeps `ALT + TAB`, so the switcher is reached there only with injected keys (`keys`
+of `aosp-device/hypr/tools/touchinject`); on the real PC no compositor sits in front and it
+works with the keyboard.
 
 With `shell.default_binds` the default touch gestures are bound too (next section).
 
@@ -186,8 +214,8 @@ With `shell.default_binds` the default touch gestures are bound too (next sectio
 Under Waydroid the host's compositor sees every key first. With the default `main_mod = "ALT"`
 the binds reach Android, except what the host binds itself: on this host's Hyprland that is
 `ALT + TAB` (window cycling), `ALT + F2`/`F3`/`F11`/`F12` and `CTRL + ALT + P`
-(`hyprctl binds`), so in the Waydroid window `ALT + Tab` (by default the last window) does
-not reach Android; it was tested with `input keycombination` inside the container. To use SUPER as in Hyprland, set it here and let the host pass SUPER through while
+(`hyprctl binds`), so in the Waydroid window `ALT + Tab` (by default the switcher) does
+not reach Android; it was tested with injected keys inside the container. To use SUPER as in Hyprland, set it here and let the host pass SUPER through while
 the Waydroid window has focus:
 
 ```lua
@@ -256,7 +284,7 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + SHIFT + arrows` | resize by 40 px |
 | `ALT + 1..9, 0`, `+ CTRL + ...`, `+ SHIFT + ...` | workspaces 1-10: switch, move the window and follow, move it silently |
 | `ALT + KP_End..KP_Insert`, `+ CTRL`, `+ SHIFT` | workspaces 11-20 on the keypad (Android's `NUMPAD_1..NUMPAD_0`), the same three (E2; the file sets `shell.workspaces = 20`) |
-| `ALT + Tab` | the window focused before (the host's `SUPER + TAB`; not under Waydroid, where the host keeps `ALT + TAB`) (E3) |
+| `ALT + Tab` | the switcher (`shell.alt_tab`, E4): tapped, the window focused before (the host's `SUPER + TAB`); held, walk the focus history, release to switch. The file's `ALT + Tab` bind is what `alt_tab = "bind"` would run. Not under Waydroid, where the host keeps `ALT + TAB` |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
