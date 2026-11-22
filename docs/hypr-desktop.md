@@ -2035,9 +2035,15 @@ gamepads off`, on again after), helpers and screenshots in `out/hypr-e1b/`:
 
 - **The fixes need the WindowManager patch in the image.** `PcSystemUI` alone (the overlay on
   the user's data) still has both old bugs; the patch was tried through the overlay's
-  `services.jar` and taken out again, so the next image build carries it.
+  `services.jar` and taken out again, so the next image build carries it (the build of
+  2026-11-22 22:18 got through system.img, system_ext.img and product.img, then hung with the
+  host; not packed).
 - With several pinned windows on a desk, the one brought back from minimized by a reorder
-  (Shell's unminimize) does not take the focus from another pinned one; a tap does.
+  (Shell's unminimize) did not take the focus from another pinned one. Fixed in code, not yet
+  checked: `focuswindow` on a minimized pinned window focuses it after the next sync
+  (`focusWhenShown`, `setFocusedTask`), and a running task brought to front by a launch
+  (`Task.moveTaskToFront`) takes the focus too. The image build for it stopped on a host RCU
+  stall (2026-11-22 22:27, CPU 1, "Flaky host" in docs/aosp-build.md).
 - Host game pads passed into the container send their keys to the focused window, pinned or
   not; a pad used on the host pressed BACK and minimized windows during the test.
 - Not pin's: `am start` of a task that is on another desk while workspace 2 shows leaves every

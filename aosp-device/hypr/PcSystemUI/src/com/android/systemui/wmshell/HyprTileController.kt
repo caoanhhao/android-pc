@@ -192,6 +192,8 @@ class HyprTileController(
     private val specialMoves = HashMap<IBinder, Pair<Boolean, Set<Int>>>()
     /** Requests this controller saw: the trigger task and whether it was visible before. */
     private val requests = HashMap<IBinder, Pair<Int, Boolean>>()
+    /** Pinned windows brought back from minimized: they take the focus once shown (E1). */
+    private val focusWhenShown = HashSet<Int>()
     /** Where a window really is when a transition starts (a mouse-dragged window), absolute. */
     private val startOverride = HashMap<Int, Rect>()
     private var mouseDrag: MouseDrag? = null
@@ -636,6 +638,7 @@ class HyprTileController(
         val configChanged = updateConfig()
         val repo = repository
         pendingBounds.clear()
+        focusShownPinned()
         val displays = repo.getAllDeskIds()
             .mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
         for (displayId in displays) {
@@ -912,8 +915,21 @@ class HyprTileController(
             runCatching { ActivityTaskManager.getService().setFocusedTask(taskId) }
                 .onFailure { Log.w(TAG, "focus pinned task $taskId", it) }
         } else {
+            // Shell's unminimize reorders the task; a pinned one would stay without the focus,
+            // so it is focused as above once it shows (sync).
+            if (tile.isPinned(taskId)) focusWhenShown += taskId
             controller.moveTaskToFront(task, null, UnminimizeReason.TASKBAR_TAP)
         }
+    }
+
+    /** Focuses the pinned windows [focusWindow] brought back, now that they show. */
+    private fun focusShownPinned() {
+        for (id in focusWhenShown) {
+            if (repository.isMinimizedTask(id) || taskOrganizer.getRunningTaskInfo(id) == null) continue
+            runCatching { ActivityTaskManager.getService().setFocusedTask(id) }
+                .onFailure { Log.w(TAG, "focus pinned task $id", it) }
+        }
+        focusWhenShown.clear()
     }
 
     private fun focusedDisplayId(): Int =

@@ -32,7 +32,7 @@ index c55085d3e..f4ce84762 100644
              if (focusedApp == activity) {
                  ProtoLog.v(WM_DEBUG_FOCUS_LIGHT,
 diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
-index ef60ace52..d11a21016 100644
+index ef60ace52..b8b85e5f5 100644
 --- a/services/core/java/com/android/server/wm/Task.java
 +++ b/services/core/java/com/android/server/wm/Task.java
 @@ -465,6 +465,13 @@ class Task extends TaskFragment {
@@ -136,6 +136,16 @@ index ef60ace52..d11a21016 100644
  
          // Log positioning.
          if (DEBUG_TASK_MOVEMENT) Slog.d(TAG_WM, "positionChildAt: child=" + child
+@@ -5982,6 +6044,9 @@ class Task extends TaskFragment {
+             // The caller wants a time tracker associated with this task.
+             tr.forAllActivities(a -> { a.appTimeTracker = timeTracker; });
+         }
++        // android-pc: brought to front (a launch of a running task), it takes the focus from
++        // always-on-top siblings, pinned or not itself.
++        tr.setPreferredFocusChild();
+ 
+         // Don't refocus if invisible to current user
+         final ActivityRecord top = tr.getTopNonFinishingActivity();
 diff --git a/services/core/java/com/android/server/wm/TaskFragment.java b/services/core/java/com/android/server/wm/TaskFragment.java
 index d84d8882a..78b1ff1bf 100644
 --- a/services/core/java/com/android/server/wm/TaskFragment.java
