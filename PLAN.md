@@ -789,7 +789,10 @@ commit (or `(partial: ...)`).
 - **E6 — mouse wheel and mouse buttons:** `mouse_up`/`mouse_down` (and `mouse_left`/
   `mouse_right`) and `mouse:27x` button binds with modifiers, any dispatcher.
 - **E7 — bar:** hide/show and reload dispatchers and binds (`ALT + B`, `ALT + SHIFT + B`),
-  auto-hide with the bar shown, animated, when the pointer reaches its edge.
+  auto-hide with the bar shown, animated, when the pointer reaches its edge. Done 2026-11-22
+  (docs/hypr-desktop.md, "Bar visibility (E7)": `bar show|hide|toggle|reveal|reload`,
+  `hl.bar({ autohide = true })` with a 2 dp edge strip, pointer and touch reveal over the
+  windows, `layers` slide; the top-edge swipe stays notifications).
 - **E8 — apps:** a btop-like system monitor and a calculator in the product, bound like the
   host (`ALT + P` on workspace 5, `ALT + SHIFT + C`).
 - **E9 — system actions:** clipboard history (`ALT + SHIFT + V`), quick translation with a
