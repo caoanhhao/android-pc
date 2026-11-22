@@ -17,10 +17,10 @@ import kotlin.math.roundToInt
 
 /**
  * btop's default layout drawn on a canvas in character cells: the cpu box on top (a history
- * graph and one meter per core), mem (with disks) and net on the lower left, the process list on
- * the lower right. Keyboard: arrows/PageUp/PageDown/Home/End select, c/m/p/n sort, r reverses,
- * f force-stops the selected app, q or Esc closes; the wheel scrolls and a click selects a row
- * or sorts by a column header.
+ * graph and one meter per core), mem (disks in their own column) and net on the lower left, the
+ * process list on the lower right. Keyboard: arrows/PageUp/PageDown/Home/End select, c/m/p/n
+ * sort, r reverses, f force-stops the selected app, q or Esc closes; the wheel scrolls and a
+ * click selects a row or sorts by a column header.
  */
 class TopView(context: Context) : View(context) {
     enum class Sort { CPU, MEM, PID, NAME }
@@ -126,7 +126,9 @@ class TopView(context: Context) : View(context) {
             drawNet(canvas, RectF(left.left, memBox.bottom + pad, left.right, left.bottom), s)
             drawProcs(canvas, RectF(left.right + pad, top, w - pad, h - pad))
         } else {
-            val memBox = RectF(pad, top, w - pad, top + min(9f, (h - top) / ch / 2) * ch)
+            // Disks beside the meters from 60 characters inside the box, else below them.
+            val memRows = if ((w - 2 * pad) / cw - 2 >= 60) 9f else 11f + s.disks.size
+            val memBox = RectF(pad, top, w - pad, top + min(memRows, (h - top) / ch / 2) * ch)
             drawMem(canvas, memBox, s)
             drawProcs(canvas, RectF(pad, memBox.bottom + pad, w - pad, h - pad))
         }
@@ -196,36 +198,84 @@ class TopView(context: Context) : View(context) {
         }
     }
 
+    /**
+     * The mem box: memory meters on the left and, like btop, the disks in their own bordered
+     * column on the right; below the meters when the box is too narrow for two columns.
+     */
     private fun drawMem(canvas: Canvas, r: RectF, s: Snapshot) {
         box(canvas, r, "mem", MEM_BOX)
-        var y = r.top + ch
-        val x = r.left + cw * 2
-        val barW = max(4 * cw, r.width() - 32 * cw)
-        fun row(label: String, kb: Long, of: Long, color: Int? = null) {
-            if (y + ch > r.bottom - ch / 2) return
+        val inner = RectF(r.left + cw, r.top + ch, r.right - cw, r.bottom - ch)
+        val memRows = if (s.swapTotalKb > 0) 6 else 5
+        val side = inner.width() / cw >= 60
+        val disks = if (side) {
+            RectF(inner.left + inner.width() * 0.56f, inner.top + ch / 2, inner.right, inner.bottom)
+        } else {
+            val top = inner.top + memRows * ch + ch / 2
+            if (inner.bottom - top >= 2 * ch) RectF(inner.left, top, inner.right, inner.bottom) else null
+        }
+        val meters = if (side) RectF(inner.left, inner.top, disks!!.left - cw, inner.bottom) else inner
+        drawMemMeters(canvas, meters, s)
+        disks?.let { drawDisks(canvas, it, s.disks) }
+    }
+
+    private fun drawMemMeters(canvas: Canvas, r: RectF, s: Snapshot) {
+        var y = r.top
+        val x = r.left + cw
+        val chars = (r.width() / cw).toInt() - 1
+        // "Available:   22.8G" when there is room, "Avail: 22.8G" otherwise.
+        val long = chars - 19 - 5 >= 8
+        val labelChars = if (long) 19 else 13
+        val barW = max(3 * cw, (chars - labelChars - 6) * cw)
+        fun row(label: String, short: String, kb: Long, of: Long, color: Int) {
+            if (y + ch > r.bottom) return
             val share = if (of > 0) kb.toFloat() / of else 0f
             text.color = FG
-            canvas.drawText("%-10s%9s".format(label, bytes(kb * 1024)), x, baseline(y), text)
-            meter(canvas, x + 20 * cw, y, barW, share, color)
-            text.color = FG
-            canvas.drawText("%3d%%".format((share * 100).roundToInt()), x + 21 * cw + barW, baseline(y), text)
+            val l = if (long) "%-10s%9s".format(label, bytes(kb * 1024)) else "%-6s%7s".format(short, bytes(kb * 1024))
+            canvas.drawText(l, x, baseline(y), text)
+            meter(canvas, x + (labelChars + 1) * cw, y, barW, share, color)
+            canvas.drawText("%3d%%".format((share * 100).roundToInt()), x + (labelChars + 2) * cw + barW, baseline(y), text)
             y += ch
         }
         text.color = TITLE
-        canvas.drawText("Total:%13s".format(bytes(s.memTotalKb * 1024)), x, baseline(y), text)
+        canvas.drawText((if (long) "Total:%13s" else "Total:%7s").format(bytes(s.memTotalKb * 1024)), x, baseline(y), text)
         y += ch
-        row("Used:", s.memTotalKb - s.memAvailKb, s.memTotalKb, USED)
-        row("Available:", s.memAvailKb, s.memTotalKb, AVAILABLE)
-        row("Cached:", s.cachedKb, s.memTotalKb, CACHED)
-        row("Free:", s.memFreeKb, s.memTotalKb, FREE)
-        if (s.swapTotalKb > 0) row("Swap:", s.swapTotalKb - s.swapFreeKb, s.swapTotalKb, USED)
-        // btop's disks column, here below the meters.
-        if (y + 2 * ch <= r.bottom) {
-            stroke.color = DIV
-            canvas.drawLine(r.left + cw, y + ch / 2, r.right - cw, y + ch / 2, stroke)
-            label(canvas, x, y, "disks", DIV, TITLE)
+        row("Used:", "Used:", s.memTotalKb - s.memAvailKb, s.memTotalKb, USED)
+        row("Available:", "Avail:", s.memAvailKb, s.memTotalKb, AVAILABLE)
+        row("Cached:", "Cache:", s.cachedKb, s.memTotalKb, CACHED)
+        row("Free:", "Free:", s.memFreeKb, s.memTotalKb, FREE)
+        if (s.swapTotalKb > 0) row("Swap:", "Swap:", s.swapTotalKb - s.swapFreeKb, s.swapTotalKb, USED)
+    }
+
+    /** The disks column: a bordered sub-box, two rows per disk (name and sizes, then a meter). */
+    private fun drawDisks(canvas: Canvas, r: RectF, disks: List<Disk>) {
+        stroke.color = DIV
+        canvas.drawRoundRect(r, cw * 0.6f, cw * 0.6f, stroke)
+        label(canvas, r.left + cw * 2, r.top - ch / 2, "disks", DIV, TITLE)
+        val x = r.left + cw
+        val right = r.right - cw
+        val rows = ((r.height() - ch / 2) / ch).toInt()
+        val twoRows = rows >= disks.size * 2
+        var y = r.top + ch / 2
+        for (d in disks) {
+            if (y + ch > r.bottom) break
+            val used = d.totalBytes - d.freeBytes
+            val share = if (d.totalBytes > 0) used.toFloat() / d.totalBytes else 0f
+            val pct = "%3d%%".format((share * 100).roundToInt())
+            text.color = TITLE
+            canvas.drawText(d.name, x, baseline(y), text)
+            if (twoRows) {
+                val sizes = "${bytes(used)}/${bytes(d.totalBytes)}"
+                text.color = GRAPH_TEXT
+                canvas.drawText(sizes, right - text.measureText(sizes), baseline(y), text)
+                y += ch
+                if (y + ch > r.bottom) break
+            }
+            val meterX = if (twoRows) x else x + 7 * cw
+            val meterW = right - meterX - 5 * cw
+            if (meterW > 2 * cw) meter(canvas, meterX, y, meterW, share, USED)
+            text.color = FG
+            canvas.drawText(pct, right - text.measureText(pct), baseline(y), text)
             y += ch
-            s.disks.forEach { d -> row(d.name, (d.totalBytes - d.freeBytes) / 1024, d.totalBytes / 1024, USED) }
         }
     }
 
