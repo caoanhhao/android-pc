@@ -782,7 +782,10 @@ commit (or `(partial: ...)`).
   the host (`ALT + SHIFT + S`, `ALT + CTRL + SHIFT + S`), lock (`ALT + SHIFT + Escape`),
   `ALT + Escape` opens the user switcher in SystemUI's shade.
 - **E10 — zoom:** `ALT + SHIFT + equal/minus`, wheel and middle-button zoom through the
-  accessibility magnification controller directly, no accessibility UI.
+  accessibility magnification controller directly, no accessibility UI. Done 2026-11-22
+  (docs/hypr-desktop.md, "Zoom (E10)": `hl.dsp.zoom`, `cursor.zoom_factor`, an accessibility
+  service enabled only while zoomed; Android's magnification border and settings button still
+  show while zoomed).
 - **E11 — host-only functions and wrap-up:** volume and brightness keys (`ALT + F11/F12`,
   `ALT + F2/F3`, media keys), display modes, input method switch, the remaining host binds
   (reload, kill, random wallpaper, ...) where Android has a counterpart; full image on
