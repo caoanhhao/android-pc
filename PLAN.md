@@ -794,7 +794,10 @@ commit (or `(partial: ...)`).
   `hl.bar({ autohide = true })` with a 2 dp edge strip, pointer and touch reveal over the
   windows, `layers` slide; the top-edge swipe stays notifications).
 - **E8 — apps:** a btop-like system monitor and a calculator in the product, bound like the
-  host (`ALT + P` on workspace 5, `ALT + SHIFT + C`).
+  host (`ALT + P` on workspace 5, `ALT + SHIFT + C`). Done 2026-11-22 (docs/hypr-desktop.md,
+  "Apps (E8)": HyprTop, a btop-style monitor fed by the `hyprtopd` daemon; LineageOS's
+  ExactCalculator from source; `hl.dsp.exec_cmd(pkg, { workspace = N })` exec rules). Not yet
+  on the real PC with SELinux enforcing.
 - **E9 — system actions:** clipboard history (`ALT + SHIFT + V`), quick translation with a
   user-installed app (Google Translate; `ALT + CTRL + T` style bind), screenshot binds as on
   the host (`ALT + SHIFT + S`, `ALT + CTRL + SHIFT + S`), lock (`ALT + SHIFT + Escape`),
