@@ -122,22 +122,33 @@ class Overview(private val desktop: Desktop) {
         highlight()
     }
 
-    /** The active and the occupied workspaces, as the bar shows them (E2). */
-    private fun shownWorkspaces() = state.shown().ifEmpty { listOf(1) }
+    /**
+     * The active and the occupied workspaces, as the bar shows them (E2), then the special
+     * workspaces with windows or shown (E5; negative keys).
+     */
+    private fun shownWorkspaces() = state.shown().ifEmpty { listOf(1) } + state.occupiedSpecials().map { it.first }
 
     private fun rebuild() {
         grid.removeAllViews()
         val active = state.active.coerceAtLeast(1)
-        order = state.on(active) + state.windows.filter { it.workspace != active }
+        val special = state.shownSpecialKey
+        order = state.on(active) + (special?.let { state.on(it) } ?: emptyList()) +
+            state.windows.filter { it.workspace != active && it.workspace != special }
         for (ws in shownWorkspaces()) {
+            val current = ws == this@Overview.state.active || ws == special
             val cell = FrameLayout(ctx)
             cell.background = GradientDrawable().apply {
                 cornerRadius = desktop.dp(10f).toFloat()
                 setColor(Color.parseColor("#1E1E2E"))
-                setStroke(desktop.dp(2f), if (ws == this@Overview.state.active) Bar.ACCENT else Color.parseColor("#45475A"))
+                setStroke(desktop.dp(2f), if (current) Bar.ACCENT else Color.parseColor("#45475A"))
             }
             cell.tag = ws
-            cell.setOnClickListener { hide(); desktop.dispatch("workspace", "$ws") }
+            cell.setOnClickListener {
+                hide()
+                // A special workspace's cell toggles it over the active workspace.
+                val name = state.specials[ws]
+                if (name != null) desktop.dispatch("togglespecialworkspace", name) else desktop.dispatch("workspace", "$ws")
+            }
             // Back to front, so the front window is drawn last.
             for (w in state.on(ws).asReversed()) {
                 val v = ImageView(ctx)
@@ -162,8 +173,8 @@ class Overview(private val desktop: Desktop) {
                 cell.addView(v)
             }
             val label = TextView(ctx)
-            label.text = "$ws"
-            label.setTextColor(if (ws == state.active) Bar.ACCENT else Bar.FG)
+            label.text = state.label(ws)
+            label.setTextColor(if (current) Bar.ACCENT else Bar.FG)
             label.textSize = 14f
             label.setPadding(desktop.dp(8f), desktop.dp(4f), 0, 0)
             cell.addView(label, FrameLayout.LayoutParams(
@@ -267,7 +278,7 @@ class Overview(private val desktop: Desktop) {
             val mgr = TaskSnapshotManager.getInstance()
             for (w in windows) {
                 val bmp = try {
-                    val snap = (if (w.workspace == state.active && !w.minimized) {
+                    val snap = (if (state.isVisible(w)) {
                         mgr.takeTaskSnapshot(w.taskId, false)
                     } else {
                         null

@@ -316,6 +316,8 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
             history = s.focusHistory,
             urgent = s.urgent,
             lastWorkspace = s.lastWorkspace,
+            specials = s.specials,
+            specialShown = s.specialShown,
         )
     }
 

@@ -367,7 +367,15 @@ hl.dsp = namespace("hl.dsp", {
   -- Any dispatcher by its Hyprland name: hl.dsp.raw("movefocus", "l").
   raw = function(name, arg) return dsp(tostring(name), arg) end,
   window = window,
-  workspace = namespace("hl.dsp.workspace", {}),
+  workspace = namespace("hl.dsp.workspace", {
+    -- Hyprland's togglespecialworkspace (E5): shows the special workspace [name] ("special"
+    -- when nil) over the active one, or hides it.
+    toggle_special = function(name)
+      if name ~= nil and type(name) ~= "string" then error("hl.dsp.workspace.toggle_special takes a name", 2) end
+      name = name and name:gsub("^special:", "") or ""
+      return dsp("togglespecialworkspace", name)
+    end,
+  }),
   cursor = namespace("hl.dsp.cursor", {}),
   group = namespace("hl.dsp.group", {}),
 })
@@ -566,7 +574,7 @@ local function snapshot()
   local recs = split(H(4, "state"), "\30")
   local head = split(recs[1], "\31")
   local s = { active = tonumber(head[2]) or 0, count = tonumber(head[3]) or 0,
-    focused = tonumber(head[4]) or -1, windows = {}, names = {} }
+    focused = tonumber(head[4]) or -1, windows = {}, names = {}, specials = {} }
   for i = 2, #recs do
     local f = split(recs[i], "\31")
     if f[1] == "W" then
@@ -598,6 +606,12 @@ local function snapshot()
       if f[1] == "H" then s.history = ids else s.urgent = ids end
     elseif f[1] == "L" then
       s.last_workspace = tonumber(f[2]) or 0
+    elseif f[1] == "P" then
+      -- A special workspace (E5): its key (negative, as Hyprland's ids), name, shown.
+      local key = tonumber(f[2])
+      s.specials[#s.specials + 1] = key
+      s.names[key] = "special:" .. f[3]
+      if f[4] == "1" then s.special_shown = key end
     end
   end
   return s
@@ -606,6 +620,10 @@ end
 local function workspace_of(s, n)
   local count = 0
   for _, w in ipairs(s.windows) do if w.workspace_id == n then count = count + 1 end end
+  if n < 0 then
+    return { id = n, name = s.names[n] or "special:special", windows = count, is_empty = count == 0,
+      active = n == s.special_shown, visible = n == s.special_shown, special = true }
+  end
   return { id = n, name = s.names[n] or tostring(n), windows = count, is_empty = count == 0,
     active = n == s.active, visible = n == s.active, special = false }
 end
@@ -656,6 +674,11 @@ function hl.get_workspaces()
   if s.active > 0 and not seen[s.active] then list[#list + 1] = s.active end
   table.sort(list)
   for _, n in ipairs(list) do out[#out + 1] = workspace_of(s, n) end
+  -- Special workspaces with windows or shown, as hyprctl lists them (after the numbered ones).
+  for _, key in ipairs(s.specials) do
+    local ws = workspace_of(s, key)
+    if ws.windows > 0 or ws.visible then out[#out + 1] = ws end
+  end
   return out
 end
 

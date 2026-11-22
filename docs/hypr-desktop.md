@@ -1754,6 +1754,96 @@ cached configuration from before E6, which has no mouse binds).
 - Side-button binds also catch keyboard `BACK`/`FORWARD` keys with the same modifiers, and are
   always consumed (`non_consuming` warns).
 
+## Special workspaces (E5)
+
+Hyprland's special workspaces (scratchpads): named workspaces (`special`, `special:name`)
+shown as an overlay above a display's active workspace, toggled on and off without leaving it.
+Lua: `hl.dsp.workspace.toggle_special(name)`, `hl.dsp.window.move({ workspace =
+"special[:name]" })` (and `follow = false`), window rules and workspace rules with
+`workspace = "special:name"`, `decoration.dim_special`, `*.special_scale_factor`,
+`binds.hide_special_on_workspace_change` (docs/hypr-lua.md, "Special workspaces"). Host binds:
+`ALT + S` toggles `special`, `ALT + CTRL + S` moves the focused window there
+(docs/examples/hypr-binds.lua).
+
+### Decisions
+
+- **Not a Shell desk of its own while shown.** Shell's multidesks show exactly one desk per
+  display; an overlay of two desks would need WindowManager changes. So a shown special
+  workspace's windows are moved into the active desk, on top (`setAlwaysOnTop`, as E1's pin),
+  and tiled in a layout of their own: hyprtile keys special layouts with negative numbers
+  (-99, -98, ..., Hyprland's ids; desks are never negative), so `HyprTile.arrange` gives them
+  their own gaps (a workspace rule keyed by that number) and `special_scale_factor` area.
+  `hyprtile/Special.kt` (`SpecialWorkspaces`) keeps the memberships, the shown name per display
+  and the keys, persisted with the workspace numbers (`hypr_workspaces`, key `special`).
+- **Hidden windows live on a stash desk.** Each display gets one extra desk, made on first
+  use, that never gets a workspace number (`orderedDesks` leaves it out, so E2's
+  `WorkspaceMap` and `removeEmptyDesks` never see it) and is never active: hiding moves the
+  special workspace's windows there, as `movetoworkspacesilent` moves to an inactive desk.
+  Minimizing them in place was the other way; it would have kept otherwise empty workspaces
+  alive, shown hidden windows as minimized ones in the bar, and let Shell's own unminimize
+  paths bring them back outside the special workspace. After a SystemUI restart Shell restores
+  desks under new ids: the inactive desk holding only special windows is taken as the stash
+  again (and dropped from the workspace numbers if E2 numbered it meanwhile).
+- **Shell may still activate the stash desk** (an app of a hidden special window started
+  again, a notification): `sync` sees it active and switches back to the last normal desk with
+  that special workspace shown; a window there that is no special window's goes along as a
+  normal one. `focuswindow` (the bar, the overview, the switcher, Lua) on a hidden special
+  window shows its special workspace instead of focusing the stash desk.
+- **Follows Hyprland's semantics where they are cheap:** one special workspace per display; a
+  toggle with no desk active (home in front) activates the current workspace first; new
+  windows open on the shown special workspace (the focused workspace in Hyprland); switching
+  workspace carries the shown one along (`switchToDesk` moves its windows with the switch, and
+  `sync` after a switch Shell made), unless `binds.hide_special_on_workspace_change`; a special
+  workspace whose last window closes hides; `movetoworkspace special:x` on a window already on
+  `x` moves it back to the active workspace; `movetoworkspace N` on a special window leaves the
+  special workspace first.
+- **Dim:** a black color layer of `dim_special` opacity (Hyprland's default 0.2) as the top
+  child of each window of the workspace behind (not pinned ones), cropped to the window. The
+  wallpaper is not dimmed: there is no surface between it and the desk's windows that Shell
+  lets us order, and a relative layer below the lowest special window would be cropped by the
+  task's own crop.
+- **Bar and overview:** `state()` reports special windows with their key as workspace and
+  `specialKeys`/`specialNames`/`specialShown`; the bar adds `S` (`S:name`) buttons after the
+  workspaces, highlighted when shown, a click toggles; the overview adds a cell per special
+  workspace with windows or shown; Lua's `hl.get_workspaces()` lists them as Hyprland does
+  (`special = true`, negative id).
+- Not done: Hyprland's `specialWorkspace` slide animation (the windows move with the shell's
+  window animations), `cursor:warp_on_toggle_special`, a special workspace on a display other
+  than the focused one by name (`togglespecialworkspace` always acts on the focused display).
+
+### Checked on Waydroid (2026-11-22)
+
+Test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`), PcSystemUI and HyprLauncher from the
+working tree in the overlay, the test binds.lua = `docs/examples/hypr-binds.lua` plus
+`dwindle.special_scale_factor = 0.8`, `decoration.dim_special = 0.5`, a `special` workspace rule
+(`gaps_in = 20`), `ALT + M` / `ALT + SHIFT + M` for `special:term` and a window rule sending
+Clock to `special:term silent` (helpers in `out/hypr-e5/`: `k.sh`, `tb.sh`, `sc.sh`).
+
+| Check | Result |
+|---|---|
+| `ALT + CTRL + S` on a tiled window | it leaves workspace 1's layout (the other window takes the space), shows on top tiled alone in the special layout; bar `1 S`, `S` highlighted |
+| `ALT + S`, `ALT + S` | hidden: the stash desk is made on first use and the window moves there (bar `S` plain); shown again over workspace 1 |
+| A new window while shown | opens on the special workspace (`new task ... opens on special:special`), the two tile side by side in the special area |
+| `special_scale_factor = 0.8`, `dim_special = 0.5` | the special layout takes the centred 80 %; the window behind reads RGB 119 where it is 251 (a 50 % black layer); the wallpaper is not dimmed |
+| `ALT + 2` while shown | the special window comes along to workspace 2 (`presentSpecial` in the desk switch) |
+| Window rule `workspace = "special:term silent"` | Clock opens, is moved to `special:term` hidden; `ALT + M` shows it (bar `S:term`) |
+| `focus({ window = "class:deskclock" })` on the hidden window | `special:term` shows (hiding `special`) and Clock has the focus |
+| `ALT + S` with `term` shown | `term` hides, `special` shows and its window takes the focus (300 ms after the move) |
+| `ALT + CTRL + S` on a special window | back into workspace 1's layout, the now empty special workspace hides |
+| `ALT + S` with home in front | workspace 1 is activated and the (empty) special workspace shows over it; the next app opens there |
+| Overview (`ALT + SHIFT + grave`) | a `special:term` cell after the workspaces, with its window |
+| The hidden app started again (`am start` of Clock) | WindowManager moves the task into the active desk and Shell would activate the stash desk (an empty desk in front, no window shown); fixed: the request path records it in the active desk first and shows its special workspace |
+| SystemUI and Waydroid restarted | the stash desk comes back under a new id and is found again (`desk 12 holds hidden special windows`) |
+
+Found and fixed on the way: right after a desk is made, its minimization root (a root task of
+undefined activity type) showed in the active desk's expanded tasks for a moment and `sync`
+tiled it, leaving an empty tile; `sync` now takes app windows only. Settings closed once during
+the tests after its own ANR (a Waydroid Settings issue, not the shell).
+
+Not checked: a second display; `binds.hide_special_on_workspace_change` (one line, the toggle's
+own path); a reboot with a special workspace shown (it comes back hidden, by design: the shown
+state is not kept).
+
 ## As built
 
 | Piece | Where | Process | What it does |

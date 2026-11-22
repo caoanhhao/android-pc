@@ -81,6 +81,9 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
 | `shell.workspaces` | 1..1000 | 10 | how many workspaces there are (E2); binds and rules past it load with a warning and do nothing |
 | `shell.alt_tab` | `"switcher"`, `"cycle"`, `"bind"`, `"overview"`, `"off"` | `switcher` | what `ALT + Tab` does (E4): `switcher` holds ALT and walks the focus history in a strip of icons and titles, releasing ALT focuses the selection, a quick tap is the window focused before; `cycle` runs `cyclenext` on every Tab (SHIFT: `cyclenext prev`), as the host binds `ALT + TAB`; `bind` runs the bind on `ALT + Tab` on every Tab (E3's way; the overview when there is none); `overview` is D4's overview on the next window; `off` nothing. See "ALT + Tab" below |
+| `decoration.dim_special` | 0..1 | 0.2 | how dark the windows behind a shown special workspace get (E5; the wallpaper is not dimmed) |
+| `dwindle.special_scale_factor`, `master.special_scale_factor` | 0.1..1 | 1.0 | share of the work area a special workspace tiles in, centred (the active layout's value applies) |
+| `binds.hide_special_on_workspace_change` | bool | false | switching workspace hides a shown special workspace (else it stays over the new one) |
 | `cursor.zoom_factor` | number, 1 or more | 1.0 | Hyprland's zoom: magnifies the screen around the pointer (Phase E10; above 8 acts as 8). A change applies at once, so the host's `hl.config({ cursor = { zoom_factor = z } })` bind functions work; binds are better off with `hl.dsp.zoom` |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
@@ -164,7 +167,8 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   `+ C` (calendar), `+ F` (files) are AOSP's app bookmarks, `+ SPACE` the assistant and
   `+ left` BACK; bind those dispatchers to other keys (below, "Waydroid and the host's SUPER
   key"). D5 saw `ALT + S` minimize a window on Waydroid; in D7 it did nothing without a game
-  pad passed into the container, so it was the pad (docs/hypr-desktop.md, D7).
+  pad passed into the container, so it was the pad (docs/hypr-desktop.md, D7). `ALT + S` is
+  the special workspace's toggle in the host-style binds (E5).
 - Mouse binds (E6, next section): `mouse:272`..`mouse:276` and the wheel, `mouse_up`,
   `mouse_down`, `mouse_left`, `mouse_right`, with any modifiers and any dispatcher.
 
@@ -331,12 +335,12 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + wheel down / up` | next / previous workspace (E6) |
 | `ALT + Tab` | the switcher (`shell.alt_tab`, E4): tapped, the window focused before (the host's `SUPER + TAB`); held, walk the focus history, release to switch. The file's `ALT + Tab` bind is what `alt_tab = "bind"` would run. Not under Waydroid, where the host keeps `ALT + TAB` |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
+| `ALT + S`, `ALT + CTRL + S` | the special workspace over the current one, toggled; the focused window into it (again: back out; Phase E5) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
-Left out, with no counterpart here: the special workspace, pin, screenshots and screen
-recording, the bar and panel widgets, lock and suspend. The shell's
-default `ALT + grave` (overview) moves to `ALT + SHIFT + grave` in this file, as the host puts
-the previous workspace there. It loads with no
+Left out, with no counterpart here: pin, screenshots and screen
+recording, the bar and panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
+moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there. It loads with no
 warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
 Checked on Waydroid (2026-11-22, user data): all 60 key binds installed, none taken by AOSP;
 open, focus (`h`/`n`), move, resize, float, maximize, silent and following moves, the shade
@@ -387,7 +391,7 @@ function. `hl.unbind` frees it (an unbound gesture leaves the touch to the app).
 ## Dispatchers: `hl.dsp`
 
 A dispatcher is a value for `hl.bind`, `hl.dispatch`, `on_click` and gestures. Hyprland
-dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
+dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_special`,
 `hl.dsp.group.*`, `hl.dsp.cursor.*`, ...) are an error where they are used.
 
 | Lua | Hyprland's name | What |
@@ -404,6 +408,9 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.window.alter_zorder({ mode = "top" \| "bottom", window = w })` | `alterzorder` | raise the window (it takes the focus) or put it below the other windows of its workspace |
 | `hl.dsp.window.move({ workspace = N })` | `movetoworkspace` | move the focused window there and follow it |
 | `hl.dsp.window.move({ workspace = N, follow = false })` | `movetoworkspacesilent` | move it without following (also `silent = true`) |
+| `hl.dsp.workspace.toggle_special()`, `("name")` | `togglespecialworkspace [name]` | show the special workspace (`special`, or `special:name`) over the active workspace, or hide it (E5, below) |
+| `hl.dsp.focus({ workspace = "special:name" })` | `workspace special:name` | the same toggle |
+| `hl.dsp.window.move({ workspace = "special[:name]" })` | `movetoworkspace special[:name]` | move the focused window to that special workspace and show it; a window already there goes back to the active workspace; `follow = false` (`movetoworkspacesilent`) moves it there hidden |
 | `hl.dsp.window.move({ direction = "left" })` | `movewindow` | tiled: swap with the neighbour; floating: to that edge |
 | `hl.dsp.window.swap({ direction = "left" })` | `movewindow` | the same |
 | `hl.dsp.window.float()` | `togglefloating` | only `action = "toggle"` |
@@ -453,6 +460,7 @@ r:set_enabled(false)
 | `match.title` (`initial_title`) | regular expression on the window title (the task's label) |
 | `float = true` / `tile = true` (`float = false`) | float or tile when it opens; a rule wins over the float defaults (dialogs, translucent activities), but a window that cannot be resized always floats |
 | `workspace = "N"` / `"N silent"` | open on workspace N (1..1000, up to `shell.workspaces`): moved there and followed, or moved without following |
+| `workspace = "special[:name]"` / `"special:name silent"` | open on that special workspace, shown, or hidden in it (E5) |
 | `opacity = "A [I]"` | active and inactive opacity of the window (`override` words are ignored) |
 | `name`, `enabled` | a name for messages; `enabled = false` keeps it off (also `r:set_enabled`) |
 
@@ -470,12 +478,38 @@ hl.workspace_rule({ workspace = "4", on_created_empty = "com.termux" })
 
 | Field | What |
 |---|---|
-| `workspace` | 1..1000 (Hyprland's selectors such as `w[tv1]` are an error) |
+| `workspace` | 1..1000, or `special[:name]` (E5: `layout`, `gaps_in`, `gaps_out` apply to it); Hyprland's selectors such as `w[tv1]` are an error |
 | `layout`, `gaps_in`, `gaps_out` | that workspace's own layout and gaps (whole pixels) |
 | `default_name` (`name`) | shown in the bar and given to Lua as `ws.name` |
 | `on_created_empty` | a package started when you switch to the workspace and it has no window |
 
 Several rules for one workspace merge, later fields winning. Other fields warn.
+
+## Special workspaces
+
+Hyprland's special workspaces (scratchpads), Phase E5: `special` (Hyprland's unnamed one,
+`special:special`) and any `special:name`. One shows over the active workspace of its display,
+toggled on and off without leaving that workspace; its windows tile in a layout of its own
+(own `hl.workspace_rule` gaps and layout, `special_scale_factor`), stay above the workspace's
+windows, and those windows are dimmed (`decoration.dim_special`). Windows moved to a special
+workspace disappear from their workspace. While one is shown, new windows open on it, as on
+the focused workspace in Hyprland; it stays shown over another workspace when you switch
+(unless `binds.hide_special_on_workspace_change`), hides when its last window closes, and a
+window of a hidden one that comes to front (its app started again, `focus({ window = })`, the
+switcher) shows it. One special workspace per display at a time.
+
+```lua
+hl.bind("ALT + S", hl.dsp.workspace.toggle_special())                     -- special
+hl.bind("ALT + CTRL + S", hl.dsp.window.move({ workspace = "special" }))  -- again: back out
+hl.bind("ALT + T", hl.dsp.workspace.toggle_special("term"))
+hl.window_rule({ match = { class = "^com\\.termux$" }, workspace = "special:term silent" })
+hl.workspace_rule({ workspace = "special:term", gaps_out = 60 })
+```
+
+The bar shows `S` (or `S:name`) after the numbered workspaces for each special workspace with
+windows or shown, highlighted when shown; a click toggles it. The overview has a cell for each.
+`hl.get_workspaces()` lists them after the numbered ones (`special = true`, `id` negative as in
+Hyprland: -99, -98, ...; `name = "special:name"`), and a window on one has that workspace.
 
 ## Gestures and monitors
 

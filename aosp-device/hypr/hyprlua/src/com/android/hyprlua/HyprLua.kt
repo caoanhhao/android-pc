@@ -47,6 +47,9 @@ data class Snapshot(
     val urgent: List<Int> = emptyList(),
     /** `workspace previous` of this display, 0 when there is none. */
     val lastWorkspace: Int = 0,
+    /** Special workspaces (E5): name by key (windows have the key as workspace), the shown one. */
+    val specials: Map<Int, String> = emptyMap(),
+    val specialShown: String? = null,
 )
 
 /** What the Lua runtime needs from HyprLauncher. Called on the runtime's thread. */
@@ -339,6 +342,9 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
             recs += (listOf("H") + s.history).joinToString("\u001f")
             recs += (listOf("U") + s.urgent).joinToString("\u001f")
             recs += listOf("L", s.lastWorkspace).joinToString("\u001f")
+            for ((key, name) in s.specials) {
+                recs += listOf("P", key, clean(name), if (name == s.specialShown) 1 else 0).joinToString("\u001f")
+            }
             return recs.joinToString("\u001e")
         }
     }

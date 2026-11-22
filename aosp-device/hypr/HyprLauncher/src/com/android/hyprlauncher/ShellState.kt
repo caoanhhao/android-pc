@@ -7,7 +7,7 @@ import com.android.hyprtile.shownWorkspaces
 /** A window as the shell reports it (IHyprShell.getState). */
 data class Win(
     val taskId: Int,
-    /** 1-based workspace (desk) number. */
+    /** 1-based workspace number; a special workspace's key (negative) for its windows. */
     val workspace: Int,
     val packageName: String,
     val title: String,
@@ -40,7 +40,25 @@ data class ShellState(
     val focusHistory: List<Int> = emptyList(),
     val urgent: List<Int> = emptyList(),
     val lastWorkspace: Int = 0,
+    /** Special workspaces (E5): name by key, in key order; windows on one have its key. */
+    val specials: Map<Int, String> = emptyMap(),
+    /** The special workspace shown over the active one, or null. */
+    val specialShown: String? = null,
 ) {
+    /** Special workspaces that have windows or are shown, as key and name. */
+    fun occupiedSpecials(): List<Pair<Int, String>> = specials.entries
+        .filter { (k, n) -> n == specialShown || windows.any { it.workspace == k } }.map { it.key to it.value }
+
+    /** The key of the special workspace shown, or null. */
+    val shownSpecialKey: Int? get() = specials.entries.firstOrNull { it.value == specialShown }?.key
+
+    /** Whether [w] is on screen: on the active workspace or the special one shown over it. */
+    fun isVisible(w: Win) = !w.minimized && (w.workspace == active || w.workspace == shownSpecialKey)
+
+    /** What the bar and overview call workspace [n]: its number, or `special:name`. */
+    fun label(n: Int, names: Map<Int, String> = emptyMap()): String =
+        specials[n]?.let { "special:$it" } ?: names[n] ?: "$n"
+
     fun on(workspace: Int) = windows.filter { it.workspace == workspace }
 
     /**
@@ -93,6 +111,9 @@ data class ShellState(
                 focusHistory = (b.getIntArray("focusHistory") ?: IntArray(0)).toList(),
                 urgent = (b.getIntArray("urgentTasks") ?: IntArray(0)).toList(),
                 lastWorkspace = b.getInt("lastWorkspace"),
+                specials = (b.getIntArray("specialKeys") ?: IntArray(0)).toList()
+                    .zip((b.getStringArray("specialNames") ?: emptyArray()).toList()).toMap(),
+                specialShown = b.getString("specialShown"),
             )
         }
     }

@@ -3,11 +3,10 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (special workspace, pin, bar and panel widgets) are
--- left out; see docs/hypr-lua.md for what the dispatchers can do. Keys the host keeps for
--- itself under Waydroid (ALT + TAB, ALT + F2/F3/F11/F12, CTRL + ALT + P) never reach Android
--- there: ALT + Tab (the switcher, which also does the host's SUPER + TAB) is for the real PC
--- and works in Waydroid only with injected keys.
+-- (pin, bar and panel widgets) are left out; see docs/hypr-lua.md for what the
+-- dispatchers can do. Keys the host keeps for itself under Waydroid (ALT + TAB, ALT + F2/F3/
+-- F11/F12, CTRL + ALT + P) never reach Android there: ALT + Tab (the switcher, which also does
+-- the host's SUPER + TAB) is for the real PC and works in Waydroid only with injected keys.
 
 local mainMod = "ALT"
 local resizeAmount = 40 -- px; the host's 25 logical px at Waydroid's density
@@ -20,6 +19,17 @@ hl.bind(mainMod .. " + Q", hl.dsp.window.close())
 hl.bind(mainMod .. " + F", hl.dsp.window.fullscreen())
 hl.bind(mainMod .. " + SHIFT + F", hl.dsp.window.fullscreen({ mode = "maximized" }))
 hl.bind(mainMod .. " + Space", hl.dsp.window.float({ action = "toggle" }))
+
+------------------------
+---- SPECIAL WORKSPACE -
+------------------------
+
+-- The host's SUPER + S and SUPER + CTRL + S (Phase E5): the scratchpad, shown over the current
+-- workspace (dimmed behind it) and hidden again, and the focused window moved into it (shown);
+-- the same keys on a window already there move it back to the current workspace. Named ones:
+-- toggle_special("term") and move({ workspace = "special:term" }).
+hl.bind(mainMod .. " + S", hl.dsp.workspace.toggle_special())
+hl.bind(mainMod .. " + CTRL + S", hl.dsp.window.move({ workspace = "special" }))
 
 ------------------------
 ---- APPS AND PANELS ---

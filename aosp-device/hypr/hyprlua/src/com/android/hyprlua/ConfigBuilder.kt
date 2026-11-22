@@ -36,6 +36,8 @@ import com.android.hyprtile.isWorkspaceArg
 import com.android.hyprtile.CycleOptions
 import com.android.hyprtile.WindowSelector
 import com.android.hyprtile.previousWorkspaceArg
+import com.android.hyprtile.specialName
+import com.android.hyprtile.DEFAULT_DIM_SPECIAL
 import java.text.SimpleDateFormat
 
 /**
@@ -265,10 +267,11 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "workspace" -> {
                     effects++
                     val p = v.trim().split(Regex("\\s+"))
-                    val n = p[0].toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
-                        ?: fail("window rule: workspace must be a number 1..$MAX_WORKSPACES, not '$v'")
+                    val special = specialName(p[0])
+                    val n = if (special != null) null else p[0].toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
+                        ?: fail("window rule: workspace must be a number 1..$MAX_WORKSPACES or special[:name], not '$v'")
                     if (p.size > 2 || (p.size == 2 && p[1] != "silent")) fail("window rule: workspace is 'N' or 'N silent'")
-                    rule.copy(workspace = n, silent = p.size == 2)
+                    rule.copy(workspace = n, special = special, silent = p.size == 2)
                 }
                 "opacity" -> {
                     effects++
@@ -294,9 +297,10 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
     /** `hl.workspace_rule`; returns the rule's id. */
     fun workspaceRule(fields: Map<String, String>): Int {
         val ws = fields["workspace"] ?: fail("workspace rule needs workspace =")
-        val n = ws.trim().toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
-            ?: fail("workspace rule: only numbered workspaces 1..$MAX_WORKSPACES are supported, not '$ws'")
-        var rule = WorkspaceRule(n)
+        val special = specialName(ws)
+        val n = if (special != null) 0 else ws.trim().toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
+            ?: fail("workspace rule: only numbered workspaces 1..$MAX_WORKSPACES and special[:name] are supported, not '$ws'")
+        var rule = WorkspaceRule(n, special = special)
         var enabled = true
         for ((k, v) in fields) {
             rule = when (k) {
@@ -444,7 +448,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         }
 
         val wsRules = workspaceRules.values.filter { it.second }.map { it.first }
-            .groupBy { it.workspace }.map { (_, rules) -> rules.reduce(::mergeWorkspaceRules) }
+            .groupBy { it.workspace to it.special }.map { (_, rules) -> rules.reduce(::mergeWorkspaceRules) }
 
         val wire = LinkedHashMap<String, String>()
         for ((hypr, name) in WIRE_NAMES) wire[name] = opt(hypr)
@@ -453,6 +457,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         wire["reserved_top"] = v["monitor.reserved_top"] ?: "0"
         wire["reserved_bottom"] = v["monitor.reserved_bottom"] ?: "0"
         wire["float_packages"] = ""
+        // One scale for special workspaces: the active layout's section has it (E5).
+        wire["special_scale_factor"] = opt(
+            if (opt("general.layout") == "master") "master.special_scale_factor" else "dwindle.special_scale_factor")
         wire["source"] = "lua"
 
         val anim = AnimationConfig.DEFAULT_ANIMATIONS.mapValues { (k, s) ->
@@ -491,6 +498,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         gapsIn = b.gapsIn ?: a.gapsIn,
         gapsOut = b.gapsOut ?: a.gapsOut,
         onCreatedEmpty = b.onCreatedEmpty ?: a.onCreatedEmpty,
+        special = a.special,
     )
 
     private fun modules(v: String): List<String> =
@@ -550,6 +558,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.workspaces" to "workspaces",
             "shell.alt_tab" to "alt_tab",
             "cursor.zoom_factor" to "zoom_factor",
+            "decoration.dim_special" to "dim_special",
+            "binds.hide_special_on_workspace_change" to "hide_special_on_workspace_change",
         )
 
         private val tile = TileConfig()
@@ -588,6 +598,10 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.workspaces" to "$DEFAULT_WORKSPACES",
             "shell.alt_tab" to "switcher",
             "cursor.zoom_factor" to "1.0",
+            "decoration.dim_special" to "$DEFAULT_DIM_SPECIAL",
+            "binds.hide_special_on_workspace_change" to "false",
+            "dwindle.special_scale_factor" to "1.0",
+            "master.special_scale_factor" to "1.0",
         )
 
         private fun intIn(range: IntRange): (String, String) -> String = { v, t ->
@@ -664,6 +678,11 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.workspaces" to intIn(1..MAX_WORKSPACES),
             // What ALT + Tab does (E4): switcher, cycle, bind, overview or off.
             "shell.alt_tab" to { v, _ -> AltTabMode.parse(v).wireName },
+            // Special workspaces (E5).
+            "decoration.dim_special" to floatIn(0f, 1f),
+            "binds.hide_special_on_workspace_change" to boolOpt,
+            "dwindle.special_scale_factor" to floatIn(0.1f, 1f),
+            "master.special_scale_factor" to floatIn(0.1f, 1f),
         )
 
         /** Why [arg] does not suit [dispatcher], or null when it does. */
@@ -672,7 +691,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             val a = arg.trim()
             return when (dispatcher) {
                 "workspace", "movetoworkspace", "movetoworkspacesilent" ->
-                    if (previousWorkspaceArg(a) != null) {
+                    if (previousWorkspaceArg(a) != null || specialName(a) != null) {
                         null
                     } else if ((a.toIntOrNull() ?: 1) > MAX_WORKSPACES) {
                         "workspaces go up to $MAX_WORKSPACES"
@@ -684,6 +703,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "movefocus", "movewindow" -> if (Direction.parse(a) == null) "bad direction '$a'" else null
                 "fullscreen" -> if (a !in setOf("", "0", "1")) "fullscreen takes 0 or 1" else null
                 "exec" -> if (a.isEmpty()) "exec needs a package name" else null
+                "togglespecialworkspace" -> if (a.contains(' ')) "bad special workspace name '$a'" else null
                 "focuswindow", "swapwindow" -> runCatching { WindowSelector.parse(a) }.exceptionOrNull()?.message
                 "cyclenext", "cycleprev" ->
                     if (CycleOptions.parse(a) == null) "$dispatcher takes prev, tiled, floating, hist, visible" else null

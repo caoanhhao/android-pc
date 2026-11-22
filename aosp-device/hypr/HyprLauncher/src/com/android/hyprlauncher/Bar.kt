@@ -231,9 +231,27 @@ class Bar(private val desktop: Desktop) {
                 marginStart = desktop.dp(2f)
             })
         }
+        // Special workspaces with windows or shown (E5, waybar's show-special): click toggles.
+        for ((_, name) in s.occupiedSpecials()) {
+            val b = button(if (name == "special") "S" else "S:$name") {
+                desktop.dispatch("togglespecialworkspace", name)
+            }
+            b.minWidth = desktop.dp(26f)
+            b.gravity = Gravity.CENTER
+            if (name == s.specialShown) {
+                b.background = pill(config.accent)
+                b.setTextColor(config.background or 0xff000000.toInt())
+            } else {
+                b.setTextColor(config.foreground)
+            }
+            workspaces.addView(b, LinearLayout.LayoutParams(WRAP_CONTENT, desktop.dp(22f)).apply {
+                marginStart = desktop.dp(2f)
+            })
+        }
 
         val focused = s.windows.find { it.taskId == s.focusedTask }
         title.text = when {
+            focused == null && s.specialShown != null -> "special:${s.specialShown}"
             focused == null -> if (s.active == 0) "" else "workspace ${names[s.active] ?: s.active}"
             focused.title.isNotEmpty() -> focused.title
             else -> desktop.apps.label(focused.packageName)
@@ -245,10 +263,10 @@ class Bar(private val desktop: Desktop) {
             icon.setImageDrawable(desktop.apps.iconOf(w.packageName))
             val pad = desktop.dp(3f)
             icon.setPadding(pad, pad, pad, pad)
-            icon.alpha = if (w.workspace == s.active && !w.minimized) 1f else 0.45f
+            icon.alpha = if (s.isVisible(w)) 1f else 0.45f
             if (w.taskId == s.focusedTask) icon.background = pill(FOCUS_BG)
             icon.tooltipText = "${w.title.ifEmpty { desktop.apps.label(w.packageName) }} " +
-                "(workspace ${w.workspace})"
+                "(workspace ${s.label(w.workspace, names)})"
             icon.setOnClickListener { desktop.dispatch("focuswindow", "${w.taskId}") }
             val size = desktop.dp(24f)
             running.addView(icon, LinearLayout.LayoutParams(size, size).apply {

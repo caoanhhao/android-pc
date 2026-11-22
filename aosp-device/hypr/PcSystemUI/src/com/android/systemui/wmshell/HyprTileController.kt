@@ -51,6 +51,9 @@ import com.android.hyprtile.MAX_WORKSPACES
 import com.android.hyprtile.WorkspaceMap
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
+import com.android.hyprtile.DEFAULT_DIM_SPECIAL
+import com.android.hyprtile.SpecialWorkspaces
+import com.android.hyprtile.specialName
 import com.android.systemui.hypr.HyprHostActions
 import com.android.systemui.hypr.HyprSystemActions
 import com.android.wm.shell.ShellTaskOrganizer
@@ -206,6 +209,14 @@ class HyprTileController(
     private val taskNumbers = HashMap<String, Map<Int, Int>>()
     /** Lua's workspace rules, by number; [mapWorkspaceRules] turns them into rules by desk. */
     private var workspaceRuleList: List<WorkspaceRule> = emptyList()
+    /** Special workspaces (E5): which windows are on which, which one each display shows. */
+    private val special by lazy { SpecialWorkspaces.decode(workspacePrefs.getString(PREF_SPECIAL, "") ?: "") }
+    /** Per display, the desk holding the windows of hidden special workspaces ([stashDesk]). */
+    private val stashDesks = HashMap<Int, Int>()
+    /** Per display, the last active desk that is not the stash desk. */
+    private val lastNormalDesk = HashMap<Int, Int>()
+    /** Dim layers over the windows behind a shown special workspace, by task ([updateDim]). */
+    private val dims = HashMap<Int, SurfaceControl>()
     /** The workspace numbers, kept over a SystemUI restart. */
     private val workspacePrefs by lazy {
         context.createDeviceProtectedStorageContext()
@@ -293,6 +304,21 @@ class HyprTileController(
         // back here; the nested call steps aside.
         if (inRequest) return null
         requests[transition] = task.taskId to task.isVisible
+        // E5: the app of a hidden special window came to front (started again). Shell would
+        // activate the stash desk; the window shows over the active desk instead.
+        val reshow = special.of(task.taskId)?.takeIf {
+            opening && special.shownOn(task.displayId) != it &&
+                repository.getDeskIdForTask(task.taskId) == stashDesk(task.displayId)
+        }
+        if (reshow != null) {
+            Log.d(TAG, "task ${task.taskId} of hidden special:$reshow came to front")
+            repository.addTaskToDesk(task.displayId, deskId, task.taskId, isVisible = true,
+                taskBounds = Rect(task.configuration.windowConfiguration.bounds))
+            mainExecutor.execute {
+                hideSpecial(task.displayId)
+                showSpecial(task.displayId, deskId, reshow)
+            }
+        }
         inRequest = true
         val other = try {
             transitions.dispatchRequest(transition, request, this)
@@ -301,10 +327,13 @@ class HyprTileController(
         }
         val wct = other?.mWct ?: WindowContainerTransaction()
         updateConfig()
+        // The desk's layout, or a special workspace's (E5).
+        var layoutKey: Int = deskId
         val changed = if (opening) {
+            if (becomesFreeform(task, wct)) layoutKey = requestLayout(task, deskId, wct)
             if (!becomesFreeform(task, wct)) {
                 tile.close(task.taskId) != null
-            } else if (tile.workspaceOf(task.taskId) == deskId) {
+            } else if (tile.workspaceOf(task.taskId) == layoutKey) {
                 // Already tiled here: a dialog activity opening on top of it (a permission
                 // prompt) does not make the window float.
                 false
@@ -312,15 +341,15 @@ class HyprTileController(
                 val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId)
                     .firstOrNull { it != task.taskId && tile.isTiled(it) }
                 newTasks += task.taskId
-                tile.open(task.taskId, deskId, focused,
+                tile.open(task.taskId, layoutKey, focused,
                     float = task.taskId in userFloated || floats(task))
             }
         } else {
-            tile.close(task.taskId) != null
+            tile.close(task.taskId)?.also { layoutKey = it } != null
         }
         if (changed) {
             Log.d(TAG, "request ${request.type} task ${task.taskId} desk $deskId -> relayout")
-            addBounds(deskId, task.displayId, wct, task)
+            addBounds(layoutKey, task.displayId, wct, task)
         }
         return other ?: Transitions.RequestResult(wct)
     }
@@ -534,6 +563,10 @@ class HyprTileController(
             .mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
         for (displayId in displays) {
             val deskId = repo.getActiveDeskId(displayId) ?: continue
+            // E5: Shell brought the stash desk of hidden special windows to front.
+            stashDesk(displayId)?.let { if (it == deskId) { recoverFromStash(displayId, it); continue } }
+            lastNormalDesk[displayId] = deskId
+            syncSpecial(displayId, deskId)
             // Pinned windows left behind by a desk switch this controller did not start (Shell's
             // own, from home or a window brought to front on another desk) follow now.
             val pinWct = WindowContainerTransaction()
@@ -543,9 +576,12 @@ class HyprTileController(
                 startChange(pinWct)
                 recordCarried(displayId, deskId, carried)
             }
+            // App windows only: a new desk's minimization root (a root task of undefined type)
+            // can show up in the active desk's list for a moment when a desk is made (E5).
             val expanded = repo.getExpandedTasksIdsInDeskOrdered(deskId).filter {
-                !repo.isClosingTask(it) &&
-                    taskOrganizer.getRunningTaskInfo(it)?.windowingMode == WINDOWING_MODE_FREEFORM
+                !repo.isClosingTask(it) && taskOrganizer.getRunningTaskInfo(it)?.let { t ->
+                    t.windowingMode == WINDOWING_MODE_FREEFORM && t.activityType == ACTIVITY_TYPE_STANDARD
+                } == true
             }
             var changed = configChanged
             for (id in tile.tiled(deskId)) if (id !in expanded) { tile.close(id); changed = true }
@@ -559,7 +595,7 @@ class HyprTileController(
             for (id in expanded.asReversed()) {
                 // A task Shell put on another desk than the request said (it relaunched into
                 // the desk it last lived on) is tiled again here.
-                if (tile.workspaceOf(id) == deskId || id in userFloated) continue
+                if (tile.workspaceOf(id) == deskId || id in userFloated || special.isMember(id)) continue
                 val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
                 val float = floats(task)
                 if (float && tile.isFloating(id)) continue
@@ -580,6 +616,7 @@ class HyprTileController(
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
         for (id in tile.pinned().toList()) if (repo.getDeskIdForTask(id) == null) tile.close(id)
         applyWindowRules()
+        syncSpecialAfter()
         focus.onSync()
         // Once things settle: removing a desk Shell still takes for the active one sends the
         // display home.
@@ -613,7 +650,16 @@ class HyprTileController(
             val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
             val pkg = task.baseActivity?.packageName
             val title = task.taskDescription?.label?.toString()
-            val rule = rules.lastOrNull { it.workspace != null && it.matches(pkg, title) } ?: continue
+            val rule = rules.lastOrNull { (it.workspace != null || it.special != null) && it.matches(pkg, title) } ?: continue
+            // `workspace = "special:name [silent]"` (E5).
+            val ruleSpecial = rule.special
+            if (ruleSpecial != null) {
+                if (special.of(id) == ruleSpecial) continue
+                Log.d(TAG, "window rule ${rule.name}: task $id to special:$ruleSpecial")
+                moveToSpecial(task, ruleSpecial, rule.silent)
+                opened.drop(opened.indexOf(id) + 1).let { newTasks.addAll(it) }
+                break
+            }
             val n = rule.workspace ?: continue
             if (n > workspaceLimit || currentWorkspaceOf(task) == n) continue
             Log.d(TAG, "window rule ${rule.name}: task $id to workspace $n" + if (rule.silent) " (silent)" else "")
@@ -672,6 +718,7 @@ class HyprTileController(
      */
     fun dispatch(name: String, arg: String = ""): Boolean {
         Log.d(TAG, "dispatch $name $arg")
+        if (dispatchSpecial(name, arg)) return true
         // `previous`, `previous_per_monitor` and binds.workspace_back_and_forth (E3).
         if (name == "workspace" || name == "movetoworkspace" || name == "movetoworkspacesilent") {
             val display = dispatchTarget?.displayId ?: focusedDisplayId()
@@ -762,6 +809,12 @@ class HyprTileController(
     private fun focusWindow(taskId: Int) {
         val controller = desktopTasksController.orElse(null) ?: return
         val task = taskOrganizer.getRunningTaskInfo(taskId)
+        // A window of a hidden special workspace: that special workspace shows (E5).
+        val name = special.of(taskId)
+        if (task != null && name != null && special.shownOn(task.displayId) != name) {
+            toggleSpecial(task.displayId, name)
+            return
+        }
         if (task == null) {
             controller.moveTaskToFront(taskId, repository.userId, null, UnminimizeReason.TASKBAR_TAP)
         } else {
@@ -787,7 +840,9 @@ class HyprTileController(
     /** The desks of [displayId] in Shell's order. */
     private fun orderedDesks(displayId: Int): List<Int> {
         val repo = repository
-        return repo.getDeskIds(displayId).sortedBy { repo.getDeskPosition(it) ?: Int.MAX_VALUE }
+        val stash = stashDesk(displayId)
+        return repo.getDeskIds(displayId).filter { it != stash }
+            .sortedBy { repo.getDeskPosition(it) ?: Int.MAX_VALUE }
     }
 
     private fun currentWorkspace(displayId: Int): Int {
@@ -864,6 +919,8 @@ class HyprTileController(
                 for (r in workspaceRuleList) numbers.deskOf(r.workspace)?.let { byDesk[it] = r }
             }
         }
+        // Rules for special workspaces go to their layouts (E5).
+        for (r in workspaceRuleList) r.special?.let { byDesk[special.keyOf(it)] = r }
         if (byDesk == tile.workspaceRules) return false
         tile.workspaceRules = byDesk
         return true
@@ -965,7 +1022,8 @@ class HyprTileController(
             tile.open(id, to, focused, float = floating)
         }
         addBounds(to, displayId, wct, moving)
-        val carried = carryPinned(displayId, to, wct, skip = moving?.taskId)
+        val carried = carryPinned(displayId, to, wct, skip = moving?.taskId) +
+            presentSpecial(displayId, to, wct, skip = moving?.taskId)
         Log.d(TAG, "switch desk $from -> $to on display $displayId" +
             (moving?.let { ", moving task ${it.taskId}" } ?: ""))
         val transition = if (animationsEnabled) {
@@ -1136,6 +1194,410 @@ class HyprTileController(
         addBounds(deskId, task.displayId, wct, task)
         startChange(wct)
         onStateChanged?.invoke()
+    }
+
+    // ---- special workspaces (Hyprland's scratchpads; Phase E5) ----
+
+    /**
+     * Runs the special-workspace forms of the dispatchers: `togglespecialworkspace [name]`,
+     * `workspace special[:name]` (the same toggle), `movetoworkspace[silent] special[:name]`.
+     * A window of a special workspace moved to a numbered workspace leaves its special workspace
+     * first. Returns true when the dispatcher was handled here.
+     */
+    private fun dispatchSpecial(name: String, arg: String): Boolean {
+        val target = specialName(arg)
+        when {
+            name == "togglespecialworkspace" ->
+                toggleSpecial(focusedDisplayId(), target ?: arg.trim().ifEmpty { "special" })
+            name == "workspace" && target != null -> toggleSpecial(focusedDisplayId(), target)
+            (name == "movetoworkspace" || name == "movetoworkspacesilent") && target != null ->
+                focusedTask()?.let { moveToSpecial(it, target, silent = name == "movetoworkspacesilent") }
+            name == "movetoworkspace" || name == "movetoworkspacesilent" -> {
+                focusedTask()?.takeIf { special.isMember(it.taskId) }?.let { leaveSpecial(it) }
+                return false
+            }
+            name == "workspace" -> {
+                // binds.hide_special_on_workspace_change; otherwise the special workspace stays
+                // shown over the new workspace (switchToDesk carries its windows).
+                if (configOverrides.getString("hide_special_on_workspace_change") == "true") {
+                    hideSpecial(focusedDisplayId())
+                }
+                return false
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * Hyprland's `togglespecialworkspace`: special workspace [name] shows over the active
+     * workspace of [displayId] (in place of another one shown there), or hides again. With no
+     * desk active (home in front), the current workspace becomes active first.
+     */
+    private fun toggleSpecial(displayId: Int, name: String) {
+        if (special.shownOn(displayId) == name) {
+            hideSpecial(displayId)
+            return
+        }
+        hideSpecial(displayId)
+        val desk = repository.getActiveDeskId(displayId)
+        if (desk != null && desk != stashDesk(displayId)) {
+            showSpecial(displayId, desk, name)
+            return
+        }
+        withWorkspaceDesk(displayId, currentWorkspace(displayId)) { d ->
+            desktopTasksController.orElse(null)?.activateDesk(d, repository.userId,
+                enterReason = EnterReason.KEYBOARD_SHORTCUT_ENTER)
+            showSpecial(displayId, d, name)
+        }
+    }
+
+    /** Shows special workspace [name] over desk [deskId]: its windows come in on top, tiled. */
+    private fun showSpecial(displayId: Int, deskId: Int, name: String) {
+        special.show(displayId, name)
+        saveSpecial()
+        Log.d(TAG, "special:$name shown over desk $deskId: ${special.windows(name)}")
+        val wct = WindowContainerTransaction()
+        val moved = presentSpecial(displayId, deskId, wct, all = true)
+        if (!wct.isEmpty) startChange(wct)
+        recordCarried(displayId, deskId, moved)
+        focusSpecial(displayId, deskId)
+        updateDim()
+        onStateChanged?.invoke()
+    }
+
+    /**
+     * Hyprland focuses a special workspace's window when it shows: its newest window comes to
+     * front once the move into [deskId] has landed (always-on-top windows do not take the focus
+     * by being reordered).
+     */
+    private fun focusSpecial(displayId: Int, deskId: Int) {
+        mainExecutor.executeDelayed({
+            val name = special.shownOn(displayId) ?: return@executeDelayed
+            val id = special.windows(name).lastOrNull {
+                repository.getDeskIdForTask(it) == deskId && !repository.isMinimizedTask(it)
+            } ?: return@executeDelayed
+            taskOrganizer.getRunningTaskInfo(id)?.let { desktopTasksController.orElse(null)?.moveTaskToFront(it) }
+        }, FOCUS_SPECIAL_DELAY_MS)
+    }
+
+    /** Hides the special workspace shown on [displayId]: its windows go to the stash desk. */
+    private fun hideSpecial(displayId: Int) {
+        val name = special.shownOn(displayId) ?: return
+        special.hide(displayId)
+        saveSpecial()
+        Log.d(TAG, "special:$name hidden on display $displayId")
+        stashWindows(displayId, special.windows(name))
+        updateDim()
+        onStateChanged?.invoke()
+    }
+
+    /**
+     * Adds to [wct] what brings the windows of the special workspace shown on [displayId] into
+     * desk [deskId]: moved from the stash desk (or the desk they were left on), always on top
+     * of the workspace's windows, tiled in the special workspace's layout. With [all], windows
+     * already in [deskId] come to front too. Returns the moved tasks, for [recordCarried].
+     */
+    private fun presentSpecial(
+        displayId: Int,
+        deskId: Int,
+        wct: WindowContainerTransaction,
+        all: Boolean = false,
+        skip: Int? = null,
+    ): List<RunningTaskInfo> {
+        val name = special.shownOn(displayId) ?: return emptyList()
+        val controller = desktopTasksController.orElse(null) ?: return emptyList()
+        val key = special.keyOf(name)
+        val moved = ArrayList<RunningTaskInfo>()
+        for (id in special.windows(name)) {
+            if (id == skip) continue
+            val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+            // Shell's repository and the task's real parent (WindowManager may have moved it).
+            if (repository.getDeskIdForTask(id) != deskId || task.parentTaskId != deskId) {
+                val bounds = floatingBounds(task)
+                controller.addMoveToDeskTaskChanges(wct, task, deskId)
+                // Shell's move gives the task cascaded bounds: a floating one keeps its own, a
+                // tiled one gets its tile again below.
+                if (tile.workspaceOf(id) == key) applied.remove(id) else wct.setBounds(task.token, bounds)
+                moved += task
+            } else if (!all) {
+                continue
+            }
+            if (tile.workspaceOf(id) == null && !tile.isFloating(id)) {
+                tile.open(id, key, float = id in userFloated || floats(task))
+            }
+            wct.setAlwaysOnTop(task.token, true)
+            wct.reorder(task.token, true)
+        }
+        addBounds(key, displayId, wct)
+        return moved
+    }
+
+    /** Moves [ids] (windows of a special workspace) to the stash desk of [displayId], hidden. */
+    private fun stashWindows(displayId: Int, ids: List<Int>) {
+        if (ids.isEmpty()) return
+        withStashDesk(displayId) { stash ->
+            val controller = desktopTasksController.orElse(null) ?: return@withStashDesk
+            val wct = WindowContainerTransaction()
+            val moved = ArrayList<Pair<RunningTaskInfo, Rect>>()
+            for (id in ids) {
+                // Shown again meanwhile (a quick double toggle): it stays.
+                if (special.of(id)?.let { special.shownOn(displayId) == it } == true) continue
+                val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+                if (repository.getDeskIdForTask(id) == stash) continue
+                val bounds = floatingBounds(task)
+                controller.addMoveToDeskTaskChanges(wct, task, stash)
+                wct.setBounds(task.token, bounds)
+                wct.setAlwaysOnTop(task.token, false)
+                moved += task to bounds
+            }
+            if (wct.isEmpty) return@withStashDesk
+            startChange(wct)
+            for ((task, bounds) in moved) {
+                repository.addTaskToDesk(displayId, stash, task.taskId, isVisible = false, taskBounds = bounds)
+            }
+            mainExecutor.removeCallbacks(syncRunnable)
+            mainExecutor.executeDelayed(syncRunnable, SYNC_DELAY_MS)
+        }
+    }
+
+    /**
+     * Hyprland's `movetoworkspace[silent] special:name`: [task] joins special workspace [name],
+     * which shows (unless [silent]; then the window disappears into it). A window already on
+     * [name] goes back to the active workspace instead, as in Hyprland.
+     */
+    private fun moveToSpecial(task: RunningTaskInfo, name: String, silent: Boolean) {
+        val id = task.taskId
+        val displayId = task.displayId
+        val target = special.moveTarget(id, name)
+        if (target == null) {
+            leaveSpecial(task)
+            return
+        }
+        val desk = repository.getActiveDeskId(displayId) ?: return
+        val floating = tile.isFloating(id) || id in userFloated
+        val wct = WindowContainerTransaction()
+        maximized -= id
+        applied.remove(id)
+        tile.close(id)?.let { addBounds(it, displayId, wct) }
+        special.add(id, target)
+        saveSpecial()
+        val key = special.keyOf(target)
+        val focused = special.windows(target).lastOrNull { it != id && tile.workspaceOf(it) == key }
+        tile.open(id, key, focused, float = floating)
+        Log.d(TAG, "task $id to special:$target" + if (silent) " (silent)" else "")
+        if (special.shownOn(displayId) == target) {
+            wct.setAlwaysOnTop(task.token, true)
+            wct.reorder(task.token, true)
+            addBounds(key, displayId, wct, task)
+            startChange(wct)
+        } else if (silent) {
+            if (!wct.isEmpty) startChange(wct)
+            stashWindows(displayId, listOf(id))
+        } else {
+            if (!wct.isEmpty) startChange(wct)
+            hideSpecial(displayId)
+            showSpecial(displayId, desk, target)
+        }
+        updateDim()
+        onStateChanged?.invoke()
+    }
+
+    /**
+     * [task] leaves its special workspace for the workspace it is on (the active one when the
+     * special workspace is shown): no longer on top, tiled in that workspace's layout.
+     */
+    private fun leaveSpecial(task: RunningTaskInfo) {
+        val id = task.taskId
+        val name = special.remove(id) ?: return
+        saveSpecial()
+        val displayId = task.displayId
+        val floating = tile.isFloating(id) || id in userFloated
+        val wct = WindowContainerTransaction()
+        wct.setAlwaysOnTop(task.token, false)
+        applied.remove(id)
+        tile.close(id)
+        addBounds(special.keyOf(name), displayId, wct)
+        val desk = repository.getDeskIdForTask(id)
+        if (desk != null && desk != stashDesk(displayId)) {
+            val focused = repository.getExpandedTasksIdsInDeskOrdered(desk)
+                .firstOrNull { it != id && tile.workspaceOf(it) == desk }
+            tile.open(id, desk, focused, float = floating)
+            addBounds(desk, displayId, wct, task)
+        }
+        Log.d(TAG, "task $id left special:$name")
+        // Emptied, a shown special workspace goes away, as Hyprland removes it.
+        if (special.windows(name).isEmpty() && special.shownOn(displayId) == name) special.hide(displayId)
+        startChange(wct)
+        updateDim()
+        onStateChanged?.invoke()
+    }
+
+    /**
+     * The layout a window of a request belongs to: its special workspace's, or, for a new
+     * window while a special workspace is shown on its display, that one (Hyprland opens new
+     * windows on the focused workspace); else the desk's.
+     */
+    private fun requestLayout(task: RunningTaskInfo, deskId: Int, wct: WindowContainerTransaction): Int {
+        special.of(task.taskId)?.let { return special.keyOf(it) }
+        val shown = special.shownOn(task.displayId) ?: return deskId
+        if (tile.workspaceOf(task.taskId) != null || tile.isFloating(task.taskId)) return deskId
+        special.add(task.taskId, shown)
+        saveSpecial()
+        wct.setAlwaysOnTop(task.token, true)
+        Log.d(TAG, "new task ${task.taskId} opens on special:$shown")
+        return special.keyOf(shown)
+    }
+
+    /**
+     * The special-workspace part of [sync] for [displayId], whose active desk is [deskId]: the
+     * shown special workspace's windows follow a desk switch Shell made, windows of hidden
+     * special workspaces left in the desk go to the stash, the special layout re-tiles.
+     */
+    private fun syncSpecial(displayId: Int, deskId: Int) {
+        val shown = special.shownOn(displayId)
+        val stray = repository.getActiveTaskIdsInDesk(deskId)
+            .filter { special.isMember(it) && !special.isShown(it, displayId) }
+        if (stray.isNotEmpty()) stashWindows(displayId, stray)
+        if (shown == null) return
+        val key = special.keyOf(shown)
+        val wct = WindowContainerTransaction()
+        val moved = presentSpecial(displayId, deskId, wct)
+        val expanded = repository.getExpandedTasksIdsInDeskOrdered(deskId)
+        for (id in tile.tiled(key)) if (id !in expanded && moved.none { it.taskId == id }) tile.close(id)
+        addBounds(key, displayId, wct)
+        if (!wct.isEmpty) {
+            Log.d(TAG, "sync special:$shown on desk $deskId: ${tile.tiled(key)}")
+            startChange(wct)
+        }
+        recordCarried(displayId, deskId, moved)
+    }
+
+    /**
+     * After [sync]: windows that closed leave their special workspace (an emptied one that was
+     * shown hides, as Hyprland removes it), and the dim layers follow.
+     */
+    private fun syncSpecialAfter() {
+        val gone = special.allWindows().filter { taskOrganizer.getRunningTaskInfo(it) == null }
+        for (id in gone) {
+            val name = special.remove(id) ?: continue
+            tile.close(id)
+            for (d in special.shownDisplays().toList()) {
+                if (special.shownOn(d) == name && special.windows(name).isEmpty()) special.hide(d)
+            }
+        }
+        if (gone.isNotEmpty()) saveSpecial()
+        updateDim()
+    }
+
+    /**
+     * Shell activated the stash desk (an app of a hidden special window came to front): the
+     * last normal desk comes back with that special workspace shown over it.
+     */
+    private fun recoverFromStash(displayId: Int, stash: Int) {
+        val repo = repository
+        val front = repo.getExpandedTasksIdsInDeskOrdered(stash)
+        // A window Shell put there that is no special window's: it goes along, as a normal one.
+        val orphan = front.firstOrNull { !special.isMember(it) }?.let { taskOrganizer.getRunningTaskInfo(it) }
+        val name = front.firstNotNullOfOrNull { special.of(it) } ?: special.occupied().firstOrNull()
+        val numbers = workspaces(displayId)
+        val target = lastNormalDesk[displayId]?.takeIf { it in repo.getDeskIds(displayId) && it != stash }
+            ?: numbers.numbers.firstOrNull()?.let { numbers.deskOf(it) } ?: return
+        Log.d(TAG, "stash desk $stash came to front: back to desk $target, special:$name shown")
+        if (name != null) special.show(displayId, name)
+        saveSpecial()
+        switchToDesk(displayId, target, moving = orphan)
+    }
+
+    /**
+     * The desk of [displayId] that holds the windows of hidden special workspaces: a desk of
+     * its own with no workspace number, never active. Shell gives desks new ids when SystemUI
+     * restarts; then the inactive desk holding only special windows is it.
+     */
+    private fun stashDesk(displayId: Int): Int? {
+        if (!userRepositories.isPresent) return null
+        val repo = repository
+        val desks = repo.getDeskIds(displayId)
+        stashDesks[displayId]?.let { if (it in desks) return it }
+        if (special.allWindows().isEmpty()) return null
+        val active = repo.getActiveDeskId(displayId)
+        val found = desks.firstOrNull { d ->
+            d != active && repo.getActiveTaskIdsInDesk(d).let { t -> t.isNotEmpty() && t.all { special.isMember(it) } }
+        } ?: return null
+        Log.i(TAG, "desk $found holds hidden special windows: the stash desk of display $displayId")
+        stashDesks[displayId] = found
+        workspaceMap(displayId).remove(found)
+        workspacePrefs.edit().putString(workspaceKey(displayId), workspaceMap(displayId).encode()).apply()
+        return found
+    }
+
+    /** Runs [block] with the stash desk of [displayId], making it first when there is none. */
+    private fun withStashDesk(displayId: Int, block: (Int) -> Unit) {
+        stashDesk(displayId)?.let { block(it); return }
+        val controller = desktopTasksController.orElse(null) ?: return
+        if (displayId in creatingDesks) {
+            // A workspace's desk is being made: try again once it is there.
+            mainExecutor.executeDelayed({ withStashDesk(displayId, block) }, SYNC_DELAY_MS)
+            return
+        }
+        Log.d(TAG, "creating the stash desk of display $displayId")
+        // Holds back numbering and removing desks until it is known (see [workspaces]).
+        creatingDesks[displayId] = 0
+        controller.createDesk(
+            displayId = displayId,
+            userId = repository.userId,
+            enforceDeskLimit = false,
+            activateDesk = false,
+            enterReason = EnterReason.KEYBOARD_SHORTCUT_ENTER,
+        ) { deskId ->
+            mainExecutor.execute {
+                creatingDesks.remove(displayId)
+                if (deskId in repository.getDeskIds(displayId)) {
+                    stashDesks[displayId] = deskId
+                    workspaceMap(displayId).remove(deskId)
+                    saveWorkspaces(displayId)
+                    block(deskId)
+                } else {
+                    Log.w(TAG, "stash desk creation on display $displayId did not add a desk ($deskId)")
+                }
+            }
+        }
+    }
+
+    /**
+     * Hyprland's `decoration:dim_special`: while a special workspace is shown, the windows of
+     * the workspace behind it get a black layer of that opacity on top (the wallpaper stays).
+     */
+    private fun updateDim() {
+        val alpha = configOverrides.getString("dim_special")?.toFloatOrNull()?.coerceIn(0f, 1f)
+            ?: DEFAULT_DIM_SPECIAL
+        val want = HashMap<Int, Rect>()
+        if (enabled && alpha > 0f) {
+            for (displayId in special.shownDisplays()) {
+                val desk = repository.getActiveDeskId(displayId) ?: continue
+                for (id in repository.getExpandedTasksIdsInDeskOrdered(desk)) {
+                    if (special.isMember(id) || tile.isPinned(id)) continue
+                    val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+                    want[id] = task.configuration.windowConfiguration.bounds
+                }
+            }
+        }
+        val t = SurfaceControl.Transaction()
+        for (id in dims.keys.filter { it !in want }) dims.remove(id)?.let { t.remove(it) }
+        for ((id, b) in want) {
+            val parent = decorations.surfaceOf(id) ?: continue
+            val dim = dims.getOrPut(id) {
+                SurfaceControl.Builder().setName("hypr-dim-special #$id").setColorLayer()
+                    .setParent(parent).setCallsite("HyprTileController.updateDim").build()
+            }
+            t.setColor(dim, floatArrayOf(0f, 0f, 0f)).setAlpha(dim, alpha).setLayer(dim, Int.MAX_VALUE)
+                .setCrop(dim, Rect(0, 0, b.width(), b.height())).show(dim)
+        }
+        t.apply()
+    }
+
+    private fun saveSpecial() {
+        workspacePrefs.edit().putString(PREF_SPECIAL, special.encode()).apply()
     }
 
     /**
@@ -1600,14 +2062,15 @@ class HyprTileController(
         val floating = ArrayList<Boolean>()
         val minimized = ArrayList<Boolean>()
         val pinned = ArrayList<Boolean>()
-        for (deskId in desks) {
+        // The stash desk's windows are the hidden special workspaces' (E5).
+        for (deskId in desks + listOfNotNull(stashDesk(displayId))) {
             val visible = repo.getExpandedTasksIdsInDeskOrdered(deskId)
             val all = visible + repo.getActiveTaskIdsInDesk(deskId).filter { it !in visible }
             for (id in all) {
                 val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
                 if (task.activityType != ACTIVITY_TYPE_STANDARD) continue
                 ids += id
-                ws += numbers.numberOf(deskId) ?: 0
+                ws += special.of(id)?.let { special.keyOf(it) } ?: numbers.numberOf(deskId) ?: 0
                 pkgs += packageOf(task) ?: ""
                 titles += titleOf(task) ?: ""
                 val b = task.configuration.windowConfiguration.bounds
@@ -1629,6 +2092,12 @@ class HyprTileController(
         out.putIntArray("urgentTasks", focus.urgent.toIntArray())
         out.putInt("lastWorkspace", focus.previousWorkspace(displayId))
         out.putBooleanArray("taskPinned", pinned.toBooleanArray())
+        // E5: special workspaces by key (windows on one have its key as workspace), the shown one.
+        val specials = special.occupied().map { special.keyOf(it) to it } +
+            listOfNotNull(special.shownOn(displayId)).filter { it !in special.occupied() }.map { special.keyOf(it) to it }
+        out.putIntArray("specialKeys", specials.map { it.first }.toIntArray())
+        out.putStringArray("specialNames", specials.map { it.second }.toTypedArray())
+        out.putString("specialShown", special.shownOn(displayId))
         return out
     }
 
@@ -1726,6 +2195,10 @@ class HyprTileController(
         /** How long after a sync empty desks are removed (Hyprland removes them at once). */
         const val REMOVE_DESKS_DELAY_MS = 400L
         const val PREFS_WORKSPACES = "hypr_workspaces"
+        /** Special workspaces' windows and keys in [PREFS_WORKSPACES] (E5). */
+        const val PREF_SPECIAL = "special"
+        /** After a special workspace showed, when its window takes the focus. */
+        const val FOCUS_SPECIAL_DELAY_MS = 300L
         /** Smallest floating window a mouse resize makes, unless the app asks for more. */
         const val MIN_SIZE = 200
 
@@ -1746,6 +2219,7 @@ class HyprTileController(
                 preserveSplit = bool("preserve_split", d.preserveSplit),
                 forceSplit = int("force_split", d.forceSplit).takeIf { it in 1..2 } ?: d.forceSplit,
                 masterFactor = float("mfact", d.masterFactor, 0.05f..0.95f),
+                specialScaleFactor = float("special_scale_factor", d.specialScaleFactor, 0.1f..1f),
                 newIsMaster = str("new_status").trim() == "master",
                 newOnTop = bool("new_on_top", d.newOnTop),
                 windowRules = overrides.getStringArray("windowrule")?.mapNotNull {
