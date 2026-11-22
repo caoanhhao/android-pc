@@ -228,6 +228,29 @@ Waydroid): `A B C E F H I L M N P Q S U`, `Tab`, `Return`, `Escape`, `slash`, `s
 `down`; with SHIFT the ones tried were free (`SUPER + SHIFT + Q`, `+ S`, `+ 1`, `+ left`),
 with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 
+## Example: binds modelled on a host Hyprland configuration
+
+`docs/examples/hypr-binds.lua` carries a desktop Hyprland configuration's binds over with
+`main_mod` kept at ALT: the host's `SUPER` binds are on `ALT`. Copy it next to init.lua as
+`binds.lua` and add `require("binds")` at the end of init.lua.
+
+| Keys | Action |
+|---|---|
+| `ALT + Q` | close the focused window (instead of the default `ALT + C`) |
+| `ALT + F` / `ALT + SHIFT + F` | fullscreen / maximize (the default's order swapped, as on the host) |
+| `ALT + Space` | float toggle (`ALT + V` still works); `ALT + D` opens the launcher |
+| `ALT + Return`, `+ W`, `+ E` | Termux, Chromium, Files |
+| `ALT + L`, `ALT + R` | notifications, quick settings (the host's left and right panels) |
+| `ALT + arrows`, `ALT + h n c t` | focus left, right, up, down |
+| `ALT + CTRL + arrows`, `ALT + CTRL + h n c t` | move the window |
+| `ALT + SHIFT + arrows` | resize by 40 px |
+| `ALT + 1..9`, `+ CTRL + 1..9`, `+ SHIFT + 1..9` | switch workspace, move the window and follow, move it silently |
+
+Left out, with no counterpart here: the special workspace, pin, screenshots and screen
+recording, the bar and panel widgets, lock and suspend, zoom, wheel binds, and jumping to the
+previous workspace or the last window (`ALT + grave` stays the overview). It loads with no
+warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
+
 ## Touch gestures
 
 ```lua
