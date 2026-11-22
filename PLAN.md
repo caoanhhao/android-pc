@@ -745,6 +745,48 @@ docs/hypr-desktop.md.
 D2 `ae112f0`/`4281300`, D3 `d96384b`/`43f178f`, D4 `99667d1`/`020d238`, D5 `9f03915`/`e14afc1`,
 D6 `44560e8`/`5f01c60`, D7 "phase-d: D7 done" (design: `ff69d39`).
 
+## Phase E — the rest of a desktop Hyprland configuration
+
+Decided 2026-11-22 (user): everything a desktop Hyprland configuration binds that Phase D's
+shell could not do (docs/hypr-lua.md, "Example: binds modelled on a host Hyprland
+configuration", and the gap list behind it). `main_mod` stays ALT; the host's `SUPER` binds
+map to `ALT`. Host-only functions are built too, since Waydroid is only the test bed and the
+real PC has no host compositor. Each step runs in its own session, one after another (one
+build and one Waydroid at a time), tested on Waydroid, and ends with a `phase-e: E<n> done`
+commit (or `(partial: ...)`).
+
+- **E1 — pin:** `hl.dsp.window.pin()` (a floating window kept on top and on every
+  workspace), the binds that need it (`ALT + CTRL + Space` pin, `ALT + CTRL + SHIFT + F`
+  float, fill the work area and pin).
+- **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
+  only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20).
+- **E3 — window history:** a focus history per display; `ALT + TAB`-free Hyprland window
+  switching: `focuscurrentorlast` (`ALT + Tab` on the host is `focus({ last })`),
+  `focusurgentorlast`, `cyclenext`/`cycleprev`, `alterzorder`, `swapnext`, `workspace
+  previous`, `binds.workspace_back_and_forth`, `allow_workspace_cycles`.
+- **E4 — ALT + Tab:** a window switcher on `ALT + Tab` (`cyclenext` with `alterzorder`, as the
+  host binds it) for the real PC, where no host takes the key; on Waydroid it is tested with
+  injected keys.
+- **E5 — special workspace:** `hl.dsp.workspace.toggle_special(name)`,
+  `hl.dsp.window.move({ workspace = "special[:name]" })`, the host's `ALT + S` and
+  `ALT + CTRL + S`.
+- **E6 — mouse wheel and mouse buttons:** `mouse_up`/`mouse_down` (and `mouse_left`/
+  `mouse_right`) and `mouse:27x` button binds with modifiers, any dispatcher.
+- **E7 — bar:** hide/show and reload dispatchers and binds (`ALT + B`, `ALT + SHIFT + B`),
+  auto-hide with the bar shown, animated, when the pointer reaches its edge.
+- **E8 — apps:** a btop-like system monitor and a calculator in the product, bound like the
+  host (`ALT + P` on workspace 5, `ALT + SHIFT + C`).
+- **E9 — system actions:** clipboard history (`ALT + SHIFT + V`), quick translation with a
+  user-installed app (Google Translate; `ALT + CTRL + T` style bind), screenshot binds as on
+  the host (`ALT + SHIFT + S`, `ALT + CTRL + SHIFT + S`), lock (`ALT + SHIFT + Escape`),
+  `ALT + Escape` opens the user switcher in SystemUI's shade.
+- **E10 — zoom:** `ALT + SHIFT + equal/minus`, wheel and middle-button zoom through the
+  accessibility magnification controller directly, no accessibility UI.
+- **E11 — host-only functions and wrap-up:** volume and brightness keys (`ALT + F11/F12`,
+  `ALT + F2/F3`, media keys), display modes, input method switch, the remaining host binds
+  (reload, kill, random wallpaper, ...) where Android has a counterpart; full image on
+  Waydroid end to end; docs and this plan.
+
 ## Phase R — public releases
 
 Goal: GitHub releases of the stick image that contain nothing we may not redistribute
