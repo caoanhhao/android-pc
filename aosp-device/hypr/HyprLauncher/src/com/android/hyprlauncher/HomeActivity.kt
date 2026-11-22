@@ -20,7 +20,7 @@ class HomeActivity : Activity() {
         Desktop.get(this).start()
         HomeRole.ensure(this)
         val hint = TextView(this)
-        hint.text = "ALT+D apps    ALT+1..9 workspaces    ALT+` overview    ALT+C close"
+        hint.text = "ALT+D apps    ALT+1..0 workspaces    ALT+` overview    ALT+C close"
         hint.setTextColor(Color.parseColor("#99CDD6F4"))
         hint.textSize = 12f
         hint.setShadowLayer(4f, 0f, 1f, Color.BLACK)

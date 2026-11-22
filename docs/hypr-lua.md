@@ -77,6 +77,7 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.caption` | `"none"`, `"floating"`, `"all"` | `floating` | which windows keep Shell's title bar (close, maximize, drag) |
 | `shell.tiling` | bool | true | false: no tiling, Shell's own desktop windowing |
 | `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
+| `shell.workspaces` | 1..1000 | 10 | how many workspaces there are (E2); binds and rules past it load with a warning and do nothing |
 | `cursor.zoom_factor` | number, 1 or more | 1.0 | Hyprland's zoom: magnifies the screen around the pointer (Phase E10; above 8 acts as 8). A change applies at once, so the host's `hl.config({ cursor = { zoom_factor = z } })` bind functions work; binds are better off with `hl.dsp.zoom` |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
@@ -136,10 +137,12 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   case: letters, digits, `F1`..`F12`, `Return`, `Escape`, `Tab`, `space`, `grave`, `left`/
   `right`/`up`/`down`, `Home`, `End`, `Prior`/`Next`, `Delete`, `BackSpace`, `minus`, `equal`,
   `bracketleft`, `bracketright`, `comma`, `period`, `slash`, `semicolon`, `apostrophe`,
-  `Print`, ..., or any Android key code name (`KEYCODE_MEDIA_PLAY_PAUSE` or
+  `Print`, the keypad (`KP_0`..`KP_9`, and with Num Lock off `KP_End`, `KP_Down`, `KP_Next`,
+  `KP_Left`, `KP_Begin`, `KP_Right`, `KP_Home`, `KP_Up`, `KP_Prior`, `KP_Insert` for
+  Android's `NUMPAD_1`..`NUMPAD_0`, which it sends either way), ..., or any Android key code name (`KEYCODE_MEDIA_PLAY_PAUSE` or
   `MEDIA_PLAY_PAUSE`). An unknown key is an error.
 - A bind on keys that already have one replaces it (the defaults included); `hl.unbind` and a
-  disabled bind leave the keys free. At most 128 binds are installed.
+  disabled bind leave the keys free. At most 256 binds are installed.
 - Options: `description` is kept; `repeating`, `locked`, `release`, `non_consuming`, ... warn
   (InputManager's key gestures fire once, on release of the trigger).
 - Binds are InputManager custom key gestures (docs/hypr-desktop.md, "Keybinds without a
@@ -162,8 +165,8 @@ Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 
 | Keys | Dispatcher |
 |---|---|
-| `$mod + 1..9` | `hl.dsp.focus({ workspace = N })` |
-| `$mod + SHIFT + 1..9` | `hl.dsp.window.move({ workspace = N })` |
+| `$mod + 1..9`, `$mod + 0` (10) | `hl.dsp.focus({ workspace = N })` |
+| `$mod + SHIFT + 1..9`, `0` | `hl.dsp.window.move({ workspace = N })` |
 | `$mod + arrows` | `hl.dsp.focus({ direction = ... })` |
 | `$mod + SHIFT + arrows` | `hl.dsp.window.move({ direction = ... })` |
 | `$mod + C` | `hl.dsp.window.close()` |
@@ -251,7 +254,8 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + arrows`, `ALT + h n c t` | focus left, right, up, down |
 | `ALT + CTRL + arrows`, `ALT + CTRL + h n c t` | move the window |
 | `ALT + SHIFT + arrows` | resize by 40 px |
-| `ALT + 1..9`, `+ CTRL + 1..9`, `+ SHIFT + 1..9` | switch workspace, move the window and follow, move it silently |
+| `ALT + 1..9, 0`, `+ CTRL + ...`, `+ SHIFT + ...` | workspaces 1-10: switch, move the window and follow, move it silently |
+| `ALT + KP_End..KP_Insert`, `+ CTRL`, `+ SHIFT` | workspaces 11-20 on the keypad (Android's `NUMPAD_1..NUMPAD_0`), the same three (E2; the file sets `shell.workspaces = 20`) |
 | `ALT + Tab` | the window focused before (the host's `SUPER + TAB`; not under Waydroid, where the host keeps `ALT + TAB`) (E3) |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
@@ -315,7 +319,7 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 
 | Lua | Hyprland's name | What |
 |---|---|---|
-| `hl.dsp.focus({ workspace = N })` | `workspace` | switch to workspace 1..9; also `"e+1"`, `"e-1"`, `"+1"`, `"-1"` |
+| `hl.dsp.focus({ workspace = N })` | `workspace` | switch to workspace N (1..`shell.workspaces`, made if it does not exist); `"e+1"`/`"e-1"` the next/previous workspace that exists (wrapping), `"+1"`/`"-1"` (`"r+1"`) the next/previous number |
 | `hl.dsp.focus({ direction = "left" })` | `movefocus` | focus the neighbour (`left`, `right`, `up`, `down`, or `l r u d`) |
 | `hl.dsp.focus({ window = w })` | `focuswindow` | a window from `hl.get_windows()`, a task id, or a selector (`"class:^org\\.chromium"`, `"title:..."`, `"initialclass:"`, `"initialtitle:"`, `"pid:N"`, `"address:0x<hex task id>"`, `"taskid:N"`, `"activewindow"`, `"floating"`, `"tiled"`; `negative:` inverts a regex): its workspace, to front |
 | `hl.dsp.focus({ workspace = "previous" })` | `workspace previous` | the workspace before this one (Hyprland 0.57's most-recently-used list; again to come back); `"previous_per_monitor"` the one before on this display; also for `window.move` |
@@ -367,7 +371,7 @@ r:set_enabled(false)
 | `match.class` (`initial_class`) | Java regular expression on the package name, searched (`firefox` matches `org.mozilla.firefox`; anchor with `^...$`). In a Lua string a regex backslash is `\\` |
 | `match.title` (`initial_title`) | regular expression on the window title (the task's label) |
 | `float = true` / `tile = true` (`float = false`) | float or tile when it opens; a rule wins over the float defaults (dialogs, translucent activities), but a window that cannot be resized always floats |
-| `workspace = "N"` / `"N silent"` | open on workspace N (1..9): moved there and followed, or moved without following |
+| `workspace = "N"` / `"N silent"` | open on workspace N (1..1000, up to `shell.workspaces`): moved there and followed, or moved without following |
 | `opacity = "A [I]"` | active and inactive opacity of the window (`override` words are ignored) |
 | `name`, `enabled` | a name for messages; `enabled = false` keeps it off (also `r:set_enabled`) |
 
@@ -385,7 +389,7 @@ hl.workspace_rule({ workspace = "4", on_created_empty = "com.termux" })
 
 | Field | What |
 |---|---|
-| `workspace` | 1..9 (Hyprland's selectors such as `w[tv1]` are an error) |
+| `workspace` | 1..1000 (Hyprland's selectors such as `w[tv1]` are an error) |
 | `layout`, `gaps_in`, `gaps_out` | that workspace's own layout and gaps (whole pixels) |
 | `default_name` (`name`) | shown in the bar and given to Lua as `ws.name` |
 | `on_created_empty` | a package started when you switch to the workspace and it has no window |
@@ -427,8 +431,9 @@ hl.bar_module("battery", {
 })
 ```
 
-Built-in modules: `apps` (the launcher button), `workspaces` (click to switch, scroll to
-step; names from workspace rules), `title` (the focused window), `windows` (running apps,
+Built-in modules: `apps` (the launcher button), `workspaces` (the active and the occupied
+workspaces, as waybar's `hyprland/workspaces`; click to switch, scroll to step through them;
+names from workspace rules), `title` (the focused window), `windows` (running apps,
 click to focus), `notifications` and `quicksettings` (the shade), `tray` (both), `clock`
 (`clock_format` is an Android date pattern: `HH:mm`, `EEE d MMM`, ...). The centre group takes
 the room the others leave. An unknown module name is an error.
@@ -467,7 +472,7 @@ hidden (minimized), visible, active, at = { x, y }, size = { x, y }, workspace }
 | `hl.get_last_window()`, `hl.get_urgent_window()` | the window focused before the active one, the newest urgent one, or nil (E3) |
 | `hl.get_last_workspace()` | the workspace `previous` goes to, or nil |
 | `hl.get_window("taskid:N")` | one window or nil |
-| `hl.get_workspaces()`, `hl.get_active_workspace()`, `hl.get_workspace(N)` | workspaces |
+| `hl.get_workspaces()`, `hl.get_active_workspace()`, `hl.get_workspace(N)` | the workspaces that exist (as `hyprctl workspaces`: the active one and the ones with windows), the active one, any one by number |
 | `hl.get_config(name)` | an option's value as a string |
 | `hl.notify(text, { timeout = ms, color = "rgba(...)" })` | a notification under the bar (also `hl.notification.create({ text, timeout, color })`) |
 | `hl.timer(fn, { timeout = ms, type = "repeat" \| "oneshot" })` | a timer (`:set_enabled(b)`, `:set_timeout(ms)`, `:is_enabled()`); 100 ms or more; all stop when the file reloads |

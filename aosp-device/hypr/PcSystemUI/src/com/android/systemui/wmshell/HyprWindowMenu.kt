@@ -157,7 +157,7 @@ class HyprWindowMenu(
 
     private companion object {
         const val TAG = "HyprWindowMenu"
-        const val MAX_WORKSPACES = 9
+        const val MAX_WORKSPACES = 10
         val BACKGROUND = Color.parseColor("#E61E1E2E")
         val FOREGROUND = Color.parseColor("#CDD6F4")
         val DIM = Color.parseColor("#7F849C")

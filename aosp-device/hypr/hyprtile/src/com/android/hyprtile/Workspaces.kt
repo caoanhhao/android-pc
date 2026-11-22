@@ -77,14 +77,24 @@ class WorkspaceMap {
 
     /**
      * Brings the map in line with the desks that exist ([desks], in Shell's order): gone desks
-     * lose their number, new ones get the lowest free one. Returns true when anything changed.
+     * lose their number, new ones get the number most of their tasks had in [taskHint] (task id
+     * to workspace number, as [taskNumbers] gave it before Shell restored its desks under new
+     * ids), else the lowest free one. Returns true when anything changed.
      */
-    fun sync(desks: List<Int>): Boolean {
+    fun sync(
+        desks: List<Int>,
+        tasksOf: (Int) -> Collection<Int> = { emptyList() },
+        taskHint: Map<Int, Int> = emptyMap(),
+    ): Boolean {
         var changed = false
         for (d in byDesk.keys.toList()) if (d !in desks) { remove(d); changed = true }
         for (d in desks) {
             if (d in byDesk) continue
-            var n = 1
+            val hinted = tasksOf(d).mapNotNull { taskHint[it] }.filter { it !in byNumber }
+                .groupingBy { it }.eachCount().entries
+                .sortedWith(compareByDescending<Map.Entry<Int, Int>> { it.value }.thenBy { it.key })
+                .firstOrNull()?.key
+            var n = hinted ?: 1
             while (n in byNumber) n++
             if (n > MAX_WORKSPACES) break
             put(d, n)
@@ -93,10 +103,32 @@ class WorkspaceMap {
         return changed
     }
 
+    /** Workspace number of each task of the numbered desks, for [sync]'s `taskHint`. */
+    fun taskNumbers(tasksOf: (Int) -> Collection<Int>): Map<Int, Int> {
+        val out = HashMap<Int, Int>()
+        for ((desk, n) in byDesk) for (t in tasksOf(desk)) out[t] = n
+        return out
+    }
+
     /** `desk:number` pairs, comma-separated, for keeping the numbers over a restart. */
     fun encode(): String = byDesk.entries.sortedBy { it.value }.joinToString(",") { "${it.key}:${it.value}" }
 
     companion object {
+        /** `task:number` pairs, as [encode]'s, for [taskNumbers]. */
+        fun encodeTasks(tasks: Map<Int, Int>): String =
+            tasks.entries.sortedBy { it.key }.joinToString(",") { "${it.key}:${it.value}" }
+
+        /** Reads [encodeTasks]'s form; bad pairs are skipped. */
+        fun decodeTasks(s: String): Map<Int, Int> {
+            val out = HashMap<Int, Int>()
+            for (p in s.split(',')) {
+                val (t, n) = p.split(':').takeIf { it.size == 2 } ?: continue
+                val task = t.trim().toIntOrNull() ?: continue
+                out[task] = n.trim().toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES } ?: continue
+            }
+            return out
+        }
+
         /** Reads [encode]'s form; bad pairs are skipped. */
         fun decode(s: String): WorkspaceMap {
             val m = WorkspaceMap()

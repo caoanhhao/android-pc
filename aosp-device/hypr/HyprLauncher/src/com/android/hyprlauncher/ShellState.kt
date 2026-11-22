@@ -2,6 +2,7 @@ package com.android.hyprlauncher
 
 import android.graphics.Rect
 import android.os.Bundle
+import com.android.hyprtile.shownWorkspaces
 
 /** A window as the shell reports it (IHyprShell.getState). */
 data class Win(
@@ -33,12 +34,21 @@ data class ShellState(
     val displayHeight: Int = 0,
     /** The work area: the display without the bar and the system bars. */
     val workArea: Rect = Rect(),
+    /** The workspaces that exist (Phase E2), in order. */
+    val existing: List<Int> = emptyList(),
     /** Phase E3: focus history (task ids, most recent first), urgent windows, previous workspace. */
     val focusHistory: List<Int> = emptyList(),
     val urgent: List<Int> = emptyList(),
     val lastWorkspace: Int = 0,
 ) {
     fun on(workspace: Int) = windows.filter { it.workspace == workspace }
+
+    /**
+     * The workspaces the bar and the overview show: the active one and the occupied ones. The
+     * shell removes empty desks, so the existing ones count as occupied (minimized windows are
+     * not in [windows] but keep their workspace).
+     */
+    fun shown(): List<Int> = shownWorkspaces(active, windows.map { it.workspace } + existing)
 
     companion object {
         val EMPTY = ShellState(0, 0, -1, null, null, emptyList())
@@ -71,6 +81,7 @@ data class ShellState(
             }
             return ShellState(
                 workspaces = b.getInt("workspaces"),
+                existing = (b.getIntArray("workspaceIds") ?: IntArray(0)).toList(),
                 active = b.getInt("active"),
                 focusedTask = b.getInt("focusedTask", -1),
                 focusedPackage = b.getString("focusedPackage"),

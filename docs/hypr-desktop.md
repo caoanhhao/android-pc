@@ -1499,6 +1499,81 @@ The user's data was not locked by a test: its lock credential is the user's own,
 the Waydroid restarts of this step it sits at the lock screen (`RUNNING_LOCKED`) until the user
 unlocks it. Its live binds.lua got the "SYSTEM" section of the example.
 
+## Workspaces (E2)
+
+Phase E2 (PLAN.md, "Phase E"): up to 1000 workspaces per display, made on demand and removed
+when empty, as in Hyprland.
+
+### Decisions
+
+- **A workspace is a desk of its own.** Before E2, workspace N was the N-th of Shell's desks
+  (multidesks, `DesktopRepository`), so the shell kept nine desks alive. Now `hyprtile`'s
+  `WorkspaceMap` gives each desk a number: a desk made for workspace 7 is workspace 7, whatever
+  its position. Desks the shell did not make (Shell's default desk, desks restored at boot)
+  get the lowest free number. The map is kept per user and display in SharedPreferences
+  `hypr_workspaces` (device-protected storage, key `u<user>d<display>`). Shell restores its
+  desks under new ids when SystemUI restarts (and at boot), with the same tasks, so each task's
+  workspace number is kept as well (key `u<user>d<display>t`): a restored desk takes the number
+  most of its tasks had, else the lowest free one.
+- **On demand.** Going to (or moving a window to) a workspace that has no desk creates one with
+  `DesktopTasksController.createDesk` and runs the dispatcher when Shell reports the new desk
+  id. One creation per display at a time; a second bind pressed meanwhile waits for it.
+- **Removed when empty.** 400 ms after a settled transition the controller removes the desks
+  that hold no task (minimized and background tasks count) and are not active, with
+  `removeDesk(..., removeTasks = false)`. Nothing is removed until every desk switch has
+  finished (`onTransitionFinished`, not the start of its animation) and no desk is being made:
+  Shell's repository changes its active desk late in a switch, and removing a desk it still
+  takes for the active one runs Shell's desktop exit, which sends the display home (seen on
+  Waydroid before the wait: the new workspace was removed right after the switch). If every desk is empty, the lowest-numbered one stays. So the number of desks
+  equals the number of occupied workspaces plus the active one, whatever the limit: 1000
+  workspaces cost nothing until windows sit on them.
+- **The limit** is `shell.workspaces` (Lua, default 10, 1..1000). It caps the numbers
+  dispatchers and rules reach; the config check warns about binds and window rules past it.
+  The hard limit, 1000, is `hyprtile`'s `MAX_WORKSPACES`.
+- **Arguments** as Hyprland: `N`, `+N`/`-N` (and `r+N`/`r-N`) numeric from the current
+  workspace, without wrapping (past 1 or the limit does nothing); `e+N`/`e-N` step through the
+  workspaces that exist (occupied, plus the current one) in number order and wrap around.
+- **Keys.** The default binds and `docs/examples/hypr-binds.lua` take `ALT + 1..9, 0`
+  (0 is 10). The host's numpad binds (`ALT + KP_End..KP_Insert` = 11..20, `+ CTRL` move and
+  follow, `+ SHIFT` move silently) work through the new keypad names (`KP_End` is Android's
+  `NUMPAD_1`, ...; `KP_0..KP_9` with Num Lock on). The example file then has more than 128
+  binds, so `HyprKeybinds` takes 256 (one key gesture slot each).
+- **Bar and overview** show the active workspace and the occupied ones only (waybar's
+  `hyprland/workspaces` default), in number order. The shell state carries `workspaceIds`,
+  the existing workspaces' numbers; since empty desks go away, these are the occupied ones
+  (minimized windows are not in the state's window list but keep their workspace). Lua's
+  `hl.get_workspaces()` returns them. The overview
+  keeps four columns and takes keys 1..9, 0.
+- **Desk switch animation** slides by workspace number, so 3 → 12 slides the same way as
+  3 → 4.
+- **Workspace rules** (`hl.workspace_rule`) and window rules take 1..1000. Workspace rules are
+  mapped onto desks again whenever the map changes, so a rule for a workspace that has no desk
+  yet applies once it is made.
+- **Performance.** A desk exists only for an occupied or active workspace, so a high limit costs
+  nothing; the map is a hash map plus a sorted map, and the state lists only existing desks.
+
+### Checked on Waydroid (2026-11-22)
+
+Test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`), PcSystemUI and HyprLauncher from the
+working tree in the overlay, the test binds.lua with the WORKSPACES section of
+`docs/examples/hypr-binds.lua` (140 binds load, no warning about workspaces):
+
+| Check | Result |
+|---|---|
+| `ALT + 0` | workspace 10 made on demand, bar `1 10` |
+| `ALT + KP_Next`, then `ALT + KP_End` (keys injected as `NUMPAD_3`, `NUMPAD_1`) | 13, then 11; 13 removed once the switch finished, 11 stays active |
+| `ALT + CTRL + KP_Insert` | the window moves to 20, the view follows |
+| `ALT + SHIFT + KP_Prior` | the window moves to 19, the view stays; empty but active 1 stays |
+| Bar | `1 2 15 19 20`: active plus occupied; 2 holds background tasks only |
+| Leaving an empty workspace | removed (`removing empty workspace 10`) |
+| Nine workspaces in a row (`KP_End..KP_Prior`) | each made and the empty ones removed after the last switch; occupied 15 and 18 kept; no errors |
+| Wheel over the bar (`e+1`, `e-1`) | 2 → 4 → 5 (3 does not exist), then back to 4 |
+| SystemUI killed | Shell restored the desks under new ids; the bar shows the same `1 2 4 5 12 17` |
+| Going home with windows on other workspaces | no desk removed |
+
+Not checked: a reboot (the same restore path as a SystemUI restart, with the same task ids);
+a second display.
+
 ## As built
 
 | Piece | Where | Process | What it does |

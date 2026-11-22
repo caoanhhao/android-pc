@@ -26,7 +26,7 @@ import kotlin.math.sqrt
 /**
  * The overview (Phase D4), after Hyprland's hyprexpo: every workspace as a scaled-down desktop
  * in a grid, its windows drawn from their task snapshots at their real places. A click on a
- * window focuses it (switching workspace), a click on a workspace switches to it; 1-9 switch
+ * window focuses it (switching workspace), a click on a workspace switches to it; 1-9, 0 switch
  * too, arrows move the selection, Enter focuses it, Esc closes. Bound to MOD+` (the `overview`
  * dispatcher), and it is the recents screen SystemUI asks for: the recents key toggles it and
  * Alt+Tab opens it on the next window, Tab steps on, releasing Alt focuses the selection.
@@ -122,14 +122,14 @@ class Overview(private val desktop: Desktop) {
         highlight()
     }
 
-    private fun workspaceCount() = maxOf(state.workspaces, state.active, 1)
+    /** The active and the occupied workspaces, as the bar shows them (E2). */
+    private fun shownWorkspaces() = state.shown().ifEmpty { listOf(1) }
 
     private fun rebuild() {
         grid.removeAllViews()
-        val n = workspaceCount()
         val active = state.active.coerceAtLeast(1)
         order = state.on(active) + state.windows.filter { it.workspace != active }
-        for (ws in 1..n) {
+        for (ws in shownWorkspaces()) {
             val cell = FrameLayout(ctx)
             cell.background = GradientDrawable().apply {
                 cornerRadius = desktop.dp(10f).toFloat()
@@ -177,7 +177,7 @@ class Overview(private val desktop: Desktop) {
     private fun layoutCells(width: Int, height: Int) {
         val n = grid.childCount
         if (n == 0) return
-        val cols = ceil(sqrt(n.toDouble())).toInt().coerceAtMost(3).coerceAtLeast(1)
+        val cols = ceil(sqrt(n.toDouble())).toInt().coerceAtMost(4).coerceAtLeast(1)
         val rows = ceil(n / cols.toDouble()).toInt()
         val margin = desktop.dp(24f)
         val top = desktop.bar.reservedTop + margin
@@ -251,9 +251,9 @@ class Overview(private val desktop: Desktop) {
                 hide()
                 if (w != null) desktop.dispatch("focuswindow", "${w.taskId}")
             }
-            in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> {
+            in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
                 hide()
-                desktop.dispatch("workspace", "${code - KeyEvent.KEYCODE_0}")
+                desktop.dispatch("workspace", "${(code - KeyEvent.KEYCODE_0).let { if (it == 0) 10 else it }}")
             }
             else -> return false
         }

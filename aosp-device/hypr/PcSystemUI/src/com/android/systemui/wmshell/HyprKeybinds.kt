@@ -206,7 +206,7 @@ class HyprKeybinds(
         const val DEFAULT_MOD = "ALT"
         /** "HY" << 16: far from AOSP's gesture types (below 100). */
         const val TYPE_BASE = 0x48590000
-        const val MAX_BINDS = 128
+        const val MAX_BINDS = 256
 
         /** The types DesktopModeKeyGestureHandler registers; this handler takes them over. */
         val SHELL_TYPES = listOf(

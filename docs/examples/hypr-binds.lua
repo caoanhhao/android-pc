@@ -77,12 +77,26 @@ hl.bind(mainMod .. " + SHIFT + grave", hl.dsp.overview())
 ---- WORKSPACES --------
 ------------------------
 
--- 1-9 (this shell has nine): switch, CTRL moves the window and follows, SHIFT moves it
--- without following.
-for i = 1, 9 do
-    hl.bind(mainMod .. " + " .. i, hl.dsp.focus({ workspace = i }))
-    hl.bind(mainMod .. " + CTRL + " .. i, hl.dsp.window.move({ workspace = i }))
-    hl.bind(mainMod .. " + SHIFT + " .. i, hl.dsp.window.move({ workspace = i, follow = false }))
+-- Twenty workspaces, as on the host (the shell's default is ten; up to 1000).
+hl.config({ shell = { workspaces = 20 } })
+
+-- 1-9 and 0 (10): switch, CTRL moves the window and follows, SHIFT moves it without
+-- following.
+for i = 1, 10 do
+    local key = tostring(i % 10)
+    hl.bind(mainMod .. " + " .. key, hl.dsp.focus({ workspace = i }))
+    hl.bind(mainMod .. " + CTRL + " .. key, hl.dsp.window.move({ workspace = i }))
+    hl.bind(mainMod .. " + SHIFT + " .. key, hl.dsp.window.move({ workspace = i, follow = false }))
+end
+
+-- The keypad (Num Lock off, as the host names its keys): 11-20, the same modifiers.
+local keypad = { "KP_End", "KP_Down", "KP_Next", "KP_Left", "KP_Begin", "KP_Right",
+    "KP_Home", "KP_Up", "KP_Prior", "KP_Insert" }
+for i, key in ipairs(keypad) do
+    local ws = i + 10
+    hl.bind(mainMod .. " + " .. key, hl.dsp.focus({ workspace = ws }))
+    hl.bind(mainMod .. " + CTRL + " .. key, hl.dsp.window.move({ workspace = ws }))
+    hl.bind(mainMod .. " + SHIFT + " .. key, hl.dsp.window.move({ workspace = ws, follow = false }))
 end
 
 ------------------------

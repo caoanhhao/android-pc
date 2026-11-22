@@ -213,8 +213,8 @@ class Bar(private val desktop: Desktop) {
     fun update(s: ShellState) {
         state = s
         workspaces.removeAllViews()
-        val count = maxOf(s.workspaces, s.active, 1)
-        for (n in 1..count) {
+        // Only the active and the occupied workspaces, as waybar's hyprland/workspaces (E2).
+        for (n in s.shown()) {
             val occupied = s.windows.any { it.workspace == n }
             val b = button(names[n] ?: "$n") { desktop.dispatch("workspace", "$n") }
             b.minWidth = desktop.dp(26f)

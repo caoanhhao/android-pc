@@ -46,6 +46,9 @@ import com.android.hyprtile.neighbor
 import com.android.hyprtile.parsePin
 import com.android.hyprtile.parseWindow
 import com.android.hyprtile.parseXY
+import com.android.hyprtile.DEFAULT_WORKSPACES
+import com.android.hyprtile.MAX_WORKSPACES
+import com.android.hyprtile.WorkspaceMap
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
 import com.android.systemui.hypr.HyprSystemActions
@@ -53,6 +56,7 @@ import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
 import com.android.wm.shell.common.ShellExecutor
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.EnterReason
+import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.ExitReason
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.UnminimizeReason
 import com.android.wm.shell.desktopmode.DesktopMixedTransitionHandler
 import com.android.wm.shell.desktopmode.DesktopModeKeyGestureHandler
@@ -185,6 +189,27 @@ class HyprTileController(
     private var mouseDrag: MouseDrag? = null
     /** Strips the launcher's bar keeps per display: top and bottom heights (Phase D4). */
     private val barReserved = HashMap<Int, Pair<Int, Int>>()
+    /** Workspace numbers of each user's displays' desks (Phase E2): workspace N is a desk of its own. */
+    private val workspaceMaps = HashMap<String, WorkspaceMap>()
+    /** Displays with a desk being made for a workspace (its number); new desks wait for it. */
+    private val creatingDesks = HashMap<Int, Int>()
+    /** Empty desks being removed. */
+    private val removingDesks = HashSet<Int>()
+    /**
+     * Desk switches until they finish ([deskSwitches] loses them when the animation starts, before
+     * Shell's repository has the new active desk): no desk is removed meanwhile.
+     */
+    private val runningDeskSwitches = HashSet<IBinder>()
+    private val removeEmptyDesksRunnable = Runnable { removeEmptyDesks() }
+    /** Workspace number of each task, by [workspaceKey], as last saved (see [rememberTaskNumbers]). */
+    private val taskNumbers = HashMap<String, Map<Int, Int>>()
+    /** Lua's workspace rules, by number; [mapWorkspaceRules] turns them into rules by desk. */
+    private var workspaceRuleList: List<WorkspaceRule> = emptyList()
+    /** The workspace numbers, kept over a SystemUI restart. */
+    private val workspacePrefs by lazy {
+        context.createDeviceProtectedStorageContext()
+            .getSharedPreferences(PREFS_WORKSPACES, Context.MODE_PRIVATE)
+    }
 
     /** Dispatchers the launcher runs (`launcher`, `overview`); set by [HyprShell]. */
     var launcherDispatch: ((String, String) -> Boolean)? = null
@@ -432,8 +457,10 @@ class HyprTileController(
             startT.setAlpha(c.leash, alpha)
             finishT.setAlpha(c.leash, alpha)
         }
-        val fromPos = repo.getDeskPosition(desk.from) ?: return false
-        val toPos = repo.getDeskPosition(desk.to) ?: return false
+        // Workspaces slide by number, as Hyprland's do.
+        val numbers = workspaces(desk.displayId)
+        val fromPos = numbers.numberOf(desk.from) ?: return false
+        val toPos = numbers.numberOf(desk.to) ?: return false
         Log.d(TAG, "animating desk switch ${desk.from} -> ${desk.to}")
         snapController.onDeskSwitchAnimationStarting(desk.displayId, desk.from, desk.to)
         val toAlphas = toTasks.map {
@@ -484,6 +511,7 @@ class HyprTileController(
     override fun onTransitionFinished(transition: IBinder, aborted: Boolean) {
         ownChanges -= transition
         deskSwitches -= transition
+        runningDeskSwitches -= transition
         requests -= transition
         // Shell's animations end at alpha 1; this runs after the finish transaction is applied.
         mainExecutor.execute { decorations.reapplyOpacity() }
@@ -552,6 +580,10 @@ class HyprTileController(
         for (id in tile.pinned().toList()) if (repo.getDeskIdForTask(id) == null) tile.close(id)
         applyWindowRules()
         focus.onSync()
+        // Once things settle: removing a desk Shell still takes for the active one sends the
+        // display home.
+        mainExecutor.removeCallbacks(removeEmptyDesksRunnable)
+        mainExecutor.executeDelayed(removeEmptyDesksRunnable, REMOVE_DESKS_DELAY_MS)
         onStateChanged?.invoke()
     }
 
@@ -582,7 +614,7 @@ class HyprTileController(
             val title = task.taskDescription?.label?.toString()
             val rule = rules.lastOrNull { it.workspace != null && it.matches(pkg, title) } ?: continue
             val n = rule.workspace ?: continue
-            if (n > MAX_WORKSPACES || currentWorkspaceOf(task) == n) continue
+            if (n > workspaceLimit || currentWorkspaceOf(task) == n) continue
             Log.d(TAG, "window rule ${rule.name}: task $id to workspace $n" + if (rule.silent) " (silent)" else "")
             withWorkspaceDesk(task.displayId, n) { desk ->
                 if (rule.silent) moveSilently(task, desk) else switchToDesk(task.displayId, desk, moving = task)
@@ -597,7 +629,7 @@ class HyprTileController(
     /** The workspace number of [task]'s desk, 0 when it is on none. */
     private fun currentWorkspaceOf(task: RunningTaskInfo): Int {
         val desk = repository.getDeskIdForTask(task.taskId) ?: return 0
-        return orderedDesks(task.displayId).indexOf(desk) + 1
+        return workspaces(task.displayId).numberOf(desk) ?: 0
     }
 
     /**
@@ -648,20 +680,17 @@ class HyprTileController(
         when (name) {
             "workspace" -> {
                 val displayId = focusedDisplayId()
-                val n = resolveWorkspace(arg, currentWorkspace(displayId))
-                    ?.takeIf { it <= MAX_WORKSPACES } ?: return false
+                val n = resolveWorkspaceOn(displayId, arg) ?: return false
                 withWorkspaceDesk(displayId, n) { switchToDesk(displayId, it, moving = null) }
             }
             "movetoworkspace" -> {
                 val task = focusedTask() ?: return true
-                val n = resolveWorkspace(arg, currentWorkspace(task.displayId))
-                    ?.takeIf { it <= MAX_WORKSPACES } ?: return false
+                val n = resolveWorkspaceOn(task.displayId, arg) ?: return false
                 withWorkspaceDesk(task.displayId, n) { switchToDesk(task.displayId, it, moving = task) }
             }
             "movetoworkspacesilent" -> {
                 val task = focusedTask() ?: return true
-                val n = resolveWorkspace(arg, currentWorkspace(task.displayId))
-                    ?.takeIf { it <= MAX_WORKSPACES } ?: return false
+                val n = resolveWorkspaceOn(task.displayId, arg) ?: return false
                 withWorkspaceDesk(task.displayId, n) { moveSilently(task, it) }
             }
             "resizeactive" -> resizeActive(parseXY(arg) ?: return false)
@@ -747,7 +776,7 @@ class HyprTileController(
         return taskOrganizer.getRunningTaskInfo(taskId)?.takeIf { repository.getDeskIdForTask(taskId) != null }
     }
 
-    /** The desks of [displayId] in Shell's order; workspace N is the N-th. */
+    /** The desks of [displayId] in Shell's order. */
     private fun orderedDesks(displayId: Int): List<Int> {
         val repo = repository
         return repo.getDeskIds(displayId).sortedBy { repo.getDeskPosition(it) ?: Int.MAX_VALUE }
@@ -755,34 +784,140 @@ class HyprTileController(
 
     private fun currentWorkspace(displayId: Int): Int {
         val active = repository.getActiveDeskId(displayId) ?: return 1
-        return orderedDesks(displayId).indexOf(active) + 1
+        return workspaces(displayId).numberOf(active) ?: 1
+    }
+
+    /** How many workspaces there are (Lua's `shell.workspaces`), 1..1000. */
+    private val workspaceLimit: Int
+        get() = (configOverrides.getString("workspaces")?.trim()?.toIntOrNull() ?: DEFAULT_WORKSPACES)
+            .coerceIn(1, MAX_WORKSPACES)
+
+    /** A workspace argument (`7`, `e+1`, `-1`) on [displayId]; null when bad or past the limit. */
+    private fun resolveWorkspaceOn(displayId: Int, arg: String): Int? =
+        resolveWorkspace(arg, currentWorkspace(displayId), workspaces(displayId).numbers, workspaceLimit)
+
+    private fun workspaceKey(displayId: Int) = "u${repository.userId}d$displayId"
+
+    /** The workspace numbers of [displayId]'s desks as last known (loaded once). */
+    private fun workspaceMap(displayId: Int): WorkspaceMap = workspaceMaps.getOrPut(workspaceKey(displayId)) {
+        WorkspaceMap.decode(workspacePrefs.getString(workspaceKey(displayId), "") ?: "")
     }
 
     /**
-     * Runs [block] with the desk of workspace [n], creating the missing desks up to it first
-     * (desks are ordered, so workspace 5 needs desks 1-4; they stay empty until used).
+     * The workspace numbers of [displayId]'s desks, brought in line with Shell's desks: a desk the
+     * shell did not make (Shell's default desk, desks restored at boot) gets the lowest free number.
+     */
+    private fun workspaces(displayId: Int): WorkspaceMap {
+        val map = workspaceMap(displayId)
+        // While a desk is being made for a workspace, the new desk waits for that number.
+        if (displayId !in creatingDesks &&
+            map.sync(orderedDesks(displayId), ::tasksOfDesk, savedTaskNumbers(displayId))
+        ) {
+            saveWorkspaces(displayId)
+        }
+        return map
+    }
+
+    private fun tasksOfDesk(deskId: Int): Collection<Int> = repository.getActiveTaskIdsInDesk(deskId)
+
+    /**
+     * Shell restores its desks under new ids when SystemUI restarts (and at boot), with the same
+     * tasks: each task's workspace number is kept so a restored desk gets its number back.
+     */
+    private fun savedTaskNumbers(displayId: Int): Map<Int, Int> = taskNumbers.getOrPut(workspaceKey(displayId)) {
+        WorkspaceMap.decodeTasks(workspacePrefs.getString(workspaceKey(displayId) + "t", "") ?: "")
+    }
+
+    private fun rememberTaskNumbers(displayId: Int) {
+        val now = workspaces(displayId).taskNumbers(::tasksOfDesk)
+        if (now == savedTaskNumbers(displayId)) return
+        taskNumbers[workspaceKey(displayId)] = now
+        workspacePrefs.edit().putString(workspaceKey(displayId) + "t", WorkspaceMap.encodeTasks(now)).apply()
+    }
+
+    private fun saveWorkspaces(displayId: Int) {
+        workspacePrefs.edit().putString(workspaceKey(displayId), workspaceMap(displayId).encode()).apply()
+        // A workspace that got (or lost) its desk takes its rule along.
+        if (mapWorkspaceRules()) applied.clear()
+    }
+
+    /**
+     * Workspace rules are by number, the layouts by desk: maps [workspaceRuleList] onto the desks
+     * the workspaces have now. Returns true when the rules by desk changed.
+     */
+    private fun mapWorkspaceRules(): Boolean {
+        val byDesk = HashMap<Int, WorkspaceRule>()
+        if (workspaceRuleList.isNotEmpty() && userRepositories.isPresent) {
+            val repo = repository
+            for (displayId in repo.getAllDeskIds().mapNotNull {
+                runCatching { repo.getDisplayForDesk(it) }.getOrNull()
+            }.toSet()) {
+                val numbers = workspaceMap(displayId)
+                for (r in workspaceRuleList) numbers.deskOf(r.workspace)?.let { byDesk[it] = r }
+            }
+        }
+        if (byDesk == tile.workspaceRules) return false
+        tile.workspaceRules = byDesk
+        return true
+    }
+
+    /**
+     * Runs [block] with the desk of workspace [n], creating it first when it does not exist
+     * (Hyprland makes workspaces on demand; [removeEmptyDesks] takes them away again).
      */
     private fun withWorkspaceDesk(displayId: Int, n: Int, block: (Int) -> Unit) {
-        val desks = orderedDesks(displayId)
-        if (n <= desks.size) {
-            block(desks[n - 1])
+        workspaces(displayId).deskOf(n)?.let { block(it); return }
+        val controller = desktopTasksController.orElse(null) ?: return
+        if (displayId in creatingDesks) {
+            Log.d(TAG, "workspace $n: workspace ${creatingDesks[displayId]} is still being made")
             return
         }
-        val controller = desktopTasksController.orElse(null) ?: return
-        Log.d(TAG, "workspace $n: creating desk ${desks.size + 1} on display $displayId")
+        Log.d(TAG, "workspace $n: creating a desk on display $displayId")
+        creatingDesks[displayId] = n
         controller.createDesk(
             displayId = displayId,
             userId = repository.userId,
             enforceDeskLimit = false,
             activateDesk = false,
             enterReason = EnterReason.KEYBOARD_SHORTCUT_ENTER,
-        ) { _ ->
+        ) { deskId ->
             mainExecutor.execute {
-                if (orderedDesks(displayId).size > desks.size) {
-                    withWorkspaceDesk(displayId, n, block)
+                creatingDesks.remove(displayId)
+                if (deskId in orderedDesks(displayId)) {
+                    workspaceMap(displayId).put(deskId, n)
+                    saveWorkspaces(displayId)
+                    workspaces(displayId)
+                    block(deskId)
                 } else {
-                    Log.w(TAG, "desk creation on display $displayId did not add a desk")
+                    Log.w(TAG, "desk creation on display $displayId did not add a desk ($deskId)")
                 }
+            }
+        }
+    }
+
+    /**
+     * Hyprland removes a workspace when it is empty and not shown: empty desks that are not
+     * active are removed, one desk per display stays. Not while desks are switched or made.
+     */
+    private fun removeEmptyDesks() {
+        if (!enabled) return
+        val controller = desktopTasksController.orElse(null) ?: return
+        if (deskSwitches.isNotEmpty() || runningDeskSwitches.isNotEmpty() || creatingDesks.isNotEmpty()) return
+        val repo = repository
+        removingDesks.retainAll(repo.getAllDeskIds())
+        val displays = repo.getAllDeskIds()
+            .mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
+        for (displayId in displays) {
+            rememberTaskNumbers(displayId)
+            val active = repo.getActiveDeskId(displayId)
+            val numbers = workspaces(displayId)
+            val desks = numbers.numbers.mapNotNull { numbers.deskOf(it) }.filter { it !in removingDesks }
+            val empty = desks.filter { it != active && repo.getActiveTaskIdsInDesk(it).isEmpty() }
+            // With nothing active or occupied, the lowest empty workspace stays.
+            for (d in if (empty.size == desks.size) empty.drop(1) else empty) {
+                Log.d(TAG, "removing empty workspace ${numbers.numberOf(d)} (desk $d)")
+                removingDesks += d
+                controller.removeDesk(d, repo.userId, ExitReason.UNKNOWN_EXIT, removeTasks = false)
             }
         }
     }
@@ -832,6 +967,7 @@ class HyprTileController(
         } else {
             deskSwitchTransitionHandler.startTransition(wct, repo.userId, displayId, from, to)
         }
+        runningDeskSwitches += transition
         runOnStart?.invoke(transition)
         recordCarried(displayId, to, carried)
     }
@@ -1233,9 +1369,9 @@ class HyprTileController(
     data class MenuState(val workspaces: Int, val current: Int, val tiled: Boolean, val pinned: Boolean)
 
     fun menuState(task: RunningTaskInfo): MenuState {
-        val desks = orderedDesks(task.displayId)
-        val ws = repository.getDeskIdForTask(task.taskId)?.let { desks.indexOf(it) + 1 } ?: 0
-        return MenuState(desks.size, ws, tile.isTiled(task.taskId), tile.isPinned(task.taskId))
+        val numbers = workspaces(task.displayId)
+        val ws = repository.getDeskIdForTask(task.taskId)?.let { numbers.numberOf(it) } ?: 0
+        return MenuState(numbers.numbers.maxOrNull() ?: 0, ws, tile.isTiled(task.taskId), tile.isPinned(task.taskId))
     }
 
     /** A window dragged by touch was dropped: as [mouseUp], plus snapping at the screen edges. */
@@ -1430,10 +1566,14 @@ class HyprTileController(
         val out = Bundle()
         if (!userRepositories.isPresent) return out
         val repo = repository
-        val desks = orderedDesks(displayId)
+        // Desks in workspace order (Phase E2); `workspaceIds` are the workspaces that exist,
+        // `workspaces` how many there may be.
+        val numbers = workspaces(displayId)
+        val desks = numbers.numbers.mapNotNull { numbers.deskOf(it) }
         val active = repo.getActiveDeskId(displayId)
-        out.putInt("workspaces", desks.size)
-        out.putInt("active", active?.let { desks.indexOf(it) + 1 } ?: 0)
+        out.putInt("workspaces", workspaceLimit)
+        out.putIntArray("workspaceIds", numbers.numbers.toIntArray())
+        out.putInt("active", active?.let { numbers.numberOf(it) } ?: 0)
         val focused = focusedTask()
         out.putInt("focusedTask", focused?.taskId ?: -1)
         out.putString("focusedPackage", focused?.let { packageOf(it) })
@@ -1452,14 +1592,14 @@ class HyprTileController(
         val floating = ArrayList<Boolean>()
         val minimized = ArrayList<Boolean>()
         val pinned = ArrayList<Boolean>()
-        for ((i, deskId) in desks.withIndex()) {
+        for (deskId in desks) {
             val visible = repo.getExpandedTasksIdsInDeskOrdered(deskId)
             val all = visible + repo.getActiveTaskIdsInDesk(deskId).filter { it !in visible }
             for (id in all) {
                 val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
                 if (task.activityType != ACTIVITY_TYPE_STANDARD) continue
                 ids += id
-                ws += i + 1
+                ws += numbers.numberOf(deskId) ?: 0
                 pkgs += packageOf(task) ?: ""
                 titles += titleOf(task) ?: ""
                 val b = task.configuration.windowConfiguration.bounds
@@ -1560,25 +1700,13 @@ class HyprTileController(
         animator.config = HyprStyleProps.animations(o)
         animationsEnabled = HyprStyleProps.animationsEnabled(o)
         val fresh = readConfig(o)
-        // Workspace rules are by number; the layouts are by desk.
-        val byDesk = HashMap<Int, WorkspaceRule>()
-        val rules = o.getStringArray("workspace")?.mapNotNull {
+        workspaceRuleList = o.getStringArray("workspace")?.mapNotNull {
             runCatching { WorkspaceRule.decode(it) }.onFailure { e -> Log.w(TAG, "bad workspace rule: $e") }
                 .getOrNull()
         } ?: emptyList()
-        if (rules.isNotEmpty() && userRepositories.isPresent) {
-            val repo = repository
-            for (displayId in repo.getAllDeskIds().mapNotNull {
-                runCatching { repo.getDisplayForDesk(it) }.getOrNull()
-            }.toSet()) {
-                val desks = orderedDesks(displayId)
-                for (r in rules) desks.getOrNull(r.workspace - 1)?.let { byDesk[it] = r }
-            }
-        }
-        val rulesChanged = byDesk != tile.workspaceRules
+        val rulesChanged = mapWorkspaceRules()
         if (fresh == tile.config && !rulesChanged) return false
         tile.config = fresh
-        tile.workspaceRules = byDesk
         applied.clear()
         return true
     }
@@ -1587,7 +1715,9 @@ class HyprTileController(
         const val TAG = "HyprTile"
         const val PROP_ENABLED = "persist.hypr.tiling"
         const val SYNC_DELAY_MS = 100L
-        const val MAX_WORKSPACES = 9
+        /** How long after a sync empty desks are removed (Hyprland removes them at once). */
+        const val REMOVE_DESKS_DELAY_MS = 400L
+        const val PREFS_WORKSPACES = "hypr_workspaces"
         /** Smallest floating window a mouse resize makes, unless the app asks for more. */
         const val MIN_SIZE = 200
 

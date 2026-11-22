@@ -498,7 +498,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
     companion object {
         private val WORKSPACE_DISPATCHERS = setOf("workspace", "movetoworkspace", "movetoworkspacesilent")
         /** HyprKeybinds' gesture slots. */
-        const val MAX_BINDS = 128
+        const val MAX_BINDS = 256
 
         val BUILTIN_MODULES = setOf(
             "apps", "workspaces", "title", "windows", "tray", "notifications", "quicksettings", "clock",

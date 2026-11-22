@@ -77,6 +77,23 @@ class WorkspacesTest {
     }
 
     @Test
+    fun restoredDesksTakeTheNumberOfTheirTasks() {
+        val m = WorkspaceMap()
+        m.put(10, 1); m.put(11, 15); m.put(12, 19)
+        val tasks = mapOf(10 to listOf(100), 11 to listOf(110, 111), 12 to listOf(120))
+        val hint = WorkspaceMap.decodeTasks(WorkspaceMap.encodeTasks(m.taskNumbers { tasks[it] ?: emptyList() }))
+        assertEquals(mapOf(100 to 1, 110 to 15, 111 to 15, 120 to 19), hint)
+        // Shell restored the desks under new ids; one task moved, one desk is new and empty.
+        val restored = WorkspaceMap()
+        val now = mapOf(20 to listOf(100), 21 to listOf(110, 120, 111), 22 to listOf(120), 23 to emptyList())
+        assertTrue(restored.sync(listOf(20, 21, 22, 23), { now[it] ?: emptyList() }, hint))
+        assertEquals(1, restored.numberOf(20))
+        assertEquals(15, restored.numberOf(21))
+        assertEquals(19, restored.numberOf(22))
+        assertEquals(2, restored.numberOf(23))
+    }
+
+    @Test
     fun mapSurvivesEncoding() {
         val m = WorkspaceMap()
         m.put(3, 1); m.put(9, 20); m.put(11, 1000)
