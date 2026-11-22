@@ -32,19 +32,11 @@ class BindsTest {
         assertTrue(binds.all { Mod.ALT in it.mods && Mod.SUPER !in it.mods })
         assertTrue(Bind(setOf(Mod.ALT), "5", "workspace", "5") in binds)
         assertTrue(Bind(setOf(Mod.ALT, Mod.SHIFT), "9", "movetoworkspace", "9") in binds)
+        assertTrue(Bind(setOf(Mod.ALT), "0", "workspace", "10") in binds)
         assertTrue(Bind(setOf(Mod.ALT), "Q", "exec", "com.termux") in binds)
         assertTrue(Bind(setOf(Mod.ALT), "D", "launcher") in binds)
         assertTrue(Bind(setOf(Mod.ALT), "GRAVE", "overview") in binds)
         assertTrue(defaultBinds(setOf(Mod.SUPER)).none { it.key == "Q" })
-    }
-
-    @Test
-    fun resolvesWorkspaceArguments() {
-        assertEquals(3, resolveWorkspace("3", 1))
-        assertEquals(3, resolveWorkspace("e+1", 2))
-        assertEquals(1, resolveWorkspace("-1", 2))
-        assertNull(resolveWorkspace("e-1", 1))
-        assertNull(resolveWorkspace("special", 1))
     }
 
     @Test

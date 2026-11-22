@@ -37,7 +37,7 @@ fun parseBind(line: String): Bind {
 
 /**
  * The default binds, after Hyprland's example configuration with [mainMod] as `$mainMod`:
- * workspaces 1-9, movefocus/movewindow on the arrows, C killactive, V togglefloating,
+ * workspaces 1-10 (0 is 10), movefocus/movewindow on the arrows, C killactive, V togglefloating,
  * J togglesplit, F maximize (`fullscreen 1`), SHIFT F fullscreen, E the file manager and,
  * when [terminal] is set, Q the terminal. D and SPACE open HyprLauncher's app launcher (rofi's
  * usual binds), GRAVE its overview (hyprexpo's).
@@ -63,24 +63,12 @@ fun defaultBinds(
         binds += Bind(mainMod, key, "movefocus", dir)
         binds += Bind(shift, key, "movewindow", dir)
     }
-    for (n in 1..9) {
-        binds += Bind(mainMod, "$n", "workspace", "$n")
-        binds += Bind(shift, "$n", "movetoworkspace", "$n")
+    for (n in 1..10) {
+        val key = "${n % 10}"
+        binds += Bind(mainMod, key, "workspace", "$n")
+        binds += Bind(shift, key, "movetoworkspace", "$n")
     }
     return binds
-}
-
-/**
- * Resolves a workspace argument (`3`, `e+1`, `e-1`, `+1`, `-1`) against the [current] workspace
- * number (1-based). Returns null for anything else or a result below 1.
- */
-fun resolveWorkspace(arg: String, current: Int): Int? {
-    val a = arg.trim().lowercase().removePrefix("e").removePrefix("r")
-    val n = when {
-        a.startsWith("+") || a.startsWith("-") -> a.toIntOrNull()?.let { current + it }
-        else -> a.toIntOrNull()
-    }
-    return n?.takeIf { it >= 1 }
 }
 
 /**
@@ -118,6 +106,14 @@ private val KEY_ALIASES = mapOf(
     "DELETE" to "FORWARD_DEL", "BACKSPACE" to "DEL", "PRINT" to "SYSRQ",
     "HOME" to "MOVE_HOME", "END" to "MOVE_END",
     "EQUAL" to "EQUALS", "BRACKETLEFT" to "LEFT_BRACKET", "BRACKETRIGHT" to "RIGHT_BRACKET",
+    // The keypad as xkb names it with Num Lock off (the host's KP_End..KP_Insert binds) and on.
+    "KP_END" to "NUMPAD_1", "KP_DOWN" to "NUMPAD_2", "KP_NEXT" to "NUMPAD_3", "KP_PAGE_DOWN" to "NUMPAD_3",
+    "KP_LEFT" to "NUMPAD_4", "KP_BEGIN" to "NUMPAD_5", "KP_RIGHT" to "NUMPAD_6", "KP_HOME" to "NUMPAD_7",
+    "KP_UP" to "NUMPAD_8", "KP_PRIOR" to "NUMPAD_9", "KP_PAGE_UP" to "NUMPAD_9", "KP_INSERT" to "NUMPAD_0",
+    "KP_DELETE" to "NUMPAD_DOT", "KP_DECIMAL" to "NUMPAD_DOT", "KP_ADD" to "NUMPAD_ADD",
+    "KP_SUBTRACT" to "NUMPAD_SUBTRACT", "KP_MULTIPLY" to "NUMPAD_MULTIPLY", "KP_DIVIDE" to "NUMPAD_DIVIDE",
+    "KP_0" to "NUMPAD_0", "KP_1" to "NUMPAD_1", "KP_2" to "NUMPAD_2", "KP_3" to "NUMPAD_3", "KP_4" to "NUMPAD_4",
+    "KP_5" to "NUMPAD_5", "KP_6" to "NUMPAD_6", "KP_7" to "NUMPAD_7", "KP_8" to "NUMPAD_8", "KP_9" to "NUMPAD_9",
     "SUPER_L" to "META_LEFT", "SUPER_R" to "META_RIGHT", "CAPS_LOCK" to "CAPS_LOCK",
 )
 
