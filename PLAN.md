@@ -758,6 +758,11 @@ commit (or `(partial: ...)`).
 - **E1 — pin:** `hl.dsp.window.pin()` (a floating window kept on top and on every
   workspace), the binds that need it (`ALT + CTRL + Space` pin, `ALT + CTRL + SHIFT + F`
   float, fill the work area and pin).
+  Status (2026-11-22): partial; pin/unpin (binds and window menu), always-on-top inside the
+  desk, windows that open stay under it, fill-and-pin and the carry to the active desk checked
+  on Waydroid (docs/hypr-desktop.md, "Pin (Phase E1)"). Open: a pinned window carried to
+  another desk is not drawn there (and an ANR follows), and key focus stays with the pinned
+  window (needs a WindowManager patch).
 - **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
   only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20). Done
   2026-11-22 (docs/hypr-desktop.md, "Workspaces (E2)": a desk per workspace number, made on
