@@ -763,7 +763,8 @@ commit (or `(partial: ...)`).
 - **E3 — window history:** a focus history per display; `ALT + TAB`-free Hyprland window
   switching: `focuscurrentorlast` (`ALT + Tab` on the host is `focus({ last })`),
   `focusurgentorlast`, `cyclenext`/`cycleprev`, `alterzorder`, `swapnext`, `workspace
-  previous`, `binds.workspace_back_and_forth`, `allow_workspace_cycles`.
+  previous`, `binds.workspace_back_and_forth`, `allow_workspace_cycles`. Done 2026-11-22
+  (docs/hypr-desktop.md, "Window history (E3)"; urgency not checked end to end on Waydroid).
 - **E4 — ALT + Tab:** a window switcher on `ALT + Tab` (`cyclenext` with `alterzorder`, as the
   host binds it) for the real PC, where no host takes the key; on Waydroid it is tested with
   injected keys.

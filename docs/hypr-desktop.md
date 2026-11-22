@@ -1282,9 +1282,25 @@ focused window of its own for the following Tabs (the overview's Alt+Tab mode ha
   COMPLETE is ALT's release). A switcher dispatcher bound to `ALT + Tab` gets START there;
   hooking COMPLETE (commit on release) is E4's to add next to it.
 
-### Checked on Waydroid
+### Checked on Waydroid (2026-11-22)
 
-(filled in below)
+`PcSystemUI` and `HyprLauncher` through the overlay (docs/hypr-desktop.md, "Waydroid notes"),
+on the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`): the user's data stays
+`RUNNING_LOCKED` after a restart until its owner unlocks it. Keys injected with
+`input keycombination` (the host keeps `ALT + TAB`), the example binds plus test binds
+(`out/hypr-e3/e3test.lua`), helpers in `out/hypr-e3/` (`k.sh`, `ft.sh`, `tb.sh`).
+
+| Check | Result |
+|---|---|
+| `ALT + Tab` | HyprLauncher gets the recents gesture and runs `focuscurrentorlast`: Settings (113) and Files (109) swap focus on each press, across the layout |
+| History | only app windows (desk roots and Shell's desktop wallpaper task are left out); closed tasks drop out |
+| `cyclenext`, `prev`, `hist` | four windows on workspace 1: 109 → 111 → 113 → 105 → 109 in opening order, `prev` the other way, `hist` from the newest to the oldest |
+| `swapnext`, `swapnext prev` | the focused window swaps with the next one and keeps the focus; pressed again it moves on (113's tile, then 105's), `prev` walks back |
+| `focuswindow` | `class:settings` → Settings, `title:negative:Settings` → the first other window of the workspace |
+| `alterzorder bottom` | a floating Files window goes under the tiles (a sliver shows at their edge), the focus passes to the top one |
+| `workspace previous` | `ALT + 2`, `ALT + grave` (the example's `prev`) → 1, again → 2; `ALT + 2` on 2 → 1 (`workspace_back_and_forth`); `ALT + 3`, `ALT + grave` → 1 |
+| Lua queries | `hl.get_last_window()` is the window focused before; `get_urgent_window()` nil without urgency |
+| Urgency | the notification listener is registered (`dumpsys notification`: `HyprFocus.Urgency`, SYSTEM). Not checked end to end: no app on the test data posts an alerting notification on demand (`cmd notification` posts only as the shell, whose dialog closes when it loses the focus; the test data's Calendar crashed on a provider-made event). The first build crashed SystemUI on a posted notification (the listener used the Service's own `getMainExecutor()`, a null context); fixed |
 
 ## As built
 
