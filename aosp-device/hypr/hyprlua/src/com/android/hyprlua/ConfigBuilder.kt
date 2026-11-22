@@ -21,7 +21,9 @@ import com.android.hyprtile.parseColor
 import com.android.hyprtile.parseKeys
 import com.android.hyprtile.parseLayout
 import com.android.hyprtile.parseMods
-import com.android.hyprtile.resolveWorkspace
+import com.android.hyprtile.DEFAULT_WORKSPACES
+import com.android.hyprtile.MAX_WORKSPACES
+import com.android.hyprtile.isWorkspaceArg
 import java.text.SimpleDateFormat
 
 /**
@@ -252,8 +254,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "workspace" -> {
                     effects++
                     val p = v.trim().split(Regex("\\s+"))
-                    val n = p[0].toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACE }
-                        ?: fail("window rule: workspace must be a number 1..$MAX_WORKSPACE, not '$v'")
+                    val n = p[0].toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
+                        ?: fail("window rule: workspace must be a number 1..$MAX_WORKSPACES, not '$v'")
                     if (p.size > 2 || (p.size == 2 && p[1] != "silent")) fail("window rule: workspace is 'N' or 'N silent'")
                     rule.copy(workspace = n, silent = p.size == 2)
                 }
@@ -281,8 +283,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
     /** `hl.workspace_rule`; returns the rule's id. */
     fun workspaceRule(fields: Map<String, String>): Int {
         val ws = fields["workspace"] ?: fail("workspace rule needs workspace =")
-        val n = ws.trim().toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACE }
-            ?: fail("workspace rule: only numbered workspaces 1..$MAX_WORKSPACE are supported, not '$ws'")
+        val n = ws.trim().toIntOrNull()?.takeIf { it in 1..MAX_WORKSPACES }
+            ?: fail("workspace rule: only numbered workspaces 1..$MAX_WORKSPACES are supported, not '$ws'")
         var rule = WorkspaceRule(n)
         var enabled = true
         for ((k, v) in fields) {
@@ -409,6 +411,17 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             if (op.bind != null && op.enabled) binds[op.keys] = op.bind
         }
         if (binds.size > MAX_BINDS) warn("${binds.size} binds, only the first $MAX_BINDS are installed")
+        // Workspaces past shell.workspaces do not exist: say which binds and rules go nowhere.
+        val count = opt("shell.workspaces").toInt()
+        for (b in binds.values) {
+            val n = b.arg.trim().toIntOrNull() ?: continue
+            if (b.dispatcher in WORKSPACE_DISPATCHERS && n > count) {
+                warn("bind ${b.mods.sorted().joinToString(" ")} ${b.key}: workspace $n is past shell.workspaces = $count")
+            }
+        }
+        for ((r, on) in windowRules.values) {
+            if (on && (r.workspace ?: 0) > count) warn("window rule ${r.name}: workspace ${r.workspace} is past shell.workspaces = $count")
+        }
 
         for (m in bar.left + bar.center + bar.right) {
             if (m !in BUILTIN_MODULES && m !in barModules) {
@@ -470,7 +483,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         v.split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
     companion object {
-        const val MAX_WORKSPACE = 9
+        private val WORKSPACE_DISPATCHERS = setOf("workspace", "movetoworkspace", "movetoworkspacesilent")
         /** HyprKeybinds' gesture slots. */
         const val MAX_BINDS = 128
 
@@ -516,6 +529,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "caption",
             "shell.tiling" to "tiling",
             "shell.touch" to "touch",
+            "shell.workspaces" to "workspaces",
         )
 
         private val tile = TileConfig()
@@ -547,6 +561,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "floating",
             "shell.tiling" to "true",
             "shell.touch" to "true",
+            "shell.workspaces" to "$DEFAULT_WORKSPACES",
         )
 
         private fun intIn(range: IntRange): (String, String) -> String = { v, t ->
@@ -607,6 +622,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
             "shell.touch" to boolOpt,
+            "shell.workspaces" to intIn(1..MAX_WORKSPACES),
         )
 
         /** Why [arg] does not suit [dispatcher], or null when it does. */
@@ -615,10 +631,10 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             val a = arg.trim()
             return when (dispatcher) {
                 "workspace", "movetoworkspace", "movetoworkspacesilent" ->
-                    if (resolveWorkspace(a, 1) == null && !a.matches(Regex("[er]?[+-]\\d+"))) {
+                    if ((a.toIntOrNull() ?: 1) > MAX_WORKSPACES) {
+                        "workspaces go up to $MAX_WORKSPACES"
+                    } else if (!isWorkspaceArg(a)) {
                         "bad workspace '$a'"
-                    } else if ((a.toIntOrNull() ?: 1) > MAX_WORKSPACE) {
-                        "workspaces go up to $MAX_WORKSPACE"
                     } else {
                         null
                     }

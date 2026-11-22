@@ -458,6 +458,9 @@ local function snapshot()
       }
     elseif f[1] == "N" then
       s.names[tonumber(f[2])] = f[3]
+    elseif f[1] == "X" then
+      s.existing = {}
+      for j = 2, #f do s.existing[#s.existing + 1] = tonumber(f[j]) end
     end
   end
   return s
@@ -501,10 +504,21 @@ function hl.get_window(selector)
   return nil
 end
 
+-- The workspaces that exist (hyprctl workspaces), in number order, the active one included.
 function hl.get_workspaces()
   local s = snapshot()
   local out = {}
-  for n = 1, math.max(s.count, s.active) do out[#out + 1] = workspace_of(s, n) end
+  local ids = s.existing
+  if ids == nil then
+    ids = {}
+    for n = 1, s.count do ids[#ids + 1] = n end
+  end
+  local seen = {}
+  local list = {}
+  for _, n in ipairs(ids) do if not seen[n] then seen[n] = true; list[#list + 1] = n end end
+  if s.active > 0 and not seen[s.active] then list[#list + 1] = s.active end
+  table.sort(list)
+  for _, n in ipairs(list) do out[#out + 1] = workspace_of(s, n) end
   return out
 end
 

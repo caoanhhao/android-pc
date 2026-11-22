@@ -23,6 +23,8 @@ data class Snapshot(
     val focused: Int,
     val windows: List<SnapWindow>,
     val names: Map<Int, String> = emptyMap(),
+    /** The workspaces that exist (Phase E2), in order; null: 1..[workspaces]. */
+    val existing: List<Int>? = null,
 )
 
 /** What the Lua runtime needs from HyprLauncher. Called on the runtime's thread. */
@@ -307,6 +309,7 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
                     .joinToString("\u001f")
             }
             for ((n, name) in s.names) recs += listOf("N", n, clean(name)).joinToString("\u001f")
+            s.existing?.let { recs += (listOf("X") + it).joinToString("\u001f") }
             return recs.joinToString("\u001e")
         }
     }

@@ -235,7 +235,7 @@ class HyprLuaTest {
         assertTrue(error("hl.bind('ALT + NOSUCHKEY', hl.dsp.window.close())").contains("unknown key NOSUCHKEY"))
         assertTrue(error("hl.bind('ALT + Q', 'killactive')").contains("expected an hl.dsp dispatcher or a function"))
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.raw('frob'))").contains("unknown dispatcher frob"))
-        assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ workspace = 12 }))").contains("workspaces go up to 9"))
+        assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ workspace = 1001 }))").contains("workspaces go up to 1000"))
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ direction = 'sideways' }))").contains("bad direction"))
         assertTrue(error("hl.bind('ALT + mouse:272', hl.dsp.window.resize(), { mouse = true })").contains("drag()"))
         val c = load("hl.bind('ALT + Q', hl.dsp.window.close(), { repeating = true, locked = true })")
@@ -489,5 +489,48 @@ class HyprLuaTest {
         } catch (e: LuaConfigException) {
             assertEquals("unknown option general.nope", e.message)
         }
+    }
+
+    @Test
+    fun workspacesUpToTheConfiguredCountAndKeypadBinds() {
+        val l = HyprLua(host) { it in keys || it.startsWith("NUMPAD_") }
+        val c = load("""
+            hl.config({ shell = { workspaces = 20 } })
+            local kp = { "KP_End", "KP_Down", "KP_Next", "KP_Left", "KP_Begin", "KP_Right",
+                "KP_Home", "KP_Up", "KP_Prior", "KP_Insert" }
+            for i, key in ipairs(kp) do
+                hl.bind("ALT + " .. key, hl.dsp.focus({ workspace = i + 10 }))
+                hl.bind("ALT + CTRL + " .. key, hl.dsp.window.move({ workspace = i + 10 }))
+                hl.bind("ALT + SHIFT + " .. key, hl.dsp.window.move({ workspace = i + 10, follow = false }))
+            end
+            hl.bind("ALT + Q", hl.dsp.focus({ workspace = "e+1" }))
+            hl.window_rule({ name = "far", match = { class = "x" }, workspace = "300" })
+            hl.workspace_rule({ workspace = 999, layout = "master" })
+        """, l)
+        assertEquals("20", c.wire.values["workspaces"])
+        val b = binds(c)
+        assertTrue(b.toString(), Bind(setOf(Mod.ALT), "KP_END", "workspace", "11") in b)
+        assertTrue(Bind(setOf(Mod.ALT, Mod.CTRL), "KP_INSERT", "movetoworkspace", "20") in b)
+        assertTrue(Bind(setOf(Mod.ALT, Mod.SHIFT), "KP_PRIOR", "movetoworkspacesilent", "19") in b)
+        // The default binds reach 10 with MOD + 0.
+        assertTrue(Bind(setOf(Mod.ALT), "0", "workspace", "10") in b)
+        assertTrue(c.warnings.toString(), c.warnings.any { "workspace 300 is past shell.workspaces = 20" in it })
+        assertEquals(999, c.workspaceRules.single().workspace)
+        // The default count is 10: a bind past it loads, with a warning.
+        val d = load("hl.bind('ALT + Q', hl.dsp.focus({ workspace = 11 }))")
+        assertEquals("10", d.wire.values["workspaces"])
+        assertTrue(d.warnings.toString(), d.warnings.any { "workspace 11 is past shell.workspaces = 10" in it })
+        assertTrue(error("hl.config({ shell = { workspaces = 1001 } })").contains("1..1000"))
+    }
+
+    @Test
+    fun getWorkspacesListsTheExistingOnes() {
+        host.snap = host.snap.copy(active = 12, existing = listOf(2, 30, 1))
+        load("""
+            local ids = {}
+            for _, w in ipairs(hl.get_workspaces()) do ids[#ids + 1] = w.id .. (w.active and "*" or "") end
+            hl.notify(table.concat(ids, " "))
+        """)
+        assertEquals(listOf("1 2 12* 30"), host.notes)
     }
 }
