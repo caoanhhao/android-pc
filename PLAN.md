@@ -771,6 +771,9 @@ commit (or `(partial: ...)`).
 - **E4 — ALT + Tab:** a window switcher on `ALT + Tab` (`cyclenext` with `alterzorder`, as the
   host binds it) for the real PC, where no host takes the key; on Waydroid it is tested with
   injected keys.
+  Status (2026-11-22): done; `shell.alt_tab` (default `switcher`: tap = the last window, hold
+  ALT and Tab through the focus history, release to switch; `cycle`, `bind`, `overview`,
+  `off`), checked on Waydroid with injected keys (docs/hypr-desktop.md, "ALT + Tab switcher").
 - **E5 — special workspace:** `hl.dsp.workspace.toggle_special(name)`,
   `hl.dsp.window.move({ workspace = "special[:name]" })`, the host's `ALT + S` and
   `ALT + CTRL + S`.
