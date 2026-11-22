@@ -139,6 +139,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         dirty = true
     }
 
+    /** Whether the configuration sets [key] itself (hyprctl getoption's `set`, E12). */
+    fun isSet(key: String): Boolean = key in values
+
     /** The value of [key] as set or by default, for `hl.get_config`. */
     fun get(key: String): String? {
         values[key]?.let { return it }
@@ -513,6 +516,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "apps", "workspaces", "title", "windows", "tray", "notifications", "quicksettings", "clock",
         )
 
+        /** The options this shell uses (`hyprctl descriptions`, E12). */
+        val optionNames: Set<String> get() = OPTIONS.keys
+
         /** Hyprland's option names, accepted with a warning when unused. */
         val HYPRLAND_OPTIONS: Set<String> by lazy {
             ConfigBuilder::class.java.getResourceAsStream("hyprland-options.txt")!!
@@ -549,6 +555,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "master.new_status" to "new_status",
             "master.new_on_top" to "new_on_top",
             "shell.caption" to "caption",
+            "ipc.allow" to "ipc_allow",
             "shell.tiling" to "tiling",
             "shell.touch" to "touch",
             "binds.workspace_back_and_forth" to "workspace_back_and_forth",
@@ -586,6 +593,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "master.new_on_top" to "${tile.newOnTop}",
             "shell.main_mod" to "ALT",
             "shell.terminal" to "",
+            "ipc.allow" to "com.termux,com.android.hyprlauncher",
             "shell.file_manager" to "com.android.documentsui",
             "shell.default_binds" to "true",
             "shell.caption" to "floating",
@@ -657,6 +665,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 m.sorted().joinToString(" ")
             },
             "shell.terminal" to { v, _ -> v.trim() },
+            // hyprctl's sockets (E12, docs/hypr-ipc.md): app packages besides root, shell and system.
+            "ipc.allow" to { v, _ -> v.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",") },
             "shell.file_manager" to { v, _ -> v.trim() },
             "shell.default_binds" to boolOpt,
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
@@ -703,6 +713,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "movefocus", "movewindow" -> if (Direction.parse(a) == null) "bad direction '$a'" else null
                 "fullscreen" -> if (a !in setOf("", "0", "1")) "fullscreen takes 0 or 1" else null
                 "exec" -> if (a.isEmpty()) "exec needs a package name" else null
+                "execr" -> if (a.isEmpty()) "execr needs a shell command" else null
                 "togglespecialworkspace" -> if (a.contains(' ')) "bad special workspace name '$a'" else null
                 "focuswindow", "swapwindow" -> runCatching { WindowSelector.parse(a) }.exceptionOrNull()?.message
                 "cyclenext", "cycleprev" ->

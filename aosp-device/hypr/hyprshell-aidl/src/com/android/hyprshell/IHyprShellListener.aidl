@@ -1,6 +1,7 @@
 package com.android.hyprshell;
 
 import android.os.Bundle;
+import com.android.hyprshell.IHyprReply;
 
 /** Events from the shell to HyprLauncher (Phase D4). */
 oneway interface IHyprShellListener {
@@ -15,4 +16,12 @@ oneway interface IHyprShellListener {
 
     /** A dispatcher the launcher runs itself: launcher, overview (from a keybind). */
     void onDispatch(String name, String arg) = 3;
+
+    /**
+     * A hyprctl request the launcher answers (Phase E12, docs/hypr-ipc.md): the Lua side
+     * (`eval`, `repl`, `keyword`, `getoption`, `configerrors`, `descriptions`), its
+     * notifications (`notify`, `dismissnotify`, `seterror`) and its layer surfaces (`layers`).
+     * [args] as typed after the command; [json] for `-j`.
+     */
+    void onRequest(String command, String args, boolean json, IHyprReply reply) = 4;
 }

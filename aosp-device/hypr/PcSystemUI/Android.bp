@@ -82,5 +82,7 @@ android_app {
     },
     required: [
         "privapp_whitelist_com.android.systemui",
+        // The client of the IPC sockets HyprIpc serves (Phase E12).
+        "hyprctl",
     ],
 }

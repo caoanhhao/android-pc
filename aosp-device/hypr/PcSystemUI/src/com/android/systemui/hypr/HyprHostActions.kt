@@ -35,6 +35,8 @@ import com.android.hyprtile.HostKey
  *   DisplayManager's MANAGE_DISPLAYS calls.
  * - `forcekillactive`: force-stops the app of the focused window (`hyprctl kill` picks a window
  *   with the next click; on a desktop without a host compositor the focused one is the target).
+ * - `execr <command>`: Hyprland's raw exec, a shell command run by `/system/bin/sh -c` as
+ *   SystemUI's user (Phase E12: `hyprctl` from binds and Lua, docs/hypr-ipc.md).
  *
  * Nothing here needs SystemUI's Dagger graph, so [HyprTileController] calls it directly.
  */
@@ -42,12 +44,13 @@ object HyprHostActions {
     private const val TAG = "HyprHostActions"
 
     /** The dispatchers [dispatch] runs (`forcekillactive` goes through [forceStop]). */
-    val NAMES = setOf("volume", "brightness", "media", "inputmethod", "display")
+    val NAMES = setOf("volume", "brightness", "media", "inputmethod", "display", "execr")
 
     private val main by lazy { Handler(Looper.getMainLooper()) }
 
     /** Runs dispatcher [name]; false for an unknown name or argument. Any thread. */
     fun dispatch(context: Context, name: String, arg: String): Boolean {
+        if (name == "execr") return execr(arg)
         if (name == "display") {
             val mode = DisplayMode.parse(arg) ?: return false
             main.post { display(context, mode) }
@@ -57,6 +60,29 @@ object HyprHostActions {
         Log.i(TAG, "$name $arg: key ${KeyEvent.keyCodeToString(key.keyCode)}")
         sendKey(key.keyCode, if (key.shift) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
         return true
+    }
+
+    /**
+     * Starts [command] with `sh -c` in SystemUI's data directory, output dropped, the
+     * environment of Hyprland's exec (HYPRLAND_INSTANCE_SIGNATURE) set. False for an empty one.
+     * Android's ProcessBuilder has no Redirect.DISCARD: /dev/null instead.
+     */
+    fun execr(command: String): Boolean {
+        if (command.isBlank()) return false
+        Log.i(TAG, "execr $command")
+        return try {
+            val devNull = java.io.File("/dev/null")
+            val pb = ProcessBuilder("/system/bin/sh", "-c", command)
+                .redirectOutput(ProcessBuilder.Redirect.to(devNull))
+                .redirectError(ProcessBuilder.Redirect.to(devNull))
+                .redirectInput(ProcessBuilder.Redirect.from(devNull))
+            pb.environment()["HYPRLAND_INSTANCE_SIGNATURE"] = "android"
+            pb.start()
+            true
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "execr $command: $e")
+            false
+        }
     }
 
     /** Force-stops [task]'s app for the task's user, as Settings' Force stop does. */

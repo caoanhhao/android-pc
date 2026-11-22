@@ -807,6 +807,13 @@ commit (or `(partial: ...)`).
   `ALT + F2/F3`, media keys), display modes, input method switch, the remaining host binds
   (reload, kill, random wallpaper, ...) where Android has a counterpart; full image on
   Waydroid end to end; docs and this plan.
+- **E12 — Hyprland IPC and hyprctl:** Hyprland's request and event sockets
+  (`.socket.sock`, `.socket2.sock`) served by PcSystemUI as abstract UNIX sockets
+  `@hypr/.socket.sock` and `@hypr/.socket2.sock`, Hyprland's syntax, text and `-j` JSON output
+  (Hyprland's field names from Android tasks) and `EVENT>>DATA` lines; `/system_ext/bin/hyprctl`
+  (Rust) with `events`, `rollinglog` and `repl` on the client side; `tools/hyprctl.sh` from
+  the host; uid check (root, shell, system, `ipc.allow` packages) and sepolicy; what Android
+  cannot do answers an error (docs/hypr-ipc.md).
 
 ## Phase R — public releases
 

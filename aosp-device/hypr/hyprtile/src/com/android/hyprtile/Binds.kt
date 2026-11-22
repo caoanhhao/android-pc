@@ -137,4 +137,5 @@ val DISPATCHERS = setOf(
     "zoom", "togglespecialworkspace",
     "clipboardhistory", "translate", "screenshot", "lock", "userswitcher",
     "volume", "brightness", "media", "inputmethod", "display", "forcekillactive", "reload", "wallpaper",
+    "execr",
 )

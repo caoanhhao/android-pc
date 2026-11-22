@@ -17,6 +17,7 @@ import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
 import com.android.hyprtile.defaultBinds
 import com.android.hyprtile.parseBind
+import com.android.hyprshell.IHyprReply
 import com.android.hyprshell.IHyprShell
 import com.android.hyprshell.IHyprShellListener
 import java.util.concurrent.Executors
@@ -49,6 +50,7 @@ class Desktop private constructor(context: Context) {
     val notifier = Notifier(this)
     private val wallpapers = Wallpapers(this)
     val lua = LuaConfig(this)
+    private val ipc = IpcRequests(this)
 
     private val listener = object : IHyprShellListener.Stub() {
         override fun onStateChanged(displayId: Int, state: Bundle) {
@@ -72,6 +74,10 @@ class Desktop private constructor(context: Context) {
                     "wallpaper" -> wallpapers.dispatch(arg)
                 }
             }
+        }
+
+        override fun onRequest(command: String, args: String, json: Boolean, reply: IHyprReply) {
+            ipc.handle(command, args, json, reply)
         }
     }
 

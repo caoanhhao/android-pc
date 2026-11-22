@@ -76,6 +76,7 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.default_binds` | bool | true | install Hyprland's example binds on `main_mod` (below) |
 | `shell.terminal` | package | none | `main_mod + Q` starts it (AOSP has no terminal) |
 | `shell.file_manager` | package | `com.android.documentsui` | `main_mod + E` |
+| `ipc.allow` | packages, comma-separated | `com.termux,com.android.hyprlauncher` | apps that may use hyprctl's sockets besides root, shell and system; `*` for every app (docs/hypr-ipc.md) |
 | `shell.caption` | `"none"`, `"floating"`, `"all"` | `floating` | which windows keep Shell's title bar (close, maximize, drag) |
 | `shell.tiling` | bool | true | false: no tiling, Shell's own desktop windowing |
 | `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
@@ -401,6 +402,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 
 | Lua | Hyprland's name | What |
 |---|---|---|
+| `hl.dsp.exec_raw("cmd")` | `execr` | a shell command (`/system/bin/sh -c`, as SystemUI), e.g. `"hyprctl notify 1 3000 0 hi"` (docs/hypr-ipc.md) |
 | `hl.dsp.focus({ workspace = N })` | `workspace` | switch to workspace N (1..`shell.workspaces`, made if it does not exist); `"e+1"`/`"e-1"` the next/previous workspace that exists (wrapping), `"+1"`/`"-1"` (`"r+1"`) the next/previous number |
 | `hl.dsp.focus({ direction = "left" })` | `movefocus` | focus the neighbour (`left`, `right`, `up`, `down`, or `l r u d`) |
 | `hl.dsp.focus({ window = w })` | `focuswindow` | a window from `hl.get_windows()`, a task id, or a selector (`"class:^org\\.chromium"`, `"title:..."`, `"initialclass:"`, `"initialtitle:"`, `"pid:N"`, `"address:0x<hex task id>"`, `"taskid:N"`, `"activewindow"`, `"floating"`, `"tiled"`; `negative:` inverts a regex): its workspace, to front |
@@ -587,6 +589,11 @@ hidden (minimized), visible, active, at = { x, y }, size = { x, y }, workspace }
 `{ id, name, windows (count), is_empty, active, visible }`.
 
 ## Queries, notifications, timers
+
+Scripts outside the configuration get the same information, and the dispatchers, through
+Hyprland's IPC: `hyprctl` on the image and the `@hypr/.socket.sock` / `@hypr/.socket2.sock`
+sockets (docs/hypr-ipc.md); `hyprctl eval` and `hyprctl repl` run Lua in this configuration's
+state.
 
 | Call | Returns |
 |---|---|

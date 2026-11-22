@@ -1,0 +1,15 @@
+// hyprctl: Hyprland's command-line client for the shell's IPC sockets (Phase E12,
+// docs/hypr-ipc.md). PcSystemUI serves `@hypr/.socket.sock` and `@hypr/.socket2.sock`; this
+// is the client, in /system_ext/bin (on PATH) for adb shell, Termux and `execr`.
+
+package {
+    default_visibility: ["//device/android-pc/pc_x86_64/hypr:__subpackages__"],
+}
+
+rust_binary {
+    name: "hyprctl",
+    crate_name: "hyprctl",
+    srcs: ["main.rs"],
+    // /system_ext/bin (on PATH): generic_system.mk keeps /system for the generic system image.
+    system_ext_specific: true,
+}

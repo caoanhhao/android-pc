@@ -152,6 +152,62 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
         return r
     }
 
+    /**
+     * `hyprctl eval` / `hyprctl repl` (Phase E12, docs/hypr-ipc.md): runs [code] in the loaded
+     * configuration's state. eval answers `ok` (or what the code printed), repl the code's
+     * results through tostring() (an expression is tried first); an error comes back as
+     * `error: ...`.
+     */
+    fun eval(code: String, repl: Boolean): String {
+        val s = state ?: return "error: no configuration loaded"
+        return try {
+            if (evalState !== s) {
+                s.run(EVAL_HELPER, "=hyprctl")
+                evalState = s
+            }
+            s.call("__hyprctl_eval", code, if (repl) "1" else "", budget = HOOK_BUDGET) ?: ""
+        } catch (e: LuaException) {
+            "error: ${firstLines(e.message)}"
+        } finally {
+            afterCall()
+        }
+    }
+
+    /**
+     * `hyprctl keyword SECTION:OPTION VALUE`: sets one option as `hl.config` would (VALUE is a
+     * boolean, a number or a string by its look). Null on success, else the error.
+     */
+    fun keyword(key: String, value: String): String? {
+        val b = builder ?: return "no configuration loaded"
+        val v = value.trim()
+        val type = when {
+            v == "true" || v == "false" -> "boolean"
+            v.toDoubleOrNull() != null -> "number"
+            else -> "string"
+        }
+        try {
+            b.set(optionKey(key), v, type)
+        } catch (e: LuaConfigException) {
+            return e.message ?: "bad value"
+        }
+        afterCall()
+        return null
+    }
+
+    /** `hyprctl getoption`: the option's value as set or by default, null for an unknown one. */
+    fun option(key: String): String? = builder?.get(optionKey(key))
+
+    /** Whether the configuration sets [key] itself (getoption's `set`). */
+    fun optionSet(key: String): Boolean = builder?.isSet(optionKey(key)) ?: false
+
+    /** The options the configuration knows, with their values (`hyprctl descriptions`). */
+    fun options(): Map<String, String> {
+        val b = builder ?: return emptyMap()
+        return ConfigBuilder.optionNames.sorted().associateWith { b.get(it) ?: "" }
+    }
+
+    private var evalState: LuaState? = null
+
     /** Stops the timers and closes the state. */
     fun close() {
         for (t in timers.values) t.token?.let(host::cancel)
@@ -304,6 +360,35 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
     companion object {
         /** Instructions for one hook, bind or timer call. */
         const val HOOK_BUDGET = 2_000_000L
+
+        /** Hyprland's `section:option` (and `section:sub:option`) as the dotted Lua name. */
+        fun optionKey(key: String): String = key.trim().replace(':', '.')
+
+        /** `__hyprctl_eval(code, repl)`: print() collected, results through tostring(). */
+        private val EVAL_HELPER = """
+            function __hyprctl_eval(code, repl)
+              local out = {}
+              local saved = print
+              print = function(...)
+                local t = {}
+                for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
+                out[#out + 1] = table.concat(t, "\t")
+              end
+              local f, err
+              if repl ~= "" then f = load("return " .. code, "=hyprctl") end
+              if not f then f, err = load(code, "=hyprctl") end
+              if not f then print = saved; error(err, 0) end
+              local r = table.pack(pcall(f))
+              print = saved
+              if not r[1] then error(tostring(r[2]), 0) end
+              if repl ~= "" then
+                for i = 2, r.n do out[#out + 1] = tostring(r[i]) end
+                return table.concat(out, "\n")
+              end
+              if #out > 0 then return table.concat(out, "\n") end
+              return "ok"
+            end
+        """.trimIndent()
         const val NOTIFY_MS = 5000L
         const val ERROR_MS = 10_000L
         val ERROR_COLOR = 0xFFFF5555.toInt()

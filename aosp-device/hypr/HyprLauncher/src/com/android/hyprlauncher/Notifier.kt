@@ -32,6 +32,8 @@ class Notifier(private val desktop: Desktop) {
     private val list = LinearLayout(ctx)
     private var shown = false
     private var top = 0
+    private var configError: String? = null
+    private var custom: Pair<String, Int?>? = null
 
     init {
         root.orientation = LinearLayout.VERTICAL
@@ -57,17 +59,39 @@ class Notifier(private val desktop: Desktop) {
 
     /** Shows the configuration error, or hides it when [message] is null. */
     fun setError(message: String?) {
-        error.text = message?.let { "init.lua: config error\n$it" }
-        error.visibility = if (message == null) View.GONE else View.VISIBLE
+        configError = message
+        // `hyprctl seterror` lasts until the configuration loads again, as in Hyprland.
+        if (message == null) custom = null
+        showError()
+    }
+
+    /** `hyprctl seterror COLOR TEXT` (Phase E12): [text] in the error strip; null = `disable`. */
+    fun setCustomError(text: String?, color: Int?) {
+        custom = text?.let { it to color }
+        showError()
+    }
+
+    private fun showError() {
+        val c = custom
+        error.text = c?.first ?: configError?.let { "init.lua: config error\n$it" }
+        error.setBackgroundColor(c?.second ?: ERROR_BG)
+        error.visibility = if (c == null && configError == null) View.GONE else View.VISIBLE
+        update()
+    }
+
+    /** `hyprctl dismissnotify [N]`: the oldest [count] messages, every one when negative. */
+    fun dismiss(count: Int) {
+        val n = if (count < 0) list.childCount else minOf(count, list.childCount)
+        repeat(n) { list.removeViewAt(0) }
         update()
     }
 
     /** A notification for [timeoutMs]; [color] is its accent (ARGB), the bar's accent if null. */
-    fun notify(text: String, timeoutMs: Long, color: Int?) {
+    fun notify(text: String, timeoutMs: Long, color: Int?, textSize: Float = 13f) {
         val v = TextView(ctx)
         v.text = text
         v.setTextColor(Bar.FG)
-        v.textSize = 13f
+        v.textSize = textSize
         v.maxWidth = desktop.dp(520f)
         val pad = desktop.dp(10f)
         v.setPadding(pad, pad / 2, pad, pad / 2)

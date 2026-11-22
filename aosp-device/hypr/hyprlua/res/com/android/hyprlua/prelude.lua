@@ -292,7 +292,11 @@ hl.dsp = namespace("hl.dsp", {
     if rules ~= nil then H(3, "warn", "exec_cmd: rules are ignored (use hl.window_rule)") end
     return dsp("exec", cmd)
   end,
-  exec_raw = function(cmd) return dsp("exec", cmd) end,
+  -- Hyprland's execr: a shell command (`sh -c`, as SystemUI), e.g. "hyprctl dispatch ..." (E12).
+  exec_raw = function(cmd)
+    if type(cmd) ~= "string" then error("hl.dsp.exec_raw needs a shell command", 2) end
+    return dsp("execr", cmd)
+  end,
   focus = function(t)
     if type(t) ~= "table" then error("hl.dsp.focus({ direction = ... } or { workspace = ... })", 2) end
     if t.direction ~= nil then return dsp("movefocus", dir(t.direction, 2)) end

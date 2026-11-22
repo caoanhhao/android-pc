@@ -157,6 +157,7 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
                     "${r.config.warnings.size} warnings")
                 r.config.warnings.forEach { Log.i(TAG, "init.lua: $it") }
                 apply(r.config)
+                lastError = null
                 desktop.handler.post { desktop.notifier.setError(null) }
                 if (r.config.warnings.isNotEmpty()) {
                     notify("init.lua: ${r.config.warnings.size} warning(s)\n" +
@@ -171,6 +172,7 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
     }
 
     private fun showError(message: String) {
+        lastError = message
         desktop.handler.post { desktop.notifier.setError(message) }
     }
 
@@ -213,6 +215,17 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         lua.removeCallbacks(reload)
         lua.post { if (everLoaded) load() }
     }
+
+    /** Runs [block] with the Lua runtime on the Lua thread (hyprctl requests, Phase E12). */
+    fun withRuntime(block: (HyprLua) -> Unit) {
+        lua.post { block(runtime) }
+    }
+
+    /** `hyprctl configerrors`: the error in force and the last load's warnings. */
+    fun errors(): List<String> = listOfNotNull(lastError) + (current?.warnings ?: emptyList())
+
+    @Volatile
+    private var lastError: String? = null
 
     /** A Lua function bound to keys (dispatcher `lua`, from the shell). */
     fun callBind(id: String) {

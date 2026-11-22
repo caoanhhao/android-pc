@@ -1,0 +1,7 @@
+# Hyprland's IPC sockets (Phase E12, docs/hypr-ipc.md): PcSystemUI (platform_app) listens on the
+# abstract sockets @hypr/.socket.sock and @hypr/.socket2.sock; hyprctl (or socat) connects from
+# adb shell, from Termux and other apps, and from SystemUI's own `execr`. Abstract sockets are
+# checked against the listening process's domain. Who may actually use them is decided by
+# HyprIpc from the peer's uid (root, shell, system, and the packages in ipc.allow).
+allow { shell untrusted_app_all priv_app system_app } platform_app:unix_stream_socket connectto;
+allow shell platform_app:unix_stream_socket { read write getattr getopt shutdown };

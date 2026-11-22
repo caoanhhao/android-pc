@@ -6,6 +6,7 @@ import android.os.RemoteCallbackList
 import android.os.RemoteException
 import android.util.Log
 import android.view.Display.DEFAULT_DISPLAY
+import com.android.hyprshell.IHyprReply
 import com.android.hyprshell.IHyprShell
 import com.android.hyprshell.IHyprShellListener
 import com.android.wm.shell.common.ExternalInterfaceBinder
@@ -13,6 +14,8 @@ import com.android.wm.shell.common.RemoteCallable
 import com.android.wm.shell.common.ShellExecutor
 import com.android.wm.shell.sysui.ShellController
 import com.android.wm.shell.sysui.ShellInit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * IHyprShell for HyprLauncher (Phase D4, docs/hypr-desktop.md).
@@ -24,7 +27,9 @@ import com.android.wm.shell.sysui.ShellInit
  * need MANAGE_ACTIVITY_TASKS, as for Shell's other interfaces).
  *
  * State goes out to listeners after every layout sync and title change, debounced, together
- * with Hyprland-style events derived from the difference to the previous state.
+ * with Hyprland-style events derived from the difference to the previous state. The same push
+ * feeds Hyprland's IPC sockets ([HyprIpc], Phase E12), which ask the launcher for what is
+ * its own (Lua, notifications, layers) through [IHyprShellListener.onRequest].
  */
 class HyprShell(
     private val context: Context,
@@ -37,6 +42,7 @@ class HyprShell(
     private val listeners = RemoteCallbackList<IHyprShellListener>()
     private val pushRunnable = Runnable { push() }
     private var last: Bundle? = null
+    private val ipc = HyprIpc(context, controller, mainExecutor, ::askLauncher)
 
     init {
         shellInit.addInitCallback(::onInit, this)
@@ -44,6 +50,7 @@ class HyprShell(
 
     private fun onInit() {
         shellController.addExternalInterface(IHyprShell.DESCRIPTOR, { Binder(this) }, this)
+        ipc.start()
         controller.onStateChanged = {
             mainExecutor.removeCallbacks(pushRunnable)
             mainExecutor.executeDelayed(pushRunnable, PUSH_DELAY_MS)
@@ -70,6 +77,7 @@ class HyprShell(
         val state = controller.state(DEFAULT_DISPLAY)
         val events = events(last, state)
         last = state
+        ipc.onState(state)
         val n = listeners.beginBroadcast()
         for (i in 0 until n) {
             val l = listeners.getBroadcastItem(i)
@@ -81,6 +89,38 @@ class HyprShell(
             }
         }
         listeners.finishBroadcast()
+    }
+
+    /**
+     * A hyprctl request for the launcher (any thread but the main one): the first listener
+     * that answers within [REQUEST_TIMEOUT_MS]; null without one.
+     */
+    private fun askLauncher(command: String, args: String, json: Boolean): String? {
+        val latch = CountDownLatch(1)
+        var answer: String? = null
+        val reply = object : IHyprReply.Stub() {
+            override fun reply(text: String?) {
+                answer = text ?: ""
+                latch.countDown()
+            }
+        }
+        mainExecutor.execute {
+            val n = listeners.beginBroadcast()
+            var asked = false
+            for (i in 0 until n) {
+                try {
+                    listeners.getBroadcastItem(i).onRequest(command, args, json, reply)
+                    asked = true
+                    break
+                } catch (e: RemoteException) {
+                    Log.w(TAG, "listener gone: $e")
+                }
+            }
+            listeners.finishBroadcast()
+            if (!asked) latch.countDown()
+        }
+        latch.await(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        return answer
     }
 
     private fun addListener(l: IHyprShellListener) {
@@ -101,6 +141,7 @@ class HyprShell(
         override fun setConfig(config: Bundle?) {
             executeRemoteCallWithTaskPermission(shell, "setConfig") {
                 it.controller.configOverrides = config ?: Bundle()
+                it.ipc.onConfig()
             }
         }
 
@@ -142,6 +183,7 @@ class HyprShell(
     companion object {
         private const val TAG = "HyprShell"
         private const val PUSH_DELAY_MS = 50L
+        private const val REQUEST_TIMEOUT_MS = 5000L
 
         /** Hyprland's event names for what changed between [old] and [new]. */
         fun events(old: Bundle?, new: Bundle): List<Pair<String, String>> {

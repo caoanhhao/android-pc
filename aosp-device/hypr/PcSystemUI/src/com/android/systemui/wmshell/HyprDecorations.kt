@@ -52,6 +52,12 @@ class HyprDecorations(
         private set
 
     private val windows = HashMap<Int, Window>()
+
+    /**
+     * Opacity set with `hyprctl setprop` (Phase E12): active and inactive, each null when unset;
+     * over a window rule's. Entries of closed tasks are harmless and dropped with them.
+     */
+    val propOpacity = HashMap<Int, Pair<Float?, Float?>>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
 
     /** Starts styling Shell's decorations. */
@@ -73,10 +79,12 @@ class HyprDecorations(
         t.apply()
     }
 
-    /** The opacity window [taskId] should have: its window rule's, else the configuration's. */
+    /** The opacity window [taskId] should have: setprop's, its window rule's, else the configuration's. */
     fun opacity(taskId: Int, focused: Boolean): Float {
         val rule = opacityRule(taskId)
-        return if (focused) rule?.first ?: config.activeOpacity else rule?.second ?: config.inactiveOpacity
+        val prop = propOpacity[taskId]
+        return if (focused) prop?.first ?: rule?.first ?: config.activeOpacity
+        else prop?.second ?: rule?.second ?: config.inactiveOpacity
     }
 
     /** The opacity of [taskId] as last decorated (1 when unknown). */
