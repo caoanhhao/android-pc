@@ -27,6 +27,9 @@ import kotlin.math.min
  * - Windows moving or resizing (`windowsMove`): position and size interpolated; the content
  *   (already drawn at its new size) is scaled to the current size, as Hyprland stretches it.
  * - Workspace switch (`workspacesIn`/`workspacesOut`): slide, slidevert, fade, slidefade.
+ * - Special workspace showing or hiding (`specialWorkspaceIn`/`specialWorkspaceOut`, E5): its
+ *   windows slide down from above the top edge (slidevert) and back up, or from the left edge
+ *   (slide), or fade; the dim layer behind them fades with the same timing.
  *
  * Runs on Shell's main thread, where transitions are started and finished.
  */
@@ -168,12 +171,7 @@ class HyprAnimator {
         val inStyle = runCatching { cfg.workspaceStyle("workspacesIn") }.getOrDefault(WorkspaceStyle())
         val outStyle = runCatching { cfg.workspaceStyle("workspacesOut") }.getOrDefault(WorkspaceStyle())
         val sign = if (forward) 1 else -1
-        fun shift(style: WorkspaceStyle): Pair<Float, Float> {
-            if (!style.slide) return 0f to 0f
-            val dx = if (style.vertical) 0f else display.width() * style.slidePercent / 100f
-            val dy = if (style.vertical) display.height() * style.slidePercent / 100f else 0f
-            return dx to dy
-        }
+        fun shift(style: WorkspaceStyle) = style.shift(display.width(), display.height())
         val tracks = ArrayList<Track>()
         val (ix, iy) = shift(inStyle)
         val (ox, oy) = shift(outStyle)
@@ -210,6 +208,66 @@ class HyprAnimator {
         for (t in tracks) t.apply(startT, 0)
         play(tracks, startT, onFinished)
     }
+
+    /**
+     * A special workspace showing ([show]) or hiding: the [special] windows come down from
+     * above the display (they go back up), as one workspace; [others] (windows of the same
+     * transition re-tiled meanwhile) animate as usual. Their bounds are in place
+     * ([WindowChange.to] when showing, [WindowChange.from] when hiding).
+     */
+    fun animateSpecial(
+        display: Rect,
+        show: Boolean,
+        special: List<WindowChange>,
+        others: List<WindowChange>,
+        startT: SurfaceControl.Transaction,
+        onFinished: () -> Unit,
+    ) {
+        val cfg = config
+        val node = specialNode(show)
+        val spec = cfg.resolve(node)
+        val style = runCatching { cfg.workspaceStyle(node) }.getOrDefault(WorkspaceStyle(vertical = true))
+        val curve = cfg.curveNamed(spec.curve)
+        val d = spec.durationMs
+        val (dx, dy) = style.shift(display.width(), display.height())
+        val tracks = ArrayList<Track>()
+        for (c in special) {
+            val rect = if (show) c.to else c.from
+            // The buffer has the end size: scale it to the size it slides with.
+            val sx = rect.width().toFloat() / c.to.width().coerceAtLeast(1)
+            val sy = rect.height().toFloat() / c.to.height().coerceAtLeast(1)
+            tracks += Track(d) { t, ms ->
+                // 1 is in place, 0 is away (above the top edge, or left of the display).
+                val p = progress(curve, ms, d).let { if (show) it else 1 - it }
+                t.setMatrix(c.leash, sx, 0f, 0f, sy)
+                t.setPosition(c.leash, rect.left - dx * (1 - p), rect.top - dy * (1 - p))
+                t.setAlpha(c.leash, if (style.fade) c.alpha * p else c.alpha)
+            }
+        }
+        tracks += others.mapNotNull { windowTrack(it) }
+        for (t in tracks) t.apply(startT, 0)
+        play(tracks, startT, onFinished)
+    }
+
+    /**
+     * Fades [surfaces] (surface, from, to alpha) with the timing of a special workspace
+     * showing ([show]) or hiding: the dim layer behind it. [onFinished] runs at the end.
+     */
+    fun fadeSpecial(show: Boolean, surfaces: List<Triple<SurfaceControl, Float, Float>>, onFinished: () -> Unit) {
+        val spec = config.resolve(specialNode(show))
+        val curve = config.curveNamed(spec.curve)
+        val d = spec.durationMs
+        val tracks = surfaces.map { (sc, from, to) ->
+            Track(d) { t, ms ->
+                if (sc.isValid) t.setAlpha(sc, from + (to - from) * progress(curve, ms, d))
+            }
+        }
+        val t = SurfaceControl.Transaction()
+        for (tr in tracks) tr.apply(t, 0)
+        play(tracks, t, onFinished)
+    }
+
+    private fun specialNode(show: Boolean) = if (show) "specialWorkspaceIn" else "specialWorkspaceOut"
 
     /**
      * Animates one surface from [from] to [to] outside a transition (a mouse-dragged window

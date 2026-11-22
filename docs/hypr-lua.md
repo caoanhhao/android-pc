@@ -115,18 +115,20 @@ hl.animation("workspaces", { speed = 5, curve = "snappy", style = "slidevert" })
 - Leaves played here, in Hyprland's tree (a leaf not set takes its parent's settings, an empty
   style its parent's style): `global` > `windows` > `windowsIn`, `windowsOut`, `windowsMove`;
   `global` > `fade` > `fadeIn`, `fadeOut`, `fadeSwitch`; `global` > `border`; `global` >
-  `workspaces` > `workspacesIn`, `workspacesOut`; `global` > `layers` > `layersIn`,
-  `layersOut` (the bar sliding in and out). Other Hyprland leaves (`fadeLayers*`,
-  `specialWorkspace*`, `zoomFactor`, ...) warn.
+  `workspaces` > `workspacesIn`, `workspacesOut`; `workspaces` > `specialWorkspace` >
+  `specialWorkspaceIn`, `specialWorkspaceOut` (a special workspace showing and hiding, E5);
+  `global` > `layers` > `layersIn`, `layersOut` (the bar sliding in and out). Other Hyprland
+  leaves (`fadeLayers*`, `zoomFactor`, ...) warn.
 - Window styles: `popin N%`, `slide [left|right|top|bottom]`, `fade`. Workspace styles:
-  `slide`, `slidevert`, `fade`, `slidefade N%`, `slidefadevert N%`. Layers (the bar): `fade`
+  `slide`, `slidevert`, `fade`, `slidefade N%`, `slidefadevert N%`; for `specialWorkspace*`
+  `slidevert` comes down from the top edge, `slide` from the left one. Layers (the bar): `fade`
   fades, anything else slides from the top.
 
 Defaults (Hyprland's example configuration, but a slide for workspaces):
 `global 10 default`, `border 5.39 easeOutQuint`, `windows 4.79 easeOutQuint`,
 `windowsIn 4.1 easeOutQuint popin 87%`, `windowsOut 1.49 linear popin 87%`,
 `fadeIn 1.73 almostLinear`, `fadeOut 1.46 almostLinear`, `fade 3.03 quick`,
-`workspaces 2.5 easeOutQuint slide`, `layers 3.81 easeOutQuint slide`, `layersIn 4
+`workspaces 2.5 easeOutQuint slide`, `specialWorkspace 3 easeOutQuint slidevert`, `layers 3.81 easeOutQuint slide`, `layersIn 4
 easeOutQuint`, `layersOut 1.5 linear` (Hyprland's example fades layers; the bar slides here).
 
 ## Binds
@@ -521,7 +523,15 @@ workspace disappear from their workspace. While one is shown, new windows open o
 the focused workspace in Hyprland; it stays shown over another workspace when you switch
 (unless `binds.hide_special_on_workspace_change`), hides when its last window closes, and a
 window of a hidden one that comes to front (its app started again, `focus({ window = })`, the
-switcher) shows it. One special workspace per display at a time.
+switcher) shows it. One special workspace per display at a time. It slides down from above
+the top edge when it shows and back up when it hides (the `specialWorkspace` animation,
+`slidevert`), while the dim behind it fades in step; workspace switches keep sliding sideways,
+so the two read apart:
+
+```lua
+hl.animation({ leaf = "specialWorkspace", speed = 3, bezier = "easeOutQuint", style = "slidevert" })
+hl.animation({ leaf = "specialWorkspaceOut", speed = 2, bezier = "quick", style = "slidefadevert 30%" })
+```
 
 ```lua
 hl.bind("ALT + S", hl.dsp.workspace.toggle_special())                     -- special

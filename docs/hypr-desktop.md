@@ -1885,8 +1885,16 @@ Lua: `hl.dsp.workspace.toggle_special(name)`, `hl.dsp.window.move({ workspace =
   workspaces, highlighted when shown, a click toggles; the overview adds a cell per special
   workspace with windows or shown; Lua's `hl.get_workspaces()` lists them as Hyprland does
   (`special = true`, negative id).
-- Not done: Hyprland's `specialWorkspace` slide animation (the windows move with the shell's
-  window animations), `cursor:warp_on_toggle_special`, a special workspace on a display other
+- **Animation:** Hyprland's `specialWorkspace` leaf (under `workspaces`, with
+  `specialWorkspaceIn`/`specialWorkspaceOut`), `slidevert` by default (3 ds, easeOutQuint):
+  showing slides the special workspace's windows down from above the top edge, hiding slides
+  them back up; `slide` comes from the left edge, `fade`/`slidefade[vert] N%` fade. The show
+  and hide changes are recorded (`specialMoves`) and `HyprAnimator.animateSpecial` moves the
+  special windows as one block by the style's shift (other windows of the same transition,
+  re-tiled, animate as usual); the dim layers fade in and out with the same leaf's timing
+  (`fadeSpecial`, the hidden ones are removed after the fade). Workspace switches keep their
+  horizontal slide, so the two are told apart at a glance.
+- Not done: `cursor:warp_on_toggle_special`, a special workspace on a display other
   than the focused one by name (`togglespecialworkspace` always acts on the focused display).
 
 ### Checked on Waydroid (2026-11-22)

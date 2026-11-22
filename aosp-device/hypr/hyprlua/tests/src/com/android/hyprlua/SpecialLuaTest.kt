@@ -1,9 +1,11 @@
 package com.android.hyprlua
 
+import com.android.hyprtile.AnimationConfig
 import com.android.hyprtile.WindowRule
 import com.android.hyprtile.WorkspaceRule
 import com.android.hyprtile.parseBind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,6 +74,29 @@ class SpecialLuaTest {
         assertEquals("true", c.wire.values["hide_special_on_workspace_change"])
         val m = load("""hl.config({ general = { layout = "master" }, master = { special_scale_factor = 0.6 } })""")
         assertEquals("0.6", m.wire.values["special_scale_factor"])
+    }
+
+    @Test
+    fun animation() {
+        fun anim(c: HyprConfig): AnimationConfig {
+            var a = AnimationConfig()
+            c.wire.lists.getValue("bezier").forEach { a = a.withBezier(it) }
+            c.wire.lists.getValue("animation").forEach { a = a.withAnimation(it) }
+            return a
+        }
+        val d = anim(load(""))
+        assertEquals("slidevert", d.resolve("specialWorkspaceIn").style)
+        assertEquals("slide", d.resolve("workspacesIn").style)
+        val c = load("""
+            hl.animation({ leaf = "specialWorkspace", speed = 4, bezier = "quick", style = "slidefadevert 30%" })
+            hl.animation({ leaf = "specialWorkspaceOut", enabled = false })
+        """.trimIndent())
+        val a = anim(c)
+        assertEquals(400L, a.resolve("specialWorkspaceIn").durationMs)
+        assertEquals("quick", a.resolve("specialWorkspaceIn").curve)
+        assertEquals("slidefadevert 30%", a.resolve("specialWorkspaceIn").style)
+        assertFalse(a.resolve("specialWorkspaceOut").enabled)
+        assertTrue(c.warnings.none { "specialWorkspace" in it })
     }
 
     @Test

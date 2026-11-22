@@ -545,8 +545,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         val HYPRLAND_ANIMATIONS = setOf(
             "layers", "layersIn", "layersOut", "fadeLayers", "fadeLayersIn", "fadeLayersOut",
             "fadePopups", "fadePopupsIn", "fadePopupsOut", "fadeDpms", "fadeShadow", "fadeDim",
-            "borderangle", "specialWorkspace", "specialWorkspaceIn", "specialWorkspaceOut",
-            "zoomFactor", "monitorAdded",
+            "borderangle", "zoomFactor", "monitorAdded",
         )
 
         /** Hyprland name -> name on the wire (`persist.hypr.` + it is the property). */

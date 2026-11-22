@@ -187,6 +187,8 @@ class HyprTileController(
     private val ownChanges = HashSet<IBinder>()
     /** Desk switches this controller started and animates. */
     private val deskSwitches = HashMap<IBinder, DeskSwitch>()
+    /** Own changes that show (true) or hide a special workspace, and its windows (E5). */
+    private val specialMoves = HashMap<IBinder, Pair<Boolean, Set<Int>>>()
     /** Requests this controller saw: the trigger task and whether it was visible before. */
     private val requests = HashMap<IBinder, Pair<Int, Boolean>>()
     /** Where a window really is when a transition starts (a mouse-dragged window), absolute. */
@@ -397,9 +399,13 @@ class HyprTileController(
         val desk = deskSwitches.remove(transition)
         val own = ownChanges.remove(transition)
         val request = requests.remove(transition)
+        val specialMove = specialMoves.remove(transition)
         if (!animationsEnabled || !enabled) return false
         if (desk != null) {
             return animateDeskSwitch(desk, info, startTransaction, finishTransaction, finishCallback)
+        }
+        if (own && specialMove != null) {
+            return animateSpecial(specialMove, info, startTransaction, finishTransaction, finishCallback)
         }
         if (!own && request == null) return false
         val changes = windowChanges(info, finishTransaction, request) ?: return false
@@ -479,6 +485,50 @@ class HyprTileController(
         return out.takeIf { it.isNotEmpty() }
     }
 
+    /**
+     * A special workspace showing or hiding (E5): its windows slide in from above the top edge
+     * or back out ([HyprAnimator.animateSpecial]), not as windows opening or closing.
+     */
+    private fun animateSpecial(
+        move: Pair<Boolean, Set<Int>>,
+        info: TransitionInfo,
+        startT: SurfaceControl.Transaction,
+        finishT: SurfaceControl.Transaction,
+        finishCallback: TransitionFinishCallback,
+    ): Boolean {
+        val (show, ids) = move
+        val changes = windowChanges(info, finishT, null) ?: return false
+        val display = changes.first().display
+        val (moving, others) = changes.partition { c ->
+            info.changes.any { it.leash == c.leash && (it.taskInfo?.taskId ?: -1) in ids }
+        }
+        // Hidden windows end in the stash desk, in place for when they show again.
+        for (c in moving) {
+            finishT.setPosition(c.leash, c.to.left.toFloat(), c.to.top.toFloat())
+            finishT.setAlpha(c.leash, c.alpha)
+        }
+        if (!show) {
+            // Shell layers windows going to back below the others (the workspace's windows
+            // would cover them), and keeps a task under its parent desk when that desk takes
+            // part in the transition (the stash desk is hidden): they slide out on top, above
+            // the transition root.
+            val root = info.getRoot(0).leash
+            for (c in moving) {
+                val change = info.changes.find { it.leash == c.leash } ?: continue
+                change.parent?.let { info.getChange(it) }?.let {
+                    startT.reparent(c.leash, root)
+                    finishT.reparent(c.leash, it.leash)
+                }
+                startT.setLayer(c.leash, SPECIAL_SLIDE_LAYER)
+            }
+        }
+        Log.d(TAG, "animating special ${if (show) "show" else "hide"} ${info.debugId}: ${moving.size} windows")
+        animator.animateSpecial(display, show, moving, others, startT) {
+            finishCallback.onTransitionFinished(null)
+        }
+        return true
+    }
+
     private fun animateDeskSwitch(
         desk: DeskSwitch,
         info: TransitionInfo,
@@ -539,9 +589,8 @@ class HyprTileController(
     }
 
     /** Starts a TRANSIT_CHANGE with new bounds that this controller animates. */
-    private fun startChange(wct: WindowContainerTransaction) {
-        ownChanges += transitions.startTransition(TRANSIT_CHANGE, wct, this)
-    }
+    private fun startChange(wct: WindowContainerTransaction): IBinder =
+        transitions.startTransition(TRANSIT_CHANGE, wct, this).also { ownChanges += it }
 
     // ---- observer path: catch up with changes made without a request ----
 
@@ -554,6 +603,7 @@ class HyprTileController(
 
     override fun onTransitionFinished(transition: IBinder, aborted: Boolean) {
         ownChanges -= transition
+        specialMoves -= transition
         deskSwitches -= transition
         runningDeskSwitches -= transition
         requests -= transition
@@ -1119,7 +1169,7 @@ class HyprTileController(
             taskOrganizer.getRunningTaskInfo(id)?.let { id to it.bounds() }
         }.toMap()
         val target = neighbor(boxes, task.taskId, dir, slack = slack()) ?: return
-        taskOrganizer.getRunningTaskInfo(target)?.let { desktopTasksController.get().moveTaskToFront(it) }
+        focusWindow(target)
     }
 
     /**
@@ -1284,10 +1334,10 @@ class HyprTileController(
         Log.d(TAG, "special:$name shown over desk $deskId: ${special.windows(name)}")
         val wct = WindowContainerTransaction()
         val moved = presentSpecial(displayId, deskId, wct, all = true)
-        if (!wct.isEmpty) startChange(wct)
+        if (!wct.isEmpty) specialMoves[startChange(wct)] = true to special.windows(name).toSet()
         recordCarried(displayId, deskId, moved)
         focusSpecial(displayId, deskId)
-        updateDim()
+        updateDim(fade = true)
         onStateChanged?.invoke()
     }
 
@@ -1313,7 +1363,7 @@ class HyprTileController(
         saveSpecial()
         Log.d(TAG, "special:$name hidden on display $displayId")
         stashWindows(displayId, special.windows(name))
-        updateDim()
+        updateDim(fade = true)
         onStateChanged?.invoke()
     }
 
@@ -1377,7 +1427,7 @@ class HyprTileController(
                 moved += task to bounds
             }
             if (wct.isEmpty) return@withStashDesk
-            startChange(wct)
+            specialMoves[startChange(wct)] = false to moved.map { it.first.taskId }.toSet()
             for ((task, bounds) in moved) {
                 repository.addTaskToDesk(displayId, stash, task.taskId, isVisible = false, taskBounds = bounds)
             }
@@ -1592,8 +1642,9 @@ class HyprTileController(
     /**
      * Hyprland's `decoration:dim_special`: while a special workspace is shown, the windows of
      * the workspace behind it get a black layer of that opacity on top (the wallpaper stays).
+     * With [fade] (the special workspace showing or hiding), layers fade in and out with it.
      */
-    private fun updateDim() {
+    private fun updateDim(fade: Boolean = false) {
         val alpha = configOverrides.getString("dim_special")?.toFloatOrNull()?.coerceIn(0f, 1f)
             ?: DEFAULT_DIM_SPECIAL
         val want = HashMap<Int, Rect>()
@@ -1607,18 +1658,32 @@ class HyprTileController(
                 }
             }
         }
+        val animate = fade && animationsEnabled
         val t = SurfaceControl.Transaction()
-        for (id in dims.keys.filter { it !in want }) dims.remove(id)?.let { t.remove(it) }
+        val fadeOut = ArrayList<SurfaceControl>()
+        for (id in dims.keys.filter { it !in want }) {
+            dims.remove(id)?.let { if (animate) fadeOut += it else t.remove(it) }
+        }
+        val fadeIn = ArrayList<SurfaceControl>()
         for ((id, b) in want) {
             val parent = decorations.surfaceOf(id) ?: continue
             val dim = dims.getOrPut(id) {
                 SurfaceControl.Builder().setName("hypr-dim-special #$id").setColorLayer()
                     .setParent(parent).setCallsite("HyprTileController.updateDim").build()
+                    .also { if (animate) fadeIn += it }
             }
-            t.setColor(dim, floatArrayOf(0f, 0f, 0f)).setAlpha(dim, alpha).setLayer(dim, Int.MAX_VALUE)
-                .setCrop(dim, Rect(0, 0, b.width(), b.height())).show(dim)
+            t.setColor(dim, floatArrayOf(0f, 0f, 0f)).setAlpha(dim, if (dim in fadeIn) 0f else alpha)
+                .setLayer(dim, Int.MAX_VALUE).setCrop(dim, Rect(0, 0, b.width(), b.height())).show(dim)
         }
         t.apply()
+        if (fadeIn.isNotEmpty()) animator.fadeSpecial(true, fadeIn.map { Triple(it, 0f, alpha) }) {}
+        if (fadeOut.isNotEmpty()) {
+            animator.fadeSpecial(false, fadeOut.map { Triple(it, alpha, 0f) }) {
+                val r = SurfaceControl.Transaction()
+                for (sc in fadeOut) if (sc.isValid) r.remove(sc)
+                r.apply()
+            }
+        }
     }
 
     private fun saveSpecial() {
@@ -2253,6 +2318,8 @@ class HyprTileController(
         const val PREFS_WORKSPACES = "hypr_workspaces"
         /** Special workspaces' windows and keys in [PREFS_WORKSPACES] (E5). */
         const val PREF_SPECIAL = "special"
+        /** Layer of hiding special windows over the transition root, above everything else. */
+        private const val SPECIAL_SLIDE_LAYER = 1_000_000
         /** After a special workspace showed, when its window takes the focus. */
         const val FOCUS_SPECIAL_DELAY_MS = 300L
         /** Smallest floating window a mouse resize makes, unless the app asks for more. */

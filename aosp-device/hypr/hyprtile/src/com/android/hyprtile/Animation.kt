@@ -112,6 +112,12 @@ data class WorkspaceStyle(
     val slidePercent: Int = 100,
     val fade: Boolean = false,
 ) {
+    /** How far a workspace moves when it slides on a [width] x [height] display (x, y). */
+    fun shift(width: Int, height: Int): Pair<Float, Float> {
+        if (!slide) return 0f to 0f
+        return if (vertical) 0f to height * slidePercent / 100f else width * slidePercent / 100f to 0f
+    }
+
     companion object {
         fun parse(text: String): WorkspaceStyle {
             val parts = text.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -216,6 +222,10 @@ data class AnimationConfig(
             "workspaces" to "global",
             "workspacesIn" to "workspaces",
             "workspacesOut" to "workspaces",
+            // Special workspaces (E5) show and hide with these.
+            "specialWorkspace" to "workspaces",
+            "specialWorkspaceIn" to "specialWorkspace",
+            "specialWorkspaceOut" to "specialWorkspace",
             // The bar (Phase E7): Hyprland animates layer surfaces (waybar) with these.
             "layers" to "global",
             "layersIn" to "layers",
@@ -223,7 +233,8 @@ data class AnimationConfig(
         )
         val ANIMATIONS: Set<String> = PARENT.keys + "global"
 
-        private val WORKSPACE_NODES = setOf("workspaces", "workspacesIn", "workspacesOut")
+        private val WORKSPACE_NODES = setOf("workspaces", "workspacesIn", "workspacesOut",
+            "specialWorkspace", "specialWorkspaceIn", "specialWorkspaceOut")
         private val WINDOW_NODES = setOf("windows", "windowsIn", "windowsOut", "windowsMove")
 
         private fun checkStyle(name: String, style: String) {
@@ -245,7 +256,8 @@ data class AnimationConfig(
         /**
          * Hyprland's example configuration, except workspaces: a 250 ms easeOutQuint slide
          * (Hyprland's own default style) instead of its almostLinear fade, and layers (the bar):
-         * a slide instead of a fade.
+         * a slide instead of a fade, and special workspaces: they slide down from the top edge
+         * (`slidevert`), so they read apart from a workspace switch.
          */
         val DEFAULT_ANIMATIONS: Map<String, AnimSpec> = mapOf(
             "global" to AnimSpec(true, 10f, "default"),
@@ -257,6 +269,7 @@ data class AnimationConfig(
             "fadeOut" to AnimSpec(true, 1.46f, "almostLinear"),
             "fade" to AnimSpec(true, 3.03f, "quick"),
             "workspaces" to AnimSpec(true, 2.5f, "easeOutQuint", "slide"),
+            "specialWorkspace" to AnimSpec(true, 3f, "easeOutQuint", "slidevert"),
             "layers" to AnimSpec(true, 3.81f, "easeOutQuint", "slide"),
             "layersIn" to AnimSpec(true, 4f, "easeOutQuint"),
             "layersOut" to AnimSpec(true, 1.5f, "linear"),

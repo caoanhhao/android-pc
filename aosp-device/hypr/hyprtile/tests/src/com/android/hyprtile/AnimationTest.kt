@@ -71,6 +71,26 @@ class AnimationTest {
     }
 
     @Test
+    fun specialWorkspacesSlideVertically() {
+        val a = AnimationConfig()
+        // Their own node, under workspaces, slides down from the top by default (E5).
+        assertEquals(WorkspaceStyle(vertical = true), a.workspaceStyle("specialWorkspaceIn"))
+        assertEquals(WorkspaceStyle(vertical = true), a.workspaceStyle("specialWorkspaceOut"))
+        assertEquals(300L, a.resolve("specialWorkspaceIn").durationMs)
+        assertEquals(WorkspaceStyle(), a.workspaceStyle("workspacesIn"))
+        assertEquals(0f to 800f, WorkspaceStyle(vertical = true).shift(1000, 800))
+        assertEquals(1000f to 0f, WorkspaceStyle().shift(1000, 800))
+        assertEquals(0f to 0f, WorkspaceStyle.parse("fade").shift(1000, 800))
+        assertEquals(0f to 160f, WorkspaceStyle.parse("slidefadevert").shift(1000, 800))
+        // Set from a config: the In leaf takes the node's speed, curve and style.
+        val b = a.withAnimation("specialWorkspace, 1, 5, quick, fade")
+        assertEquals(AnimSpec(true, 5f, "quick", "fade"), b.resolve("specialWorkspaceIn"))
+        assertEquals(WorkspaceStyle(slide = false, fade = true), b.workspaceStyle("specialWorkspaceOut"))
+        assertFalse(a.withAnimation("specialWorkspaceOut, 0").resolve("specialWorkspaceOut").enabled)
+        assertThrows("style") { a.withAnimation("specialWorkspace, 1, 4, quick, popin") }
+    }
+
+    @Test
     fun configsCompareByValue() {
         assertEquals(AnimationConfig(), AnimationConfig().withBezier("linear, 0, 0, 1, 1"))
         assertTrue(AnimationConfig() != AnimationConfig().withAnimation("windows, 0"))
