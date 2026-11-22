@@ -304,6 +304,16 @@ hl.dsp = namespace("hl.dsp", {
   -- SystemUI's notification shade and quick settings (the touch gestures' top edge).
   notifications = function() return dsp("notifications") end,
   quick_settings = function() return dsp("quicksettings") end,
+  -- System actions (Phase E9), SystemUI's own: the host runs scripts for these.
+  clipboard_history = function() return dsp("clipboardhistory") end,
+  translate = function() return dsp("translate") end,
+  screenshot = function(t)
+    local mode = tostring(t and t.mode or "area")
+    if mode ~= "area" and mode ~= "full" then error("hl.dsp.screenshot: mode is 'area' or 'full'", 2) end
+    return dsp("screenshot", mode)
+  end,
+  lock = function() return dsp("lock") end,
+  user_switcher = function() return dsp("userswitcher") end,
   -- Full-screen zoom around the pointer (Phase E10; Hyprland's cursor:zoom_factor):
   -- { delta = 0.5 } changes the factor, { factor = 1 } sets it (1 is no zoom).
   zoom = function(t)

@@ -577,4 +577,25 @@ class HyprLuaTest {
         """)
         assertEquals(listOf("1 2 12* 30"), host.notes)
     }
+
+    @Test
+    fun systemActionDispatchers() {
+        val all = HyprLua(FakeHost()) { true }
+        val b = binds(load("""
+            hl.bind("ALT + SHIFT + V", hl.dsp.clipboard_history())
+            hl.bind("ALT + SHIFT + T", hl.dsp.translate())
+            hl.bind("ALT + SHIFT + S", hl.dsp.screenshot())
+            hl.bind("ALT + CTRL + SHIFT + S", hl.dsp.screenshot({ mode = "full" }))
+            hl.bind("ALT + SHIFT + Escape", hl.dsp.lock())
+            hl.bind("ALT + Escape", hl.dsp.user_switcher())
+        """, all))
+        val shift = setOf(Mod.ALT, Mod.SHIFT)
+        assertTrue(b.toString(), Bind(shift, "V", "clipboardhistory") in b)
+        assertTrue(Bind(shift, "T", "translate") in b)
+        assertTrue(Bind(shift, "S", "screenshot", "area") in b)
+        assertTrue(Bind(shift + Mod.CTRL, "S", "screenshot", "full") in b)
+        assertTrue(Bind(shift, "ESCAPE", "lock") in b)
+        assertTrue(Bind(setOf(Mod.ALT), "ESCAPE", "userswitcher") in b)
+        assertTrue(error("hl.bind('ALT + Q', hl.dsp.screenshot({ mode = 'window' }))").contains("'area' or 'full'"))
+    }
 }

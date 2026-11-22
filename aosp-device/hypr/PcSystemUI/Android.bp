@@ -56,6 +56,13 @@ android_app {
     enable_ksp: true,
 
     use_resource_processor: true,
+    // SystemUI's product="desktop" resources (res-product/): this is a desktop product. Among
+    // them config_enableLargeScreenScreencapture, the large-screen pre-capture UI that the
+    // `screenshot area` dispatcher opens (Phase E9; Waydroid's display is under sw600dp).
+    aaptflags: [
+        "--product",
+        "desktop",
+    ],
     platform_apis: true,
     system_ext_specific: true,
     certificate: "platform",

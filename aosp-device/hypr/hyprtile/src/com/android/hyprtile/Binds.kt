@@ -129,4 +129,5 @@ val DISPATCHERS = setOf(
     "notifications", "quicksettings",
     "pin", "setfloating", "settiled", "moveactive",
     "zoom",
+    "clipboardhistory", "translate", "screenshot", "lock", "userswitcher",
 )

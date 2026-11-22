@@ -9,6 +9,7 @@ import com.android.systemui.dagger.SysUIComponent;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.SystemUICoreStartableModule;
 import com.android.systemui.dagger.SystemUIModule;
+import com.android.systemui.hypr.HyprSystemModule;
 import com.android.systemui.keyguard.CustomizationProvider;
 import com.android.systemui.notifications.intelligence.rules.ui.NotificationRulesDefaultModule;
 import com.android.systemui.settings.MultiUserUtilsModule;
@@ -23,12 +24,13 @@ import dagger.Subcomponent;
 /**
  * SysUI subcomponent of PcSystemUI. The same modules as AOSP's ReferenceSysUIComponent
  * (frameworks/base/packages/SystemUI/application/src/.../dagger/ReferenceSysUIComponent.java);
- * keep the two lists in sync.
+ * keep the two lists in sync. HyprSystemModule is PcSystemUI's own (Phase E9 system actions).
  */
 @SysUISingleton
 @Subcomponent(modules = {
         DefaultComponentBinder.class,
         DependencyProvider.class,
+        HyprSystemModule.class,
         MultiUserUtilsModule.class,
         NotificationInsetsModule.class,
         NotificationRulesDefaultModule.class,

@@ -3,7 +3,7 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (special workspace, pin, screenshots, bar and panel widgets, lock, wheel binds) are
+-- (special workspace, pin, bar and panel widgets, wheel binds) are
 -- left out; see docs/hypr-lua.md for what the dispatchers can do. Keys the host keeps for
 -- itself under Waydroid (ALT + TAB, ALT + F2/F3/F11/F12, CTRL + ALT + P) never reach Android
 -- there: ALT + Tab (the host's SUPER + TAB) is bound for the real PC and works in Waydroid
@@ -97,3 +97,22 @@ hl.bind(mainMod .. " + SHIFT + minus", hl.dsp.zoom({ delta = -0.5 }), { repeatin
 hl.bind(mainMod .. " + SHIFT + mouse_down", hl.dsp.zoom({ delta = 0.2 }))
 hl.bind(mainMod .. " + SHIFT + mouse_up", hl.dsp.zoom({ delta = -0.2 }), { repeating = true })
 hl.bind(mainMod .. " + SHIFT + mouse:274", hl.dsp.zoom({ factor = 1 }))
+
+------------------------
+---- SYSTEM ------------
+------------------------
+
+-- The host's SUPER + SHIFT + V (clipboard manager): SystemUI's clipboard history, in memory
+-- only, sensitive clips (passwords) never kept. Enter pastes, SHIFT + Enter only copies.
+hl.bind(mainMod .. " + SHIFT + V", hl.dsp.clipboard_history())
+-- The host's MOD3 + T (translate): the selection, or else the clipboard, to Google Translate
+-- (installed by the user; a notification says so when it is missing). ALT + CTRL + T is
+-- "move down" here, so SHIFT.
+hl.bind(mainMod .. " + SHIFT + T", hl.dsp.translate())
+-- Screenshots as the host's custom binds have them: SHIFT + S an area, CTRL + SHIFT + S the
+-- whole screen.
+hl.bind(mainMod .. " + SHIFT + S", hl.dsp.screenshot({ mode = "area" }))
+hl.bind(mainMod .. " + CTRL + SHIFT + S", hl.dsp.screenshot({ mode = "full" }))
+-- The host's SUPER + SHIFT + Escape (hyprlock) and SUPER + Escape (its user panel).
+hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.lock())
+hl.bind(mainMod .. " + Escape", hl.dsp.user_switcher())

@@ -342,6 +342,11 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.quick_settings()` | `quicksettings` | SystemUI's quick settings |
 | `hl.dsp.zoom({ delta = 0.5 })` | `zoom +0.5` | zoom the whole screen around the pointer by that much (negative: out), between 1 and 8 (Phase E10, ours: Hyprland zooms with `cursor:zoom_factor`) |
 | `hl.dsp.zoom({ factor = 1 })` | `zoom 1` | set the zoom factor; 1 is no zoom |
+| `hl.dsp.clipboard_history()` | `clipboardhistory` | SystemUI's clipboard history picker (Phase E9, ours): type to filter, Enter pastes, SHIFT + Enter copies, Delete removes; text only, in memory, sensitive clips never kept |
+| `hl.dsp.translate()` | `translate` | the focused app's selection (copied with CTRL + C), or else the clipboard's text, to Google Translate's floating popup; a notification when the app is not installed (E9) |
+| `hl.dsp.screenshot({ mode = "area" })` | `screenshot area` | SystemUI's region screenshot (its large-screen pre-capture UI); `mode = "full"` (`screenshot full`) the whole screen with the usual preview and editor (E9) |
+| `hl.dsp.lock()` | `lock` | the lock screen now, as the power menu's Lock (E9) |
+| `hl.dsp.user_switcher()` | `userswitcher` | SystemUI's user switcher dialog, also with one user (E9) |
 | `hl.dsp.raw(name, arg)` | any of the above | by Hyprland's name: `hl.dsp.raw("movefocus", "l")` |
 | a Lua function | `lua` | runs in the launcher's Lua state |
 

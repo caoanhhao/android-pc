@@ -48,6 +48,7 @@ import com.android.hyprtile.parseWindow
 import com.android.hyprtile.parseXY
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
+import com.android.systemui.hypr.HyprSystemActions
 import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
 import com.android.wm.shell.common.ShellExecutor
@@ -691,6 +692,8 @@ class HyprTileController(
             "quicksettings" ->
                 context.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
             "exec" -> exec(arg.trim())
+            // SystemUI-side system actions (E9): clipboard, translate, screenshot, lock, users.
+            in HyprSystemActions.NAMES -> return HyprSystemActions.dispatch(name, arg)
             "zoom" -> return zoom.dispatch(arg)
             // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
             "launcher", "overview", "hyprexpo:expo", "lua" ->
