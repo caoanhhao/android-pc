@@ -28,6 +28,15 @@ interface TileLayout {
      * allowed ratios.
      */
     fun resize(id: Int, dx: Int, dy: Int) {}
+
+    /**
+     * A tiled window's edges were dragged: its left, top, right and bottom edges moved by these
+     * pixels (positive is right/down), as of the last [arrange]. The split line next to each
+     * moved edge follows it, so the neighbours on that side shrink or grow with it. An edge on
+     * the work area's border has no neighbour and stays.
+     */
+    fun resizeEdges(id: Int, left: Int, top: Int, right: Int, bottom: Int) =
+        resize(id, right - left, bottom - top)
 }
 
 fun newLayout(kind: LayoutKind): TileLayout = when (kind) {

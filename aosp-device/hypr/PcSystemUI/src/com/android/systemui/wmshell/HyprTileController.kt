@@ -28,6 +28,7 @@ import android.view.WindowManager.TRANSIT_OPEN
 import android.view.WindowManager.TRANSIT_TO_BACK
 import android.view.WindowManager.TRANSIT_TO_FRONT
 import android.window.TransitionInfo
+import android.window.TransitionInfo.FLAG_IS_DISPLAY
 import android.window.TransitionInfo.FLAG_IS_WALLPAPER
 import android.window.TransitionRequestInfo
 import android.window.WindowContainerTransaction
@@ -94,9 +95,10 @@ import java.util.Optional
  *   from its caption, minimized, moved by Shell itself), starts one TRANSIT_CHANGE with the new
  *   bounds.
  *
- * A task's bounds are written only when its tile changes, so a window the user drags or
- * resizes stays where it was put until the next layout change. Floating windows (not
- * resizeable, translucent, too large a minimum size) are left alone.
+ * A task's bounds are written only when its tile changes. Dragging a tiled window's edge
+ * (Shell's resize handles) moves the split lines on that side and re-tiles the neighbours
+ * ([onEdgeResize]). Floating windows (not resizeable, translucent, too large a minimum size)
+ * are left alone, and always stack above the tiled ones ([raiseAboveTiled]).
  *
  * Each desk (Shell's multidesks) is a Hyprland workspace with its own layout tree: workspace N
  * of a display is its N-th desk, created on demand. [dispatch] runs Hyprland's dispatchers
@@ -186,6 +188,10 @@ class HyprTileController(
     private var dispatchTarget: RunningTaskInfo? = null
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
     private val ownChanges = HashSet<IBinder>()
+    /** Shell's edge drags of tiled windows: the task and where its edges ended up. */
+    private val edgeResizes = HashMap<IBinder, Pair<RunningTaskInfo, Rect>>()
+    /** The desk's z-order (top first) when [raiseAboveTiled] last fixed it from sync. */
+    private val lastStacking = HashMap<Int, List<Int>>()
     /** Desk switches this controller started and animates. */
     private val deskSwitches = HashMap<IBinder, DeskSwitch>()
     /** Own changes that show (true) or hide a special workspace, and its windows (E5). */
@@ -357,20 +363,45 @@ class HyprTileController(
             Log.d(TAG, "request ${request.type} task ${task.taskId} desk $deskId -> relayout")
             addBounds(layoutKey, task.displayId, wct, task)
         }
-        if (opening && !tile.isPinned(task.taskId)) keepPinnedOnTop(deskId, wct)
+        if (opening) raiseAboveTiled(deskId, wct, top = task.taskId)
         return other ?: Transitions.RequestResult(wct)
     }
 
     /**
-     * A task that opens goes to the top of its desk, above always-on-top siblings too (only
-     * reordering keeps them above), so the desk's pinned windows are reordered above it again.
+     * Hyprland's stacking: tiled windows at the bottom, floating windows (and a maximized tiled
+     * one) above them, windows of a shown special workspace above those, pinned windows on top.
+     * Bringing a window to front only reorders it within its own kind.
      */
-    private fun keepPinnedOnTop(deskId: Int, wct: WindowContainerTransaction) {
-        for (id in tile.pinned()) {
-            if (repository.getDeskIdForTask(id) != deskId || repository.isMinimizedTask(id)) continue
-            val pinned = taskOrganizer.getRunningTaskInfo(id) ?: continue
-            wct.reorder(pinned.token, true)
+    private fun zRank(id: Int): Int = when {
+        tile.isPinned(id) -> 3
+        special.isMember(id) -> 2
+        !tile.isTiled(id) || id in maximized -> 1
+        else -> 0
+    }
+
+    /**
+     * Adds to [wct] the reorders that put [deskId]'s windows back into [zRank] order, keeping
+     * the order within each kind; [top] is a task this transition brings to front. False when
+     * the order is right already. A task that opens goes to the top of its desk, above
+     * floating and always-on-top siblings too (only reordering keeps them above).
+     */
+    private fun raiseAboveTiled(deskId: Int, wct: WindowContainerTransaction, top: Int? = null): Boolean {
+        val repo = repository
+        val z = repo.getFreeformTasksIdsInDeskInZOrder(deskId).filter {
+            it != top && !repo.isMinimizedTask(it) && taskOrganizer.getRunningTaskInfo(it) != null
+        }.let { if (top != null) listOf(top) + it else it } // top first
+        val ranks = z.map(::zRank)
+        if (ranks.zipWithNext().all { (above, below) -> above >= below }) return false
+        val desired = z.indices.sortedWith(compareByDescending<Int> { ranks[it] }.thenBy { it })
+        // Bottom to top: each reorder puts the task on top of the ones before it.
+        for (i in desired.asReversed()) {
+            if (ranks[i] == 0) continue
+            val id = z[i]
+            val token = taskOrganizer.getRunningTaskInfo(id)?.token ?: continue
+            wct.reorder(token, true)
         }
+        Log.d(TAG, "desk $deskId stacking: ${desired.map { z[it] }} (top first)")
+        return true
     }
 
     /**
@@ -609,14 +640,51 @@ class HyprTileController(
 
     // ---- observer path: catch up with changes made without a request ----
 
+    /**
+     * Notes Shell's drag-resize of a tiled window (a window edge dragged with the mouse ends in a
+     * TRANSIT_CHANGE of that one task, started by its ResizeTaskPositioner): its neighbours are
+     * re-tiled when the transition finishes ([onEdgeResize]).
+     */
     override fun onTransitionReady(
         transition: IBinder,
         info: TransitionInfo,
         startTransaction: SurfaceControl.Transaction,
         finishTransaction: SurfaceControl.Transaction,
-    ) {}
+    ) {
+        if (!enabled || transition in ownChanges || info.type != TRANSIT_CHANGE) return
+        if (info.changes.any { it.hasFlags(FLAG_IS_DISPLAY) }) return
+        val tasks = info.changes.filter { it.taskInfo != null }
+        val task = tasks.singleOrNull()?.taskInfo ?: return
+        val id = task.taskId
+        if (!tile.isTiled(id) || id in maximized || special.isMember(id)) return
+        val tiled = applied[id] ?: return
+        val now = tasks.single().endAbsBounds
+        if (now.width() == tiled.width() && now.height() == tiled.height()) return
+        edgeResizes[transition] = task to Rect(now)
+    }
+
+    /**
+     * A tiled window's edges were dragged from [applied] to [now]: the split lines on the moved
+     * sides follow, the neighbours shrink or grow with them, and the window settles into its new
+     * tile (Hyprland resizes tiled windows the same way, by moving the splits).
+     */
+    private fun onEdgeResize(task: RunningTaskInfo, now: Rect) {
+        val id = task.taskId
+        val old = applied[id] ?: return
+        val ws = tile.workspaceOf(id) ?: return
+        tile.resizeEdges(id, now.left - old.left, now.top - old.top,
+            now.right - old.right, now.bottom - old.bottom)
+        // The window is where the drag left it; it is moved only if its tile differs from that.
+        applied[id] = Rect(now)
+        val wct = WindowContainerTransaction()
+        addBounds(ws, task.displayId, wct)
+        Log.d(TAG, "edge resize task $id $old -> $now: re-tile ${tile.tiled(ws)}")
+        if (!wct.isEmpty) startChange(wct)
+        onStateChanged?.invoke()
+    }
 
     override fun onTransitionFinished(transition: IBinder, aborted: Boolean) {
+        edgeResizes.remove(transition)?.let { (task, now) -> if (!aborted) onEdgeResize(task, now) }
         ownChanges -= transition
         specialMoves -= transition
         deskSwitches -= transition
@@ -684,6 +752,14 @@ class HyprTileController(
                 // exec rules apply to it as to one opened through a request.
                 if (tile.workspaceOf(id) == null) newTasks += id
                 changed = tile.open(id, deskId, focused, float) || changed
+            }
+            // Shell brought a tiled window to front over floating ones (a tap, the taskbar):
+            // they go back above it. Once per stacking, in case the repository lags behind.
+            val zWct = WindowContainerTransaction()
+            val zNow = repo.getFreeformTasksIdsInDeskInZOrder(deskId)
+            if (lastStacking[deskId] != zNow && raiseAboveTiled(deskId, zWct)) {
+                lastStacking[deskId] = zNow
+                startChange(zWct)
             }
             if (!changed) continue
             val wct = WindowContainerTransaction()

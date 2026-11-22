@@ -110,6 +110,34 @@ class DwindleLayout : TileLayout {
         if (dy != 0) grow(leaf, dy, top = true)
     }
 
+    override fun resizeEdges(id: Int, left: Int, top: Int, right: Int, bottom: Int) {
+        val leaf = leaves[id] ?: return
+        if (left != 0) moveLine(leaf, left, top = false, after = false)
+        if (right != 0) moveLine(leaf, right, top = false, after = true)
+        if (top != 0) moveLine(leaf, top, top = true, after = false)
+        if (bottom != 0) moveLine(leaf, bottom, top = true, after = true)
+    }
+
+    /**
+     * Moves by [by] pixels the split line on one side of [leaf]: the nearest split of that
+     * direction above it with the leaf's subtree before the line ([after], the right or bottom
+     * edge) or after it (the left or top edge).
+     */
+    private fun moveLine(leaf: Leaf, by: Int, top: Boolean, after: Boolean) {
+        var child: Node = leaf
+        var split = leaf.parent
+        while (split != null &&
+            (split.splitTop != top || (split.first === child) != after)) {
+            child = split
+            split = split.parent
+        }
+        split ?: return
+        val box = split.box ?: return
+        val size = if (top) box.height else box.width
+        if (size <= 0) return
+        split.ratio = (split.ratio + 2f * by / size).coerceIn(0.1f, 1.9f)
+    }
+
     /** Moves the nearest split of that direction above [leaf] so that it grows by [by]. */
     private fun grow(leaf: Leaf, by: Int, top: Boolean) {
         var child: Node = leaf

@@ -126,6 +126,12 @@ class HyprTile(config: TileConfig = TileConfig()) {
         layouts[ws]?.resize(id, dx, dy)
     }
 
+    /** A tiled window's edges were dragged ([TileLayout.resizeEdges]). */
+    fun resizeEdges(id: Int, left: Int, top: Int, right: Int, bottom: Int) {
+        val ws = workspaceOf[id] ?: return
+        layouts[ws]?.resizeEdges(id, left, top, right, bottom)
+    }
+
     /** The layout of [workspace], for layout-specific dispatchers (togglesplit, ...). */
     fun layout(workspace: Int): TileLayout? = layouts[workspace]
 

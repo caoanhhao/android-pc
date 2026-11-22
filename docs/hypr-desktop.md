@@ -378,6 +378,44 @@ Known limits (left for later sub-phases):
 - The first window of a desk is placed by the observer, a moment after Shell placed it.
 - Only the active desk of each display is tiled; one tree per desk is D2 (done there).
 
+### Stacking and resizing tiles (2026-11-23)
+
+Asked by the user after D1: in the dwindle layout floating windows always stay above tiled
+ones, and resizing a tiled window resizes its neighbours so the layout stays tiled.
+
+- **Stacking** (`HyprTileController.raiseAboveTiled`). Hyprland's order, bottom to top: tiled
+  windows, floating windows (and a maximized tiled one), windows of a shown special workspace,
+  pinned windows. Bringing a window to front reorders it only within its kind. On a request
+  that brings a window to front (a click on a tiled window is a `TO_FRONT` request), the
+  reorders that put the floating, special and pinned windows back above it ride along in the
+  same transition. When Shell brings a tiled window to front by itself (`focuswindow`, the
+  taskbar), the observer's sync compares the desk's z-order
+  (`DesktopRepository.getFreeformTasksIdsInDeskInZOrder`) with that order and fixes it with one
+  `TRANSIT_CHANGE` (once per z-order, so a repository that lags cannot loop). This replaces
+  E1's `keepPinnedOnTop`, which kept only pinned windows above. It applies to every layout,
+  as in Hyprland.
+- **Resizing a tile by its edges** (`onTransitionReady` / `onEdgeResize`). Shell's resize
+  handles stay on tiled windows (only the caption is gone); a drag ends in a `TRANSIT_CHANGE`
+  of that one task started by its `ResizeTaskPositioner`. The observer notes such a
+  transition when the task is tiled and its size differs from its tile, and when it finishes
+  hands the moved edges to `HyprTile.resizeEdges`: in dwindle the split line next to each moved
+  edge follows it (the nearest split of that direction with the window on the other side, not
+  just the nearest split), so the neighbours on that side shrink or grow; an edge on the work
+  area's border has no neighbour and stays. The splits inside the resized part keep their
+  ratios, as in Hyprland. Master moves `mfact`. The neighbours move in one animated
+  `TRANSIT_CHANGE` when the button is released (Hyprland moves them live; Shell gives no hook
+  while the drag runs, only its veil).
+- Tests: `ResizeEdgesTest` (7; 160 in all pass).
+
+Checked on Waydroid (test data, 2538x1058): Settings and Contacts tiled, Files floating; a
+mouse click on Settings brought it to front with Files kept above (`desk 6 stacking: [202,
+195, 200]`), and so did `hyprctl dispatch focuswindow` on Contacts through the sync path.
+Dragging the edge between Settings and Contacts 200 px to the right gave Settings
+`[12,45][1464,1046]` and Contacts `[1474,45][2526,1046]`; with five tiles, dragging the line
+between Calendar and the microG window 100 px left moved only that line, and dragging the
+middle column's right edge moved the column's line and shifted its inner splits
+proportionally. Screenshots: `out/hypr-resize/`.
+
 ## Workspaces and keybinds (D2)
 
 Code: `PcSystemUI/src/com/android/systemui/wmshell/` (`HyprTileController.kt` dispatchers,
