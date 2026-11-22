@@ -206,7 +206,11 @@ class Sampler {
         readText("/sys/devices/system/cpu/cpu$core/cpufreq/scaling_cur_freq")?.trim()?.toIntOrNull()?.div(1000) ?: 0
 
     private fun findTemperatureSensor(): File? {
-        val zones = File("/sys/class/thermal").listFiles { f -> f.name.startsWith("thermal_zone") } ?: return null
+        // The zones themselves (sysfs_thermal), not /sys/class/thermal: listing that one needs
+        // the generic sysfs label, which system_app may not read.
+        val zones = listOf("/sys/devices/virtual/thermal", "/sys/class/thermal").firstNotNullOfOrNull { dir ->
+            File(dir).listFiles { f -> f.name.startsWith("thermal_zone") }?.takeIf { it.isNotEmpty() }
+        } ?: return null
         val preferred = listOf("x86_pkg_temp", "cpu", "soc", "acpitz")
         return preferred.firstNotNullOfOrNull { want ->
             zones.firstOrNull { readText("${it.path}/type")?.trim()?.startsWith(want) == true }

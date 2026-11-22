@@ -2120,7 +2120,20 @@ screenshots in `out/hypr-e8/`.
 | Default calculator | `APP_CALCULATOR` resolves to `com.android.calculator2` |
 
 Not checked: the real PC (SELinux enforcing: the `hyprtopd` domain and HyprTop's socket and
-`/proc` reads), the image's own install of `hyprtopd.rc` (the overlay carried a copy).
+`/proc` reads). The image's own `hyprtopd.rc` was checked with E11 (init starts `hyprtopd`
+with its socket).
+
+The policy itself was checked offline on 2026-11-23: `checkpolicy -M -C -b` turns the built
+`precompiled_sepolicy` into CIL, and a small query (attributes expanded) confirms each access
+HyprTop and `hyprtopd` make: init's transition to `hyprtopd`, its socket, `hyprtopd` reading
+`/proc` and every domain's `/proc/<pid>` files, and system_app connecting and reading
+`proc_stat`, `proc_meminfo`, `proc_loadavg`, `proc_net` and the cpufreq files. The one gap
+was the temperature: `/sys/class/thermal` is plain `sysfs` (system_app may only search it)
+and the zones are `sysfs_thermal`, which system_app could not read at all, so on the real PC
+the cpu box would have shown no temperature. HyprTop now lists the zones in
+`/sys/devices/virtual/thermal` (`/sys/class/thermal` stays the fallback) and `hyprtop.te`
+grants `sysfs_thermal` dir and file reads. Checked on the Waydroid test data with the new
+HyprTop in the overlay: 57 °C from `x86_pkg_temp`, 136 processes (`top5.png`).
 The user's live binds.lua got the three E8 lines after `ALT + E`.
 
 ## Host functions (E11)
