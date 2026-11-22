@@ -11,6 +11,8 @@ import android.util.Log
 import android.view.KeyEvent
 import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
+import com.android.hyprtile.MouseBind
+import com.android.hyprtile.MouseInput
 import com.android.hyprtile.TouchGesture
 import com.android.hyprtile.androidKeyName
 import com.android.hyprtile.defaultBinds
@@ -86,8 +88,16 @@ class HyprKeybinds(
         val list = readBinds()
         wanted = list
         val installed = ArrayList<Bind>()
-        // Gesture binds (GESTURE:...) are HyprTouch's.
-        for (bind in list.filterNot { TouchGesture.isGestureKey(it.key) }.take(MAX_BINDS)) {
+        // Gesture binds (GESTURE:...) are HyprTouch's, mouse binds HyprMouse's, except the side
+        // buttons: InputReader turns them into BACK and FORWARD keys.
+        val keyBinds = list.filterNot { TouchGesture.isGestureKey(it.key) }.mapNotNull { bind ->
+            when (MouseBind.from(bind)?.input) {
+                null -> bind
+                MouseInput.BACK, MouseInput.FORWARD -> bind
+                else -> null
+            }
+        }
+        for (bind in keyBinds.take(MAX_BINDS)) {
             val keycode = keyCode(bind.key)
             if (keycode == KeyEvent.KEYCODE_UNKNOWN) {
                 Log.w(TAG, "bind $bind: unknown key ${bind.key}")
@@ -162,7 +172,11 @@ class HyprKeybinds(
     }
 
     /** Android's key code for a Hyprland key name (`LEFT`, `RETURN`, `Q`, `KEYCODE_...`). */
-    private fun keyCode(key: String): Int = KeyEvent.keyCodeFromString("KEYCODE_${androidKeyName(key)}")
+    private fun keyCode(key: String): Int = when (MouseInput.parse(key.substringBefore('/'))) {
+        MouseInput.BACK -> KeyEvent.KEYCODE_BACK
+        MouseInput.FORWARD -> KeyEvent.KEYCODE_FORWARD
+        else -> KeyEvent.keyCodeFromString("KEYCODE_${androidKeyName(key)}")
+    }
 
     private fun metaState(mods: Set<Mod>): Int {
         var meta = 0

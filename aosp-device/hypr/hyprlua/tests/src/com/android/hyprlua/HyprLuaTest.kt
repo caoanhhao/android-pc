@@ -281,7 +281,7 @@ class HyprLuaTest {
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.raw('frob'))").contains("unknown dispatcher frob"))
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ workspace = 1001 }))").contains("workspaces go up to 1000"))
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ direction = 'sideways' }))").contains("bad direction"))
-        assertTrue(error("hl.bind('ALT + mouse:272', hl.dsp.window.resize(), { mouse = true })").contains("drag()"))
+        assertTrue(error("hl.bind('ALT + mouse:272', hl.dsp.window.close(), { mouse = true })").contains("drag()"))
         val c = load("hl.bind('ALT + Q', hl.dsp.window.close(), { repeating = true, locked = true })")
         assertTrue(c.warnings.any { "repeating, locked not supported" in it })
     }

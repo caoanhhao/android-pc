@@ -2,6 +2,9 @@ package com.android.hyprlua
 
 import com.android.hyprtile.AnimationConfig
 import com.android.hyprtile.Bind
+import com.android.hyprtile.MouseBind
+import com.android.hyprtile.MouseInput
+import com.android.hyprtile.defaultMouseBinds
 import com.android.hyprtile.CaptionMode
 import com.android.hyprtile.DISPATCHERS
 import com.android.hyprtile.parsePin
@@ -170,12 +173,14 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
     }
 
     /**
-     * `hl.bind`. Returns the bind's id. Mouse binds (`mouse:272` left, `273` right, `274`
-     * middle) set the modifier of the mouse binds, whose actions are fixed (drag, resize, float).
+     * `hl.bind`. Returns the bind's id. Mouse binds (E6): `mouse:272`..`276` and the wheel
+     * (`mouse_up`, `mouse_down`, `mouse_left`, `mouse_right`) with any modifiers and dispatcher;
+     * `{ mouse = true }` with `hl.dsp.window.drag()`/`resize()` is Hyprland's `bindm`.
      */
     fun bind(keys: String, dispatcher: String, arg: String, mouse: Boolean, flags: String, description: String?): Int {
         val parsed = checked("bind '$keys'") { parseKeys(keys) }
         val (mods, key) = parsed
+        MouseInput.parse(key)?.let { return mouseBind(keys, mods, it, dispatcher, arg, mouse, flags) }
         if (flags.isNotEmpty()) warn("bind '$keys': ${flags.replace(",", ", ")} not supported, ignored")
         if (TouchGesture.isGestureKey(key)) {
             if (mods.isNotEmpty()) fail("bind '$keys': gestures take no modifiers")
@@ -185,38 +190,35 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             val k = TouchGesture.key(name)
             return addOp(mods to k, Bind(mods, k, dispatcher, arg))
         }
-        if (key.startsWith("MOUSE:") || mouse) {
-            val expected = when (key) {
-                "MOUSE:272" -> "__drag"
-                "MOUSE:273" -> "__resize"
-                "MOUSE:274" -> "togglefloating"
-                else -> fail("bind '$keys': mouse binds are mouse:272, mouse:273 or mouse:274")
-            }
-            if (dispatcher != expected) {
-                fail("bind '$keys': this mouse button only takes " + when (expected) {
-                    "__drag" -> "hl.dsp.window.drag()"
-                    "__resize" -> "hl.dsp.window.resize()"
-                    else -> "hl.dsp.window.float()"
-                })
-            }
-            if (mods.isEmpty()) fail("bind '$keys': mouse binds need a modifier")
-            if (mouseMods != null && mouseMods != mods) {
-                warn("mouse binds use one modifier; ${mods.joinToString(" ")} replaces ${mouseMods!!.joinToString(" ")}")
-            }
-            mouseMods = mods
-            dirty = true
-            return addOp(null, null)
-        }
-        if (key == "MOUSE_DOWN" || key == "MOUSE_UP" || key == "MOUSE_LEFT" || key == "MOUSE_RIGHT") {
-            warn("bind '$keys': wheel binds are not supported (scroll over the bar's workspaces)")
-            return addOp(null, null)
-        }
+        if (key.startsWith("MOUSE")) fail("bind '$keys': mouse keys are mouse:272..mouse:276, mouse_up, mouse_down, mouse_left, mouse_right")
+        if (mouse) fail("bind '$keys': { mouse = true } binds a mouse button (mouse:272, mouse:273, mouse:274)")
         if (!isKey(androidKeyName(key))) fail("bind '$keys': unknown key $key")
         if (dispatcher == "__drag" || dispatcher == "__resize") {
             fail("bind '$keys': drag and resize are mouse binds (mouse:272, mouse:273)")
         }
         checkDispatcher(dispatcher, arg)?.let { fail("bind '$keys': $it") }
         return addOp(mods to key, Bind(mods, key, dispatcher, arg))
+    }
+
+    private fun mouseBind(keys: String, mods: Set<Mod>, input: MouseInput, dispatcher: String, arg: String,
+                          mouse: Boolean, flags: String): Int {
+        val flagSet = flags.split(',').filter { it.isNotEmpty() }.toSet()
+        (flagSet - setOf("non_consuming", "repeating")).takeIf { it.isNotEmpty() }?.let {
+            warn("bind '$keys': ${it.joinToString(", ")} not supported on mouse binds, ignored")
+        }
+        val drag = dispatcher == MouseBind.DRAG || dispatcher == MouseBind.RESIZE
+        if (drag && !input.isPointerButton) {
+            fail("bind '$keys': drag and resize take mouse:272, mouse:273 or mouse:274")
+        }
+        if (mouse && !drag) fail("bind '$keys': { mouse = true } takes hl.dsp.window.drag() or resize()")
+        if (!drag) checkDispatcher(dispatcher, arg)?.let { fail("bind '$keys': $it") }
+        if (!input.isPointerButton && !input.isWheel && "non_consuming" in flagSet) {
+            warn("bind '$keys': side buttons arrive as BACK/FORWARD keys and are always consumed")
+        }
+        if (drag) mouseMods = mods
+        val b = MouseBind(mods, input, dispatcher, arg,
+            consuming = "non_consuming" !in flagSet, repeating = "repeating" in flagSet)
+        return addOp(mods to input.key, b.toBind())
     }
 
     private fun addOp(keys: Pair<Set<Mod>, String>?, bind: Bind?): Int {
@@ -407,9 +409,12 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         if (opt("shell.default_binds") == "true") {
             for (b in defaultBinds(mainMod, terminal, fileManager)) binds[b.mods to b.key] = b
             for (b in defaultTouchBinds()) binds[b.mods to b.key] = b
+            for (b in defaultMouseBinds(mainMod)) binds[b.mods to b.input.key] = b.toBind()
         }
         for (op in bindOps) {
             if (op.removed || op.keys == null) continue
+            // The same bind again (init.lua repeating a default) keeps its place.
+            if (op.bind != null && op.enabled && binds[op.keys] == op.bind) continue
             binds.remove(op.keys)
             if (op.bind != null && op.enabled) binds[op.keys] = op.bind
         }
@@ -532,6 +537,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "caption",
             "shell.tiling" to "tiling",
             "shell.touch" to "touch",
+            "binds.pass_mouse_when_bound" to "pass_mouse_when_bound",
+            "binds.scroll_event_delay" to "scroll_event_delay",
             "shell.workspaces" to "workspaces",
         )
 
@@ -564,6 +571,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "floating",
             "shell.tiling" to "true",
             "shell.touch" to "true",
+            "binds.pass_mouse_when_bound" to "false",
+            "binds.scroll_event_delay" to "300",
             "shell.workspaces" to "$DEFAULT_WORKSPACES",
         )
 
@@ -625,6 +634,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
             "shell.touch" to boolOpt,
+            "binds.pass_mouse_when_bound" to boolOpt,
+            "binds.scroll_event_delay" to intIn(0..2000),
             "shell.workspaces" to intIn(1..MAX_WORKSPACES),
         )
 

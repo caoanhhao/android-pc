@@ -34,3 +34,6 @@ BOARD_VENDOR_SEPOLICY_DIRS += \
     device/android-pc/pc_x86_64/sepolicy/vendor \
     device/android-pc/pc_x86_64/pc/sepolicy \
     $(sort $(wildcard device/android-pc/pc_x86_64/hals/*/sepolicy))
+
+# The hypr desktop shell's system properties (PcSystemUI -> system_server).
+SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += device/android-pc/pc_x86_64/hypr/sepolicy

@@ -1,0 +1,5 @@
+# sys.hypr.wheel_binds: the wheel binds of PcSystemUI (HyprMouse), read by the input
+# dispatcher in system_server (tools/patches/aosp17-input-hypr-wheel-binds.patch).
+system_internal_prop(hypr_input_prop)
+set_prop(platform_app, hypr_input_prop)
+get_prop(system_server, hypr_input_prop)

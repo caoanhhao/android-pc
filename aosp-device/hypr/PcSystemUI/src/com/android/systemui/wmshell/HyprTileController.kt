@@ -130,6 +130,7 @@ class HyprTileController(
             field = value
             mainExecutor.execute {
                 onConfigChanged?.invoke()
+                mouse.onConfigChanged()
                 sync()
             }
         }

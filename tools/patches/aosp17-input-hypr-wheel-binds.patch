@@ -1,0 +1,67 @@
+--- a/services/inputflinger/dispatcher/InputDispatcher.cpp
++++ b/services/inputflinger/dispatcher/InputDispatcher.cpp
+@@ -637,6 +637,51 @@
+             std::none_of(exclude.begin(), exclude.end(), matches);
+ }
+ 
++// android-pc: Hyprland-style wheel binds (aosp-device/hypr, HyprMouse). A spy window sees a
++// scroll at the same time as the window under the pointer and cannot pilfer it, so a scroll
++// that PcSystemUI binds goes to spy windows only. sys.hypr.wheel_binds lists the bound scrolls
++// as "MODS:dir" entries joined by ',': MODS the letters S C A M (shift, ctrl, alt, meta) in
++// that order or '-' for none, dir u/d/l/r (wheel up, down, tilt left, right).
++constexpr const char* kWheelBindsProperty = "sys.hypr.wheel_binds";
++
++bool isBoundScroll(const MotionEntry& entry) {
++    if (MotionEvent::getActionMasked(entry.action) != AMOTION_EVENT_ACTION_SCROLL ||
++        entry.getPointerCount() < 1) {
++        return false;
++    }
++#if defined(__BIONIC__)
++    static std::mutex lock;
++    static android::base::CachedProperty property(kWheelBindsProperty);
++    static std::vector<std::string> bound;
++    std::scoped_lock _l(lock);
++    bool changed = false;
++    const char* value = property.Get(&changed);
++    if (changed) {
++        bound.clear();
++        for (std::string token : android::base::Split(value ? value : "", ",")) {
++            token = android::base::Trim(token);
++            if (!token.empty()) bound.push_back(token);
++        }
++    }
++    if (bound.empty()) return false;
++    const float v = entry.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_VSCROLL);
++    const float h = entry.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_HSCROLL);
++    const char dir = v > 0 ? 'u' : v < 0 ? 'd' : h < 0 ? 'l' : h > 0 ? 'r' : 0;
++    if (dir == 0) return false;
++    std::string key;
++    if (entry.metaState & AMETA_SHIFT_ON) key += 'S';
++    if (entry.metaState & AMETA_CTRL_ON) key += 'C';
++    if (entry.metaState & AMETA_ALT_ON) key += 'A';
++    if (entry.metaState & AMETA_META_ON) key += 'M';
++    if (key.empty()) key = "-";
++    key += ':';
++    key += dir;
++    return std::find(bound.begin(), bound.end(), key) != bound.end();
++#else
++    return false; // host builds (tests) have no system properties
++#endif
++}
++
+ // A single-pointer mouse event that isMouseAsTouchApp() windows get as a touch.
+ bool isConvertibleMouseEvent(const MotionEntry& entry) {
+     return isFromSource(entry.source, AINPUT_SOURCE_MOUSE) &&
+@@ -2285,6 +2330,12 @@
+         if (result.ok()) {
+             inputTargets = std::move(*result);
+             injectionResult = InputEventInjectionResult::SUCCEEDED;
++            if (isBoundScroll(*entry)) {
++                // android-pc: a bound wheel step goes to spy windows (HyprMouse) only.
++                std::erase_if(inputTargets, [](const InputTarget& target) {
++                    return target.windowHandle == nullptr || !target.windowHandle->getInfo()->isSpy();
++                });
++            }
+         } else {
+             injectionResult = result.error().code();
+         }
