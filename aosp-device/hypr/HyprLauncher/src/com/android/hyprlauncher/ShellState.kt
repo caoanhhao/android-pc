@@ -13,6 +13,7 @@ data class Win(
     val bounds: Rect,
     val floating: Boolean,
     val minimized: Boolean,
+    val pinned: Boolean = false,
 )
 
 /**
@@ -27,6 +28,11 @@ data class ShellState(
     val focusedPackage: String?,
     val focusedTitle: String?,
     val windows: List<Win>,
+    /** The display's size, 0 x 0 until the shell answers. */
+    val displayWidth: Int = 0,
+    val displayHeight: Int = 0,
+    /** The work area: the display without the bar and the system bars. */
+    val workArea: Rect = Rect(),
 ) {
     fun on(workspace: Int) = windows.filter { it.workspace == workspace }
 
@@ -41,6 +47,9 @@ data class ShellState(
             val bounds = b.getIntArray("taskBounds") ?: IntArray(0)
             val floating = b.getBooleanArray("taskFloating") ?: BooleanArray(0)
             val minimized = b.getBooleanArray("taskMinimized") ?: BooleanArray(0)
+            val pinned = b.getBooleanArray("taskPinned") ?: BooleanArray(0)
+            val display = b.getIntArray("display") ?: IntArray(0)
+            val work = b.getIntArray("workArea") ?: IntArray(0)
             val windows = ids.indices.map { i ->
                 Win(
                     taskId = ids[i],
@@ -53,6 +62,7 @@ data class ShellState(
                     ),
                     floating = floating.getOrElse(i) { false },
                     minimized = minimized.getOrElse(i) { false },
+                    pinned = pinned.getOrElse(i) { false },
                 )
             }
             return ShellState(
@@ -62,6 +72,9 @@ data class ShellState(
                 focusedPackage = b.getString("focusedPackage"),
                 focusedTitle = b.getString("focusedTitle"),
                 windows = windows,
+                displayWidth = display.getOrElse(0) { 0 },
+                displayHeight = display.getOrElse(1) { 0 },
+                workArea = if (work.size == 4) Rect(work[0], work[1], work[2], work[3]) else Rect(),
             )
         }
     }

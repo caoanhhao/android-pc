@@ -174,6 +174,24 @@ local function window_id(w, level)
   return id
 end
 
+local FLOAT_ACTIONS = { toggle = "togglefloating", on = "setfloating", off = "settiled",
+  enable = "setfloating", disable = "settiled" }
+local PIN_ACTIONS = { toggle = "toggle", on = "on", off = "off", enable = "on", disable = "off" }
+
+-- One coordinate of move/resize: pixels (a number) or "N%" of the work area (exact only).
+local function coord(v, exact, level)
+  if type(v) == "number" then return str(math.floor(v + 0.5)) end
+  if exact and type(v) == "string" and v:match("^%d+%%$") then return v end
+  error("bad coordinate '" .. tostring(v) .. "' (pixels" .. (exact and ", or 'N%'" or "") .. ")", level + 1)
+end
+
+-- { x = , y = , relative = false } as "exact X Y", else "DX DY".
+local function xy(t, level)
+  local exact = t.relative == false or t.exact == true
+  local x, y = t.x or t[1] or 0, t.y or t[2] or 0
+  return (exact and "exact " or "") .. coord(x, exact, level + 1) .. " " .. coord(y, exact, level + 1)
+end
+
 -- A namespace whose missing members are Hyprland dispatchers this shell does not have.
 local function namespace(name, t)
   return setmetatable(t, { __index = function(_, k)
@@ -185,9 +203,16 @@ local window = namespace("hl.dsp.window", {
   close = function() return dsp("killactive") end,
   kill = function() return dsp("killactive") end,
   float = function(t)
-    local action = t and t.action or "toggle"
-    if action ~= "toggle" then error("hl.dsp.window.float: only action = 'toggle' is supported", 2) end
-    return dsp("togglefloating")
+    local name = FLOAT_ACTIONS[tostring(t and t.action or "toggle")]
+    if not name then error("hl.dsp.window.float: action is 'toggle', 'on' or 'off'", 2) end
+    return dsp(name, t and t.window ~= nil and "taskid:" .. window_id(t.window, 2) or nil)
+  end,
+  pin = function(t)
+    local action = tostring(t and t.action or "toggle")
+    if not PIN_ACTIONS[action] then error("hl.dsp.window.pin: action is 'toggle', 'on' or 'off'", 2) end
+    local arg = PIN_ACTIONS[action]
+    if t and t.window ~= nil then arg = arg .. " taskid:" .. window_id(t.window, 2) end
+    return dsp("pin", arg)
   end,
   fullscreen = function(t)
     local mode = t and t.mode
@@ -203,7 +228,8 @@ local window = namespace("hl.dsp.window", {
       return dsp(silent and "movetoworkspacesilent" or "movetoworkspace", t.workspace)
     end
     if t.direction ~= nil then return dsp("movewindow", dir(t.direction, 2)) end
-    error("hl.dsp.window.move needs workspace = or direction =", 2)
+    if t.x ~= nil or t.y ~= nil then return dsp("moveactive", xy(t, 2)) end
+    error("hl.dsp.window.move needs workspace =, direction = or x =, y =", 2)
   end,
   swap = function(t)
     if type(t) ~= "table" or t.direction == nil then error("hl.dsp.window.swap({ direction = 'left' })", 2) end
@@ -213,7 +239,7 @@ local window = namespace("hl.dsp.window", {
   resize = function(t)
     if t == nil then return dsp("__resize") end
     if type(t) ~= "table" then error("hl.dsp.window.resize({ x = 40, y = 0 })", 2) end
-    return dsp("resizeactive", str(t.x or t[1] or 0) .. " " .. str(t.y or t[2] or 0))
+    return dsp("resizeactive", xy(t, 2))
   end,
 })
 
@@ -454,8 +480,16 @@ local function snapshot()
         initial_title = f[5], floating = f[6] == "1", hidden = f[7] == "1",
         at = { x = tonumber(f[8]), y = tonumber(f[9]) },
         size = { x = tonumber(f[10]), y = tonumber(f[11]) },
-        active = id == s.focused, mapped = true, visible = f[7] ~= "1",
+        active = id == s.focused, mapped = true, visible = f[7] ~= "1", pinned = f[12] == "1",
       }
+    elseif f[1] == "M" then
+      local w, h = tonumber(f[3]), tonumber(f[4])
+      local l, t, r, b = tonumber(f[5]), tonumber(f[6]), tonumber(f[7]), tonumber(f[8])
+      s.monitor = { id = tonumber(f[2]), name = "display-" .. f[2], x = 0, y = 0, width = w, height = h,
+        scale = 1, transform = 0, focused = true, disabled = false,
+        -- hyprctl's order: left, top, right, bottom; also by name.
+        reserved = { l, t, w - r, h - b, left = l, top = t, right = w - r, bottom = h - b },
+        work_area = { x = l, y = t, width = r - l, height = b - t } }
     elseif f[1] == "N" then
       s.names[tonumber(f[2])] = f[3]
     elseif f[1] == "X" then
@@ -520,6 +554,19 @@ function hl.get_workspaces()
   table.sort(list)
   for _, n in ipairs(list) do out[#out + 1] = workspace_of(s, n) end
   return out
+end
+
+-- The display (one: the default display) with its work area; nil before the shell answers.
+function hl.get_active_monitor()
+  local s = snapshot()
+  local m = s.monitor
+  if m then m.active_workspace = s.active > 0 and workspace_of(s, s.active) or nil end
+  return m
+end
+
+function hl.get_monitors()
+  local m = hl.get_active_monitor()
+  return m and { m } or {}
 end
 
 function hl.get_active_workspace()

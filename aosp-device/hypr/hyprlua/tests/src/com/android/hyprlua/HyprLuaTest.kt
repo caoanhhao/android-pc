@@ -156,7 +156,7 @@ class HyprLuaTest {
         assertTrue(error("hl.config({\n  general = {\n").startsWith("init.lua:"))
         assertEquals("init.lua:2: attempt to call a nil value (global 'nope')", error("\nnope()"))
         assertTrue(error("hl.frobnicate()").startsWith("init.lua:1: hl.frobnicate does not exist"))
-        assertTrue(error("hl.bind('ALT + P', hl.dsp.window.pin())").startsWith("init.lua:1: hl.dsp.window.pin is not supported"))
+        assertTrue(error("hl.bind('ALT + P', hl.dsp.window.cycle_next())").startsWith("init.lua:1: hl.dsp.window.cycle_next is not supported"))
     }
 
     @Test
@@ -228,6 +228,50 @@ class HyprLuaTest {
         lua.call(id)
         assertEquals(listOf("hi"), host.notes)
         assertEquals(listOf("workspace" to "2"), host.dispatched)
+    }
+
+    @Test
+    fun pinFloatMoveResizeAndTheMonitor() {
+        host.snap = host.snap.copy(
+            windows = host.snap.windows.map { if (it.id == 9) it.copy(pinned = true) else it },
+            monitor = SnapMonitor(0, 2538, 1058, 12, 39, 2526, 983),
+        )
+        val c = load("""
+            hl.bind("ALT + CTRL + Space", hl.dsp.window.pin())
+            hl.bind("ALT + CTRL + SHIFT + F", function()
+              local m = hl.get_active_monitor()
+              local a = m.work_area
+              hl.dispatch(hl.dsp.window.float({ action = "on" }))
+              hl.dispatch(hl.dsp.window.resize({ x = a.width, y = a.height, relative = false }))
+              hl.dispatch(hl.dsp.window.move({ x = a.x, y = a.y, relative = false }))
+              hl.dispatch(hl.dsp.window.pin({ action = "toggle" }))
+              hl.notify(m.width .. "x" .. m.height .. " " .. m.reserved.top .. " " .. m.reserved[3] ..
+                " " .. tostring(hl.get_window(9).pinned) .. " " .. tostring(hl.get_window(7).pinned) ..
+                " " .. #hl.get_monitors() .. " " .. m.active_workspace.id)
+            end)
+            hl.bind("ALT + Q", hl.dsp.window.pin({ action = "off", window = "taskid:7" }))
+            hl.bind("ALT + T", hl.dsp.window.float({ action = "off", window = hl.get_window(9) }))
+            hl.bind("ALT + B", hl.dsp.window.resize({ x = "50%", y = "100%", relative = false }))
+            hl.bind("ALT + C", hl.dsp.window.move({ x = -20, y = 10 }))
+        """)
+        val b = binds(c)
+        val alt = setOf(Mod.ALT)
+        assertTrue(Bind(alt + Mod.CTRL, "SPACE", "pin", "toggle") in b)
+        assertTrue(Bind(alt, "Q", "pin", "off taskid:7") in b)
+        assertTrue(Bind(alt, "T", "settiled", "taskid:9") in b)
+        assertTrue(Bind(alt, "B", "resizeactive", "exact 50% 100%") in b)
+        assertTrue(Bind(alt, "C", "moveactive", "-20 10") in b)
+        lua.call(b.single { it.key == "F" && Mod.CTRL in it.mods }.arg)
+        assertEquals(listOf("setfloating" to "", "resizeactive" to "exact 2514 944",
+            "moveactive" to "exact 12 39", "pin" to "toggle"), host.dispatched)
+        assertEquals(listOf("2538x1058 39 12 true false 1 1"), host.notes)
+        assertTrue(error("hl.dsp.window.pin({ action = 'sideways' })").contains("action is"))
+        assertTrue(error("hl.dsp.window.move({ x = '10%', y = 0 })").contains("bad coordinate"))
+        assertTrue(error("hl.bind('ALT + Q', hl.dsp.raw('pin', 'frob'))").contains("pin takes"))
+        assertTrue(error("hl.bind('ALT + Q', hl.dsp.raw('setfloating', 'class:x'))").contains("bad window"))
+        host.snap = host.snap.copy(monitor = null)
+        load("hl.notify(tostring(hl.get_active_monitor()) .. ' ' .. #hl.get_monitors())")
+        assertEquals("nil 0", host.notes.last())
     }
 
     @Test

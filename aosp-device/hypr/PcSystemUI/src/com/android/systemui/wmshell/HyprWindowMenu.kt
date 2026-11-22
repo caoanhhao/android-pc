@@ -18,7 +18,7 @@ import android.widget.TextView
 
 /**
  * The window menu a touch long-press on a window's frame opens (Phase D6): float or tile,
- * maximize (tiled windows), fullscreen, move to workspace 1..N (+1 for a new one), close.
+ * maximize (tiled windows), pin or unpin (E1), fullscreen, move to workspace 1..N (+1 for a new one), close.
  * Each entry runs a dispatcher on that window ([HyprTileController.dispatchOn]). A small
  * no-focus system window at the finger; a touch outside closes it. Shell's main thread only.
  */
@@ -35,7 +35,7 @@ class HyprWindowMenu(
 
     fun show(task: RunningTaskInfo, x: Float, y: Float) {
         dismiss()
-        val (workspaces, current, tiled) = controller.menuState(task)
+        val (workspaces, current, tiled, pinned) = controller.menuState(task)
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(6), dp(6), dp(6), dp(6))
@@ -67,6 +67,7 @@ class HyprWindowMenu(
         }
         item(if (tiled) "Float" else "Tile", "togglefloating")
         if (tiled) item("Maximize", "fullscreen", "1")
+        item(if (pinned) "Unpin" else "Pin", "pin")
         item("Fullscreen", "fullscreen", "0")
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL

@@ -34,13 +34,18 @@ import com.android.hyprtile.Direction
 import com.android.hyprtile.DwindleLayout
 import com.android.hyprtile.HyprTile
 import com.android.hyprtile.Insets
+import com.android.hyprtile.Coord
 import com.android.hyprtile.LayoutKind
+import com.android.hyprtile.Switch
 import com.android.hyprtile.TileConfig
 import com.android.hyprtile.WindowRule
 import com.android.hyprtile.WindowTraits
 import com.android.hyprtile.WorkspaceRule
 import com.android.hyprtile.effect
 import com.android.hyprtile.neighbor
+import com.android.hyprtile.parsePin
+import com.android.hyprtile.parseWindow
+import com.android.hyprtile.parseXY
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
 import com.android.wm.shell.ShellTaskOrganizer
@@ -143,6 +148,11 @@ class HyprTileController(
     private val maximized = HashSet<Int>()
     /** Tasks opened since the last sync: window rules with a workspace apply to them once. */
     private val newTasks = HashSet<Int>()
+    /**
+     * Bounds the dispatchers gave floating tasks in transitions that may not have landed yet:
+     * a Lua function that floats, resizes and moves a window in a row builds on them.
+     */
+    private val pendingBounds = HashMap<Int, Rect>()
     /** Opacity of tasks a window rule gives one (active, inactive). */
     private val ruleOpacity = HashMap<Int, Pair<Float, Float>>()
 
@@ -404,8 +414,16 @@ class HyprTileController(
         val display = Rect(0, 0, layout.width(), layout.height())
         val fromDesk = info.changes.find { it.taskInfo?.taskId == desk.from }
         val toDesk = info.changes.find { it.taskInfo?.taskId == desk.to }
-        val fromTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.from }
-        val toTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.to }
+        // Pinned windows come along to the new desk and stay where they are.
+        fun slides(c: TransitionInfo.Change) = c.taskInfo?.let { !tile.isPinned(it.taskId) } ?: true
+        val fromTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.from && slides(it) }
+        val toTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.to && slides(it) }
+        for (c in info.changes) {
+            val id = c.taskInfo?.takeIf { tile.isPinned(it.taskId) }?.taskId ?: continue
+            val alpha = decorations.opacity(id, c.taskInfo?.isFocused == true)
+            startT.setAlpha(c.leash, alpha)
+            finishT.setAlpha(c.leash, alpha)
+        }
         val fromPos = repo.getDeskPosition(desk.from) ?: return false
         val toPos = repo.getDeskPosition(desk.to) ?: return false
         Log.d(TAG, "animating desk switch ${desk.from} -> ${desk.to}")
@@ -474,10 +492,20 @@ class HyprTileController(
         }
         val configChanged = updateConfig()
         val repo = repository
+        pendingBounds.clear()
         val displays = repo.getAllDeskIds()
             .mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
         for (displayId in displays) {
             val deskId = repo.getActiveDeskId(displayId) ?: continue
+            // Pinned windows left behind by a desk switch this controller did not start (Shell's
+            // own, from home or a window brought to front on another desk) follow now.
+            val pinWct = WindowContainerTransaction()
+            val carried = carryPinned(displayId, deskId, pinWct)
+            if (carried.isNotEmpty()) {
+                Log.d(TAG, "pinned ${carried.map { it.taskId }} follow to desk $deskId")
+                startChange(pinWct)
+                recordCarried(displayId, deskId, carried)
+            }
             val expanded = repo.getExpandedTasksIdsInDeskOrdered(deskId).filter {
                 !repo.isClosingTask(it) &&
                     taskOrganizer.getRunningTaskInfo(it)?.windowingMode == WINDOWING_MODE_FREEFORM
@@ -513,6 +541,7 @@ class HyprTileController(
         maximized.retainAll { tile.isTiled(it) }
         refreshCaptions()
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
+        for (id in tile.pinned().toList()) if (repo.getDeskIdForTask(id) == null) tile.close(id)
         applyWindowRules()
         onStateChanged?.invoke()
     }
@@ -594,9 +623,10 @@ class HyprTileController(
 
     /**
      * Runs a Hyprland dispatcher: `workspace N`, `movetoworkspace N`, `movefocus l|r|u|d`,
-     * `movewindow l|r|u|d`, `togglefloating`, `togglesplit`, `fullscreen [0|1]`, `killactive`,
-     * `exec <package>`. Workspace arguments may be relative (`e+1`, `-1`). Must be called on
-     * Shell's main thread. Returns false for an unknown dispatcher or a bad argument.
+     * `movewindow l|r|u|d`, `togglefloating`/`setfloating`/`settiled [taskid:N]`,
+     * `pin [toggle|on|off] [taskid:N]`, `resizeactive`/`moveactive [exact] X Y`, `togglesplit`,
+     * `fullscreen [0|1]`, `killactive`, `exec <package>`. Workspace arguments may be relative
+     * (`e+1`, `-1`). Must be called on Shell's main thread. Returns false for an unknown dispatcher or a bad argument.
      */
     fun dispatch(name: String, arg: String = ""): Boolean {
         Log.d(TAG, "dispatch $name $arg")
@@ -619,14 +649,19 @@ class HyprTileController(
                     ?.takeIf { it <= MAX_WORKSPACES } ?: return false
                 withWorkspaceDesk(task.displayId, n) { moveSilently(task, it) }
             }
-            "resizeactive" -> {
-                val p = arg.trim().split(Regex("\\s+")).map { it.toIntOrNull() ?: return false }
-                if (p.size != 2) return false
-                resizeActive(p[0], p[1])
-            }
+            "resizeactive" -> resizeActive(parseXY(arg) ?: return false)
+            "moveactive" -> moveActive(parseXY(arg) ?: return false)
             "movefocus" -> moveFocus(Direction.parse(arg) ?: return false)
             "movewindow" -> moveWindow(Direction.parse(arg) ?: return false)
-            "togglefloating" -> toggleFloating()
+            "togglefloating" -> toggleFloating(windowTask(parseWindow(arg).getOrElse { return false }))
+            "setfloating", "settiled" -> {
+                val task = windowTask(parseWindow(arg).getOrElse { return false }) ?: return true
+                if (tile.isTiled(task.taskId) == (name == "setfloating")) toggleFloating(task)
+            }
+            "pin" -> {
+                val (action, window) = parsePin(arg) ?: return false
+                pin(windowTask(window) ?: return true, action)
+            }
             "togglesplit" -> toggleSplit()
             "fullscreen" -> if (arg.trim() == "1") toggleMaximize() else toggleFullscreen()
             "killactive" -> {
@@ -687,6 +722,12 @@ class HyprTileController(
     /** The focused task when it is a desktop task of the active desk. */
     private fun focusedTask(): RunningTaskInfo? = dispatchTarget ?: taskOrganizer.getRunningTasks().find {
         repository.isActiveTask(it.taskId) && focusTransitionObserver.hasGlobalFocus(it)
+    }
+
+    /** The desktop task [taskId] names, or the focused one when it is null. */
+    private fun windowTask(taskId: Int?): RunningTaskInfo? {
+        if (taskId == null) return focusedTask()
+        return taskOrganizer.getRunningTaskInfo(taskId)?.takeIf { repository.getDeskIdForTask(taskId) != null }
     }
 
     /** The desks of [displayId] in Shell's order; workspace N is the N-th. */
@@ -764,6 +805,7 @@ class HyprTileController(
             tile.open(id, to, focused, float = floating)
         }
         addBounds(to, displayId, wct, moving)
+        val carried = carryPinned(displayId, to, wct, skip = moving?.taskId)
         Log.d(TAG, "switch desk $from -> $to on display $displayId" +
             (moving?.let { ", moving task ${it.taskId}" } ?: ""))
         val transition = if (animationsEnabled) {
@@ -774,6 +816,55 @@ class HyprTileController(
             deskSwitchTransitionHandler.startTransition(wct, repo.userId, displayId, from, to)
         }
         runOnStart?.invoke(transition)
+        recordCarried(displayId, to, carried)
+    }
+
+    /**
+     * Moves the pinned windows of [displayId] that are on another desk into desk [to], on top,
+     * keeping their bounds (Hyprland shows a pinned window on every workspace). Minimized ones
+     * stay where they are. Returns the moved tasks, for [recordCarried] once the transition
+     * started.
+     */
+    private fun carryPinned(
+        displayId: Int,
+        to: Int,
+        wct: WindowContainerTransaction,
+        skip: Int? = null,
+    ): List<RunningTaskInfo> {
+        val controller = desktopTasksController.orElse(null) ?: return emptyList()
+        val repo = repository
+        val moved = ArrayList<RunningTaskInfo>()
+        for (id in tile.pinned().toList()) {
+            if (id == skip || repo.isMinimizedTask(id)) continue
+            val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
+            if (task.displayId != displayId) continue
+            val desk = repo.getDeskIdForTask(id) ?: continue
+            if (desk == to) continue
+            val bounds = floatingBounds(task)
+            controller.addMoveToDeskTaskChanges(wct, task, to)
+            // Shell's move gives the task its cascaded bounds; it keeps its own.
+            wct.setBounds(task.token, bounds)
+            wct.reorder(task.token, true)
+            moved += task
+        }
+        return moved
+    }
+
+    /** Shell's repository learns about moves from its own handlers; ours are recorded here. */
+    private fun recordCarried(displayId: Int, to: Int, moved: List<RunningTaskInfo>) {
+        for (task in moved) {
+            repository.addTaskToDesk(displayId, to, task.taskId, isVisible = true,
+                taskBounds = floatingBounds(task))
+        }
+    }
+
+    /** Where a floating task is, or will be once the dispatchers' transitions land. */
+    private fun floatingBounds(task: RunningTaskInfo): Rect =
+        pendingBounds[task.taskId]?.let { Rect(it) } ?: Rect(task.configuration.windowConfiguration.bounds)
+
+    private fun setFloatingBounds(task: RunningTaskInfo, bounds: Rect, wct: WindowContainerTransaction) {
+        wct.setBounds(task.token, bounds)
+        pendingBounds[task.taskId] = Rect(bounds)
     }
 
     /** Brings the window next to the focused one in [dir] to front (and so focuses it). */
@@ -821,23 +912,15 @@ class HyprTileController(
         task ?: return
         val id = task.taskId
         val deskId = repository.getDeskIdForTask(id) ?: return
-        val area = workArea(task.displayId) ?: return
         val wct = WindowContainerTransaction()
         if (tile.isTiled(id)) {
-            tile.toggleFloating(id, deskId)
-            userFloated += id
-            maximized -= id
-            applied.remove(id)
-            // Hyprland centres a window that starts floating; half the width, two thirds of
-            // the height of the work area.
-            val w = area.width / 2
-            val h = area.height * 2 / 3
-            val left = area.left + (area.width - w) / 2
-            val top = area.top + (area.height - h) / 2
-            wct.setBounds(task.token, Rect(left, top, left + w, top + h))
+            if (!floatOut(task, deskId, wct)) return
         } else {
             if (!task.isResizeable) return
             userFloated -= id
+            pendingBounds.remove(id)
+            // Tiled again, a pinned window is no longer pinned (hyprtile drops the pin).
+            if (tile.isPinned(id)) wct.setAlwaysOnTop(task.token, false)
             val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId)
                 .firstOrNull { it != id && tile.isTiled(it) }
             tile.toggleFloating(id, deskId, focused)
@@ -846,22 +929,100 @@ class HyprTileController(
         if (!wct.isEmpty) startChange(wct)
     }
 
-    /** Hyprland's `resizeactive DX DY`: a tiled window moves its splits, a floating one grows. */
-    private fun resizeActive(dx: Int, dy: Int) {
+    /**
+     * Takes tiled [task] out of its layout as a floating window; Hyprland centres a window that
+     * starts floating: half the width, two thirds of the height of the work area. False when
+     * the display has no work area.
+     */
+    private fun floatOut(task: RunningTaskInfo, deskId: Int, wct: WindowContainerTransaction): Boolean {
+        val area = workArea(task.displayId) ?: return false
+        val id = task.taskId
+        tile.toggleFloating(id, deskId)
+        userFloated += id
+        maximized -= id
+        applied.remove(id)
+        val w = area.width / 2
+        val h = area.height * 2 / 3
+        val left = area.left + (area.width - w) / 2
+        val top = area.top + (area.height - h) / 2
+        setFloatingBounds(task, Rect(left, top, left + w, top + h), wct)
+        return true
+    }
+
+    /**
+     * Hyprland's `pin`: a pinned window floats (a tiled one leaves its layout, centred), stays
+     * above the other windows of its desk (WindowManager's always-on-top among the desk root's
+     * tasks) and goes along to whichever desk becomes active ([carryPinned]). Unpinned, it
+     * stays floating where it is.
+     */
+    private fun pin(task: RunningTaskInfo, action: Switch) {
+        val id = task.taskId
+        val on = action.apply(tile.isPinned(id))
+        if (on == tile.isPinned(id)) return
+        val deskId = repository.getDeskIdForTask(id) ?: return
+        val wct = WindowContainerTransaction()
+        if (on) {
+            if (tile.isTiled(id) && !floatOut(task, deskId, wct)) return
+            userFloated += id
+            tile.setPinned(id, true)
+            wct.setAlwaysOnTop(task.token, true)
+            wct.reorder(task.token, true)
+        } else {
+            tile.setPinned(id, false)
+            wct.setAlwaysOnTop(task.token, false)
+        }
+        Log.d(TAG, "pin task $id: $on")
+        addBounds(deskId, task.displayId, wct, task)
+        startChange(wct)
+        onStateChanged?.invoke()
+    }
+
+    /**
+     * Hyprland's `resizeactive`: `DX DY` moves a tiled window's splits or grows a floating
+     * one; `exact W H` (pixels or `N%` of the work area) sizes a floating window, its top-left
+     * corner staying.
+     */
+    private fun resizeActive(xy: Triple<Boolean, Coord, Coord>) {
+        val (exact, cx, cy) = xy
         val task = focusedTask() ?: return
         val id = task.taskId
         val wct = WindowContainerTransaction()
         if (tile.isTiled(id)) {
+            // A tile's size comes from the layout.
+            if (exact) return
             maximized -= id
-            tile.resize(id, dx, dy)
+            tile.resize(id, cx.value, cy.value)
             tile.workspaceOf(id)?.let { addBounds(it, task.displayId, wct) }
         } else {
-            val box = task.bounds()
-            val b = Rect(box.left, box.top, maxOf(box.left + MIN_SIZE, box.right + dx),
-                maxOf(box.top + MIN_SIZE, box.bottom + dy))
-            wct.setBounds(task.token, b)
+            val box = floatingBounds(task)
+            val b = if (exact) {
+                val area = desktopBounds(task.displayId) ?: return
+                Rect(box.left, box.top, box.left + maxOf(MIN_SIZE, cx.resolve(area.width())),
+                    box.top + maxOf(MIN_SIZE, cy.resolve(area.height())))
+            } else {
+                Rect(box.left, box.top, maxOf(box.left + MIN_SIZE, box.right + cx.value),
+                    maxOf(box.top + MIN_SIZE, box.bottom + cy.value))
+            }
+            setFloatingBounds(task, b, wct)
         }
         if (!wct.isEmpty) startChange(wct)
+    }
+
+    /**
+     * Hyprland's `moveactive` for a floating window: `DX DY`, or `exact X Y` (display pixels,
+     * or `N%` across the work area). Tiled windows move with `movewindow`.
+     */
+    private fun moveActive(xy: Triple<Boolean, Coord, Coord>) {
+        val (exact, cx, cy) = xy
+        val task = focusedTask() ?: return
+        if (tile.isTiled(task.taskId)) return
+        val box = floatingBounds(task)
+        val area = desktopBounds(task.displayId) ?: return
+        val x = if (exact) cx.resolve(area.width(), area.left) else box.left + cx.value
+        val y = if (exact) cy.resolve(area.height(), area.top) else box.top + cy.value
+        val wct = WindowContainerTransaction()
+        setFloatingBounds(task, Rect(box).apply { offsetTo(x, y) }, wct)
+        startChange(wct)
     }
 
     private fun toggleSplit() {
@@ -986,11 +1147,13 @@ class HyprTileController(
         }
     }
 
-    /** What the window menu needs: workspaces of the display and the window's own. */
-    fun menuState(task: RunningTaskInfo): Triple<Int, Int, Boolean> {
+    /** What the window menu shows: the workspaces of a window's display, its own, its state. */
+    data class MenuState(val workspaces: Int, val current: Int, val tiled: Boolean, val pinned: Boolean)
+
+    fun menuState(task: RunningTaskInfo): MenuState {
         val desks = orderedDesks(task.displayId)
         val ws = repository.getDeskIdForTask(task.taskId)?.let { desks.indexOf(it) + 1 } ?: 0
-        return Triple(desks.size, ws, tile.isTiled(task.taskId))
+        return MenuState(desks.size, ws, tile.isTiled(task.taskId), tile.isPinned(task.taskId))
     }
 
     /** A window dragged by touch was dropped: as [mouseUp], plus snapping at the screen edges. */
@@ -1177,8 +1340,9 @@ class HyprTileController(
      * The workspaces and windows of [displayId] for the launcher's bar and overview (Phase D4):
      * `workspaces` (count), `active` (1-based, 0 = none: home), `focusedTask`, and per window
      * the parallel arrays `taskIds`, `taskWorkspaces`, `taskPackages`, `taskTitles`,
-     * `taskBounds` (left, top, right, bottom each), `taskFloating`, `taskMinimized`, ordered
-     * front to back within each workspace.
+     * `taskBounds` (left, top, right, bottom each), `taskFloating`, `taskMinimized`,
+     * `taskPinned`, ordered front to back within each workspace; `display` (width, height) and
+     * `workArea` (left, top, right, bottom: without the bar and system bars).
      */
     fun state(displayId: Int): Bundle {
         val out = Bundle()
@@ -1192,6 +1356,12 @@ class HyprTileController(
         out.putInt("focusedTask", focused?.taskId ?: -1)
         out.putString("focusedPackage", focused?.let { packageOf(it) })
         out.putString("focusedTitle", focused?.let { titleOf(it) })
+        displayController.getDisplayLayout(displayId)?.let {
+            out.putIntArray("display", intArrayOf(it.width(), it.height()))
+        }
+        desktopBounds(displayId)?.let {
+            out.putIntArray("workArea", intArrayOf(it.left, it.top, it.right, it.bottom))
+        }
         val ids = ArrayList<Int>()
         val ws = ArrayList<Int>()
         val pkgs = ArrayList<String>()
@@ -1199,6 +1369,7 @@ class HyprTileController(
         val bounds = ArrayList<Int>()
         val floating = ArrayList<Boolean>()
         val minimized = ArrayList<Boolean>()
+        val pinned = ArrayList<Boolean>()
         for ((i, deskId) in desks.withIndex()) {
             val visible = repo.getExpandedTasksIdsInDeskOrdered(deskId)
             val all = visible + repo.getActiveTaskIdsInDesk(deskId).filter { it !in visible }
@@ -1213,6 +1384,7 @@ class HyprTileController(
                 bounds += listOf(b.left, b.top, b.right, b.bottom)
                 floating += !tile.isTiled(id)
                 minimized += repo.isMinimizedTask(id)
+                pinned += tile.isPinned(id)
             }
         }
         out.putIntArray("taskIds", ids.toIntArray())
@@ -1222,6 +1394,7 @@ class HyprTileController(
         out.putIntArray("taskBounds", bounds.toIntArray())
         out.putBooleanArray("taskFloating", floating.toBooleanArray())
         out.putBooleanArray("taskMinimized", minimized.toBooleanArray())
+        out.putBooleanArray("taskPinned", pinned.toBooleanArray())
         return out
     }
 

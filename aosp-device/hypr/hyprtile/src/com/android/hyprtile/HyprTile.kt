@@ -26,6 +26,7 @@ class HyprTile(config: TileConfig = TileConfig()) {
     private val layouts = HashMap<Int, TileLayout>()
     private val workspaceOf = HashMap<Int, Int>()
     private val floating = HashSet<Int>()
+    private val pinned = HashSet<Int>()
 
     /** Tiled window ids of [workspace], in layout order. */
     fun tiled(workspace: Int): List<Int> = layouts[workspace]?.ids ?: emptyList()
@@ -36,14 +37,38 @@ class HyprTile(config: TileConfig = TileConfig()) {
 
     fun workspaceOf(id: Int): Int? = workspaceOf[id]
 
+    /** Hyprland's pinned windows: floating, on top, shown on every workspace. */
+    fun isPinned(id: Int) = id in pinned
+
+    fun pinned(): Set<Int> = pinned
+
+    /**
+     * Hyprland's `pin` for [id]: pinning takes a tiled window out of its layout and makes it
+     * float (Hyprland pins only floating windows); unpinning leaves it floating. Returns the
+     * workspace whose layout lost the window, if any.
+     */
+    fun setPinned(id: Int, on: Boolean): Int? {
+        if (!on) {
+            pinned -= id
+            return null
+        }
+        val ws = close(id)
+        floating += id
+        pinned += id
+        return ws
+    }
+
     /**
      * A window opened on [workspace]. It is tiled next to [focused] (when that one is tiled on
      * the same workspace) unless [float] is set. Returns true when the workspace's layout changed.
      */
     fun open(id: Int, workspace: Int, focused: Int? = null, float: Boolean = false): Boolean {
         if (float) {
+            // Moving a pinned window to another workspace keeps it pinned.
+            val pin = id in pinned
             close(id)
             floating += id
+            if (pin) pinned += id
             return false
         }
         if (workspaceOf[id] == workspace) return false
@@ -56,9 +81,13 @@ class HyprTile(config: TileConfig = TileConfig()) {
         return true
     }
 
-    /** A window closed, was minimized or became floating; returns its old workspace if tiled. */
+    /**
+     * A window closed, was minimized or became floating (no longer pinned then); returns its old
+     * workspace if tiled.
+     */
     fun close(id: Int): Int? {
         floating -= id
+        pinned -= id
         val ws = workspaceOf.remove(id) ?: return null
         layouts[ws]?.let {
             it.remove(id)

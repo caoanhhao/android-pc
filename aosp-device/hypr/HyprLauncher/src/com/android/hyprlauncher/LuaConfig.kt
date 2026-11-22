@@ -13,13 +13,16 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
 import android.os.UserManager
+import android.graphics.Rect
 import android.util.Log
+import android.view.Display
 import android.view.KeyEvent
 import com.android.hyprlua.BarModule
 import com.android.hyprlua.HyprConfig
 import com.android.hyprlua.HyprLua
 import com.android.hyprlua.LuaHost
 import com.android.hyprlua.LuaState
+import com.android.hyprlua.SnapMonitor
 import com.android.hyprlua.SnapWindow
 import com.android.hyprlua.Snapshot
 import com.android.hyprlua.WireConfig
@@ -294,7 +297,12 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
             focused = s.focusedTask,
             windows = s.windows.map {
                 SnapWindow(it.taskId, it.workspace, it.packageName, it.title, it.floating, it.minimized,
-                    it.bounds.left, it.bounds.top, it.bounds.width(), it.bounds.height())
+                    it.bounds.left, it.bounds.top, it.bounds.width(), it.bounds.height(), it.pinned)
+            },
+            monitor = s.takeIf { it.displayWidth > 0 }?.let {
+                val w = if (it.workArea.isEmpty) Rect(0, 0, it.displayWidth, it.displayHeight) else it.workArea
+                SnapMonitor(Display.DEFAULT_DISPLAY, it.displayWidth, it.displayHeight,
+                    w.left, w.top, w.right, w.bottom)
             },
             names = current?.workspaceRules?.mapNotNull { r -> r.name?.let { r.workspace to it } }?.toMap()
                 ?: emptyMap(),

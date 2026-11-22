@@ -4,6 +4,9 @@ import com.android.hyprtile.AnimationConfig
 import com.android.hyprtile.Bind
 import com.android.hyprtile.CaptionMode
 import com.android.hyprtile.DISPATCHERS
+import com.android.hyprtile.parsePin
+import com.android.hyprtile.parseWindow
+import com.android.hyprtile.parseXY
 import com.android.hyprtile.DecorationConfig
 import com.android.hyprtile.Direction
 import com.android.hyprtile.Gesture
@@ -642,8 +645,11 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "fullscreen" -> if (a !in setOf("", "0", "1")) "fullscreen takes 0 or 1" else null
                 "exec" -> if (a.isEmpty()) "exec needs a package name" else null
                 "focuswindow" -> if (a.removePrefix("taskid:").toIntOrNull() == null) "bad window '$a'" else null
-                "resizeactive" -> if (a.split(Regex("\\s+")).size != 2 ||
-                    a.split(Regex("\\s+")).any { it.toIntOrNull() == null }) "resizeactive takes 'DX DY'" else null
+                "resizeactive", "moveactive" ->
+                    if (parseXY(a) == null) "$dispatcher takes 'DX DY' or 'exact X Y'" else null
+                "pin" -> if (parsePin(a) == null) "pin takes [toggle|on|off] [taskid:N]" else null
+                "togglefloating", "setfloating", "settiled" ->
+                    parseWindow(a).exceptionOrNull()?.message
                 else -> null
             }
         }

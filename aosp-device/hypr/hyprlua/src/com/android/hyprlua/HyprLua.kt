@@ -14,6 +14,21 @@ data class SnapWindow(
     val y: Int = 0,
     val width: Int = 0,
     val height: Int = 0,
+    val pinned: Boolean = false,
+)
+
+/**
+ * The display as Lua sees it (`hl.get_active_monitor`): its size and the work area (the display
+ * without the bar and system bars), both in display pixels.
+ */
+data class SnapMonitor(
+    val id: Int,
+    val width: Int,
+    val height: Int,
+    val workLeft: Int,
+    val workTop: Int,
+    val workRight: Int,
+    val workBottom: Int,
 )
 
 /** The shell's state for `hl.get_*`: workspaces, the focused window, windows, workspace names. */
@@ -25,6 +40,8 @@ data class Snapshot(
     val names: Map<Int, String> = emptyMap(),
     /** The workspaces that exist (Phase E2), in order; null: 1..[workspaces]. */
     val existing: List<Int>? = null,
+    /** The display and its work area (Phase E1), null until the shell answered. */
+    val monitor: SnapMonitor? = null,
 )
 
 /** What the Lua runtime needs from HyprLauncher. Called on the runtime's thread. */
@@ -305,8 +322,12 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
             recs += listOf("S", s.active, s.workspaces, s.focused).joinToString("\u001f")
             for (w in s.windows) {
                 recs += listOf("W", w.id, w.workspace, clean(w.packageName), clean(w.title),
-                    if (w.floating) 1 else 0, if (w.minimized) 1 else 0, w.x, w.y, w.width, w.height)
-                    .joinToString("\u001f")
+                    if (w.floating) 1 else 0, if (w.minimized) 1 else 0, w.x, w.y, w.width, w.height,
+                    if (w.pinned) 1 else 0).joinToString("\u001f")
+            }
+            s.monitor?.let { m ->
+                recs += listOf("M", m.id, m.width, m.height, m.workLeft, m.workTop, m.workRight,
+                    m.workBottom).joinToString("\u001f")
             }
             for ((n, name) in s.names) recs += listOf("N", n, clean(name)).joinToString("\u001f")
             s.existing?.let { recs += (listOf("X") + it).joinToString("\u001f") }
