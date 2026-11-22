@@ -777,6 +777,10 @@ commit (or `(partial: ...)`).
 - **E5 — special workspace:** `hl.dsp.workspace.toggle_special(name)`,
   `hl.dsp.window.move({ workspace = "special[:name]" })`, the host's `ALT + S` and
   `ALT + CTRL + S`.
+  Status (2026-11-22): done; named special workspaces shown over the active one (own layout
+  and gaps, `dim_special`, `special_scale_factor`), hidden ones on a stash desk without a
+  workspace number, rules, bar and overview, checked on Waydroid (docs/hypr-desktop.md,
+  "Special workspaces (E5)").
 - **E6 — mouse wheel and mouse buttons:** `mouse_up`/`mouse_down` (and `mouse_left`/
   `mouse_right`) and `mouse:27x` button binds with modifiers, any dispatcher.
 - **E7 — bar:** hide/show and reload dispatchers and binds (`ALT + B`, `ALT + SHIFT + B`),
