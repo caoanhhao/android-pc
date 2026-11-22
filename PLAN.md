@@ -758,11 +758,12 @@ commit (or `(partial: ...)`).
 - **E1 — pin:** `hl.dsp.window.pin()` (a floating window kept on top and on every
   workspace), the binds that need it (`ALT + CTRL + Space` pin, `ALT + CTRL + SHIFT + F`
   float, fill the work area and pin).
-  Status (2026-11-22): partial; pin/unpin (binds and window menu), always-on-top inside the
+  Status (2026-11-22): done; pin/unpin (binds and window menu), always-on-top inside the
   desk, windows that open stay under it, fill-and-pin and the carry to the active desk checked
-  on Waydroid (docs/hypr-desktop.md, "Pin (Phase E1)"). Open: a pinned window carried to
-  another desk is not drawn there (and an ANR follows), and key focus stays with the pinned
-  window (needs a WindowManager patch).
+  on Waydroid (docs/hypr-desktop.md, "Pin (Phase E1)"). The follow-up fixed the carried window
+  (drawn on the new desk, no ANR) and made key focus follow the click under a pinned window,
+  both with `tools/patches/aosp17-wm-pinned-focus.patch` (frameworks/base WindowManager),
+  checked through the overlay; the image needs a rebuild to carry it.
 - **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
   only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20). Done
   2026-11-22 (docs/hypr-desktop.md, "Workspaces (E2)": a desk per workspace number, made on
@@ -834,9 +835,9 @@ commit (or `(partial: ...)`).
   SELinux not checked (Waydroid has none); `focusedmon`, `urgent`, `minimized` and
   `windowtitle` are sent but were not provoked.
 
-Phase E status (2026-11-22): done (E1 partial). The full image (build
+Phase E status (2026-11-22): done. The full image (build
 `eng.caoanh.20261122.1905`) ran E1-E12 end to end on Waydroid (docs/hypr-desktop.md, "Phase E
-on the full image"). Commits: E1 f0b595e f609e77 6c3f426 (partial); E2 14a244f 220b51b 061673b
+on the full image"). Commits: E1 f0b595e f609e77 6c3f426 and "hypr: E1 follow-up"; E2 14a244f 220b51b 061673b
 108c1d6 a118732; E3 c78fb8d 025e081 bc3034c; E4 5df9b20 b63bc90; E5 0e1dd17 1226223 c5f8901;
 E6 e503b92 909f88e 55a9636; E7 4d738d1 7532557; E8 21d08b3 77cfb3e; E9 4ab0f21 1001035; E10
 149809e 84fe9e1; E11 76dac50 30fd707 and the done commit; E12 eec8c5f 0394bb8. Open: E1's

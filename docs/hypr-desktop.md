@@ -1957,9 +1957,29 @@ Decisions:
   again (Shell's move would cascade it), and recorded in `DesktopRepository` with
   `addTaskToDesk` (as `movetoworkspacesilent` does). Switches Shell makes by itself (from home,
   a window brought to front on another desk) are caught by the sync after the transition. In the
-  desk-switch animation the pinned window does not slide with the desks. A minimized pinned
+  desk-switch animation the pinned window does not slide with the desks: it waits on the
+  transition root above both and goes into the new desk at the end. A minimized pinned
   window stays on its desk. Reparenting it out of the desks (a root task of its own) was not
   chosen: Shell's desktop code expects every freeform task in a desk, and would move it back.
+- **The carried window needs a WindowManager fix** (`tools/patches/aosp17-wm-pinned-focus.patch`,
+  `Transition.ChangeInfo.hasChanged`). A task that only changes parent (same bounds, mode and
+  visibility) was dropped from the transition as a no-op, so Shell never got its change and its
+  surface stayed under the old desk, which ends hidden: the new desk showed only the wallpaper,
+  and a key then ended in an ANR. With the patch a visible task that moved to another parent
+  task counts as changed.
+- **Key focus follows the click, not the stacking** (same patch, Task/TaskFragment/
+  DisplayContent/ActivityRecord). Hyprland keeps a pinned window on top without giving it the
+  focus. WindowManager focused the top resumed activity (the desk's top child, the pinned one)
+  and gave key focus to the topmost focusable window; its always-on-top skip covers only
+  always-on-top root tasks (`ENABLE_INTERACTIVE_PICTURE_IN_PICTURE`). Now a parent task
+  remembers the child last brought to front under always-on-top siblings
+  (`mPreferredFocusChild`: added or moved to the top, a tap or `setFocusedTask` on it, an
+  activity started in it); `getTopResumedActivity` returns it first, multi-resume does not
+  hand the focus to the pinned task above it (`TaskFragment.resumeTopActivity`), and
+  `findFocusedWindow` skips an always-on-top child task's windows unless they are the
+  focused app's (they stay the fallback). Reordering a pinned task (Shell's
+  `keepPinnedOnTop`) does not take the focus; a tap on it does, and `focuswindow`/`movefocus`
+  onto a pinned window calls `setFocusedTask` (a reorder would not).
 - **Floating first.** Hyprland pins floating windows only; the host's binds float the window
   before pinning. Here `pin` on a tiled window floats it first (centred, as `togglefloating`),
   so `ALT + CTRL + Space` is just `hl.dsp.window.pin()`.
@@ -1994,24 +2014,35 @@ binds plus the pin block (81 binds, the 2 warnings are E10's `repeating`):
   desk, keeps its bounds and `isAlwaysOnTop` (log `pin task N: true`, then the task under the
   new desk in the dump).
 
+E1 follow-up (2026-11-22, `PcSystemUI` and `services.jar` with the WindowManager patch through
+the overlay, test data, host game pads off for the run: `tools/waydroid/container-guard.sh
+gamepads off`, on again after), helpers and screenshots in `out/hypr-e1b/`:
+
+- Before the patch, `ALT + 2` with a pinned Files: WindowManager logged `Rejecting as no-op` for
+  the task, and SurfaceFlinger still had `Task=194` under `Task=6(Desk)` (the old desk).
+- `ALT + 2`: Files is drawn on workspace 2 at its bounds (`e2.png`), the layer is under
+  `Task=8(Desk)`, it has the key focus, a key gives no ANR. `ALT + 1`: it comes back on top of
+  Settings, and Settings (workspace 1's last window) has the focus.
+- A switch Shell made by itself (the bar's icon of a minimized window on workspace 1, seen from
+  workspace 2): `pinned [190] follow to desk 6`, Files drawn on workspace 1 (`e5.png`).
+- Focus: with Files pinned above Settings, a tap on Settings gives Settings the key focus
+  (`mCurrentFocus`), Files stays drawn above it (`d3.png`) and BACK closes Settings' sub-page;
+  a tap on an item that starts an activity in Settings keeps the focus in Settings; a tap on
+  Files gives it back to Files; `hyprctl dispatch focuswindow 190` (the pinned task) from
+  Settings focuses Files.
+
 ### Known limits
 
-- **A pinned window carried to another desk is not drawn there.** After `ALT + 2` the task is in
-  the new desk with its bounds and the always-on-top flag, but the screen shows only the
-  wallpaper (`ws2.png`, `ws2-fix.png`); a key event then waits on it and ends in an ANR
-  ("Application does not have a focused window"). Not fixed in E1: the next step is to look at
-  the carried task's leash in `animateDeskSwitch` (it is neither in the sliding sets nor shown
-  on the new desk) and at the app window's visibility after the reparent.
-- **Key focus stays with the pinned window.** The pinned task is the desk's top child, so it is
-  the focused app and the top resumed activity; `DisplayContent` gives key focus to the topmost
-  focusable window, and the always-on-top skip there applies only to always-on-top root tasks
-  (with `ENABLE_INTERACTIVE_PICTURE_IN_PICTURE`). Clicking a window under it draws nothing over
-  the pinned one, but keys still go to the pinned window. `setFocusable(false)` does not help
-  (`ActivityRecord.windowsAreFocusable` checks `canReceiveKeys`). Fixing it needs a
-  WindowManager patch.
-- With host game pads passed into the container, a pad held on the host sends its keys to the
-  pinned window (the point above) and can press its buttons, which minimized it during the
-  test.
+- **The fixes need the WindowManager patch in the image.** `PcSystemUI` alone (the overlay on
+  the user's data) still has both old bugs; the patch was tried through the overlay's
+  `services.jar` and taken out again, so the next image build carries it.
+- With several pinned windows on a desk, the one brought back from minimized by a reorder
+  (Shell's unminimize) does not take the focus from another pinned one; a tap does.
+- Host game pads passed into the container send their keys to the focused window, pinned or
+  not; a pad used on the host pressed BACK and minimized windows during the test.
+- Not pin's: `am start` of a task that is on another desk while workspace 2 shows leaves every
+  desk hidden (Shell activates the task's old desk, empty, under the desktop wallpaper), as
+  E5 saw for a hidden special window ("Special workspaces (E5)").
 
 ## Apps (E8)
 

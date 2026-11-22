@@ -1,0 +1,175 @@
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index bd5c72a6e..c5edeba33 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -3456,6 +3456,8 @@ final class ActivityRecord extends WindowToken {
+                     + this + " task=" + task);
+             return false;
+         }
++        // android-pc: brought to front, the task takes the focus from always-on-top siblings.
++        if (task != null) task.setPreferredFocusChild();
+ 
+         // If this activity already positions on the top focused task, moving the task to front
+         // is not needed. But we still need to ensure this activity is focused because the
+diff --git a/services/core/java/com/android/server/wm/DisplayContent.java b/services/core/java/com/android/server/wm/DisplayContent.java
+index c55085d3e..f4ce84762 100644
+--- a/services/core/java/com/android/server/wm/DisplayContent.java
++++ b/services/core/java/com/android/server/wm/DisplayContent.java
+@@ -1003,6 +1003,15 @@ class DisplayContent extends RootDisplayArea implements WindowManagerPolicy.Disp
+             }
+         }
+ 
++        // android-pc: an always-on-top task inside a desk (a pinned window) is drawn above the
++        // focused app without taking its focus; it is only the fallback.
++        if (activity != null && activity != focusedApp
++                && activity.getTask() != focusedApp.getTask()
++                && Task.isAlwaysOnTopChild(activity.getTask())) {
++            if (mTmpWindow == null) mTmpWindow = w;
++            return false;
++        }
++
+         if (DesktopExperienceFlags.ENABLE_INTERACTIVE_PICTURE_IN_PICTURE.isTrue()) {
+             if (focusedApp == activity) {
+                 ProtoLog.v(WM_DEBUG_FOCUS_LIGHT,
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index ef60ace52..d11a21016 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -465,6 +465,13 @@ class Task extends TaskFragment {
+ 
+     private boolean mForceShowForAllUsers;
+ 
++    /**
++     * android-pc: the child task that keeps the focus while always-on-top siblings (pinned
++     * windows of a desk, aosp-device/hypr) are drawn above it: the one last brought to front.
++     */
++    @Nullable
++    private Task mPreferredFocusChild;
++
+     // The display category name for this task.
+     String mRequiredDisplayCategory;
+ 
+@@ -1383,10 +1390,60 @@ class Task extends TaskFragment {
+         mRootWindowContainer.invalidateTaskLayersAndUpdateOomAdjIfNeeded();
+     }
+ 
++    /**
++     * android-pc: a child task that was added or moved to the top, but stays under
++     * always-on-top siblings, keeps the focus ({@link #mPreferredFocusChild}). Always-on-top
++     * children do not take it this way (Shell reorders them to stay above an opening task); they
++     * take it when brought to front as an activity ({@link #setPreferredFocusChild}: a tap,
++     * setFocusedTask).
++     */
++    private void updatePreferredFocusChild(WindowContainer child) {
++        final Task task = child.asTask();
++        if (task == null || task.isAlwaysOnTop()) return;
++        if (onlyAlwaysOnTopAbove(task)) mPreferredFocusChild = task;
++    }
++
++    /** android-pc: this task's parent gives it the focus, see {@link #mPreferredFocusChild}. */
++    void setPreferredFocusChild() {
++        final Task parent = getParent() != null ? getParent().asTask() : null;
++        if (parent != null) parent.mPreferredFocusChild = this;
++    }
++
++    /** android-pc: {@code child} is a child and every child above it is always-on-top. */
++    private boolean onlyAlwaysOnTopAbove(WindowContainer child) {
++        for (int i = mChildren.size() - 1; i >= 0; --i) {
++            final WindowContainer c = mChildren.get(i);
++            if (c == child) return true;
++            if (!c.isAlwaysOnTop()) return false;
++        }
++        return false;
++    }
++
++    /** android-pc: the always-on-top task inside a parent task (a pinned window of a desk). */
++    static boolean isAlwaysOnTopChild(@Nullable Task task) {
++        return task != null && !task.isRootTask() && task.isAlwaysOnTop();
++    }
++
++    /** android-pc: an always-on-top child task while a sibling under it keeps the focus. */
++    static boolean yieldsFocus(@Nullable Task task) {
++        if (!isAlwaysOnTopChild(task)) return false;
++        final Task parent = task.getParent().asTask();
++        final Task preferred = parent != null ? parent.mPreferredFocusChild : null;
++        return preferred != null && preferred != task && parent.onlyAlwaysOnTopAbove(preferred);
++    }
++
+     @Override
+     @Nullable
+     ActivityRecord getTopResumedActivity() {
+         if (!isLeafTask()) {
++            // android-pc: the preferred child goes first when only always-on-top tasks cover it.
++            final Task preferred = mPreferredFocusChild;
++            if (preferred != null && onlyAlwaysOnTopAbove(preferred)) {
++                final ActivityRecord resumedActivity = preferred.getTopResumedActivity();
++                if (resumedActivity != null) {
++                    return resumedActivity;
++                }
++            }
+             for (int i = mChildren.size() - 1; i >= 0; --i) {
+                 ActivityRecord resumedActivity = mChildren.get(i).asTask().getTopResumedActivity();
+                 if (resumedActivity != null) {
+@@ -1635,6 +1692,9 @@ class Task extends TaskFragment {
+         }
+         index = getAdjustedChildPosition(child, index);
+         super.addChild(child, index);
++        updatePreferredFocusChild(child);
++        // android-pc: a task that starts an activity takes the focus from always-on-top siblings.
++        if (child.asActivityRecord() != null) setPreferredFocusChild();
+ 
+         ProtoLog.v(WM_DEBUG_ADD_REMOVE, "addChild: %s at top.", this);
+ 
+@@ -1722,6 +1782,7 @@ class Task extends TaskFragment {
+             Slog.d(TAG_WM, "removeChild: child=" + r + " reason=" + reason);
+         }
+         super.removeChild(r, false /* removeSelfIfPossible */);
++        if (r == mPreferredFocusChild) mPreferredFocusChild = null;
+ 
+         if (inPinnedWindowingMode()) {
+             // We normally notify listeners of task stack changes on pause, however root pinned task
+@@ -2951,6 +3012,7 @@ class Task extends TaskFragment {
+         final boolean toTop = position >= (mChildren.size() - 1);
+         position = getAdjustedChildPosition(child, position);
+         super.positionChildAt(position, child, includingParents);
++        if (toTop) updatePreferredFocusChild(child);
+ 
+         // Log positioning.
+         if (DEBUG_TASK_MOVEMENT) Slog.d(TAG_WM, "positionChildAt: child=" + child
+diff --git a/services/core/java/com/android/server/wm/TaskFragment.java b/services/core/java/com/android/server/wm/TaskFragment.java
+index d84d8882a..78b1ff1bf 100644
+--- a/services/core/java/com/android/server/wm/TaskFragment.java
++++ b/services/core/java/com/android/server/wm/TaskFragment.java
+@@ -1395,9 +1395,12 @@ class TaskFragment extends WindowContainer<WindowContainer> {
+             // same task because it can break focused state. (e.g. activity embedding)
+             if (taskDisplayArea.inMultiWindowMode() && taskDisplayArea.mDisplayContent != null) {
+                 final ActivityRecord focusedApp = taskDisplayArea.mDisplayContent.mFocusedApp;
+-                if (focusedApp == null || (focusedApp.getTask() != next.getTask()
++                // android-pc: nor for a pinned window (always-on-top in a desk) above the window
++                // that was brought to front last.
++                if ((focusedApp == null || (focusedApp.getTask() != next.getTask()
+                         && (!com.android.window.flags.Flags.fixMultiWindowTaskFocusChange()
+-                                || next.getTask().compareTo(focusedApp.getTask()) > 0))) {
++                                || next.getTask().compareTo(focusedApp.getTask()) > 0)))
++                        && !Task.yieldsFocus(next.getTask())) {
+                     taskDisplayArea.mDisplayContent.setFocusedApp(next);
+                 }
+             }
+diff --git a/services/core/java/com/android/server/wm/Transition.java b/services/core/java/com/android/server/wm/Transition.java
+index 960066fb7..9b5a12a25 100644
+--- a/services/core/java/com/android/server/wm/Transition.java
++++ b/services/core/java/com/android/server/wm/Transition.java
+@@ -4232,7 +4232,12 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
+                     // required to send such changes separately. Notifying about exiting AoT is not
+                     // necessary, because AoT will stay on top and order changes will catch up.
+                     || mIsAlwaysOnTop != mContainer.isAlwaysOnTop() && !mIsAlwaysOnTop
+-                    || mIsInteractive != isInteractive();
++                    || mIsInteractive != isInteractive()
++                    // android-pc: a visible task moved to another parent task without other
++                    // changes (a pinned window carried to another desk, aosp-device/hypr): its
++                    // surface goes along only if Shell gets the change.
++                    || (mContainer.asTask() != null && mStartParent != null
++                            && mStartParent != mContainer.getParent());
+         }
+ 
+         @TransitionInfo.TransitionMode

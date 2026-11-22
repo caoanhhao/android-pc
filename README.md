@@ -87,6 +87,7 @@ resets that project. The `nvidia-open-*` patches are applied by `tools/nvidia-bu
 | `aosp17-bionic-static-tls-surplus.patch` | `bionic` | static TLS room for NVIDIA's glibc libraries (nvglibc) |
 | `aosp17-microg-signature-spoofing.patch` | `frameworks/base` | lets microG stand in for Google Play services |
 | `aosp17-credman-empty-ui.patch` | `frameworks/base` | Credential Manager answers when all entries are dropped (TikTok sign-in) |
+| `aosp17-wm-pinned-focus.patch` | `frameworks/base` | a pinned window (Hyprland's `pin`, always-on-top inside a desk) does not keep the key focus (Phase E1) |
 | `aosp17-input-mouse-as-touch.patch` | `frameworks/native` | mouse clicks reach touch-only games |
 | `aosp17-launcher3-recents-only.patch`, `aosp17-launcher3-taskbar-npe.patch` | `packages/apps/Launcher3` | superseded by HyprLauncher (Phase D4): Launcher3 is no longer in the image; kept for older builds |
 | `aosp17-minigbm-nvidia.patch`, `aosp17-minigbm-drop-master.patch`, `aosp17-minigbm-rw-lock.patch` | `external/minigbm` | gralloc on nvidia-drm |

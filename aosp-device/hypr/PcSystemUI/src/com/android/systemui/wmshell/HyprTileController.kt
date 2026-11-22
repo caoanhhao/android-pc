@@ -1,6 +1,7 @@
 package com.android.systemui.wmshell
 
 import android.app.ActivityManager.RunningTaskInfo
+import android.app.ActivityTaskManager
 import android.app.StatusBarManager
 import android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD
 import android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM
@@ -545,11 +546,23 @@ class HyprTileController(
         fun slides(c: TransitionInfo.Change) = c.taskInfo?.let { !tile.isPinned(it.taskId) } ?: true
         val fromTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.from && slides(it) }
         val toTasks = info.changes.filter { it.taskInfo?.parentTaskId == desk.to && slides(it) }
+        // A carried pinned window is a child of the new desk, which slides in: it waits on the
+        // transition root above both desks, where it was, and goes into the new desk at the end.
+        // WindowManager reports the move only with tools/patches/aosp17-wm-pinned-focus.patch
+        // (a reparent alone was a no-op, and the window stayed in the old, hidden desk).
+        val root = info.getRoot(0)
         for (c in info.changes) {
             val id = c.taskInfo?.takeIf { tile.isPinned(it.taskId) }?.taskId ?: continue
             val alpha = decorations.opacity(id, c.taskInfo?.isFocused == true)
             startT.setAlpha(c.leash, alpha)
             finishT.setAlpha(c.leash, alpha)
+            val parent = c.parent?.let { info.getChange(it) } ?: continue
+            val b = c.endAbsBounds
+            startT.reparent(c.leash, root.leash).setLayer(c.leash, SPECIAL_SLIDE_LAYER)
+                .setPosition(c.leash, (b.left - root.offset.x).toFloat(), (b.top - root.offset.y).toFloat())
+                .show(c.leash)
+            finishT.reparent(c.leash, parent.leash)
+                .setPosition(c.leash, c.endRelOffset.x.toFloat(), c.endRelOffset.y.toFloat())
         }
         // Workspaces slide by number, as Hyprland's do.
         val numbers = workspaces(desk.displayId)
@@ -892,6 +905,12 @@ class HyprTileController(
         }
         if (task == null) {
             controller.moveTaskToFront(taskId, repository.userId, null, UnminimizeReason.TASKBAR_TAP)
+        } else if (tile.isPinned(taskId) && !repository.isMinimizedTask(taskId)) {
+            // A pinned window is on top already; reordering it would not give it the focus (the
+            // window last brought to front under it keeps it, tools/patches/
+            // aosp17-wm-pinned-focus.patch), focusing its activity does, as a tap on it.
+            runCatching { ActivityTaskManager.getService().setFocusedTask(taskId) }
+                .onFailure { Log.w(TAG, "focus pinned task $taskId", it) }
         } else {
             controller.moveTaskToFront(task, null, UnminimizeReason.TASKBAR_TAP)
         }
