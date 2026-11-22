@@ -1393,6 +1393,112 @@ nor modifiers on mouse events), state from `dumpsys accessibility`:
   Under Waydroid `getCursorPosition` answered the middle of the screen (injected events do not
   move Android's pointer), so a zoom from 1 started there and moved with the next hover.
 
+## System actions (E9)
+
+The host's clipboard manager, translate, screenshot, lock and user-panel binds, as SystemUI
+dispatchers. They need SystemUI's own interactors (user switcher, screen capture), which
+Shell's Dagger graph cannot reach, so they live in `HyprSystemActions`, a `CoreStartable` of
+`PcSysUIComponent` (`HyprSystemModule`); `HyprTileController.dispatch` hands the five names
+to it, and they run on SystemUI's main thread. Lua: `hl.dsp.clipboard_history()`,
+`.translate()`, `.screenshot({ mode = "area" | "full" })`, `.lock()`, `.user_switcher()`
+(docs/hypr-lua.md); binds in docs/examples/hypr-binds.lua, "SYSTEM".
+
+| Keys | Host | Dispatcher | What |
+|---|---|---|---|
+| `ALT + SHIFT + V` | `SUPER + SHIFT + V` (hyprwidget clipboard) | `clipboardhistory` | the clipboard history picker |
+| `ALT + SHIFT + T` | `MOD3 + T` (hyprwidget translate) | `translate` | selection or clipboard to Google Translate |
+| `ALT + SHIFT + S` | `SUPER + SHIFT + S` (screenshot `--area`) | `screenshot area` | SystemUI's region screenshot UI |
+| `ALT + CTRL + SHIFT + S` | `SUPER + CTRL + SHIFT + S` (`--now`) | `screenshot full` | a full-screen screenshot |
+| `ALT + SHIFT + Escape` | `SUPER + SHIFT + Escape` (hyprlock) | `lock` | the lock screen |
+| `ALT + Escape` | `SUPER + Escape` (user panel) | `userswitcher` | SystemUI's user switcher dialog |
+
+`ALT + CTRL + T` (the plan's example) is "move down" in the example binds (`t` is down), so
+translate is on `ALT + SHIFT + T`; `SHIFT` + a letter is free there (SHIFT + arrows resize).
+The screenshot keys follow the host's custom binds (`custom/bind.lua` swaps the two).
+
+### Clipboard history
+
+Android keeps one clip. `HyprClipboard` (PcSystemUI) listens to `ClipboardManager`'s
+primary-clip changes and keeps the text of the last 25 clips in `hyprtile`'s `ClipHistory`
+(host-tested): newest first, a clip copied again moves to the front. SystemUI may read the
+clipboard in the background (`READ_CLIPBOARD_IN_BACKGROUND`) without Android's "pasted from
+your clipboard" toast (`SUPPRESS_CLIPBOARD_ACCESS_NOTIFICATION`).
+
+Privacy, decided:
+
+- **Memory only.** Nothing goes to storage: a reboot or a SystemUI restart forgets the
+  history. A history on disk would keep everything ever copied (one-time codes, addresses)
+  past the moment it mattered, readable by anything that reads SystemUI's data.
+- **Sensitive clips are never kept**: a clip whose description has
+  `ClipDescription.EXTRA_IS_SENSITIVE` (password managers and password fields set it) is
+  skipped, and `translate` does not send it either.
+- **Text only**, at most 64 KiB per clip: images, URIs and intents are not resolved (resolving a
+  content URI would read another app's data with SystemUI's rights).
+- A user switch clears it; the history belongs to the user who copied.
+
+The picker is a focused system window in the bar's colours at the top of the screen: type to
+filter (every word, any order), Up/Down/Tab/Page keys choose, Enter or a click puts the entry
+back on the clipboard and pastes it into the window that had the focus (CTRL + V injected 150
+ms after the picker closes; SystemUI holds `INJECT_EVENTS`), SHIFT + Enter only copies, Delete
+removes the entry, CTRL + Delete clears the history, Escape or a touch outside closes it.
+
+### Quick translate
+
+Google Translate (`com.google.android.apps.translate`) is the user's to install. `translate`
+injects CTRL + C into the focused window, waits up to 400 ms for a new clip (the selection),
+otherwise takes the clipboard's text, and starts the app with `ACTION_PROCESS_TEXT`
+(read-only; the "Translate" entry of a text selection menu, Google's floating popup), else
+`ACTION_TRANSLATE`, else `ACTION_SEND`, else its launcher activity when there is no text.
+The popup's activity is dialog-styled, so it floats (hyprtile's float rules). With the app
+missing a notification says so; tapping it opens the Play Store page when a store is there.
+Side effect: the selection stays on the clipboard (and in the history), as a copy would.
+
+### Screenshots
+
+`screenshot area` calls `ScreenCaptureKeyboardShortcutInteractor.attemptPartialRegionScreenshot()`,
+what AOSP's own partial-screenshot key gesture runs: the large-screen pre-capture UI (a
+toolbar with region, window and full-screen modes, a movable region box, "Take screenshot of
+selected area"), saved and previewed as any screenshot. AOSP enables that UI
+(`config_enableLargeScreenScreencapture`) only in its `desktop` product resources
+(`res-product/`), and Waydroid's 2538x1058 at density 180 is under sw600dp, so `PcSystemUI`
+is now built with `aaptflags: ["--product", "desktop"]`: SystemUI's `product="desktop"`
+resources (this config and wording such as "device" in place of "tablet"). Without the UI the
+interactor falls back to a full-screen shot. `screenshot full` asks `ScreenshotHelper` for a
+full-screen screenshot (`SCREENSHOT_KEY_OTHER`): the usual preview with Share and Edit.
+
+### Lock and user switcher
+
+`lock` is `IWindowManager.lockNow(null)`, what the power menu's Lock and AOSP's `META + L`
+do: the keyguard shows at once and the screen stays on (hyprlock does not sleep either). With
+no lock screen at all (Settings' "None"), Android has nothing to show, and nothing happens.
+`userswitcher` is `UserSwitcherInteractor.showUserSwitcher(null)`, the shade's user switcher
+dialog (QS footer's user icon): the users, Guest, Add user and Manage users; it works with
+one user.
+
+### Checked on Waydroid (2026-11-22)
+
+`PcSystemUI` and `HyprLauncher` through the overlay, on the test data
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`), the example binds as binds.lua. Keys with
+`input keycombination`, clips set with a small `IClipboard` helper run as shell
+(`out/hypr-e9/cs.sh`, `clipset/`), helpers and screenshots in `out/hypr-e9/`.
+
+| Check | Result |
+|---|---|
+| `ALT + SHIFT + V`, nothing copied | the picker, "Nothing copied yet" (`clip-empty.png`) |
+| Four clips, one sensitive, one copied twice | three entries, newest first, no duplicate, the sensitive one absent, a multi-line clip on one line (`clip-list-crop.png`) |
+| Typing `third` | one match (`clip-filter-crop.png`) |
+| Down, Enter with Files' search field focused | the second entry pasted into the field (`paste1-crop.png`) |
+| `ALT + SHIFT + T`, Translate missing | notification "Google Translate is not installed" |
+| `ALT + SHIFT + T` with a stand-in app (`com.google.android.apps.translate` with a `PROCESS_TEXT` dialog activity, test data only, removed after) | text selected in Files' field reached it (`PROCESS_TEXT: third clip https://example.com xyz readonly=true`; " xyz" was only in the field, so the selection, not the old clip); its window floats (`translate-pop.png`). With the focus in a dialog without a selection, the clipboard's text went |
+| `ALT + CTRL + SHIFT + S` | a screenshot saved, preview with Share and Edit (`full-after.png`) |
+| `ALT + SHIFT + S` | before the `desktop` product: a full-screen shot (the fallback); after: the pre-capture UI with the region box (`area-ui.png`), "Take screenshot of selected area" saved a 1270x530 PNG |
+| `ALT + Escape` | "Select user": Owner, Guest, Add user, Manage users, Done (`users.png`) |
+| `ALT + SHIFT + Escape` | nothing with the test data's lock screen off; with a temporary PIN the keyguard showed at once, screen on (`locked.png`); unlocked with the PIN, the PIN cleared and the lock screen turned off again |
+
+The user's data was not locked by a test: its lock credential is the user's own, and after
+the Waydroid restarts of this step it sits at the lock screen (`RUNNING_LOCKED`) until the user
+unlocks it. Its live binds.lua got the "SYSTEM" section of the example.
+
 ## As built
 
 | Piece | Where | Process | What it does |

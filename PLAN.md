@@ -780,7 +780,9 @@ commit (or `(partial: ...)`).
 - **E9 — system actions:** clipboard history (`ALT + SHIFT + V`), quick translation with a
   user-installed app (Google Translate; `ALT + CTRL + T` style bind), screenshot binds as on
   the host (`ALT + SHIFT + S`, `ALT + CTRL + SHIFT + S`), lock (`ALT + SHIFT + Escape`),
-  `ALT + Escape` opens the user switcher in SystemUI's shade.
+  `ALT + Escape` opens the user switcher in SystemUI's shade. Done 2026-11-22
+  (docs/hypr-desktop.md, "System actions (E9)"; translate checked with a stand-in app,
+  Google Translate is the user's to install).
 - **E10 — zoom:** `ALT + SHIFT + equal/minus`, wheel and middle-button zoom through the
   accessibility magnification controller directly, no accessibility UI. Done 2026-11-22
   (docs/hypr-desktop.md, "Zoom (E10)": `hl.dsp.zoom`, `cursor.zoom_factor`, an accessibility
