@@ -135,3 +135,34 @@ hl.bind(mainMod .. " + CTRL + SHIFT + S", hl.dsp.screenshot({ mode = "full" }))
 -- The host's SUPER + SHIFT + Escape (hyprlock) and SUPER + Escape (its user panel).
 hl.bind(mainMod .. " + SHIFT + Escape", hl.dsp.lock())
 hl.bind(mainMod .. " + Escape", hl.dsp.user_switcher())
+
+------------------------
+---- HOST FUNCTIONS ----
+------------------------
+
+-- What the host's scripts do (wpctl, brightnessctl, fcitx5, hyprctl, the dual-screen and
+-- wallpaper scripts), with Android's own volume and brightness dialogs. Under Waydroid the
+-- host keeps ALT + F2/F3/F11/F12 and ALT + CTRL + P; on the real PC they reach these binds.
+-- The plain media keys (XF86Audio*, XF86MonBrightness*) need no bind: Android handles them.
+-- A held key steps once (InputManager's custom key gestures fire on the first key down).
+hl.bind(mainMod .. " + F12", hl.dsp.volume("up"))
+hl.bind(mainMod .. " + F11", hl.dsp.volume("down"))
+hl.bind(mainMod .. " + F3", hl.dsp.brightness("up"))
+hl.bind(mainMod .. " + F2", hl.dsp.brightness("down"))
+-- Displays: the host's SUPER + CTRL + SHIFT + P (both), SUPER + CTRL + P (the PC's own display
+-- only) and ALT + CTRL + P (the external one only; on SHIFT here, CTRL + P being primary).
+hl.bind(mainMod .. " + CTRL + SHIFT + P", hl.dsp.display("extend"))
+hl.bind(mainMod .. " + CTRL + P", hl.dsp.display("primary"))
+hl.bind(mainMod .. " + SHIFT + P", hl.dsp.display("external"))
+-- The host's MOD3 binds on ALT + SHIFT (as translate above): the next keyboard layout or
+-- input method (fcitx5-remote -t), force-stop the focused app (hyprctl kill), init.lua again
+-- (hyprctl reload).
+hl.bind(mainMod .. " + SHIFT + Space", hl.dsp.input_method("next"))
+hl.bind(mainMod .. " + SHIFT + Q", hl.dsp.window.kill())
+hl.bind(mainMod .. " + SHIFT + R", hl.dsp.reload())
+-- A random wallpaper from /sdcard/Pictures/Wallpapers (one wallpaper for every workspace, so
+-- both binds do the same).
+hl.bind(mainMod .. " + SHIFT + W", hl.dsp.wallpaper({ workspace = "current" }))
+hl.bind(mainMod .. " + CTRL + SHIFT + W", hl.dsp.wallpaper({ workspace = "all" }))
+-- The keypad's Enter: Termux.
+hl.bind(mainMod .. " + KP_Enter", hl.dsp.exec_cmd("com.termux"))

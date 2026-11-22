@@ -47,6 +47,7 @@ class Desktop private constructor(context: Context) {
     val overview = Overview(this)
     val altTab = AltTabSwitcher(this)
     val notifier = Notifier(this)
+    private val wallpapers = Wallpapers(this)
     val lua = LuaConfig(this)
 
     private val listener = object : IHyprShellListener.Stub() {
@@ -67,6 +68,8 @@ class Desktop private constructor(context: Context) {
                     "launcher" -> launcher.toggle()
                     "overview", "hyprexpo:expo" -> overview.toggle()
                     "lua" -> lua.callBind(arg)
+                    "reload" -> lua.reloadNow()
+                    "wallpaper" -> wallpapers.dispatch(arg)
                 }
             }
         }

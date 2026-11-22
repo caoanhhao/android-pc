@@ -6,6 +6,8 @@
         package="com.android.systemui"
         android:sharedUserId="android.uid.systemui"
         coreApp="true">
+    <!-- Phase E11: hl.dsp.window.kill() force-stops the focused window's app. -->
+    <uses-permission android:name="android.permission.FORCE_STOP_PACKAGES" />
     <application
         tools:replace="android:appComponentFactory"
         android:appComponentFactory="com.android.systemui.PcSystemUIAppComponentFactory">

@@ -51,6 +51,7 @@ import com.android.hyprtile.MAX_WORKSPACES
 import com.android.hyprtile.WorkspaceMap
 import com.android.hyprtile.resolveWorkspace
 import com.android.hyprtile.shouldFloat
+import com.android.systemui.hypr.HyprHostActions
 import com.android.systemui.hypr.HyprSystemActions
 import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
@@ -727,6 +728,13 @@ class HyprTileController(
             // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
             "launcher", "overview", "hyprexpo:expo", "lua" ->
                 return launcherDispatch?.invoke(name, arg) ?: false
+            // Host-only functions (E11): system keys, display modes; reload and wallpaper are
+            // HyprLauncher's.
+            in HyprHostActions.NAMES -> return HyprHostActions.dispatch(context, name, arg)
+            "forcekillactive" -> (focusedTask() ?: taskOrganizer.getRunningTasks()
+                .find { focusTransitionObserver.hasGlobalFocus(it) })
+                ?.let { HyprHostActions.forceStop(context, it) }
+            "reload", "wallpaper" -> return launcherDispatch?.invoke(name, arg) ?: false
             // Window history and switching (E3): focuscurrentorlast, cyclenext, focuswindow, ...
             else -> return focus.dispatch(name, arg)
         }

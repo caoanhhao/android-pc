@@ -140,8 +140,13 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   `bracketleft`, `bracketright`, `comma`, `period`, `slash`, `semicolon`, `apostrophe`,
   `Print`, the keypad (`KP_0`..`KP_9`, and with Num Lock off `KP_End`, `KP_Down`, `KP_Next`,
   `KP_Left`, `KP_Begin`, `KP_Right`, `KP_Home`, `KP_Up`, `KP_Prior`, `KP_Insert` for
-  Android's `NUMPAD_1`..`NUMPAD_0`, which it sends either way), ..., or any Android key code name (`KEYCODE_MEDIA_PLAY_PAUSE` or
-  `MEDIA_PLAY_PAUSE`). An unknown key is an error.
+  Android's `NUMPAD_1`..`NUMPAD_0`, which it sends either way), `KP_Enter`, the media keys
+  (`XF86AudioRaiseVolume`, `XF86AudioLowerVolume`, `XF86AudioMute`, `XF86AudioPlay`,
+  `XF86AudioNext`, `XF86AudioPrev`, `XF86AudioStop`, `XF86MonBrightnessUp`/`Down`), ..., or
+  any Android key code name (`KEYCODE_MEDIA_PLAY_PAUSE` or `MEDIA_PLAY_PAUSE`). An unknown key
+  is an error. Android handles the plain media keys itself (volume dialog, media session,
+  brightness dialog, holding repeats) and InputManager refuses binds on the volume and media
+  keys, so leave them unbound (E11).
 - A bind on keys that already have one replaces it (the defaults included); `hl.unbind` and a
   disabled bind leave the keys free. At most 256 binds are installed.
 - Options: `description` is kept; `repeating`, `locked`, `release`, `non_consuming`, ... warn
@@ -364,7 +369,8 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.window.float()` | `togglefloating` | only `action = "toggle"` |
 | `hl.dsp.window.fullscreen({ mode = "maximized" })` | `fullscreen 1` | fill the work area, keep the tile; again to go back |
 | `hl.dsp.window.fullscreen()` | `fullscreen 0` | Android's fullscreen, out of the desktop and back |
-| `hl.dsp.window.close()`, `.kill()` | `killactive` | close the focused window |
+| `hl.dsp.window.close()` | `killactive` | close the focused window |
+| `hl.dsp.window.kill()` | `forcekillactive` | force-stop the focused window's app, as Settings' Force stop (E11; the host's `hyprctl kill` picks a window by click) |
 | `hl.dsp.window.resize({ x = 40, y = 0 })` | `resizeactive` | tiled: move its splits; floating: grow (px) |
 | `hl.dsp.layout("togglesplit")` | `togglesplit` | dwindle: flip the focused window's split |
 | `hl.dsp.exec_cmd("com.termux")` | `exec` | start a package's launcher activity (a package name, not a shell command); it opens on the active workspace |
@@ -379,6 +385,13 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.screenshot({ mode = "area" })` | `screenshot area` | SystemUI's region screenshot (its large-screen pre-capture UI); `mode = "full"` (`screenshot full`) the whole screen with the usual preview and editor (E9) |
 | `hl.dsp.lock()` | `lock` | the lock screen now, as the power menu's Lock (E9) |
 | `hl.dsp.user_switcher()` | `userswitcher` | SystemUI's user switcher dialog, also with one user (E9) |
+| `hl.dsp.volume("up")`, `"down"`, `"mute"` | `volume up\|down\|mute` | the VOLUME key, as a keyboard sends it: AudioService and SystemUI's volume dialog (E11; the host runs wpctl) |
+| `hl.dsp.brightness("up")`, `"down"` | `brightness up\|down` | the BRIGHTNESS key: Android's brightness step and its brightness dialog (E11) |
+| `hl.dsp.media("play_pause")`, `"next"`, `"previous"`, `"stop"` | `media ...` | the media key, to the active media session (E11; the host runs playerctl) |
+| `hl.dsp.input_method("next")`, `"previous"` | `inputmethod next\|previous` | the LANGUAGE_SWITCH key: the input method's next keyboard layout or subtype (E11; fcitx5-remote -t) |
+| `hl.dsp.display("extend")`, `"mirror"`, `"primary"`, `"external"` | `display ...` | external displays on (each its own desktop, or mirroring the default display), off, or alone with the default display powered off (E11; docs/hypr-desktop.md) |
+| `hl.dsp.reload()` | `reload` | `hyprctl reload`: init.lua and its modules again, now |
+| `hl.dsp.wallpaper({ workspace = "all", dir = "/sdcard/Pictures/Wallpapers" })` | `wallpaper random all [dir]` | a random picture of the folder becomes the wallpaper; one wallpaper for every workspace, so `"current"` does the same |
 | `hl.dsp.raw(name, arg)` | any of the above | by Hyprland's name: `hl.dsp.raw("movefocus", "l")` |
 | a Lua function | `lua` | runs in the launcher's Lua state |
 

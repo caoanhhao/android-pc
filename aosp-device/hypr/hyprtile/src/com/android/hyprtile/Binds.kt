@@ -117,6 +117,12 @@ private val KEY_ALIASES = mapOf(
     "KP_0" to "NUMPAD_0", "KP_1" to "NUMPAD_1", "KP_2" to "NUMPAD_2", "KP_3" to "NUMPAD_3", "KP_4" to "NUMPAD_4",
     "KP_5" to "NUMPAD_5", "KP_6" to "NUMPAD_6", "KP_7" to "NUMPAD_7", "KP_8" to "NUMPAD_8", "KP_9" to "NUMPAD_9",
     "SUPER_L" to "META_LEFT", "SUPER_R" to "META_RIGHT", "CAPS_LOCK" to "CAPS_LOCK",
+    // Media keys (Android handles them itself; InputManager refuses custom binds on most).
+    "XF86AUDIORAISEVOLUME" to "VOLUME_UP", "XF86AUDIOLOWERVOLUME" to "VOLUME_DOWN",
+    "XF86AUDIOMUTE" to "VOLUME_MUTE", "XF86AUDIOPLAY" to "MEDIA_PLAY_PAUSE",
+    "XF86AUDIOPAUSE" to "MEDIA_PLAY_PAUSE", "XF86AUDIOSTOP" to "MEDIA_STOP",
+    "XF86AUDIONEXT" to "MEDIA_NEXT", "XF86AUDIOPREV" to "MEDIA_PREVIOUS",
+    "XF86MONBRIGHTNESSUP" to "BRIGHTNESS_UP", "XF86MONBRIGHTNESSDOWN" to "BRIGHTNESS_DOWN",
 )
 
 /** The dispatchers the shell and HyprLauncher run (Hyprland's names, `lua` for Lua functions). */
@@ -130,4 +136,5 @@ val DISPATCHERS = setOf(
     "pin", "setfloating", "settiled", "moveactive",
     "zoom",
     "clipboardhistory", "translate", "screenshot", "lock", "userswitcher",
+    "volume", "brightness", "media", "inputmethod", "display", "forcekillactive", "reload", "wallpaper",
 )

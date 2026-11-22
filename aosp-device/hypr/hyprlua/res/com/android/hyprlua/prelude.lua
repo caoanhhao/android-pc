@@ -167,6 +167,14 @@ local function dir(d, level)
   return r
 end
 
+-- The argument of a dispatcher that takes one word of [choices] (a string, or { action = }).
+local function one_of(what, a, choices, level)
+  if type(a) == "table" then a = a.action end
+  a = tostring(a):lower()
+  for _, c in ipairs(choices) do if a == c then return a end end
+  error(what .. ": '" .. a .. "' is not one of " .. concat(choices, ", "), level + 1)
+end
+
 local function window_id(w, level)
   if type(w) == "table" and w.id then return str(w.id) end
   local id = tostring(w):match("^taskid:(%d+)$") or tostring(w):match("^(%d+)$")
@@ -213,7 +221,8 @@ end
 
 local window = namespace("hl.dsp.window", {
   close = function() return dsp("killactive") end,
-  kill = function() return dsp("killactive") end,
+  -- Hyprland's forcekillactive: force-stops the focused window's app.
+  kill = function() return dsp("forcekillactive") end,
   float = function(t)
     local name = FLOAT_ACTIONS[tostring(t and t.action or "toggle")]
     if not name then error("hl.dsp.window.float: action is 'toggle', 'on' or 'off'", 2) end
@@ -326,6 +335,34 @@ hl.dsp = namespace("hl.dsp", {
       return dsp("zoom", str(t.factor))
     end
     error("hl.dsp.zoom needs delta = or factor = (a number)", 2)
+  end,
+  -- What the host's scripts do (Phase E11): the system's own keys and dialogs.
+  volume = function(a) return dsp("volume", one_of("hl.dsp.volume", a, { "up", "down", "mute" }, 2)) end,
+  brightness = function(a) return dsp("brightness", one_of("hl.dsp.brightness", a, { "up", "down" }, 2)) end,
+  media = function(a)
+    return dsp("media", one_of("hl.dsp.media", a, { "play_pause", "next", "previous", "stop" }, 2))
+  end,
+  input_method = function(a)
+    return dsp("inputmethod", one_of("hl.dsp.input_method", a or "next", { "next", "previous" }, 2))
+  end,
+  display = function(a)
+    return dsp("display", one_of("hl.dsp.display", a, { "extend", "mirror", "primary", "external" }, 2))
+  end,
+  -- hyprctl reload: init.lua again now.
+  reload = function() return dsp("reload") end,
+  -- A random picture of a folder (default /sdcard/Pictures/Wallpapers) as the wallpaper:
+  -- { workspace = "current" | "all", dir = "/sdcard/..." }; one wallpaper serves every workspace.
+  wallpaper = function(t)
+    if t ~= nil and type(t) ~= "table" then t = { workspace = t } end
+    local scope = tostring(t and t.workspace or "all")
+    if scope ~= "all" and scope ~= "current" then
+      error("hl.dsp.wallpaper: workspace is 'current' or 'all'", 2)
+    end
+    local folder = t and t.dir
+    if folder ~= nil and (type(folder) ~= "string" or folder:find("%s")) then
+      error("hl.dsp.wallpaper: dir is a folder path without spaces", 2)
+    end
+    return dsp("wallpaper", "random " .. scope .. (folder and " " .. folder or ""))
   end,
   -- Any dispatcher by its Hyprland name: hl.dsp.raw("movefocus", "l").
   raw = function(name, arg) return dsp(tostring(name), arg) end,

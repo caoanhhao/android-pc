@@ -208,6 +208,12 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         if (name == "lua") lua.post { runtime.call(arg) } else desktop.dispatch(name, arg)
     }
 
+    /** `reload` (hyprctl reload, Phase E11): init.lua and its modules again, now. */
+    fun reloadNow() {
+        lua.removeCallbacks(reload)
+        lua.post { if (everLoaded) load() }
+    }
+
     /** A Lua function bound to keys (dispatcher `lua`, from the shell). */
     fun callBind(id: String) {
         lua.post { runtime.call(id) }

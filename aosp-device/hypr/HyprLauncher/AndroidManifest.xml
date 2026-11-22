@@ -20,6 +20,8 @@
          the platform-signed launcher grants itself. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.MANAGE_APP_OPS_MODES"/>
+    <!-- Phase E11: hl.dsp.wallpaper(), a random picture as the wallpaper. -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER"/>
 
     <application
         android:label="@string/app_name"
