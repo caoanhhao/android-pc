@@ -69,6 +69,8 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `master.new_status` | `"master"`, `"slave"`, `"inherit"` | `slave` | `master`: a new window becomes the master |
 | `master.new_on_top` | bool | false | a new stack window goes to the top of the stack |
 | `binds.workspace_back_and_forth` | bool, 0..2 | 0 | switching to the active workspace goes to the previous one (2: the previous one on this display) |
+| `binds.pass_mouse_when_bound` | bool | false | bound mouse buttons and wheel steps reach the app too |
+| `binds.scroll_event_delay` | 0..2000 | 300 | ms between two firings of a wheel bind (not `repeating` ones) |
 | `binds.allow_workspace_cycles` | bool | false | accepted; as in Hyprland 0.57's most-recently-used workspace history it changes nothing |
 | `shell.main_mod` | modifiers | `ALT` | modifier of the default binds, and of the mouse binds unless `mouse:` binds say otherwise. SUPER belongs to the host's compositor under Waydroid |
 | `shell.default_binds` | bool | true | install Hyprland's example binds on `main_mod` (below) |
@@ -163,10 +165,47 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   `+ left` BACK; bind those dispatchers to other keys (below, "Waydroid and the host's SUPER
   key"). D5 saw `ALT + S` minimize a window on Waydroid; in D7 it did nothing without a game
   pad passed into the container, so it was the pad (docs/hypr-desktop.md, D7).
-- Mouse binds: `mouse:272` (left) only with `hl.dsp.window.drag()`, `mouse:273` (right) only
-  with `hl.dsp.window.resize()`, `mouse:274` (middle) only with `hl.dsp.window.float()`;
-  their modifier is the one modifier of all mouse binds (`main_mod` without them). Wheel
-  binds (`mouse_down`, `mouse_up`) warn: scroll over the bar's workspaces instead.
+- Mouse binds (E6, next section): `mouse:272`..`mouse:276` and the wheel, `mouse_up`,
+  `mouse_down`, `mouse_left`, `mouse_right`, with any modifiers and any dispatcher.
+
+## Mouse binds
+
+```lua
+hl.bind("ALT + mouse:272", hl.dsp.window.drag(), { mouse = true })    -- bindm movewindow
+hl.bind("ALT + mouse:273", hl.dsp.window.resize(), { mouse = true })  -- bindm resizewindow
+hl.bind("ALT + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
+hl.bind("ALT + mouse_up", hl.dsp.focus({ workspace = "e-1" }))
+hl.bind("CTRL + mouse:274", function() hl.notify("middle") end, { non_consuming = true })
+hl.bind("ALT + mouse:275", hl.dsp.overview())                         -- side button (back)
+hl.config({ binds = { pass_mouse_when_bound = false, scroll_event_delay = 300 } })
+```
+
+| Key | Input |
+|---|---|
+| `mouse:272`, `mouse:273`, `mouse:274` | left, right, middle button |
+| `mouse:275`, `mouse:276` | side buttons back (BTN_SIDE) and forward (BTN_EXTRA) |
+| `mouse_up`, `mouse_down` | one wheel step away from you / towards you |
+| `mouse_left`, `mouse_right` | wheel tilt (horizontal scroll) |
+
+- Modifiers must match exactly, as for keys; none is allowed (a bare `mouse_down` bind takes
+  every wheel step from the apps).
+- A button bind fires on the press; the app under the pointer gets a cancel instead of the
+  click, unless the bind is `non_consuming` or `binds.pass_mouse_when_bound` is true. A wheel
+  bind fires per wheel step and the app does not get the step (same exceptions). Unbound
+  combinations reach the app unchanged.
+- `binds.scroll_event_delay` (ms, default 300, Hyprland's): a wheel bind fires at most once
+  in that time; steps in between are still consumed. `repeating = true` on a wheel bind fires
+  on every step.
+- `{ mouse = true }` with `hl.dsp.window.drag()` / `resize()` on `mouse:272`..`274` is
+  Hyprland's `bindm`: the window under the pointer follows it while the button is held.
+  `hl.dsp.window.float()` on a button toggles the window under the pointer; other dispatchers
+  act on the focused window, as key binds do (clicking does not focus first).
+- The side buttons reach Android as BACK and FORWARD keys, so their binds are key binds: they
+  also catch a keyboard's BACK/FORWARD keys, are always consumed, and need the key free in
+  InputManager (as any key bind).
+- Defaults (`shell.default_binds`): `main_mod + mouse:272` drag, `+ mouse:273` resize,
+  `+ mouse:274` float, the binds of Hyprland's example configuration; `hl.unbind` frees them.
+- Other options (`release`, `locked`, ...) warn and are ignored.
 
 Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 
@@ -289,12 +328,13 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + SHIFT + arrows` | resize by 40 px |
 | `ALT + 1..9, 0`, `+ CTRL + ...`, `+ SHIFT + ...` | workspaces 1-10: switch, move the window and follow, move it silently |
 | `ALT + KP_End..KP_Insert`, `+ CTRL`, `+ SHIFT` | workspaces 11-20 on the keypad (Android's `NUMPAD_1..NUMPAD_0`), the same three (E2; the file sets `shell.workspaces = 20`) |
+| `ALT + wheel down / up` | next / previous workspace (E6) |
 | `ALT + Tab` | the switcher (`shell.alt_tab`, E4): tapped, the window focused before (the host's `SUPER + TAB`); held, walk the focus history, release to switch. The file's `ALT + Tab` bind is what `alt_tab = "bind"` would run. Not under Waydroid, where the host keeps `ALT + TAB` |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
 Left out, with no counterpart here: the special workspace, pin, screenshots and screen
-recording, the bar and panel widgets, lock and suspend, wheel binds. The shell's
+recording, the bar and panel widgets, lock and suspend. The shell's
 default `ALT + grave` (overview) moves to `ALT + SHIFT + grave` in this file, as the host puts
 the previous workspace there. It loads with no
 warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.

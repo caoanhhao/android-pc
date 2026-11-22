@@ -1672,6 +1672,88 @@ the mode switched with a test file required from init.lua (helpers in `out/hypr-
 | `alt_tab = "bind"` | every Tab while ALT is held runs the example's `ALT + Tab` bind (`focuscurrentorlast`) |
 | `alt_tab = "overview"`, `"off"` | the overview on the next window, focused on release; nothing |
 
+## Mouse binds (E6)
+
+Phase E6 (PLAN.md, "Phase E"): Hyprland's mouse binds. `mouse:272`..`mouse:276` (left, right,
+middle, side back/forward) and the wheel (`mouse_up`, `mouse_down`, `mouse_left`,
+`mouse_right`) take any modifiers and any dispatcher or Lua function; `{ mouse = true }` with
+`hl.dsp.window.drag()`/`resize()` stays Hyprland's `bindm`. Lua side: docs/hypr-lua.md,
+"Mouse binds"; types and matching: `hyprtile`'s `MouseBinds.kt`.
+
+### How the events are taken
+
+Android delivers the three kinds of input differently, so there are three paths:
+
+- **Buttons 272-274** come as motion events. `HyprMouse` (PcSystemUI) keeps a gesture monitor
+  (a spy window over the display, as since D3). On a press whose modifiers and button match a
+  bind it calls `pilferPointers()` first, so the app under the pointer gets a cancel and never a
+  click, then runs the bind; the rest of the gesture is swallowed (or drives the drag/resize).
+  Pilfering comes before the action: a window change can take longer than a quick click, and
+  once the button is up there is nothing left to pilfer.
+- **The wheel** is one `ACTION_SCROLL` event that the input dispatcher sends to the spy and to
+  the window under the pointer at once; a spy cannot take it back. A small patch to the
+  dispatcher (`tools/patches/aosp17-input-hypr-wheel-binds.patch`, `frameworks/native`) drops
+  every non-spy target of a scroll whose direction and modifiers are bound. `HyprMouse`
+  publishes the bound ones in `sys.hypr.wheel_binds` (`A:d,A:u,SA:d,SA:u`: modifier letters
+  `S C A M` or `-`, direction `u d l r`), which the dispatcher reads through a
+  `CachedProperty` (one atomic serial check per scroll, no lock contention, no parsing unless it
+  changed). Unbound scrolls and binds with `non_consuming` or `binds.pass_mouse_when_bound`
+  are not in the list and reach the app as before. sepolicy: `hypr_input_prop`, set by
+  `platform_app` (SystemUI), read by `system_server` (`aosp-device/hypr/sepolicy/`).
+- **Side buttons 275/276**: InputReader turns `BTN_SIDE`/`BTN_EXTRA` into `KEYCODE_BACK` /
+  `KEYCODE_FORWARD` key events (with the meta state of the keyboard), so `HyprKeybinds` installs
+  these binds as key gestures, like keyboard binds.
+
+### Decisions
+
+- **Exact modifiers**, as for keys: `ALT + mouse_down` does not fire with `ALT + SHIFT`, so
+  E10's `ALT + SHIFT + wheel` zoom and E6's `ALT + wheel` workspace switch live side by side.
+- **`binds.scroll_event_delay`** (Hyprland's, default 300 ms): a wheel bind fires at most once
+  per delay; the steps in between are still taken from the app. `repeating = true` fires on every
+  step (E10's zoom out uses it). One notch of a real wheel is one step; a free-spinning or
+  high-resolution wheel sends many, and the delay keeps `e+1` from skipping workspaces.
+- **Generic button binds act on the focused window** (Hyprland focuses on click first; here the
+  press is taken from the app, so focus does not move). `togglefloating` without an argument,
+  drag and resize act on the window under the pointer.
+- **Defaults** (`shell.default_binds`): `main_mod + mouse:272` drag, `+ 273` resize, `+ 274`
+  float, Hyprland's example config; the shell installs them when Lua sends no bind list.
+- **Host binds** (`docs/examples/hypr-binds.lua`): `ALT + wheel down/up` → `e+1`/`e-1`, as the
+  host's `SUPER + wheel`; E10 added `ALT + SHIFT + wheel` and `ALT + SHIFT + mouse:274` zoom.
+
+### Checked on Waydroid (2026-11-22)
+
+Test data (the user's data was locked by its password after the restart), PcSystemUI,
+HyprLauncher and the patched `libinputflinger.so` from the working tree in the overlay, the
+test binds.lua with the MOUSE and ZOOM sections of `docs/examples/hypr-binds.lua`
+(`8 mouse binds, bound wheel 'A:d,A:u,SA:d,SA:u'`). Events written into Waydroid's evdev FIFOs
+(`out/hypr-e6/inj.sh`: `KEY_LEFTALT`, `REL_WHEEL`, `BTN_MIDDLE`):
+
+| Check | Result |
+|---|---|
+| Wheel without modifier over Settings' app list | list scrolls (unbound, reaches the app) |
+| `ALT` + three wheel steps down, 60 ms apart | one `workspace e+1` (scroll delay), 1 → 2 |
+| `ALT` + wheel up, back on 1 | `e-1`; the app list has not moved (bound steps dropped) |
+| `ALT + SHIFT` + wheel down, then `ALT + SHIFT + mouse:274` | zoom 1.0 → 1.2, then reset to 1.0 |
+| `ALT + mouse:274` over the list, button held 50, 80, 300 ms | window floats; `pilferPointers` takes the press, the list item under the pointer does not open |
+| The same with a 30 ms click (press and release in one write) | window floats, but the dispatcher logs `Can't pilfer: no touching devices`: the click was over before the shell saw the press, and the item opened |
+
+Not checked: side buttons (Waydroid's `wayland_pointer` device does not report `BTN_SIDE`, so
+nothing arrives), tilt wheels, the real PC (the property context is built; the policy is not
+exercised, Waydroid runs without SELinux). The user's live binds.lua got the MOUSE section; their
+data was locked at the time, so it loads once they unlock (until then the launcher sends its
+cached configuration from before E6, which has no mouse binds).
+
+### Limits
+
+- If SystemUI dies with the property set, bound scrolls stay dropped until it restarts and
+  publishes again (Shell restarts within seconds).
+- A click shorter than the shell's reaction time (about 30 ms on Waydroid, while Shell's main
+  thread is busy) reaches the app before the press can be pilfered; the bind still runs.
+- A pilfered press still reaches the app as `ACTION_DOWN` + `ACTION_CANCEL` (Android's spy
+  model); apps treat it as an aborted touch.
+- Side-button binds also catch keyboard `BACK`/`FORWARD` keys with the same modifiers, and are
+  always consumed (`non_consuming` warns).
+
 ## As built
 
 | Piece | Where | Process | What it does |
@@ -1679,7 +1761,7 @@ the mode switched with a test file required from init.lua (helpers in `out/hypr-
 | `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
 | `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
 | `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types; Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
-| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; MOD + mouse binds |
+| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) |
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
 | `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |

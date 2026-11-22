@@ -3,7 +3,7 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (special workspace, pin, bar and panel widgets, wheel binds) are
+-- (special workspace, pin, bar and panel widgets) are
 -- left out; see docs/hypr-lua.md for what the dispatchers can do. Keys the host keeps for
 -- itself under Waydroid (ALT + TAB, ALT + F2/F3/F11/F12, CTRL + ALT + P) never reach Android
 -- there: ALT + Tab (the switcher, which also does the host's SUPER + TAB) is for the real PC
@@ -103,6 +103,16 @@ for i, key in ipairs(keypad) do
     hl.bind(mainMod .. " + CTRL + " .. key, hl.dsp.window.move({ workspace = ws }))
     hl.bind(mainMod .. " + SHIFT + " .. key, hl.dsp.window.move({ workspace = ws, follow = false }))
 end
+
+------------------------
+---- MOUSE -------------
+------------------------
+
+-- The wheel over anything, with mainMod: next and previous workspace, as on the host. The
+-- default mouse binds stay: mainMod + left drags a window, + right resizes it, + middle
+-- floats it. The SHIFT + wheel and SHIFT + middle-button binds are the zoom's, below.
+hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
+hl.bind(mainMod .. " + mouse_up", hl.dsp.focus({ workspace = "e-1" }))
 
 ------------------------
 ---- ZOOM --------------

@@ -151,7 +151,10 @@ class HyprMouse(
         }
         // A touch with no button only drags.
         if (e.buttonState == 0 && input != null && !bind.isDragOrResize) return false
-        val pass = input != null && binds.passes(bind)
+        val pass = input != null && binds.passes(bind) && !bind.isDragOrResize
+        // Pilfer before acting: acting can take longer than a quick click, and once the button
+        // is up the app has had the whole click and there is nothing left to pilfer.
+        if (!pass) monitor?.pilferPointers()
         if (bind.isDragOrResize || (bind.dispatcher == "togglefloating" && bind.arg.isEmpty())) {
             // These act on the window under the pointer, not the focused one.
             val button = when (bind.dispatcher) {
@@ -159,15 +162,12 @@ class HyprMouse(
                 MouseBind.RESIZE -> MotionEvent.BUTTON_SECONDARY
                 else -> MotionEvent.BUTTON_TERTIARY
             }
-            if (!controller.mouseDown(displayId, e.rawX, e.rawY, button)) return false
-            active = bind.isDragOrResize
+            active = controller.mouseDown(displayId, e.rawX, e.rawY, button) && bind.isDragOrResize
         } else {
             run(bind)
         }
-        if (pass && !active) return false
-        monitor?.pilferPointers()
-        swallowing = !active
-        return true
+        swallowing = !pass && !active
+        return !pass
     }
 
     private fun run(bind: MouseBind) {

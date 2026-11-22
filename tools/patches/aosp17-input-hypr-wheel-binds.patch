@@ -1,6 +1,6 @@
 --- a/services/inputflinger/dispatcher/InputDispatcher.cpp
 +++ b/services/inputflinger/dispatcher/InputDispatcher.cpp
-@@ -637,6 +637,51 @@
+@@ -637,6 +637,49 @@
              std::none_of(exclude.begin(), exclude.end(), matches);
  }
  
@@ -9,8 +9,6 @@
 +// that PcSystemUI binds goes to spy windows only. sys.hypr.wheel_binds lists the bound scrolls
 +// as "MODS:dir" entries joined by ',': MODS the letters S C A M (shift, ctrl, alt, meta) in
 +// that order or '-' for none, dir u/d/l/r (wheel up, down, tilt left, right).
-+constexpr const char* kWheelBindsProperty = "sys.hypr.wheel_binds";
-+
 +bool isBoundScroll(const MotionEntry& entry) {
 +    if (MotionEvent::getActionMasked(entry.action) != AMOTION_EVENT_ACTION_SCROLL ||
 +        entry.getPointerCount() < 1) {
@@ -18,7 +16,7 @@
 +    }
 +#if defined(__BIONIC__)
 +    static std::mutex lock;
-+    static android::base::CachedProperty property(kWheelBindsProperty);
++    static android::base::CachedProperty property("sys.hypr.wheel_binds");
 +    static std::vector<std::string> bound;
 +    std::scoped_lock _l(lock);
 +    bool changed = false;
@@ -52,7 +50,7 @@
  // A single-pointer mouse event that isMouseAsTouchApp() windows get as a touch.
  bool isConvertibleMouseEvent(const MotionEntry& entry) {
      return isFromSource(entry.source, AINPUT_SOURCE_MOUSE) &&
-@@ -2285,6 +2330,12 @@
+@@ -2285,6 +2328,12 @@
          if (result.ok()) {
              inputTargets = std::move(*result);
              injectionResult = InputEventInjectionResult::SUCCEEDED;
