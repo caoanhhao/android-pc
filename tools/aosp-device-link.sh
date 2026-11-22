@@ -9,6 +9,28 @@
 # this before every build; never edit the mirror, edit aosp-device/.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# While parallel sessions share this checkout (Phase E), builds take out/.phase-e.lock with
+# flock. The mirror is the build's input, so refreshing it outside the lock would change
+# another session's running build: refuse unless the lock is held by this process or one of
+# its ancestors. Without the lock file (no parallel sessions) nothing is checked.
+LOCK=$ROOT/out/.phase-e.lock
+if [[ -e $LOCK && -z ${HYPR_LINK_NO_LOCK:-} ]]; then
+    # lslocks lists waiting flock processes too; they have no children yet, so no harm.
+    holders=$(lslocks -n -r -o PID,PATH 2>/dev/null | awk -v l="$(realpath "$LOCK")" '$2 == l { print $1 }')
+    held=
+    for pid in $holders; do
+        p=$$
+        while [[ $p -gt 1 ]]; do
+            [[ $p == "$pid" ]] && { held=1; break 2; }
+            p=$(awk '{ print $4 }' "/proc/$p/stat" 2>/dev/null || echo 1)
+        done
+    done
+    if [[ -z $held ]]; then
+        echo "aosp-device-link.sh: run builds inside the shared lock:" >&2
+        echo "  flock $LOCK tools/aosp17-build.sh ...   (lock processes: $(echo ${holders:-none}))" >&2
+        exit 1
+    fi
+fi
 # AOSP_DEVICE_SRC=DIR mirrors DIR/aosp-device and DIR/aosp-device-vendor instead (e.g. a
 # `git archive HEAD` export, so other sessions' uncommitted work stays out of a release build).
 SRC=${AOSP_DEVICE_SRC:-$ROOT}
