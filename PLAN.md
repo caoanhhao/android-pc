@@ -814,6 +814,11 @@ commit (or `(partial: ...)`).
   (Rust) with `events`, `rollinglog` and `repl` on the client side; `tools/hyprctl.sh` from
   the host; uid check (root, shell, system, `ipc.allow` packages) and sepolicy; what Android
   cannot do answers an error (docs/hypr-ipc.md).
+  Status (2026-11-22): done; every request and 15 event types checked on Waydroid with test
+  data by `aosp-device/hypr/hyprctl/ipc-test.sh` (120 checks), the uid check with shell,
+  Termux, HyprLauncher and a refused app uid (docs/hypr-ipc.md, "Checked on Waydroid").
+  SELinux not checked (Waydroid has none); `focusedmon`, `urgent`, `minimized` and
+  `windowtitle` are sent but were not provoked.
 
 ## Phase R — public releases
 

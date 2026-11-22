@@ -1577,9 +1577,7 @@ with `waydroid shell`, which skips FUSE, so HyprLauncher kept reading the old fi
 through `/storage/emulated/0/Documents/hypr/` it reloads at once.
 
 Not checked: a reboot (the same restore path as a SystemUI restart, with the same task ids);
-a second display; a workspace rule on a workspace made later (a test rule with `gaps_out` and
-`default_name` on workspace 15 showed neither; its name is missing from the bar too, which
-HyprLauncher takes from the Lua configuration directly, so the cause is still open).
+a second display.
 
 ## ALT + Tab switcher (E4)
 
