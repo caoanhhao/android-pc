@@ -250,6 +250,10 @@ Left out, with no counterpart here: the special workspace, pin, screenshots and 
 recording, the bar and panel widgets, lock and suspend, zoom, wheel binds, and jumping to the
 previous workspace or the last window (`ALT + grave` stays the overview). It loads with no
 warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
+Checked on Waydroid (2026-11-22, user data): all 60 key binds installed, none taken by AOSP;
+open, focus (`h`/`n`), move, resize, float, maximize, silent and following moves, the shade
+(`ALT + L` and `ALT + R` open SystemUI's large-screen shade, quick settings and
+notifications side by side) and close all work.
 
 ## Touch gestures
 
