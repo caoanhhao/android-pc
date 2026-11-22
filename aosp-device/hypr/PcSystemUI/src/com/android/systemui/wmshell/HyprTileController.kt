@@ -738,7 +738,8 @@ class HyprTileController(
      * `movewindow l|r|u|d`, `togglefloating`/`setfloating`/`settiled [taskid:N]`,
      * `pin [toggle|on|off] [taskid:N]`, `resizeactive`/`moveactive [exact] X Y`, `togglesplit`,
      * `fullscreen [0|1]`, `killactive`, `exec <package>`. Workspace arguments may be relative
-     * (`e+1`, `-1`). Must be called on Shell's main thread. Returns false for an unknown dispatcher or a bad argument.
+     * (`e+1`, `-1`). Must be called on Shell's main thread. Returns false for an unknown
+     * dispatcher or a bad argument.
      */
     fun dispatch(name: String, arg: String = ""): Boolean {
         Log.d(TAG, "dispatch $name $arg")

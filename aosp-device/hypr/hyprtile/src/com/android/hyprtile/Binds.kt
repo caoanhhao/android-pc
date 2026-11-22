@@ -127,8 +127,6 @@ private val KEY_ALIASES = mapOf(
 
 /** The dispatchers the shell and HyprLauncher run (Hyprland's names, `lua` for Lua functions). */
 val DISPATCHERS = setOf(
-    "focuscurrentorlast", "focusurgentorlast", "cyclenext", "cycleprev", "swapnext", "swapwindow",
-    "alterzorder",
     "workspace", "movetoworkspace", "movetoworkspacesilent", "movefocus", "movewindow",
     "togglefloating", "togglesplit", "fullscreen", "killactive", "exec", "focuswindow",
     "resizeactive", "launcher", "overview", "hyprexpo:expo", "lua",
@@ -136,6 +134,8 @@ val DISPATCHERS = setOf(
     "pin", "setfloating", "settiled", "moveactive",
     "zoom", "togglespecialworkspace",
     "clipboardhistory", "translate", "screenshot", "lock", "userswitcher",
+    "focuscurrentorlast", "focusurgentorlast", "cyclenext", "cycleprev", "swapnext", "swapwindow",
+    "alterzorder",
     "volume", "brightness", "media", "inputmethod", "display", "forcekillactive", "reload", "wallpaper",
     "execr",
 )

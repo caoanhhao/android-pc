@@ -787,7 +787,9 @@ commit (or `(partial: ...)`).
   workspace number, rules, bar and overview, checked on Waydroid (docs/hypr-desktop.md,
   "Special workspaces (E5)").
 - **E6 — mouse wheel and mouse buttons:** `mouse_up`/`mouse_down` (and `mouse_left`/
-  `mouse_right`) and `mouse:27x` button binds with modifiers, any dispatcher.
+  `mouse_right`) and `mouse:27x` button binds with modifiers, any dispatcher. Done 2026-11-22
+  (docs/hypr-desktop.md, "Mouse binds (E6)"; wheel binds need
+  `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`).
 - **E7 — bar:** hide/show and reload dispatchers and binds (`ALT + B`, `ALT + SHIFT + B`),
   auto-hide with the bar shown, animated, when the pointer reaches its edge. Done 2026-11-22
   (docs/hypr-desktop.md, "Bar visibility (E7)": `bar show|hide|toggle|reveal|reload`,
@@ -813,6 +815,12 @@ commit (or `(partial: ...)`).
   `ALT + F2/F3`, media keys), display modes, input method switch, the remaining host binds
   (reload, kill, random wallpaper, ...) where Android has a counterpart; full image on
   Waydroid end to end; docs and this plan.
+  Status (2026-11-22): done; `volume`, `brightness`, `media`, `inputmethod` (injected system
+  keys, Android's own dialogs), `display extend|mirror|primary|external`, `forcekillactive`
+  (`hyprctl kill`), `reload`, `wallpaper random`, `exec [float]` and the keypad Enter binds
+  (docs/hypr-desktop.md, "Host functions (E11)"); no fingerprint (a key-driven one would be a
+  fake biometric). Display modes with an external display, brightness on the PC's monitor
+  and key repeat for binds are not checked or not possible (same section).
 - **E12 — Hyprland IPC and hyprctl:** Hyprland's request and event sockets
   (`.socket.sock`, `.socket2.sock`) served by PcSystemUI as abstract UNIX sockets
   `@hypr/.socket.sock` and `@hypr/.socket2.sock`, Hyprland's syntax, text and `-j` JSON output
@@ -825,6 +833,15 @@ commit (or `(partial: ...)`).
   Termux, HyprLauncher and a refused app uid (docs/hypr-ipc.md, "Checked on Waydroid").
   SELinux not checked (Waydroid has none); `focusedmon`, `urgent`, `minimized` and
   `windowtitle` are sent but were not provoked.
+
+Phase E status (2026-11-22): done (E1 partial). The full image (build
+`eng.caoanh.20261122.1905`) ran E1-E12 end to end on Waydroid (docs/hypr-desktop.md, "Phase E
+on the full image"). Commits: E1 f0b595e f609e77 6c3f426 (partial); E2 14a244f 220b51b 061673b
+108c1d6 a118732; E3 c78fb8d 025e081 bc3034c; E4 5df9b20 b63bc90; E5 0e1dd17 1226223 c5f8901;
+E6 e503b92 909f88e 55a9636; E7 4d738d1 7532557; E8 21d08b3 77cfb3e; E9 4ab0f21 1001035; E10
+149809e 84fe9e1; E11 76dac50 30fd707 and the done commit; E12 eec8c5f 0394bb8. Open: E1's
+pinned window after a desk switch; the real PC (the stick was not updated in Phase E; SELinux
+enforcing for hyprtopd and the IPC sockets).
 
 ## Phase R — public releases
 

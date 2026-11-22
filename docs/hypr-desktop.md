@@ -2071,6 +2071,162 @@ Not checked: the real PC (SELinux enforcing: the `hyprtopd` domain and HyprTop's
 `/proc` reads), the image's own install of `hyprtopd.rc` (the overlay carried a copy).
 The user's live binds.lua got the three E8 lines after `ALT + E`.
 
+## Host functions (E11)
+
+What the host's binds do through its own scripts (wpctl, brightnessctl, playerctl,
+fcitx5-remote, the dual-screen script, `hyprctl kill`, the random-wallpaper script), as
+dispatchers. The SystemUI side is `HyprHostActions` (`PcSystemUI/.../hypr/`), called straight
+from `HyprTileController.dispatch` (none of it needs SystemUI's Dagger graph); `reload` and
+`wallpaper` go on to HyprLauncher, which owns the Lua state and has all-files access. The
+names and arguments are parsed in hyprtile (`HostActions.kt`, host-tested). Lua:
+`hl.dsp.volume`, `.brightness`, `.media`, `.input_method`, `.display`, `.reload`,
+`.wallpaper`, `hl.dsp.window.kill()`, and `hl.dsp.exec_cmd(app, { float = true })`
+(docs/hypr-lua.md); binds in docs/examples/hypr-binds.lua, "HOST FUNCTIONS".
+
+| Keys | Host | Dispatcher | What |
+|---|---|---|---|
+| `ALT + F12` / `ALT + F11` | `SUPER + F12` / `F11` (wpctl) | `volume up` / `down` | the music stream one step, SystemUI's volume dialog |
+| `ALT + F3` / `ALT + F2` | `SUPER + F3` / `F2` (brightnessctl) | `brightness up` / `down` | one brightness step, the brightness dialog |
+| `ALT + SHIFT + Space` | `MOD3 + Space` (fcitx5) | `inputmethod next` | the next keyboard layout or input method subtype |
+| `ALT + CTRL + SHIFT + P` | dual-screen script | `display extend` | every connected display on, no mirroring |
+| `ALT + CTRL + P` | dual-screen script | `display primary` | the external displays off |
+| `ALT + SHIFT + P` | dual-screen script | `display external` | the external displays on, the built-in one powered off |
+| (unbound) | | `display mirror` | the default display mirrored to the external ones |
+| `ALT + SHIFT + Q` | `MOD3 + Q` (`hyprctl kill`) | `forcekillactive` | force-stops the focused window's app |
+| `ALT + SHIFT + R` | `MOD3 + R` (`hyprctl reload`) | `reload` | reloads init.lua now |
+| `ALT + SHIFT + W` / `ALT + CTRL + SHIFT + W` | random-wallpaper script | `wallpaper random current` / `all` | a random picture of `/sdcard/Pictures/Wallpapers` as the wallpaper |
+| `ALT + KP_Enter` / `ALT + CTRL + KP_Enter` | `SUPER + KP_Enter` (kitty, floating kitty) | `exec com.termux` / `exec [float] com.termux` | the terminal, tiled or floating |
+
+The host's MOD3 binds map to `ALT + SHIFT` (as E9 did for translate); the free `SHIFT` +
+letter combos of the example binds take them.
+
+### Decisions
+
+- **System keys are injected, not reimplemented.** `volume`, `brightness`, `media` and
+  `inputmethod` inject the plain key (`VOLUME_UP`, `BRIGHTNESS_UP`, `MEDIA_NEXT`,
+  `LANGUAGE_SWITCH`, ...) from the virtual keyboard (`InputManagerGlobal.injectInputEvent`,
+  SystemUI holds `INJECT_EVENTS`), down and up, with no modifiers in the event's meta
+  state. Android then does what it does for the real keys: AudioService and the volume
+  dialog, PhoneWindowManager's brightness step and `ACTION_SHOW_BRIGHTNESS_DIALOG`, the
+  active media session, the input method's next subtype (`SHIFT` = previous). The system's
+  own UI shows, as asked.
+- **Media keys need no binds.** `Generic.kl` maps the keyboard's volume, mute, play/pause,
+  next, previous, stop and brightness keys, and Android handles them (they repeat when
+  held). InputManager refuses custom gestures on most of them
+  (`isKeyAllowedForCustomGesture`), so the example binds leave them alone; `hl.dsp.media`
+  is there for other keys. The XF86 names (`XF86AudioRaiseVolume`, ...) are known key names.
+- **No key repeat.** A custom key gesture fires on the first key down only
+  (`KeyGestureController`), so `ALT + F12` held steps once; repeating would take a
+  framework patch to hand key repeats to custom gestures. The plain keys repeat.
+- **Brightness on the PC.** The desktop's monitor has no backlight the lights HAL can drive
+  (docs/usb-boot-aosp17.md), so the brightness binds move Android's setting and its dialog
+  but not the monitor. A laptop panel follows.
+- **Display modes.** `extend`, `mirror` and `external` set `MIRROR_BUILT_IN_DISPLAY` and
+  enable the connected external displays (`DisplayManager.enableConnectedDisplay`,
+  `MANAGE_DISPLAYS`); `primary` disables them. The default display cannot be disabled, so
+  `external` powers it off (`requestDisplayPower(STATE_OFF)`, 1.5 s after an external one is
+  on, never with no external display on); its windows stay there, dark, until moved, and
+  every other mode gives it its power back. With no external display the binds only show
+  "No external display connected".
+- **Kill.** `hyprctl kill` waits for a click on a window; on Android the focused window is
+  the target: `forcekillactive` force-stops its app for the task's user
+  (`ActivityManager.forceStopPackageAsUser`, `FORCE_STOP_PACKAGES`), as Settings' Force stop
+  does, never SystemUI or `android`. `killactive` (`ALT + C`) still closes the window.
+- **Reload.** `reload` reloads init.lua and its requires at once (it also reloads on save).
+- **One wallpaper.** HOME draws the system wallpaper behind every workspace, so a wallpaper
+  per workspace would mean setting the wallpaper at every switch (a full decode and a
+  WallpaperManagerService write). `current` and `all` therefore both set the system and lock
+  wallpaper to a random picture of the folder (`hl.dsp.wallpaper({ workspace = "all", dir =
+  "/sdcard/Pictures/Other" })` for another one), not the last one twice.
+- **No fingerprint.** The PC has no fingerprint sensor, and a virtual one driven by a key
+  (the HAL's test path) would let anyone at the keyboard pass a fingerprint check: Android
+  would treat a key press as a biometric. No fingerprint HAL or bind is added.
+- **Floating exec.** `exec_cmd`'s rules take `float = true` (`[float]`) next to `workspace`;
+  the window floats when it opens, as a window rule would.
+
+### Checked on Waydroid (2026-11-22)
+
+`PcSystemUI` and `HyprLauncher` through the overlay, on the test data
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`), the example binds as binds.lua, keys with
+`input keycombination` (the host keeps `ALT + F2/F3/F11/F12` and `ALT + CTRL + P` under
+Waydroid). Screenshots in `out/hypr-e11/`.
+
+| Check | Result |
+|---|---|
+| `ALT + F12`, `ALT + F11` | SystemUI's volume dialog (`vol.png`); as with the real keys, the first press while the dialog is hidden only shows it, then each press is one step (music 3 → 4 → 5, 5 → 4 → 3) |
+| `ALT + F2` twice, `ALT + F3` | brightness 102 → 38 → 61, `BrightnessDialog` started each time |
+| `ALT + SHIFT + Space` | with LatinIME's en_US and de subtypes enabled: en_US → de → en_US; with one subtype the system logs "next input method and subtype not found" |
+| `ALT + CTRL + SHIFT + P` | "No external display connected" (Waydroid has one display; the modes with an external display are unchecked) |
+| `ALT + KP_Enter`, `ALT + CTRL + KP_Enter` | Termux tiled, then floating with its caption |
+| `ALT + SHIFT + Q` on Termux | "Force stopping com.termux ... from com.android.systemui", the process gone |
+| `ALT + SHIFT + R` | init.lua reloaded at once |
+| `ALT + SHIFT + W`, `ALT + CTRL + SHIFT + W` | an empty folder gives the notice; with three pictures, green then blue as the wallpaper |
+
+A new `<uses-permission>` reached the test only after two things: touching the manifest (the
+mirror into `aosp/device/` keeps mtimes, and a build of another session had already made the
+APK from an older mirror) and deleting `/data/system/package_cache` in the container
+(Package Manager reuses its parse of an overlay APK while the build fingerprint stays the
+same). A full image has a new fingerprint and needs neither.
+
+## Phase E on the full image (E11)
+
+### The image
+
+E11 built the five images Waydroid needs (`tools/aosp17-build.sh` with `STEPS="system.img
+system_ext.img product.img vendor.img odm.img"`, build `eng.caoanh.20261122.1905`), packed them
+(`tools/waydroid/aosp17-pack.sh`) and copied `system.img` and `vendor.img` into
+`/var/lib/waydroid/images-aosp17/`. The Phase E test entries of the overlay (`PcSystemUI`,
+`HyprLauncher`, `HyprTop`, `ExactCalculator`, `hyprctl`, `hyprtopd` with its `hyprtopd.rc`,
+and E6's `libinputflinger.so`, identical to the image's) went to
+`/var/lib/waydroid/overlay-phase-e-tests.20261122-1852/`; the overlay keeps only what
+`aosp17-switch.sh` puts there and `vulkan.nvidia.so`. A first image
+(`eng.caoanh.20261122.1833`) ran the check below; the ALT + Tab fix found there made the second
+one, on which ALT + Tab and a short pass were run again.
+
+### End-to-end check (2026-11-22)
+
+The user's data boots the image to its lock screen (`RUNNING_LOCKED`: the credential is the
+user's, so nothing past it was checked there); FORCE_STOP_PACKAGES and SET_WALLPAPER are
+granted to the image's SystemUI and HyprLauncher without any package-cache step, `hyprtopd`
+runs with its socket, `/system_ext/bin/hyprctl` is there. The steps ran on the test data
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`) with the image only, the example binds as
+binds.lua (140 binds), keys with `input keycombination` and state read with `hyprctl` inside
+the container.
+
+| Step | Check | Result |
+|---|---|---|
+| E2 | `ALT + 3`, then `ALT + P` | workspace 3 active; HyprTop opens on workspace 5, created and followed |
+| E8 | `ALT + SHIFT + C`, `ALT + P` | the calculator floating, HyprTop on 5, `hyprtopd` feeding it |
+| E1 | `ALT + CTRL + Space` on the calculator, `ALT + 1` | pinned, carried to workspace 1; `hyprctl dispatch pin address:` unpins |
+| E5 | `ALT + CTRL + S` on HyprTop, `ALT + S` twice | HyprTop on `special:special` (-99); the special workspace shown, then hidden |
+| E3, E4 | `ALT + Tab` taps | focus between Settings and HyprTop (shown from the special workspace); on the second image Settings and Clock swap on each of four taps |
+| E7 | `ALT + B` twice | the bar hidden, then shown |
+| E10 | `ALT + SHIFT + equal`, `minus` | zoom 1.5 with the accessibility service turned on, then back to 1.0 |
+| E9 | `ALT + CTRL + SHIFT + S`, `ALT + SHIFT + V` | a full screenshot saved (3 → 4 files), `clipboardhistory` dispatched |
+| E11 | `ALT + F12`, `ALT + SHIFT + R`, `ALT + KP_Enter`, `ALT + CTRL + KP_Enter`, `ALT + SHIFT + Q`, `ALT + SHIFT + W` | music volume 5 → 6; init.lua reloaded; Termux tiled, then floating; force-stopped each time; `blue.png` as the wallpaper |
+| E12 | `hyprctl version`, `workspaces`, `clients`, `-j activewindow`, `dispatch` | answers from the image's own `hyprctl` |
+
+Not repeated here: E6's wheel binds (an injected wheel event cannot be sent with ALT held by
+`input`), the volume and brightness dialogs and the input method switch (checked in "Host
+functions (E11)").
+
+Found and fixed: **ALT + Tab left an invisible window holding the keys.** `AltTabSwitcher`
+removed its window only when `root.isAttachedToWindow`, which turns true at the next frame
+after `addView`; a press released within that frame (`input keycombination`, or a loaded host)
+left the full-screen `HyprAltTab` window up and focused, and the next press logged "has already
+been added to the window manager". It now tracks its own `added` flag.
+
+Also seen:
+
+- The first start of the test data on the new image hung with SurfaceFlinger waiting for the
+  composer HAL (`IComposer/default` never registered); stopping and starting the session again
+  booted it. Not seen on the user's data or on later starts.
+- `com.android.deskclock` crashes on the user's data with "Can't downgrade database from
+  version 12 to 8" (data from a newer DeskClock); not a Phase E change.
+- `hyprctl activeworkspace` (text form) answered `Invalid` right after boot and on the locked
+  user data, where `-j` gives `{}`; passed on to E12.
+- The example's two zoom binds warn that `repeating` is not supported (Known limits).
+
 ## As built
 
 | Piece | Where | Process | What it does |
@@ -2082,8 +2238,13 @@ The user's live binds.lua got the three E8 lines after `ALT + E`.
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
 | `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |
+| `HyprHostActions` | `PcSystemUI/.../hypr/` | SystemUI | E11's host functions: injected volume, brightness, media and input-method keys, display modes, `forcekillactive`, `execr` (E12) |
+| `HyprSystemActions`, `HyprClipboard`, `HyprIpc` | `PcSystemUI/.../hypr/`, `.../wmshell/` | SystemUI | E9's clipboard history, translate, screenshots, lock and user switcher; E12's Hyprland IPC sockets (docs/hypr-ipc.md) |
 | `hyprtile` | `aosp-device/hypr/hyprtile/` (plain Kotlin, 70 host tests) | (library) | dwindle, master, gaps, rules, binds, gestures, colours, beziers, fuzzy matching |
 | `HyprLauncher` | `aosp-device/hypr/HyprLauncher/` (system_ext, privileged, platform key, overrides Launcher3) | its own | HOME, recents provider (`QUICKSTEP_SERVICE`), bar, app launcher, overview, Alt+Tab, notifications and the error strip |
+| `AltTabSwitcher`, `Wallpapers` | `HyprLauncher/src/...` | HyprLauncher | E4's ALT + Tab switcher; E11's random wallpaper (`/sdcard/Pictures/Wallpapers`) |
+| `HyprTop` + `hyprtopd`, `ExactCalculator` | `aosp-device/hypr/HyprTop/`, LineageOS's calculator from source | their own | E8's btop-like monitor (process table from the Rust daemon) and the calculator |
+| `hyprctl` | `aosp-device/hypr/hyprctl/` (Rust, `/system_ext/bin`) | | E12's client for the IPC sockets |
 | `hyprlua` | `aosp-device/hypr/hyprlua/` (Lua 5.4 from `external/lua`, JNI, 25 host tests) | HyprLauncher | `init.lua` with Hyprland 0.57's Lua API subset → the configuration Bundle; hooks, timers, bar modules |
 | `hyprshell-aidl` | `aosp-device/hypr/hyprshell-aidl/` | | `IHyprShell`, `IHyprShellListener` |
 | `hypr_overlay_frameworks_base_core` | `aosp-device/hypr/rro/` (vendor) | | recents component, no status bar height, no taskbar height |
@@ -2100,9 +2261,9 @@ Collected from D1-D7 (details in each sub-phase's section):
   window the user drags or resizes keeps its bounds until the next layout change; the first
   window of a desk is placed by the observer just after Shell placed it, with Shell's
   animation.
-- **Workspaces.** Desks have no numbers of their own (workspace N = the N-th desk) and empty
-  ones stay; no special workspaces, groups, `pseudo` or submaps; binds are installed for
-  user 0 only.
+- **Workspaces.** No groups, `pseudo` or submaps; binds are installed for user 0 only (E2
+  gave desks workspace numbers, made on demand and removed when empty; E5 added special
+  workspaces).
 - **Decoration and animation.** The border is drawn inside the window and does not animate;
   mouse and touch resizes land on release, not live; Shell-started closes and minimizes keep
   Shell's animation.
@@ -2110,7 +2271,7 @@ Collected from D1-D7 (details in each sub-phase's section):
   bar has no status icons (battery, network: in the shade); bar, panels and touch gestures are
   on the default display only; events come from 50 ms state pushes, so two changes in that
   time merge.
-- **Lua.** No spring curves, submaps, special workspaces, groups, layer rules or plugins; a
+- **Lua.** No spring curves, submaps, groups, layer rules or plugins; a
   window rule's workspace applies once, after the window opened.
 - **Touch.** Checked only with injected events (no touchscreen on the host); workspace swipes
   are discrete.
@@ -2119,6 +2280,21 @@ Collected from D1-D7 (details in each sub-phase's section):
   up to its lock screen only (its credential is the user's).
 - **Not checked:** Cuttlefish at 2560x1080/160 after D0, the real PC with the stick (the
   stick was not updated in Phase D), CDD/CTS expectations for desktop windowing.
+
+Added by Phase E (details in each section):
+
+- **Pin (E1).** A pinned window carried to another desk is not drawn there, and key focus
+  stays with it (needs a WindowManager patch).
+- **Binds.** Custom key gestures fire on the first key down only: no `repeating` binds
+  (`ALT + F12` held steps once; the example's zoom binds warn). InputManager refuses custom
+  binds on the volume and media keys, which Android handles itself.
+- **Host functions (E11).** Brightness moves Android's setting but not a desktop monitor
+  (no backlight); display modes are unchecked with an external display (Waydroid has one);
+  one wallpaper for every workspace; no fingerprint.
+- **ALT + Tab (E4).** The first press cannot go backwards; `ALT + <key>` binds still run
+  while the strip is up.
+- **Real PC.** Phase E ran on Waydroid only: SELinux enforcing (hyprtopd's domain, the IPC
+  sockets) and the stick are unchecked.
 
 ## Waydroid notes
 

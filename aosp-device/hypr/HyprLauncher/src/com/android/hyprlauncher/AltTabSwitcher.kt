@@ -64,6 +64,8 @@ class AltTabSwitcher(private val desktop: Desktop) {
     private var active: AltTabMode? = null
     private var session: AltTabSession? = null
     private var hadFocus = false
+    /** Whether [root] is in the window manager: it attaches only at the next frame, after [open]. */
+    private var added = false
     private val reveal = Runnable { if (active == AltTabMode.SWITCHER) panel.visibility = View.VISIBLE }
 
     init {
@@ -177,6 +179,7 @@ class AltTabSwitcher(private val desktop: Desktop) {
         lp.setFitInsetsTypes(0)
         try {
             wm.addView(root, lp)
+            added = true
             root.requestFocus()
         } catch (e: Exception) {
             Log.w(Desktop.TAG, "alt-tab window: $e")
@@ -186,7 +189,12 @@ class AltTabSwitcher(private val desktop: Desktop) {
     private fun close() {
         root.removeCallbacks(reveal)
         session = null
-        if (root.isAttachedToWindow) wm.removeViewImmediate(root)
+        // Not isAttachedToWindow: a press released within a frame would leave the window up,
+        // full screen and holding the key focus.
+        if (added) {
+            added = false
+            wm.removeViewImmediate(root)
+        }
         row.removeAllViews()
     }
 

@@ -9,8 +9,8 @@ import com.android.hyprtile.CaptionMode
 import com.android.hyprtile.AltTabMode
 import com.android.hyprtile.BarVisibility
 import com.android.hyprtile.DISPATCHERS
-import com.android.hyprtile.parsePin
 import com.android.hyprtile.clampZoom
+import com.android.hyprtile.parsePin
 import com.android.hyprtile.parseZoom
 import com.android.hyprtile.parseWindow
 import com.android.hyprtile.parseXY
@@ -680,17 +680,17 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
             "shell.touch" to boolOpt,
+            // 0 off, 1 (or true) back to the previous workspace, 2 the previous one on this display.
+            "binds.workspace_back_and_forth" to { v, t ->
+                if (t == "boolean") (if (v == "true") "1" else "0") else intIn(0..2)(v, t)
+            },
+            "binds.allow_workspace_cycles" to boolOpt,
             // Hyprland's own zoom (E10): 1 or more; the shell stops at MAX_ZOOM.
             "cursor.zoom_factor" to { v, t ->
                 val f = v.toFloatOrNull()?.takeIf { t == "number" && it >= 1f }
                     ?: throw IllegalArgumentException("expected a number of 1 or more, got '$v'")
                 "${clampZoom(f)}"
             },
-            // 0 off, 1 (or true) back to the previous workspace, 2 the previous one on this display.
-            "binds.workspace_back_and_forth" to { v, t ->
-                if (t == "boolean") (if (v == "true") "1" else "0") else intIn(0..2)(v, t)
-            },
-            "binds.allow_workspace_cycles" to boolOpt,
             "binds.pass_mouse_when_bound" to boolOpt,
             "binds.scroll_event_delay" to intIn(0..2000),
             "shell.workspaces" to intIn(1..MAX_WORKSPACES),

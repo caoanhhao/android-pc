@@ -318,6 +318,7 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         return Snapshot(
             active = s.active,
             workspaces = s.workspaces,
+            existing = s.existing,
             focused = s.focusedTask,
             windows = s.windows.map {
                 SnapWindow(it.taskId, it.workspace, it.packageName, it.title, it.floating, it.minimized,
@@ -329,7 +330,6 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
                     w.left, w.top, w.right, w.bottom)
             },
             names = current?.workspaceRules?.mapNotNull { r -> r.name?.let { r.workspace to it } }?.toMap()
-            existing = s.existing,
                 ?: emptyMap(),
             history = s.focusHistory,
             urgent = s.urgent,

@@ -68,9 +68,9 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `master.mfact` | 0.05..0.95 | 0.55 | master area's share |
 | `master.new_status` | `"master"`, `"slave"`, `"inherit"` | `slave` | `master`: a new window becomes the master |
 | `master.new_on_top` | bool | false | a new stack window goes to the top of the stack |
-| `binds.workspace_back_and_forth` | bool, 0..2 | 0 | switching to the active workspace goes to the previous one (2: the previous one on this display) |
 | `binds.pass_mouse_when_bound` | bool | false | bound mouse buttons and wheel steps reach the app too |
 | `binds.scroll_event_delay` | 0..2000 | 300 | ms between two firings of a wheel bind (not `repeating` ones) |
+| `binds.workspace_back_and_forth` | bool, 0..2 | 0 | switching to the active workspace goes to the previous one (2: the previous one on this display) |
 | `binds.allow_workspace_cycles` | bool | false | accepted; as in Hyprland 0.57's most-recently-used workspace history it changes nothing |
 | `shell.main_mod` | modifiers | `ALT` | modifier of the default binds, and of the mouse binds unless `mouse:` binds say otherwise. SUPER belongs to the host's compositor under Waydroid |
 | `shell.default_binds` | bool | true | install Hyprland's example binds on `main_mod` (below) |
