@@ -13,6 +13,7 @@ import android.graphics.Rect
 import android.hardware.input.InputManager
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import android.os.SystemProperties
 import android.os.UserHandle
 import android.util.Log
@@ -613,6 +614,9 @@ class HyprTileController(
                 val float = floats(task)
                 if (float && tile.isFloating(id)) continue
                 val focused = expanded.firstOrNull { it != id && tile.isTiled(it) }
+                // A task Shell opened without a desk in its request is new here: window and
+                // exec rules apply to it as to one opened through a request.
+                if (tile.workspaceOf(id) == null) newTasks += id
                 changed = tile.open(id, deskId, focused, float) || changed
             }
             if (!changed) continue
@@ -643,7 +647,9 @@ class HyprTileController(
      * last sync, the workspace it belongs on (moved there and followed, or moved silently).
      */
     private fun applyWindowRules() {
-        val rules = tile.config.windowRules
+        val now = SystemClock.uptimeMillis()
+        execRules.values.removeAll { now - it.second > EXEC_RULE_TIMEOUT_MS }
+        val rules = tile.config.windowRules + execRules.values.map { it.first }
         ruleOpacity.clear()
         val opened = newTasks.toList()
         newTasks.clear()
@@ -663,7 +669,9 @@ class HyprTileController(
             val task = taskOrganizer.getRunningTaskInfo(id) ?: continue
             val pkg = task.baseActivity?.packageName
             val title = task.taskDescription?.label?.toString()
-            val rule = rules.lastOrNull { (it.workspace != null || it.special != null) && it.matches(pkg, title) } ?: continue
+            val rule = rules.lastOrNull { (it.workspace != null || it.special != null) && it.matches(pkg, title) }
+            pkg?.let { execRules.remove(it) }
+            if (rule == null) continue
             // `workspace = "special:name [silent]"` (E5).
             val ruleSpecial = rule.special
             if (ruleSpecial != null) {
@@ -719,6 +727,9 @@ class HyprTileController(
         repository.addTaskToDesk(task.displayId, deskId, id, isVisible = false,
             taskBounds = Rect(task.configuration.windowConfiguration.bounds))
     }
+
+    /** Exec rules by package, with the time `exec` set them (see [exec]). */
+    private val execRules = HashMap<String, Pair<WindowRule, Long>>()
 
     // ---- dispatchers (Hyprland's names; Phase D2) ----
 
@@ -1706,7 +1717,30 @@ class HyprTileController(
         )
     }
 
-    private fun exec(packageName: String) {
+    /**
+     * `exec [workspace N [silent]] <package>`: Hyprland's exec rules, a one-shot window rule for
+     * the next window [packageName] opens (within [EXEC_RULE_TIMEOUT_MS]).
+     */
+    private fun exec(command: String) {
+        var packageName = command
+        if (command.startsWith("[")) {
+            val end = command.indexOf(']')
+            if (end < 0) {
+                Log.w(TAG, "exec: unterminated rules in $command")
+                return
+            }
+            packageName = command.substring(end + 1).trim()
+            for (r in command.substring(1, end).split(';').map { it.trim() }.filter { it.isNotEmpty() }) {
+                val words = r.split(Regex("\\s+"))
+                val n = words.getOrNull(1)?.toIntOrNull()
+                if (words[0] == "workspace" && n != null && n >= 1) {
+                    execRules[packageName] = WindowRule(name = "exec", matchClass = "^${Regex.escape(packageName)}$",
+                        workspace = n, silent = words.getOrNull(2) == "silent") to SystemClock.uptimeMillis()
+                } else {
+                    Log.w(TAG, "exec: rule '$r' is ignored")
+                }
+            }
+        }
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (intent == null) {
             Log.w(TAG, "exec: no launcher activity in $packageName")
@@ -2207,6 +2241,8 @@ class HyprTileController(
         const val SYNC_DELAY_MS = 100L
         /** How long after a sync empty desks are removed (Hyprland removes them at once). */
         const val REMOVE_DESKS_DELAY_MS = 400L
+        /** How long an exec rule waits for its package's window. */
+        const val EXEC_RULE_TIMEOUT_MS = 30_000L
         const val PREFS_WORKSPACES = "hypr_workspaces"
         /** Special workspaces' windows and keys in [PREFS_WORKSPACES] (E5). */
         const val PREF_SPECIAL = "special"

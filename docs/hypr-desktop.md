@@ -2005,6 +2005,72 @@ binds plus the pin block (81 binds, the 2 warnings are E10's `repeating`):
   pinned window (the point above) and can press its buttons, which minimized it during the
   test.
 
+## Apps (E8)
+
+The host binds `SUPER + P` to `kitty btop` on workspace 5 and `MOD3 + C` to a calculator in a
+floating terminal. Here: `ALT + P` opens HyprTop, a btop-style monitor, on workspace 5, and
+`ALT + SHIFT + C` (C alone is focus up) the calculator, floating. Both are in the image; the
+user installs nothing.
+
+### Decisions
+
+- **The monitor is our own app, not btop.** btop itself needs a terminal and a process table:
+  the product's only terminal is Termux (a user app whose packages the image cannot install),
+  and an app cannot read other apps' `/proc` entries anyway (below), so btop in any terminal
+  would show only its own uid's processes; a third-party monitor app has the same limit.
+  HyprTop (`aosp-device/hypr/HyprTop`) draws
+  btop's default layout and theme on a canvas: the cpu box (a total history graph, one meter
+  and frequency per core, package temperature, uptime, load), mem (used, available, cached,
+  free, swap) with disks (`/data`, `/system`), net (download and upload graphs and totals), and
+  the process list (pid, program, user, threads, resident memory, CPU share, a meter).
+  Keyboard: arrows, `j`/`k`, PageUp/PageDown, Home/End select; `c`, `m`, `p`, `n` sort by CPU,
+  memory, pid, name (again: reversed), `r` reverses; `f` force-stops the selected app; `q` or
+  Esc closes. The wheel scrolls, a click selects a row or sorts by a header.
+- **The process table comes from a daemon.** `/proc` is mounted `hidepid=2,gid=readproc`, and
+  SELinux's `app_domain()` forbids every app domain (`system_app` included) to read files of
+  any other domain, `/proc/<pid>/*` among them (a `neverallow` in `te_macros`, so no policy can
+  grant it). `hyprtopd` (Rust, `/system_ext/bin/hyprtopd`, its own `hyprtopd` domain in
+  system_ext private policy, user `nobody`, group `readproc`) waits in `accept()` on the
+  init-created socket `/dev/socket/hyprtopd` (system:system 0660); HyprTop (the system uid, so
+  `system_app`, allowed to connect) writes one byte per refresh and reads
+  `pid uid ticks threads rss_pages state name` lines ended by `.`. Without the daemon HyprTop
+  falls back to the processes its own uid can see. CPU, memory, load and uptime come from
+  `/proc/stat`, `/proc/meminfo`, `/proc/loadavg` (allowed to `system_app` by
+  `HyprTop/sepolicy/hyprtop.te`), network from `TrafficStats`.
+- **The calculator is AOSP's ExactCalculator, from LineageOS.** AOSP deprecated
+  `packages/apps/ExactCalculator` in 2019 (its `main` is empty and the AOSP 17 manifest has
+  none); LineageOS keeps it current (Material 3, Apache 2.0, `lineage-24.0`).
+  `tools/fetch-apps.sh calculator` puts its source, pinned by commit, in
+  `aosp/device/android-pc/apps/ExactCalculator`, and `pc.mk` installs it with the other fetched
+  apps (`/product/app`); its dependencies (androidx, Material) are in `prebuilts/sdk`, and its
+  `crcalc` jar is bundled. It handles `APP_CALCULATOR`, so it is the default calculator.
+- **Exec rules.** `hl.dsp.exec_cmd(pkg, { workspace = 5 })` (and `hl.exec_cmd`) send
+  `exec [workspace 5] pkg`, Hyprland's exec-rule syntax; the shell keeps it as a one-shot
+  window rule for that package's next window (30 s). A task Shell opened without a desk in its
+  request (an app's first launch) is now also counted as newly opened in `sync()`, so window
+  rules with a workspace apply to it too (before, only tasks opened through a desk request were).
+
+### Checked on Waydroid (2026-11-22)
+
+`HyprTop`, `hyprtopd` (with `hyprtopd.rc` in `system_ext/etc/init`), `ExactCalculator`,
+`PcSystemUI` and `HyprLauncher` through the overlay, on the test data
+(`XDG_DATA_HOME=~/.local/share/waydroid-test`; the user's data stays `RUNNING_LOCKED` after a
+restart), with the example's E8 binds added to its binds.lua. Waydroid runs without SELinux,
+so the policy was only compiled (`selinux_policy`, no `neverallow` hit), not exercised;
+screenshots in `out/hypr-e8/`.
+
+| Check | Result |
+|---|---|
+| `hyprtopd` | started by init as `nobody`/`readproc`, socket `/dev/socket/hyprtopd` system:system 0660 |
+| `ALT + P` | `exec [workspace 5] com.android.hyprtop`: HyprTop opens, the window rule moves it to workspace 5 (created) and follows it (`top2.png`) |
+| HyprTop | 16 cores with frequency, 77 °C package temperature, memory and swap, disks, 134 processes of every uid (apps, system, root, nobody) from hyprtopd; `m` sorts by memory (`top3`); net from `/proc/net/dev` (TrafficStats has no counters in Waydroid) |
+| `ALT + SHIFT + C` | the calculator opens floating over the monitor (`calc1.png`); `12*3` Enter gives 36 |
+| Default calculator | `APP_CALCULATOR` resolves to `com.android.calculator2` |
+
+Not checked: the real PC (SELinux enforcing: the `hyprtopd` domain and HyprTop's socket and
+`/proc` reads), the image's own install of `hyprtopd.rc` (the overlay carried a copy).
+The user's live binds.lua got the three E8 lines after `ALT + E`.
+
 ## As built
 
 | Piece | Where | Process | What it does |

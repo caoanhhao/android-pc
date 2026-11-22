@@ -286,11 +286,23 @@ local window = namespace("hl.dsp.window", {
   end,
 })
 
+-- Hyprland's exec rules ("[workspace 5 silent] kitty"): { workspace = 5, silent = true } or the
+-- rule string; they apply to the next window the package opens. Other rules: use hl.window_rule.
+local function exec_rules(rules)
+  if rules == nil then return "" end
+  if type(rules) == "string" then return "[" .. rules .. "] " end
+  if type(rules) ~= "table" then error("exec_cmd rules: { workspace = N } or a rule string", 3) end
+  for k in pairs(rules) do
+    if k ~= "workspace" and k ~= "silent" then H(4, "warn", "exec_cmd: rule " .. tostring(k) .. " is ignored (use hl.window_rule)") end
+  end
+  if rules.workspace == nil then return "" end
+  return "[workspace " .. tostring(rules.workspace) .. (rules.silent and " silent" or "") .. "] "
+end
+
 hl.dsp = namespace("hl.dsp", {
   exec_cmd = function(cmd, rules)
     if type(cmd) ~= "string" then error("hl.dsp.exec_cmd needs a package name", 2) end
-    if rules ~= nil then H(3, "warn", "exec_cmd: rules are ignored (use hl.window_rule)") end
-    return dsp("exec", cmd)
+    return dsp("exec", exec_rules(rules) .. cmd)
   end,
   -- Hyprland's execr: a shell command (`sh -c`, as SystemUI), e.g. "hyprctl dispatch ..." (E12).
   exec_raw = function(cmd)
@@ -406,9 +418,9 @@ function hl.dispatch(d)
   H(3, "dispatch", d.name, d.arg)
 end
 
-function hl.exec_cmd(cmd)
+function hl.exec_cmd(cmd, rules)
   if type(cmd) ~= "string" then error("hl.exec_cmd needs a package name", 2) end
-  H(3, "dispatch", "exec", cmd)
+  H(3, "dispatch", "exec", exec_rules(rules) .. cmd)
 end
 
 ---------------------------------------------------------------------------------------------

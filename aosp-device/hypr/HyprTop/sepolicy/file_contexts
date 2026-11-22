@@ -1,0 +1,2 @@
+/system_ext/bin/hyprtopd    u:object_r:hyprtopd_exec:s0
+/dev/socket/hyprtopd        u:object_r:hyprtopd_socket:s0

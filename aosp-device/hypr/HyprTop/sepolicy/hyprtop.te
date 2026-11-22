@@ -1,0 +1,6 @@
+# HyprTop (com.android.hyprtop, the system uid, so system_app): CPU, load and uptime from /proc,
+# the process table from hyprtopd (app domains may not read other domains' /proc files).
+allow system_app { proc_stat proc_loadavg proc_uptime }:file r_file_perms;
+# Network totals when TrafficStats has none (/proc/net/dev).
+allow system_app proc_net:file r_file_perms;
+unix_socket_connect(system_app, hyprtopd, hyprtopd)

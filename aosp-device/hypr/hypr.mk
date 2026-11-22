@@ -12,3 +12,7 @@ PRODUCT_PACKAGES += PcSystemUI
 # userdata from an earlier build moves its HOME role to HyprLauncher (HomeRole.kt).
 PRODUCT_PACKAGES += HyprLauncher hypr_overlay_frameworks_base_core
 PRODUCT_PACKAGES := $(filter-out SmartDock,$(PRODUCT_PACKAGES))
+
+# E8: HyprTop, a btop-style system monitor (ALT + P, workspace 5). The calculator (ALT + SHIFT +
+# C) is ExactCalculator from tools/fetch-apps.sh, installed by pc.mk with the other fetched apps.
+PRODUCT_PACKAGES += HyprTop

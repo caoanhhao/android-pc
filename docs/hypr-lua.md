@@ -332,6 +332,8 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + CTRL + Space` | pin toggle (a tiled window is floated first) |
 | `ALT + CTRL + SHIFT + F` | float, fill the work area and pin: a Lua function with `hl.get_active_monitor().work_area`, `resize`/`move` with `relative = false` and `pin` (the host uses the monitor's size; here the bar stays visible) |
 | `ALT + Return`, `+ W`, `+ E` | Termux, Chromium, Files |
+| `ALT + P` | the system monitor (HyprTop) on workspace 5, as the host's btop (Phase E8) |
+| `ALT + SHIFT + C` | the calculator, floating (a window rule on `com.android.calculator2`; the host's `MOD3 + C`) |
 | `ALT + L`, `ALT + R` | notifications, quick settings (the host's left and right panels) |
 | `ALT + arrows`, `ALT + h n c t` | focus left, right, up, down |
 | `ALT + CTRL + arrows`, `ALT + CTRL + h n c t` | move the window |
@@ -435,6 +437,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.window.move({ x = X, y = Y, relative = false })` | `moveactive exact` | floating: to that display position (px, or `"N%"` across the work area); without `relative = false` it moves by X, Y |
 | `hl.dsp.layout("togglesplit")` | `togglesplit` | dwindle: flip the focused window's split |
 | `hl.dsp.exec_cmd("com.termux")` | `exec` | start a package's launcher activity (a package name, not a shell command); it opens on the active workspace |
+| `hl.dsp.exec_cmd("com.android.hyprtop", { workspace = 5 })` | `exec [workspace 5] pkg` | Hyprland's exec rules: the package's next window (within 30 s) opens on workspace 5 and is followed; `silent = true` leaves it there (`[workspace 5 silent]`); a rule string works too. Other rules warn: use `hl.window_rule` |
 | `hl.dsp.launcher()` | `launcher` | the rofi-like app launcher |
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
 | `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |
@@ -459,7 +462,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.raw(name, arg)` | any of the above | by Hyprland's name: `hl.dsp.raw("movefocus", "l")` |
 | a Lua function | `lua` | runs in the launcher's Lua state |
 
-`hl.dispatch(dsp)` runs one now; `hl.exec_cmd("pkg")` is `hl.dispatch(hl.dsp.exec_cmd("pkg"))`.
+`hl.dispatch(dsp)` runs one now; `hl.exec_cmd("pkg"[, rules])` is `hl.dispatch(hl.dsp.exec_cmd("pkg"[, rules]))`.
 
 ## Window rules
 

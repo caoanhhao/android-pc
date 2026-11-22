@@ -3,7 +3,8 @@
 # /product app in aosp/device/android-pc/apps/<Name>/ (the APK + a generated Android.bp);
 # aosp-device/pc/pc.mk installs every app found there. Downloads are kept in out/downloads/.
 #
-#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [termux] [smartdock]   default: all five
+#   tools/fetch-apps.sh [chromium] [fdroid] [microg] [termux] [smartdock] [calculator]
+#                                                                         default: all six
 #
 # - Chromium for Android x86_64: the Chromium project's own "AndroidDesktop_x64"
 #   continuous build, open source (Chrome itself has no x86_64 APK outside the Play
@@ -25,6 +26,10 @@
 #   F-Droid's build, pinned by version code and SHA-256 and checked against the certificate
 #   F-Droid signs it with (SHA-256 51:8E:C9:46:...:7D:C3:E9:6C). The default launcher (H4,
 #   aosp-device/desktop/smartdock-setup.sh).
+# - ExactCalculator (com.android.calculator2), the default calculator (E8): AOSP's own
+#   calculator, deprecated in AOSP in 2019 and kept up to date by LineageOS (Apache-2.0).
+#   Built from source, not a prebuilt: LineageOS's tree pinned by commit, with its own
+#   Android.bp (androidx and Material from prebuilts/sdk, crcalc as a bundled jar).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
@@ -149,10 +154,25 @@ smartdock() {
     install_app SmartDock "$dl/$apk" "$apk ($ver) from https://f-droid.org/repo, signature checked"
 }
 
+calculator() {
+    local rev=${CALCULATOR_REV:-f76cfbe2428de5744c0e0c4b74fb77708fb15b95}   # lineage-24.0
+    local repo=https://github.com/LineageOS/android_packages_apps_ExactCalculator
+    local dl=$ROOT/out/downloads/ExactCalculator-$rev dst=$APPS/ExactCalculator
+    if [[ ! -d $dl ]]; then
+        git init -q "$dl.part"
+        git -C "$dl.part" fetch -q --depth 1 "$repo" "$rev"
+        git -C "$dl.part" checkout -q FETCH_HEAD
+        mv "$dl.part" "$dl"
+    fi
+    rm -rf "$dst" && mkdir -p "$dst"
+    git -C "$dl" archive HEAD | tar -x -C "$dst"
+    echo "ExactCalculator: $dst (source, $repo at $rev)"
+}
+
 rm -rf "$ROOT/aosp/device/android-pc/chromium"   # the pre-fetch-apps.sh location
 # Play Store and Google WebView, fetched here before they became user-added extras
 # (docs/google-extras.md): their modules would install over the extras placeholders.
 rm -rf "$APPS/Phonesky" "$APPS/WebViewGoogle"
-for app in "${@:-chromium fdroid microg termux smartdock}"; do
+for app in "${@:-chromium fdroid microg termux smartdock calculator}"; do
     for a in $app; do "$a"; done
 done

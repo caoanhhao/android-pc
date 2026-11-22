@@ -1,0 +1,34 @@
+// HyprTop: a btop-style system monitor (CPU per core, memory, network, disks, processes) of the
+// Phase D/E desktop shell (docs/hypr-desktop.md, "Apps (E8)"). SELinux keeps apps out of other
+// domains' /proc files, so the process table comes from hyprtopd over a socket.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+android_app {
+    name: "HyprTop",
+    srcs: ["src/**/*.kt"],
+    resource_dirs: ["res"],
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    optimize: {
+        enabled: false,
+    },
+    dex_preopt: {
+        enabled: false,
+    },
+    required: ["hyprtopd"],
+    visibility: ["//visibility:public"],
+}
+
+// The process table for HyprTop (sepolicy/hyprtopd.te).
+rust_binary {
+    name: "hyprtopd",
+    crate_name: "hyprtopd",
+    srcs: ["hyprtopd/main.rs"],
+    rustlibs: ["liblibc"],
+    init_rc: ["hyprtopd/hyprtopd.rc"],
+    system_ext_specific: true,
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HyprTop (docs/hypr-desktop.md, "Apps (E8)"): a btop-style system monitor. The system uid
+     (SELinux system_app, sepolicy/hyprtop.te) reads /proc/stat and may force-stop apps; the
+     process table comes from hyprtopd. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="com.android.hyprtop"
+        android:sharedUserId="android.uid.system">
+
+    <uses-permission android:name="android.permission.FORCE_STOP_PACKAGES"/>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_hyprtop"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".TopActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode"
+            android:theme="@style/TopTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

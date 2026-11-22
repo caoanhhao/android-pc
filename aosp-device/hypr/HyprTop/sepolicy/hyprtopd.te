@@ -1,0 +1,10 @@
+# hyprtopd: lists every process (/proc/<pid>/{stat,cmdline} carry the process's domain).
+type hyprtopd, domain, coredomain;
+type hyprtopd_exec, system_file_type, exec_type, file_type;
+type hyprtopd_socket, file_type, coredomain_socket;
+init_daemon_domain(hyprtopd)
+
+allow hyprtopd domain:dir r_dir_perms;
+allow hyprtopd domain:file r_file_perms;
+allow hyprtopd domain:lnk_file read;
+allow hyprtopd self:unix_stream_socket { accept listen };

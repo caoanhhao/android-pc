@@ -52,6 +52,11 @@ hl.bind(mainMod .. " + CTRL + S", hl.dsp.window.move({ workspace = "special" }))
 hl.bind(mainMod .. " + Return", hl.dsp.exec_cmd("com.termux"))
 hl.bind(mainMod .. " + W", hl.dsp.exec_cmd("org.chromium.chrome"))
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd("com.android.documentsui"))
+-- The host's SUPER + P (btop in kitty on workspace 5): HyprTop, the btop-style monitor.
+hl.bind(mainMod .. " + P", hl.dsp.exec_cmd("com.android.hyprtop", { workspace = 5 }))
+-- The host's MOD3 + C (a calculator in a floating terminal); C alone is focus up here.
+hl.bind(mainMod .. " + SHIFT + C", hl.dsp.exec_cmd("com.android.calculator2"))
+hl.window_rule({ name = "calculator", match = { class = "^com\\.android\\.calculator2$" }, float = true })
 -- The host's left and right panels: notifications and quick settings.
 hl.bind(mainMod .. " + L", hl.dsp.notifications())
 hl.bind(mainMod .. " + R", hl.dsp.quick_settings())

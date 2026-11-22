@@ -37,3 +37,6 @@ BOARD_VENDOR_SEPOLICY_DIRS += \
 
 # The hypr desktop shell's system properties (PcSystemUI -> system_server).
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += device/android-pc/pc_x86_64/hypr/sepolicy
+
+# HyprTop, the system monitor (E8): hyprtopd's domain and what HyprTop (system_app) may read.
+SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += device/android-pc/pc_x86_64/hypr/HyprTop/sepolicy

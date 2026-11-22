@@ -1,0 +1,7 @@
+# hyprtopd: the process table for HyprTop (docs/hypr-desktop.md, "Apps (E8)"). Idle in accept()
+# until the monitor connects; readproc lets it see every process under /proc's hidepid=2.
+service hyprtopd /system_ext/bin/hyprtopd
+    class main
+    user nobody
+    group readproc
+    socket hyprtopd stream 0660 system system

@@ -31,6 +31,7 @@ computer to take the two extras from Google's images.
 | microG GmsCore | Apache 2.0 | Yes |
 | Chromium (AndroidDesktop_x64 snapshot) | BSD + third-party open licences | Yes |
 | F-Droid, Termux, Termux:API, Termux:Boot | GPL-3.0 | Yes (F-Droid builds; link the sources) |
+| ExactCalculator (`com.android.calculator2`, LineageOS's fork of AOSP's calculator, built from source by `tools/fetch-apps.sh calculator`) with its bundled `crcalc` (Hans Boehm's constructive reals) | Apache 2.0 | Yes |
 | AOSP test keys (platform/APK `testkey`, AVB `testkey_rsa4096`) | Public, in AOSP | See "Secrets" |
 
 ## Secrets
