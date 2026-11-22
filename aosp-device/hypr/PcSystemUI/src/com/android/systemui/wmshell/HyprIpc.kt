@@ -289,9 +289,19 @@ class HyprIpc(
             }
             "workspaces" -> onMain { HyprCtlFormat.workspaces(allWorkspaces(), j) }
             "activeworkspace" -> onMain {
+                // Hyprland always has an active workspace: with home in front and no desk active
+                // yet it is 1, and one without a desk (E2 makes them on demand) is listed empty.
                 val d = controller.focusedDisplay()
-                val active = snapshot(d, controller.state(d), emptyMap()).active
-                HyprCtlFormat.activeWorkspace(allWorkspaces().find { it.ref.id == active.id }, j)
+                val state = controller.state(d)
+                val active = snapshot(d, state, emptyMap()).active.takeIf { it.id != 0 }
+                    ?: ref(state, 1, workspaceNames())
+                val ws = allWorkspaces().find { it.ref.id == active.id } ?: IpcWorkspace(
+                    ref = active, monitor = monitorName(d), monitorId = d, windows = 0,
+                    hasFullscreen = false, lastWindow = -1, lastWindowTitle = "", persistent = false,
+                    layout = controller.configOverrides.getString("layout")
+                        ?: SystemProperties.get("persist.hypr.layout").ifEmpty { "dwindle" },
+                )
+                HyprCtlFormat.activeWorkspace(ws, j)
             }
             "monitors" -> onMain { HyprCtlFormat.monitors(monitors(r.args.trim() == "all"), j) }
             "devices" -> HyprCtlFormat.devices(devices(), j)
