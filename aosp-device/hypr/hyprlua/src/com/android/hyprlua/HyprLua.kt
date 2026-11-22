@@ -42,6 +42,11 @@ data class Snapshot(
     val existing: List<Int>? = null,
     /** The display and its work area (Phase E1), null until the shell answered. */
     val monitor: SnapMonitor? = null,
+    /** The focus history, most recent first, and the urgent windows (Phase E3). */
+    val history: List<Int> = emptyList(),
+    val urgent: List<Int> = emptyList(),
+    /** `workspace previous` of this display, 0 when there is none. */
+    val lastWorkspace: Int = 0,
 )
 
 /** What the Lua runtime needs from HyprLauncher. Called on the runtime's thread. */
@@ -331,6 +336,9 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
             }
             for ((n, name) in s.names) recs += listOf("N", n, clean(name)).joinToString("\u001f")
             s.existing?.let { recs += (listOf("X") + it).joinToString("\u001f") }
+            recs += (listOf("H") + s.history).joinToString("\u001f")
+            recs += (listOf("U") + s.urgent).joinToString("\u001f")
+            recs += listOf("L", s.lastWorkspace).joinToString("\u001f")
             return recs.joinToString("\u001e")
         }
     }

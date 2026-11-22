@@ -97,7 +97,9 @@ class HyprKeybinds(
                 else -> null
             }
         }
-        for (bind in keyBinds.take(MAX_BINDS)) {
+        // ALT + Tab, ALT + SHIFT + Tab and META + Tab are InputManager's recents gestures (it
+        // refuses custom gestures on them); HyprLauncher, their handler, runs these binds (E3).
+        for (bind in keyBinds.filterNot { isRecentsKey(it) }.take(MAX_BINDS)) {
             val keycode = keyCode(bind.key)
             if (keycode == KeyEvent.KEYCODE_UNKNOWN) {
                 Log.w(TAG, "bind $bind: unknown key ${bind.key}")
@@ -170,6 +172,9 @@ class HyprKeybinds(
         val taken = extra.map { it.mods to it.key }.toSet()
         return extra + defaultBinds(mod, terminal).filter { (it.mods to it.key) !in taken }
     }
+
+    private fun isRecentsKey(bind: Bind) = bind.key == "TAB" &&
+        (bind.mods == setOf(Mod.ALT) || bind.mods == setOf(Mod.ALT, Mod.SHIFT) || bind.mods == setOf(Mod.SUPER))
 
     /** Android's key code for a Hyprland key name (`LEFT`, `RETURN`, `Q`, `KEYCODE_...`). */
     private fun keyCode(key: String): Int = when (MouseInput.parse(key.substringBefore('/'))) {

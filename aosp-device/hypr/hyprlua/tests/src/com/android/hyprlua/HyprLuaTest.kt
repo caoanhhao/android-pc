@@ -156,7 +156,7 @@ class HyprLuaTest {
         assertTrue(error("hl.config({\n  general = {\n").startsWith("init.lua:"))
         assertEquals("init.lua:2: attempt to call a nil value (global 'nope')", error("\nnope()"))
         assertTrue(error("hl.frobnicate()").startsWith("init.lua:1: hl.frobnicate does not exist"))
-        assertTrue(error("hl.bind('ALT + P', hl.dsp.window.cycle_next())").startsWith("init.lua:1: hl.dsp.window.cycle_next is not supported"))
+        assertTrue(error("hl.bind('ALT + P', hl.dsp.window.pseudo())").startsWith("init.lua:1: hl.dsp.window.pseudo is not supported"))
     }
 
     @Test

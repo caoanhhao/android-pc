@@ -68,6 +68,8 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `master.mfact` | 0.05..0.95 | 0.55 | master area's share |
 | `master.new_status` | `"master"`, `"slave"`, `"inherit"` | `slave` | `master`: a new window becomes the master |
 | `master.new_on_top` | bool | false | a new stack window goes to the top of the stack |
+| `binds.workspace_back_and_forth` | bool, 0..2 | 0 | switching to the active workspace goes to the previous one (2: the previous one on this display) |
+| `binds.allow_workspace_cycles` | bool | false | accepted; as in Hyprland 0.57's most-recently-used workspace history it changes nothing |
 | `shell.main_mod` | modifiers | `ALT` | modifier of the default binds, and of the mouse binds unless `mouse:` binds say otherwise. SUPER belongs to the host's compositor under Waydroid |
 | `shell.default_binds` | bool | true | install Hyprland's example binds on `main_mod` (below) |
 | `shell.terminal` | package | none | `main_mod + Q` starts it (AOSP has no terminal) |
@@ -140,8 +142,11 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
 - Options: `description` is kept; `repeating`, `locked`, `release`, `non_consuming`, ... warn
   (InputManager's key gestures fire once, on release of the trigger).
 - Binds are InputManager custom key gestures (docs/hypr-desktop.md, "Keybinds without a
-  framework patch"): keys that a user shortcut or AOSP (all META shortcuts, ALT+TAB) already
-  uses are skipped with a log line in SystemUI (`HyprKeybinds`). With `main_mod = "SUPER"`
+  framework patch"): keys that a user shortcut or AOSP (all META shortcuts) already
+  uses are skipped with a log line in SystemUI (`HyprKeybinds`). `ALT + Tab`, `ALT + SHIFT +
+  Tab` and `SUPER + Tab` are InputManager's recents gestures: a bind on them runs in
+  HyprLauncher when Tab goes down (E3, docs/hypr-desktop.md, "ALT + Tab"); `ALT + SHIFT + Tab`
+  only when `ALT + Tab` has no bind, as InputManager reports both alike. With `main_mod = "SUPER"`
   five default binds hit AOSP's own META shortcuts and are skipped: `SUPER + E` (email),
   `+ C` (calendar), `+ F` (files) are AOSP's app bookmarks, `+ SPACE` the assistant and
   `+ left` BACK; bind those dispatchers to other keys (below, "Waydroid and the host's SUPER
@@ -168,6 +173,7 @@ Default binds (`shell.default_binds`, `$mod` = `shell.main_mod`):
 | `$mod + Q` | `hl.dsp.exec_cmd(shell.terminal)`, when set |
 | `$mod + D`, `$mod + SPACE` | `hl.dsp.launcher()` |
 | `$mod + grave` | `hl.dsp.overview()` |
+| `$mod + Tab` | `hl.dsp.focus({ last = true })`, the window focused before (E3; runs in HyprLauncher, see "Binds") |
 
 With `shell.default_binds` the default touch gestures are bound too (next section).
 
@@ -176,8 +182,8 @@ With `shell.default_binds` the default touch gestures are bound too (next sectio
 Under Waydroid the host's compositor sees every key first. With the default `main_mod = "ALT"`
 the binds reach Android, except what the host binds itself: on this host's Hyprland that is
 `ALT + TAB` (window cycling), `ALT + F2`/`F3`/`F11`/`F12` and `CTRL + ALT + P`
-(`hyprctl binds`), so in the Waydroid window use `ALT + grave` (overview) instead of Android's
-`ALT + TAB`. To use SUPER as in Hyprland, set it here and let the host pass SUPER through while
+(`hyprctl binds`), so in the Waydroid window `ALT + Tab` (by default the last window) does
+not reach Android; it was tested with `input keycombination` inside the container. To use SUPER as in Hyprland, set it here and let the host pass SUPER through while
 the Waydroid window has focus:
 
 ```lua
@@ -245,10 +251,13 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + CTRL + arrows`, `ALT + CTRL + h n c t` | move the window |
 | `ALT + SHIFT + arrows` | resize by 40 px |
 | `ALT + 1..9`, `+ CTRL + 1..9`, `+ SHIFT + 1..9` | switch workspace, move the window and follow, move it silently |
+| `ALT + Tab` | the window focused before (the host's `SUPER + TAB`; not under Waydroid, where the host keeps `ALT + TAB`) (E3) |
+| `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
 
 Left out, with no counterpart here: the special workspace, pin, screenshots and screen
-recording, the bar and panel widgets, lock and suspend, zoom, wheel binds, and jumping to the
-previous workspace or the last window (`ALT + grave` stays the overview). It loads with no
+recording, the bar and panel widgets, lock and suspend, zoom and wheel binds. The shell's
+default `ALT + grave` (overview) moves to `ALT + SHIFT + grave` in this file, as the host puts
+the previous workspace there. It loads with no
 warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
 Checked on Waydroid (2026-11-22, user data): all 60 key binds installed, none taken by AOSP;
 open, focus (`h`/`n`), move, resize, float, maximize, silent and following moves, the shade
@@ -306,7 +315,14 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 |---|---|---|
 | `hl.dsp.focus({ workspace = N })` | `workspace` | switch to workspace 1..9; also `"e+1"`, `"e-1"`, `"+1"`, `"-1"` |
 | `hl.dsp.focus({ direction = "left" })` | `movefocus` | focus the neighbour (`left`, `right`, `up`, `down`, or `l r u d`) |
-| `hl.dsp.focus({ window = w })` | `focuswindow` | a window from `hl.get_windows()` or `"taskid:N"`: its workspace, to front |
+| `hl.dsp.focus({ window = w })` | `focuswindow` | a window from `hl.get_windows()`, a task id, or a selector (`"class:^org\\.chromium"`, `"title:..."`, `"initialclass:"`, `"initialtitle:"`, `"pid:N"`, `"address:0x<hex task id>"`, `"taskid:N"`, `"activewindow"`, `"floating"`, `"tiled"`; `negative:` inverts a regex): its workspace, to front |
+| `hl.dsp.focus({ workspace = "previous" })` | `workspace previous` | the workspace before this one (Hyprland 0.57's most-recently-used list; again to come back); `"previous_per_monitor"` the one before on this display; also for `window.move` |
+| `hl.dsp.focus({ last = true })` | `focuscurrentorlast` | the window focused before this one (across workspaces); default on `$mod + Tab` |
+| `hl.dsp.focus({ urgent_or_last = true })` | `focusurgentorlast` | the newest urgent window (an unfocused window whose app posted an alerting notification), else the last one |
+| `hl.dsp.window.cycle_next({ next = false, tiled = true, floating = true, hist = true, visible = true })` | `cyclenext prev tiled ...` | the next (previous) window of the workspace in opening order; `tiled`/`floating` only those, `hist` in focus history order, `visible` every display's active workspace; `hl.dsp.raw("cycleprev")` goes back |
+| `hl.dsp.window.swap({ next = true })`, `({ prev = true })` | `swapnext [prev]` | the focused tiled window swaps with the next (previous) tiled one; pressed again it walks on |
+| `hl.dsp.window.swap({ target = w })` | `swapwindow` | swap the focused tiled window with that one (also `with =`, `other =`) |
+| `hl.dsp.window.alter_zorder({ mode = "top" \| "bottom", window = w })` | `alterzorder` | raise the window (it takes the focus) or put it below the other windows of its workspace |
 | `hl.dsp.window.move({ workspace = N })` | `movetoworkspace` | move the focused window there and follow it |
 | `hl.dsp.window.move({ workspace = N, follow = false })` | `movetoworkspacesilent` | move it without following (also `silent = true`) |
 | `hl.dsp.window.move({ direction = "left" })` | `movewindow` | tiled: swap with the neighbour; floating: to that edge |
@@ -439,6 +455,8 @@ hidden (minimized), visible, active, at = { x, y }, size = { x, y }, workspace }
 |---|---|
 | `hl.get_windows([{ class =, title =, floating =, workspace = }])` | windows, every workspace; `class`/`title` are Lua patterns |
 | `hl.get_active_window()` | the focused window or nil |
+| `hl.get_last_window()`, `hl.get_urgent_window()` | the window focused before the active one, the newest urgent one, or nil (E3) |
+| `hl.get_last_workspace()` | the workspace `previous` goes to, or nil |
 | `hl.get_window("taskid:N")` | one window or nil |
 | `hl.get_workspaces()`, `hl.get_active_workspace()`, `hl.get_workspace(N)` | workspaces |
 | `hl.get_config(name)` | an option's value as a string |

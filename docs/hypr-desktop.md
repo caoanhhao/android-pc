@@ -1188,6 +1188,104 @@ made an 8.7 GiB stick image whose `android/build.txt` names build `eng.builder.2
 (patch level 2026-06-05, unchanged). The stick itself was not touched; the image is ready for
 `tools/update-usb-aosp17.sh` (docs/usb-boot-aosp17.md, §10).
 
+## Window history (E3)
+
+Phase E3 (PLAN.md, "Phase E"): a focus history and Hyprland's ways of switching windows,
+emulated after Hyprland 0.57.2's own code (`src/config/shared/actions/ConfigActions.cpp`,
+`src/desktop/history/*HistoryTracker.cpp`, `src/desktop/state/WindowQuery.cpp`).
+
+### The histories
+
+- **Windows** (`hyprtile`'s `FocusHistory`, kept by `HyprFocus` in PcSystemUI): one list per
+  display, most recently focused first, across all workspaces of the display. `HyprFocus`
+  listens to Shell's `FocusTransitionObserver` (`setLocalFocusTransitionListener`): a standard
+  task focused on its display goes to the front. After every settled transition (the
+  controller's sync) closed tasks drop out, a task now on another display moves to that
+  display's list (first if it was first) and tasks that opened without the focus join at the
+  end, as Hyprland's `openEarly` track does. Moving a window to another workspace keeps its
+  place. Hyprland keeps one global list; per display is the brief's choice and the same on one
+  display.
+- **Workspaces** (`WorkspaceHistory`): Hyprland 0.57's single most-recently-used list of
+  (display, workspace number), updated at every sync with each display's active workspace.
+  `previous` is the entry after the current one, so going there and back toggles between the
+  two last workspaces; `previous_per_monitor` the next one on the same display. In 0.57
+  `binds.allow_workspace_cycles` only decides whether a workspace already in front is tracked
+  again, which changes nothing in a most-recently-used list; it is accepted and has the same
+  (no) effect here.
+- **Urgent windows.** Hyprland marks a window urgent when it asks for activation while
+  unfocused (xdg-activation). Android has no such request, so here a window is urgent when its
+  app posts an alerting notification (importance default or higher, not ongoing, not a group
+  summary) while the window is not focused: `HyprFocus` registers a system notification
+  listener in SystemUI's process (`NotificationListenerService.registerAsSystemService`, as
+  SystemUI's own listener) and marks the app's most recently focused window. It stops being
+  urgent when it gets the focus or the notification goes.
+
+### Dispatchers
+
+| Hyprland (wire name) | Lua | What |
+|---|---|---|
+| `focuscurrentorlast` | `hl.dsp.focus({ last = true })` | the window focused before the current one; with nothing focused (the desktop), the most recent one |
+| `focusurgentorlast` | `hl.dsp.focus({ urgent_or_last = true })` | the most recently urgent window, else as above |
+| `cyclenext [prev] [tiled] [floating] [hist] [visible]` | `hl.dsp.window.cycle_next({ next = false, tiled, floating, hist, visible })` | the next window of the focused one's workspace in opening order (task ids grow with each new task, as Hyprland's window list); `hist` walks the focus history instead (oldest to newest, as Hyprland), `visible` takes every display's active workspace; minimized windows are skipped; with nothing focused, the first window |
+| `cycleprev ...` | `hl.dsp.raw("cycleprev", ...)` | `cyclenext prev` (a name from Hyprland's layout messages, kept as a shorthand) |
+| `swapnext [prev]` | `hl.dsp.window.swap({ next = true })`, `({ prev = true })` | the focused tiled window swaps with the next tiled one in opening order and keeps the focus; pressed again it goes on from the window it swapped with (Hyprland's `m_lastCycledWindow`), so it walks through the layout |
+| `swapwindow <selector>` | `hl.dsp.window.swap({ target = ... })` (also `with`, `other`) | swaps the focused tiled window with the selected one on the same workspace |
+| `alterzorder top\|bottom[,<selector>]` | `hl.dsp.window.alter_zorder({ mode, window })` | top: the window comes to front (and, as any raised Android window, takes the focus); bottom: it goes below the other windows of its desk (`WindowContainerTransaction.reorder(token, false)`), the focus passes to the new top one |
+| `focuswindow <selector>` | `hl.dsp.focus({ window = ... })` | the selected window: its workspace becomes active, it comes to front (a minimized one comes back) |
+| `workspace previous`, `previous_per_monitor` | `hl.dsp.focus({ workspace = "previous" })` (also `"prev"`) | the previous workspace; also for `movetoworkspace[silent]` |
+
+Window selectors (`hyprtile`'s `WindowSelector`): `class:`, `initialclass:` (the package),
+`title:`, `initialtitle:` (the task's label; regular expressions searched like window rules,
+`negative:` inverts), `pid:` (the app's process), `address:0x<hex task id>` (also
+`address:taskid:N`, the `address` of `hl.get_windows()`), `stableid:`/`taskid:` and a bare
+number (the task id), `activewindow`, `floating` and `tiled` (the first such window on the
+active workspace). Windows of the active workspace come first, then by task id. `tag:` is an
+error (no window tags). `hl.get_last_window()`, `hl.get_urgent_window()` and
+`hl.get_last_workspace()` answer from the shell's state (`focusHistory`, `urgentTasks`,
+`lastWorkspace` in `HyprTileController.state()`).
+
+`binds.workspace_back_and_forth` (`true`/1, or 2 for the previous workspace on this display):
+`workspace N` of the active workspace goes to the previous one. `HyprTileController.dispatch`
+rewrites `previous`, `previous_per_monitor` and back-and-forth into a workspace number before
+the workspace dispatchers run, so the workspace code (E2) sees plain numbers.
+
+### ALT + Tab
+
+`KeyGestureController` turns ALT + Tab (and ALT + SHIFT + Tab, which it cannot tell apart)
+into `KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER`: START when Tab goes down, COMPLETE when ALT is
+released; META + Tab is `KEY_GESTURE_TYPE_RECENT_APPS`. It refuses custom gestures on these
+keys (`CUSTOM_INPUT_GESTURE_RESULT_ERROR_RESERVED_GESTURE`), and with
+`grant_manage_key_gestures_to_recents` on (this release) the recents provider handles them:
+HyprLauncher (D4), whose overview had an Alt+Tab mode. E3 takes the keys over there, without a
+framework change: HyprLauncher looks up the configuration's bind on `ALT + Tab` (else
+`ALT + SHIFT + Tab`) and runs it on START; a bind on `SUPER + Tab` runs on RECENT_APPS. With no
+such bind (`hl.unbind("ALT + Tab")`) the D4 behaviour comes back: the overview on the next
+window, focused when ALT is released (META + Tab: the overview). `HyprKeybinds` leaves these
+binds alone instead of logging InputManager's refusal. The new default bind is
+`$mod + Tab` → `focuscurrentorlast`, as the host's `SUPER + TAB` (`focus({ last })`).
+
+Holding ALT and pressing Tab again sends that Tab to the focused app: the gesture starts once
+per ALT press (`mPendingHideRecentSwitcher`). E4's switcher, which keeps ALT held, will need a
+focused window of its own for the following Tabs (the overview's Alt+Tab mode has one).
+
+### For E4: the API
+
+- PcSystemUI (`HyprTileController.focus`, a `HyprFocus`, Shell's main thread):
+  `history(displayId)` (task ids, most recent first, closed tasks dropped), `urgent` (task
+  ids, oldest first), `focus(taskId)` (its workspace, to front), `previousWorkspace(displayId)`,
+  `dispatch(name, arg)` for the dispatchers above.
+- IHyprShell `getState`/listener Bundle: `focusHistory` (int[]), `urgentTasks` (int[]),
+  `lastWorkspace` (int); in HyprLauncher `ShellState.focusHistory`, `.urgent`,
+  `.lastWorkspace`; in Lua `hl.get_last_window()`, `hl.get_urgent_window()`,
+  `hl.get_last_workspace()`.
+- ALT + Tab: `Desktop.registerKeyGestures()` in HyprLauncher (START runs the `ALT + Tab` bind,
+  COMPLETE is ALT's release). A switcher dispatcher bound to `ALT + Tab` gets START there;
+  hooking COMPLETE (commit on release) is E4's to add next to it.
+
+### Checked on Waydroid
+
+(filled in below)
+
 ## As built
 
 | Piece | Where | Process | What it does |

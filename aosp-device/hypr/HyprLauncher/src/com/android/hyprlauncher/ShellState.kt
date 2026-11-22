@@ -33,6 +33,10 @@ data class ShellState(
     val displayHeight: Int = 0,
     /** The work area: the display without the bar and the system bars. */
     val workArea: Rect = Rect(),
+    /** Phase E3: focus history (task ids, most recent first), urgent windows, previous workspace. */
+    val focusHistory: List<Int> = emptyList(),
+    val urgent: List<Int> = emptyList(),
+    val lastWorkspace: Int = 0,
 ) {
     fun on(workspace: Int) = windows.filter { it.workspace == workspace }
 
@@ -75,6 +79,9 @@ data class ShellState(
                 displayWidth = display.getOrElse(0) { 0 },
                 displayHeight = display.getOrElse(1) { 0 },
                 workArea = if (work.size == 4) Rect(work[0], work[1], work[2], work[3]) else Rect(),
+                focusHistory = (b.getIntArray("focusHistory") ?: IntArray(0)).toList(),
+                urgent = (b.getIntArray("urgentTasks") ?: IntArray(0)).toList(),
+                lastWorkspace = b.getInt("lastWorkspace"),
             )
         }
     }

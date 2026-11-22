@@ -306,6 +306,9 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
             },
             names = current?.workspaceRules?.mapNotNull { r -> r.name?.let { r.workspace to it } }?.toMap()
                 ?: emptyMap(),
+            history = s.focusHistory,
+            urgent = s.urgent,
+            lastWorkspace = s.lastWorkspace,
         )
     }
 

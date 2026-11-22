@@ -174,6 +174,18 @@ local function window_id(w, level)
   return id
 end
 
+-- A window selector (Phase E3): a window from hl.get_windows, a task id, or Hyprland's
+-- selectors as text (class:, title:, initialclass:, initialtitle:, address:, pid:, stableid:,
+-- activewindow, floating, tiled); the shell checks the text.
+local function window_sel(w, level)
+  if type(w) == "table" and w.id then return "taskid:" .. str(w.id) end
+  if type(w) == "number" then return "taskid:" .. str(w) end
+  if type(w) ~= "string" or w == "" then
+    error("bad window '" .. tostring(w) .. "' (a window, or class:, title:, address:, pid:, ...)", level + 1)
+  end
+  return w
+end
+
 local FLOAT_ACTIONS = { toggle = "togglefloating", on = "setfloating", off = "settiled",
   enable = "setfloating", disable = "settiled" }
 local PIN_ACTIONS = { toggle = "toggle", on = "on", off = "off", enable = "on", disable = "off" }
@@ -232,8 +244,30 @@ local window = namespace("hl.dsp.window", {
     error("hl.dsp.window.move needs workspace =, direction = or x =, y =", 2)
   end,
   swap = function(t)
-    if type(t) ~= "table" or t.direction == nil then error("hl.dsp.window.swap({ direction = 'left' })", 2) end
-    return dsp("movewindow", dir(t.direction, 2))
+    if type(t) ~= "table" then error("hl.dsp.window.swap({ direction = 'left' } or { next = true })", 2) end
+    if t.direction ~= nil then return dsp("movewindow", dir(t.direction, 2)) end
+    local target = t.target or t.with or t.other
+    if target ~= nil then return dsp("swapwindow", window_sel(target, 2)) end
+    if t.next then return dsp("swapnext") end
+    if t.prev then return dsp("swapnext", "prev") end
+    error("hl.window.swap: unrecognized arguments. Expected one of: direction, target/with/other, next, prev", 2)
+  end,
+  -- Hyprland's cyclenext: { next = false } goes back; tiled, floating, hist (focus history
+  -- order) and visible (every display's active workspace) as its old arguments.
+  cycle_next = function(t)
+    t = type(t) == "table" and t or {}
+    if t.window ~= nil then error("hl.dsp.window.cycle_next: window = is not supported (it cycles from the active window)", 2) end
+    local w = {}
+    if t.next == false or t.prev == true then w[#w + 1] = "prev" end
+    for _, k in ipairs({ "tiled", "floating", "hist", "visible" }) do
+      if t[k] then w[#w + 1] = k end
+    end
+    return dsp("cyclenext", table.concat(w, " "))
+  end,
+  alter_zorder = function(t)
+    if type(t) ~= "table" then error("hl.window.alter_zorder: expected a table { mode, window? }", 2) end
+    if t.mode ~= "top" and t.mode ~= "bottom" then error("hl.window.alter_zorder: mode is 'top' or 'bottom'", 2) end
+    return dsp("alterzorder", t.mode .. (t.window ~= nil and "," .. window_sel(t.window, 2) or ""))
   end,
   drag = function() return dsp("__drag") end,
   resize = function(t)
@@ -253,9 +287,12 @@ hl.dsp = namespace("hl.dsp", {
   focus = function(t)
     if type(t) ~= "table" then error("hl.dsp.focus({ direction = ... } or { workspace = ... })", 2) end
     if t.direction ~= nil then return dsp("movefocus", dir(t.direction, 2)) end
+    -- Workspaces are per display here: on_current_monitor changes nothing.
     if t.workspace ~= nil then return dsp("workspace", t.workspace) end
-    if t.window ~= nil then return dsp("focuswindow", window_id(t.window, 2)) end
-    error("hl.dsp.focus needs direction =, workspace = or window =", 2)
+    if t.window ~= nil then return dsp("focuswindow", window_sel(t.window, 2)) end
+    if t.urgent_or_last then return dsp("focusurgentorlast") end
+    if t.last then return dsp("focuscurrentorlast") end
+    error("hl.focus: unrecognized arguments. Expected one of: direction, workspace, window, urgent_or_last, last", 2)
   end,
   layout = function(msg)
     if msg == "togglesplit" then return dsp("togglesplit") end
@@ -495,6 +532,12 @@ local function snapshot()
     elseif f[1] == "X" then
       s.existing = {}
       for j = 2, #f do s.existing[#s.existing + 1] = tonumber(f[j]) end
+    elseif f[1] == "H" or f[1] == "U" then
+      local ids = {}
+      for j = 2, #f do ids[#ids + 1] = tonumber(f[j]) end
+      if f[1] == "H" then s.history = ids else s.urgent = ids end
+    elseif f[1] == "L" then
+      s.last_workspace = tonumber(f[2]) or 0
     end
   end
   return s
@@ -567,6 +610,37 @@ end
 function hl.get_monitors()
   local m = hl.get_active_monitor()
   return m and { m } or {}
+end
+
+-- Phase E3: the window focused before the active one, the most recently urgent window and
+-- the workspace `workspace previous` goes to.
+local function window_by_id(s, id)
+  for _, w in ipairs(s.windows) do if w.id == id then return w end end
+  return nil
+end
+
+function hl.get_last_window()
+  local s = with_workspaces(snapshot())
+  for _, id in ipairs(s.history or {}) do
+    if id ~= s.focused then return window_by_id(s, id) end
+  end
+  return nil
+end
+
+function hl.get_urgent_window()
+  local s = with_workspaces(snapshot())
+  local u = s.urgent or {}
+  for i = #u, 1, -1 do
+    local w = window_by_id(s, u[i])
+    if w then return w end
+  end
+  return nil
+end
+
+function hl.get_last_workspace()
+  local s = snapshot()
+  if (s.last_workspace or 0) < 1 then return nil end
+  return workspace_of(s, s.last_workspace)
 end
 
 function hl.get_active_workspace()

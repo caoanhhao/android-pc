@@ -30,6 +30,9 @@ import com.android.hyprtile.parseMods
 import com.android.hyprtile.DEFAULT_WORKSPACES
 import com.android.hyprtile.MAX_WORKSPACES
 import com.android.hyprtile.isWorkspaceArg
+import com.android.hyprtile.CycleOptions
+import com.android.hyprtile.WindowSelector
+import com.android.hyprtile.previousWorkspaceArg
 import java.text.SimpleDateFormat
 
 /**
@@ -537,6 +540,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "caption",
             "shell.tiling" to "tiling",
             "shell.touch" to "touch",
+            "binds.workspace_back_and_forth" to "workspace_back_and_forth",
+            "binds.allow_workspace_cycles" to "allow_workspace_cycles",
             "binds.pass_mouse_when_bound" to "pass_mouse_when_bound",
             "binds.scroll_event_delay" to "scroll_event_delay",
             "shell.workspaces" to "workspaces",
@@ -571,6 +576,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to "floating",
             "shell.tiling" to "true",
             "shell.touch" to "true",
+            "binds.workspace_back_and_forth" to "0",
+            "binds.allow_workspace_cycles" to "false",
             "binds.pass_mouse_when_bound" to "false",
             "binds.scroll_event_delay" to "300",
             "shell.workspaces" to "$DEFAULT_WORKSPACES",
@@ -634,6 +641,11 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
             "shell.touch" to boolOpt,
+            // 0 off, 1 (or true) back to the previous workspace, 2 the previous one on this display.
+            "binds.workspace_back_and_forth" to { v, t ->
+                if (t == "boolean") (if (v == "true") "1" else "0") else intIn(0..2)(v, t)
+            },
+            "binds.allow_workspace_cycles" to boolOpt,
             "binds.pass_mouse_when_bound" to boolOpt,
             "binds.scroll_event_delay" to intIn(0..2000),
             "shell.workspaces" to intIn(1..MAX_WORKSPACES),
@@ -645,7 +657,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             val a = arg.trim()
             return when (dispatcher) {
                 "workspace", "movetoworkspace", "movetoworkspacesilent" ->
-                    if ((a.toIntOrNull() ?: 1) > MAX_WORKSPACES) {
+                    if (previousWorkspaceArg(a) != null) {
+                        null
+                    } else if ((a.toIntOrNull() ?: 1) > MAX_WORKSPACES) {
                         "workspaces go up to $MAX_WORKSPACES"
                     } else if (!isWorkspaceArg(a)) {
                         "bad workspace '$a'"
@@ -655,7 +669,21 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "movefocus", "movewindow" -> if (Direction.parse(a) == null) "bad direction '$a'" else null
                 "fullscreen" -> if (a !in setOf("", "0", "1")) "fullscreen takes 0 or 1" else null
                 "exec" -> if (a.isEmpty()) "exec needs a package name" else null
-                "focuswindow" -> if (a.removePrefix("taskid:").toIntOrNull() == null) "bad window '$a'" else null
+                "focuswindow", "swapwindow" -> runCatching { WindowSelector.parse(a) }.exceptionOrNull()?.message
+                "cyclenext", "cycleprev" ->
+                    if (CycleOptions.parse(a) == null) "$dispatcher takes prev, tiled, floating, hist, visible" else null
+                "swapnext" -> if (a.lowercase() !in setOf("", "next", "prev", "p", "b")) "swapnext takes prev or nothing" else null
+                "alterzorder" -> {
+                    val mode = a.substringBefore(',').trim()
+                    val window = a.substringAfter(',', "").trim()
+                    if (mode != "top" && mode != "bottom") {
+                        "alterzorder takes top or bottom[,window]"
+                    } else if (window.isNotEmpty()) {
+                        runCatching { WindowSelector.parse(window) }.exceptionOrNull()?.message
+                    } else {
+                        null
+                    }
+                }
                 "resizeactive", "moveactive" ->
                     if (parseXY(a) == null) "$dispatcher takes 'DX DY' or 'exact X Y'" else null
                 "pin" -> if (parsePin(a) == null) "pin takes [toggle|on|off] [taskid:N]" else null

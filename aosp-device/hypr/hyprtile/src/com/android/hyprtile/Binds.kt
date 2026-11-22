@@ -40,7 +40,8 @@ fun parseBind(line: String): Bind {
  * workspaces 1-10 (0 is 10), movefocus/movewindow on the arrows, C killactive, V togglefloating,
  * J togglesplit, F maximize (`fullscreen 1`), SHIFT F fullscreen, E the file manager and,
  * when [terminal] is set, Q the terminal. D and SPACE open HyprLauncher's app launcher (rofi's
- * usual binds), GRAVE its overview (hyprexpo's).
+ * usual binds), GRAVE its overview (hyprexpo's). TAB goes back to the window focused before
+ * (`focuscurrentorlast`, Phase E3; ALT + Tab reaches HyprLauncher as a recents key gesture).
  */
 fun defaultBinds(
     mainMod: Set<Mod>,
@@ -54,6 +55,7 @@ fun defaultBinds(
     binds += Bind(mainMod, "D", "launcher")
     binds += Bind(mainMod, "SPACE", "launcher")
     binds += Bind(mainMod, "GRAVE", "overview")
+    binds += Bind(mainMod, "TAB", "focuscurrentorlast")
     binds += Bind(mainMod, "C", "killactive")
     binds += Bind(mainMod, "V", "togglefloating")
     binds += Bind(mainMod, "J", "togglesplit")
@@ -119,6 +121,8 @@ private val KEY_ALIASES = mapOf(
 
 /** The dispatchers the shell and HyprLauncher run (Hyprland's names, `lua` for Lua functions). */
 val DISPATCHERS = setOf(
+    "focuscurrentorlast", "focusurgentorlast", "cyclenext", "cycleprev", "swapnext", "swapwindow",
+    "alterzorder",
     "workspace", "movetoworkspace", "movetoworkspacesilent", "movefocus", "movewindow",
     "togglefloating", "togglesplit", "fullscreen", "killactive", "exec", "focuswindow",
     "resizeactive", "launcher", "overview", "hyprexpo:expo", "lua",

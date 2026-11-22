@@ -3,10 +3,11 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (special workspace, pin, screenshots, bar and panel widgets, lock, zoom, wheel binds, the
--- previous-workspace and last-window jumps) are left out; see docs/hypr-lua.md for what the
--- dispatchers can do. Keys the host keeps for itself under Waydroid (ALT + TAB, ALT + F2/F3/
--- F11/F12, CTRL + ALT + P) are not bound.
+-- (special workspace, pin, screenshots, bar and panel widgets, lock, zoom, wheel binds) are
+-- left out; see docs/hypr-lua.md for what the dispatchers can do. Keys the host keeps for
+-- itself under Waydroid (ALT + TAB, ALT + F2/F3/F11/F12, CTRL + ALT + P) never reach Android
+-- there: ALT + Tab (the host's SUPER + TAB) is bound for the real PC and works in Waydroid
+-- only with injected keys.
 
 local mainMod = "ALT"
 local resizeAmount = 40 -- px; the host's 25 logical px at Waydroid's density
@@ -56,6 +57,21 @@ hl.bind(mainMod .. " + SHIFT + left", hl.dsp.window.resize({ x = -resizeAmount, 
 hl.bind(mainMod .. " + SHIFT + right", hl.dsp.window.resize({ x = resizeAmount, y = 0 }))
 hl.bind(mainMod .. " + SHIFT + up", hl.dsp.window.resize({ x = 0, y = -resizeAmount }))
 hl.bind(mainMod .. " + SHIFT + down", hl.dsp.window.resize({ x = 0, y = resizeAmount }))
+
+------------------------
+---- WINDOW HISTORY ----
+------------------------
+
+-- As the host: switching to the active workspace goes back to the previous one.
+hl.config({ binds = { workspace_back_and_forth = 1, allow_workspace_cycles = 1 } })
+
+-- The host's SUPER + TAB: back to the window focused before (also the shell's default).
+hl.bind(mainMod .. " + Tab", hl.dsp.focus({ last = "" }))
+-- The host's SUPER + GRAVE: the previous workspace. The shell's default overview moves to
+-- SHIFT + grave (the overview is also the three-finger swipe up and the pinch).
+hl.bind(mainMod .. " + grave", hl.dsp.focus({ workspace = "prev", on_current_monitor = true }))
+hl.bind(mainMod .. " + SHIFT + grave", hl.dsp.overview())
+-- The host's ALT + TAB (cycle_next with alter_zorder top) is the switcher of Phase E4.
 
 ------------------------
 ---- WORKSPACES --------

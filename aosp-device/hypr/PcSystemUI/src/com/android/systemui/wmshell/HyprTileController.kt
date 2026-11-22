@@ -167,6 +167,8 @@ class HyprTileController(
     private var animationsEnabled = HyprStyleProps.animationsEnabled(Bundle())
     private val mouse = HyprMouse(inputManager, this)
     private val touch = HyprTouch(context, inputManager, this, mainExecutor)
+    /** Window history and Hyprland's window switching dispatchers (Phase E3). */
+    val focus = HyprFocus(context, this, taskOrganizer, transitions, focusTransitionObserver, mainExecutor)
     /** The window a dispatcher acts on instead of the focused one (the touch window menu). */
     private var dispatchTarget: RunningTaskInfo? = null
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
@@ -220,6 +222,7 @@ class HyprTileController(
         decorations.install()
         mouse.start()
         touch.start()
+        focus.start()
         // Window titles change without a transition; the bar shows the focused one.
         taskOrganizer.addTaskInfoChangedListener(object : ShellTaskOrganizer.TaskInfoChangedListener {
             override fun onTaskInfoChanged(taskInfo: RunningTaskInfo) {
@@ -544,6 +547,7 @@ class HyprTileController(
         userFloated.retainAll { repo.getDeskIdForTask(it) != null }
         for (id in tile.pinned().toList()) if (repo.getDeskIdForTask(id) == null) tile.close(id)
         applyWindowRules()
+        focus.onSync()
         onStateChanged?.invoke()
     }
 
@@ -631,6 +635,12 @@ class HyprTileController(
      */
     fun dispatch(name: String, arg: String = ""): Boolean {
         Log.d(TAG, "dispatch $name $arg")
+        // `previous`, `previous_per_monitor` and binds.workspace_back_and_forth (E3).
+        if (name == "workspace" || name == "movetoworkspace" || name == "movetoworkspacesilent") {
+            val display = dispatchTarget?.displayId ?: focusedDisplayId()
+            val resolved = focus.resolveWorkspace(name, arg, display) ?: return true
+            if (resolved != arg) return dispatch(name, resolved)
+        }
         when (name) {
             "workspace" -> {
                 val displayId = focusedDisplayId()
@@ -678,12 +688,11 @@ class HyprTileController(
             "quicksettings" ->
                 context.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
             "exec" -> exec(arg.trim())
-            "focuswindow" -> focusWindow(arg.trim().removePrefix("taskid:").toIntOrNull()
-                ?: return false)
             // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
             "launcher", "overview", "hyprexpo:expo", "lua" ->
                 return launcherDispatch?.invoke(name, arg) ?: false
-            else -> return false
+            // Window history and switching (E3): focuscurrentorlast, cyclenext, focuswindow, ...
+            else -> return focus.dispatch(name, arg)
         }
         return true
     }
@@ -1107,6 +1116,71 @@ class HyprTileController(
         if (!wct.isEmpty) startChange(wct)
     }
 
+    // ---- window history (HyprFocus, Phase E3) ----
+
+    internal fun focusedWindow(): RunningTaskInfo? = focusedTask()
+
+    internal fun focusedDisplay(): Int = focusedDisplayId()
+
+    /** Brings [taskId] to front on its workspace (`focuswindow`). */
+    internal fun focusTask(taskId: Int) = focusWindow(taskId)
+
+    internal fun isTiled(taskId: Int) = tile.isTiled(taskId)
+
+    /** An app's window: a standard task, not a desk's root nor Shell's desktop wallpaper. */
+    internal fun isAppWindow(task: RunningTaskInfo): Boolean =
+        task.activityType == ACTIVITY_TYPE_STANDARD &&
+            (!userRepositories.isPresent || task.taskId !in repository.getAllDeskIds()) &&
+            task.baseActivity?.className?.endsWith(".DesktopWallpaperActivity") != true
+
+    internal fun isMinimized(taskId: Int) = repository.isMinimizedTask(taskId)
+
+    internal fun displaysWithDesks(): Set<Int> {
+        if (!userRepositories.isPresent) return emptySet()
+        val repo = repository
+        return repo.getAllDeskIds().mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
+    }
+
+    /** The active workspace's number on [displayId], 0 when no desk is active (home). */
+    internal fun activeWorkspace(displayId: Int): Int =
+        if (repository.getActiveDeskId(displayId) == null) 0 else currentWorkspace(displayId)
+
+    /** The tasks of [displayId]'s active workspace, minimized ones included. */
+    internal fun activeWorkspaceTasks(displayId: Int): List<Int> {
+        val desk = repository.getActiveDeskId(displayId) ?: return emptyList()
+        return repository.getActiveTaskIdsInDesk(desk).filter { taskOrganizer.getRunningTaskInfo(it) != null }
+    }
+
+    /** Every task on a desk of any display. */
+    internal fun desktopTasks(): List<RunningTaskInfo> = taskOrganizer.getRunningTasks().filter {
+        it.activityType == ACTIVITY_TYPE_STANDARD && repository.getDeskIdForTask(it.taskId) != null
+    }
+
+    /** Swaps tiled [task] with tiled [other] in their layout (`swapnext`, `swapwindow`). */
+    internal fun swapTiled(task: RunningTaskInfo, other: Int) {
+        val deskId = tile.workspaceOf(task.taskId) ?: return
+        if (tile.workspaceOf(other) != deskId) return
+        tile.swap(task.taskId, other)
+        maximized -= task.taskId
+        maximized -= other
+        val wct = WindowContainerTransaction()
+        addBounds(deskId, task.displayId, wct)
+        if (!wct.isEmpty) startChange(wct)
+    }
+
+    /** `binds.workspace_back_and_forth`: 0 off, 1 on, 2 on this display only. */
+    internal fun workspaceBackAndForth(): Int = (configOverrides.getString("workspace_back_and_forth")
+        ?: SystemProperties.get("persist.hypr.workspace_back_and_forth")).trim().let {
+        when (it) {
+            "true" -> 1
+            "false", "" -> 0
+            else -> it.toIntOrNull()?.coerceIn(0, 2) ?: 0
+        }
+    }
+
+    internal fun allowWorkspaceCycles(): Boolean = (configOverrides.getString("allow_workspace_cycles")
+        ?: SystemProperties.get("persist.hypr.allow_workspace_cycles")).trim() == "true"
+
     // ---- touch (HyprTouch) ----
 
     /** The topmost desktop window of the active desk under ([x], [y]), if any. */
@@ -1395,6 +1469,10 @@ class HyprTileController(
         out.putIntArray("taskBounds", bounds.toIntArray())
         out.putBooleanArray("taskFloating", floating.toBooleanArray())
         out.putBooleanArray("taskMinimized", minimized.toBooleanArray())
+        // E3: the focus history (most recent first) and the urgent windows.
+        out.putIntArray("focusHistory", focus.history(displayId).toIntArray())
+        out.putIntArray("urgentTasks", focus.urgent.toIntArray())
+        out.putInt("lastWorkspace", focus.previousWorkspace(displayId))
         out.putBooleanArray("taskPinned", pinned.toBooleanArray())
         return out
     }

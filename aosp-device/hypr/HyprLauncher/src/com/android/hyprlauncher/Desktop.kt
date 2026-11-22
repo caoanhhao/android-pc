@@ -13,6 +13,10 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Display
 import com.android.hyprlua.BarConfig
+import com.android.hyprtile.Bind
+import com.android.hyprtile.Mod
+import com.android.hyprtile.defaultBinds
+import com.android.hyprtile.parseBind
 import com.android.hyprshell.IHyprShell
 import com.android.hyprshell.IHyprShellListener
 import java.util.concurrent.Executors
@@ -80,10 +84,15 @@ class Desktop private constructor(context: Context) {
 
     /**
      * The system key gestures a recents provider handles in AOSP 17 (Quickstep's
-     * QuickstepKeyGestureEventsManager): Alt+Tab (RECENT_APPS_SWITCHER: overview on the next
-     * window, focus it when Alt is released), META+Tab (RECENT_APPS: the overview) and the
-     * all-apps key or META alone (ALL_APPS: the launcher). Each type has one handler, so they
-     * are registered one by one; one that someone else holds is skipped.
+     * QuickstepKeyGestureEventsManager): Alt+Tab (RECENT_APPS_SWITCHER), META+Tab (RECENT_APPS)
+     * and the all-apps key or META alone (ALL_APPS: the launcher). Each type has one handler, so
+     * they are registered one by one; one that someone else holds is skipped.
+     *
+     * InputManager keeps ALT + Tab (and ALT + SHIFT + Tab) and META + Tab for these gestures, so
+     * HyprKeybinds cannot install binds on them; a bind on `ALT + Tab` or `SUPER + Tab` runs
+     * here instead, when Tab goes down (Phase E3: the default `ALT + Tab` is
+     * `focuscurrentorlast`). Without one, Alt+Tab shows the overview on the next window and
+     * focuses it when Alt is released, META+Tab toggles the overview.
      */
     private fun registerKeyGestures() {
         val im = context.getSystemService(InputManager::class.java) ?: return
@@ -92,9 +101,19 @@ class Desktop private constructor(context: Context) {
             val complete = event.action == KeyGestureEvent.ACTION_GESTURE_COMPLETE && !event.isCancelled
             handler.post {
                 when (event.keyGestureType) {
-                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER ->
-                        if (start) overview.show(altTab = true) else overview.commitAltTab()
-                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS -> if (complete) overview.toggle()
+                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS_SWITCHER -> {
+                        val bind = tabBind(setOf(Mod.ALT)) ?: tabBind(setOf(Mod.ALT, Mod.SHIFT))
+                        if (bind != null) {
+                            if (start) runBind(bind)
+                        } else if (start) {
+                            overview.show(altTab = true)
+                        } else {
+                            overview.commitAltTab()
+                        }
+                    }
+                    KeyGestureEvent.KEY_GESTURE_TYPE_RECENT_APPS -> if (complete) {
+                        tabBind(setOf(Mod.SUPER))?.let { runBind(it) } ?: overview.toggle()
+                    }
                     KeyGestureEvent.KEY_GESTURE_TYPE_ALL_APPS -> if (complete) launcher.toggle()
                 }
             }
@@ -136,6 +155,22 @@ class Desktop private constructor(context: Context) {
             notifier.setTop(top)
             shellCall { it.setReserved(Display.DEFAULT_DISPLAY, top, 0) }
         }
+    }
+
+    /**
+     * The bind on [mods] + Tab: from init.lua (its list has the defaults in it), or the default
+     * binds before init.lua loaded.
+     */
+    private fun tabBind(mods: Set<Mod>): Bind? {
+        val binds = lua.current?.wire?.lists?.get("binds")
+            ?.mapNotNull { runCatching { parseBind(it) }.getOrNull() }
+            ?: defaultBinds(setOf(Mod.ALT))
+        return binds.lastOrNull { it.key == "TAB" && it.mods == mods }
+    }
+
+    private fun runBind(bind: Bind) {
+        Log.d(TAG, "key gesture bind $bind")
+        if (bind.dispatcher == "lua") lua.callBind(bind.arg) else dispatch(bind.dispatcher, bind.arg)
     }
 
     /** Runs a Hyprland dispatcher in the shell. */
