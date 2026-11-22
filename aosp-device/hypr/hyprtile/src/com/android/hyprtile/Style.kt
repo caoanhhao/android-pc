@@ -138,7 +138,7 @@ data class DecorationConfig(
     /** decoration:inactive_opacity. */
     val inactiveOpacity: Float = 1f,
     /** Which windows keep Shell's caption. */
-    val caption: CaptionMode = CaptionMode.FLOATING,
+    val caption: CaptionMode = CaptionMode.NONE,
     /** Shell's drop shadow under floating windows (Hyprland's decoration:shadow:enabled). */
     val shadow: Boolean = true,
 ) {

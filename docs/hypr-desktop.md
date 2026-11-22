@@ -617,10 +617,12 @@ size. The patch applies the transaction at once when the style hides the caption
 
 `HyprDecorations` implements `WindowDecorStyle`:
 
-- **Caption.** `caption = floating` (default): tiled windows have no caption (Hyprland), a
-  floating window keeps Shell's header (app menu, minimize, maximize, close, drag), so a
-  floating window can still be closed and moved with the mouse alone. `none` drops it
-  everywhere, `all` keeps it everywhere. The caption follows `togglefloating`, since floating
+- **Caption.** `caption = none` (default since 2026-11-23, user's request): no window has a
+  caption, tiled or floating, as in Hyprland; windows are moved, resized and closed with the
+  binds (`bindm` MOD + drag, `killactive`) and the window menu. `floating` (the default
+  before) keeps Shell's header (app menu, minimize, maximize, close, drag) on floating
+  windows only, so they can be closed and moved with the mouse alone; `all` keeps it
+  everywhere. The caption follows `togglefloating`, since floating
   changes start a transition that relayouts the decoration.
 - **Corners and opacity** are set on the task surface in Shell's own start and finish
   transactions after Shell's values, so they win and change in the same frame as Shell's
@@ -690,7 +692,8 @@ gets a cancel) and:
   (`HyprTile.resize`: dwindle moves the nearest split of that direction, master changes mfact;
   also Hyprland's `resizeactive`). The new bounds land in one animated transition when the
   button is up;
-- **middle click** toggles floating (a floating window gets its caption back, with close).
+- **middle click** toggles floating (with `caption = floating`, a floating window gets its
+  caption back, with close).
 
 ### Configuration
 
@@ -705,7 +708,7 @@ transition (a bad value is logged and its default kept):
 | `persist.hypr.col.active_border` | `general:col.active_border` | `rgba(33ccffee) rgba(00ff99ee) 45deg` |
 | `persist.hypr.col.inactive_border` | `general:col.inactive_border` | `rgba(595959aa)` |
 | `persist.hypr.active_opacity`, `inactive_opacity` | `decoration:*_opacity` | 1.0, 1.0 |
-| `persist.hypr.caption` | (none) | `floating` (`none`, `all`) |
+| `persist.hypr.caption` | (none) | `none` (`floating`, `all`); `floating` until 2026-11-23 |
 | `persist.hypr.shadow` | `decoration:shadow:enabled` | true (floating windows) |
 | `persist.hypr.animations` | `animations:enabled` | true (false: Shell's animations) |
 | `persist.hypr.bezier.1`..`.16` | `bezier = NAME, X0, Y0, X1, Y1` | Hyprland's example curves |

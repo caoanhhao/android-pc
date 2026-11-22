@@ -40,7 +40,7 @@ hl.config({
         default_binds = true,   -- Hyprland's example binds on main_mod (docs/hypr-lua.md)
         file_manager = "com.android.documentsui",
         -- terminal = "com.termux", -- main_mod + Q
-        caption = "floating",   -- title bars: "none", "floating" (default) or "all"
+        caption = "none",       -- title bars: "none" (default), "floating" or "all"
     },
 })
 

@@ -610,7 +610,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "ipc.allow" to "com.termux,com.android.hyprlauncher",
             "shell.file_manager" to "com.android.documentsui",
             "shell.default_binds" to "true",
-            "shell.caption" to "floating",
+            "shell.caption" to "none",
             "shell.tiling" to "true",
             "shell.touch" to "true",
             "binds.workspace_back_and_forth" to "0",

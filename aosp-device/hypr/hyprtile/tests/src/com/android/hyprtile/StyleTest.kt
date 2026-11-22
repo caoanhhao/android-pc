@@ -68,9 +68,10 @@ class StyleTest {
     @Test
     fun captionModes() {
         val d = DecorationConfig()
-        assertTrue(d.hasCaption(floating = true))
+        assertFalse(d.hasCaption(floating = true))
         assertFalse(d.hasCaption(floating = false))
-        assertFalse(d.copy(caption = CaptionMode.NONE).hasCaption(true))
+        assertTrue(d.copy(caption = CaptionMode.FLOATING).hasCaption(true))
+        assertFalse(d.copy(caption = CaptionMode.FLOATING).hasCaption(false))
         assertTrue(d.copy(caption = CaptionMode.ALL).hasCaption(false))
         assertEquals(CaptionMode.NONE, CaptionMode.parse("off"))
         assertEquals(CaptionMode.FLOATING, CaptionMode.parse("Floating"))

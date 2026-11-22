@@ -74,7 +74,7 @@ class HyprLuaTest {
         assertEquals("10", v["rounding"])
         assertEquals("ALT", v["mod"])
         assertEquals("ALT", v["mouse_mod"])
-        assertEquals("floating", v["caption"])
+        assertEquals("none", v["caption"])
         assertEquals("lua", v["source"])
         assertTrue(Bind(setOf(Mod.ALT), "1", "workspace", "1") in binds(c))
         assertTrue(Bind(setOf(Mod.ALT), "E", "exec", "com.android.documentsui") in binds(c))
@@ -107,7 +107,7 @@ class HyprLuaTest {
               animations = { enabled = false },
               dwindle = { preserve_split = true, default_split_ratio = 1.2, force_split = 1 },
               master = { mfact = 0.6, new_status = "master", new_on_top = true },
-              shell = { main_mod = "SUPER", caption = "none", default_binds = false },
+              shell = { main_mod = "SUPER", caption = "floating", default_binds = false },
             })
         """)
         val v = c.wire.values
@@ -129,7 +129,7 @@ class HyprLuaTest {
         assertEquals("master", v["new_status"])
         assertEquals("true", v["new_on_top"])
         assertEquals("SUPER", v["mod"])
-        assertEquals("none", v["caption"])
+        assertEquals("floating", v["caption"])
         assertEquals(emptyList<String>(), c.wire.lists["binds"])
     }
 
