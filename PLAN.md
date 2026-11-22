@@ -759,7 +759,10 @@ commit (or `(partial: ...)`).
   workspace), the binds that need it (`ALT + CTRL + Space` pin, `ALT + CTRL + SHIFT + F`
   float, fill the work area and pin).
 - **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
-  only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20).
+  only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20). Done
+  2026-11-22 (docs/hypr-desktop.md, "Workspaces (E2)": a desk per workspace number, made on
+  demand and removed when empty, `shell.workspaces`; a reboot not checked, only a SystemUI
+  restart).
 - **E3 — window history:** a focus history per display; `ALT + TAB`-free Hyprland window
   switching: `focuscurrentorlast` (`ALT + Tab` on the host is `focus({ last })`),
   `focusurgentorlast`, `cyclenext`/`cycleprev`, `alterzorder`, `swapnext`, `workspace

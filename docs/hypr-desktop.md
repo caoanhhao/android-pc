@@ -1572,7 +1572,9 @@ working tree in the overlay, the test binds.lua with the WORKSPACES section of
 | Going home with windows on other workspaces | no desk removed |
 
 Not checked: a reboot (the same restore path as a SystemUI restart, with the same task ids);
-a second display.
+a second display; a workspace rule on a workspace made later (a test rule with `gaps_out` and
+`default_name` on workspace 15 showed neither; its name is missing from the bar too, which
+HyprLauncher takes from the Lua configuration directly, so the cause is still open).
 
 ## As built
 
