@@ -1570,11 +1570,14 @@ working tree in the overlay, the test binds.lua with the WORKSPACES section of
 | Wheel over the bar (`e+1`, `e-1`) | 2 → 4 → 5 (3 does not exist), then back to 4 |
 | SystemUI killed | Shell restored the desks under new ids; the bar shows the same `1 2 4 5 12 17` |
 | Going home with windows on other workspaces | no desk removed |
+| Workspace rule on a workspace made later (`workspace = "15", gaps_out = 80, default_name = "e2rule"` added to init.lua, then Settings moved there with `CTRL + KP_Begin`) | the new desk gets the rule: the window sits 80 px from the edges, the bar names it `e2rule` |
+
+The first try at that rule showed neither because init.lua was written through `/data/media`
+with `waydroid shell`, which skips FUSE, so HyprLauncher kept reading the old file. Written
+through `/storage/emulated/0/Documents/hypr/` it reloads at once.
 
 Not checked: a reboot (the same restore path as a SystemUI restart, with the same task ids);
-a second display; a workspace rule on a workspace made later (a test rule with `gaps_out` and
-`default_name` on workspace 15 showed neither; its name is missing from the bar too, which
-HyprLauncher takes from the Lua configuration directly, so the cause is still open).
+a second display.
 
 ## ALT + Tab switcher (E4)
 
