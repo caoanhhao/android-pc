@@ -3,7 +3,7 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (pin, bar and panel widgets) are left out; see docs/hypr-lua.md for what the
+-- (bar and panel widgets) are left out; see docs/hypr-lua.md for what the
 -- dispatchers can do. Keys the host keeps for itself under Waydroid (ALT + TAB, ALT + F2/F3/
 -- F11/F12, CTRL + ALT + P) never reach Android there: ALT + Tab (the switcher, which also does
 -- the host's SUPER + TAB) is for the real PC and works in Waydroid only with injected keys.
@@ -19,6 +19,20 @@ hl.bind(mainMod .. " + Q", hl.dsp.window.close())
 hl.bind(mainMod .. " + F", hl.dsp.window.fullscreen())
 hl.bind(mainMod .. " + SHIFT + F", hl.dsp.window.fullscreen({ mode = "maximized" }))
 hl.bind(mainMod .. " + Space", hl.dsp.window.float({ action = "toggle" }))
+-- Pin: a pinned window floats (a tiled one is floated first), stays on top and follows every
+-- workspace.
+hl.bind(mainMod .. " + CTRL + Space", hl.dsp.window.pin())
+-- Float the window, fill the work area (the display without the bar) and pin it, as the host
+-- does with the monitor's size.
+hl.bind(mainMod .. " + CTRL + SHIFT + F", function()
+    local monitor = hl.get_active_monitor()
+    if monitor == nil then return end
+    local area = monitor.work_area
+    hl.dispatch(hl.dsp.window.float({ action = "on" }))
+    hl.dispatch(hl.dsp.window.resize({ x = area.width, y = area.height, relative = false }))
+    hl.dispatch(hl.dsp.window.move({ x = area.x, y = area.y, relative = false }))
+    hl.dispatch(hl.dsp.window.pin({ action = "toggle" }))
+end)
 
 ------------------------
 ---- SPECIAL WORKSPACE -

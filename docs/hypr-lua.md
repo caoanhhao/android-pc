@@ -325,6 +325,8 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + Q` | close the focused window (instead of the default `ALT + C`) |
 | `ALT + F` / `ALT + SHIFT + F` | fullscreen / maximize (the default's order swapped, as on the host) |
 | `ALT + Space` | float toggle (`ALT + V` still works); `ALT + D` opens the launcher |
+| `ALT + CTRL + Space` | pin toggle (a tiled window is floated first) |
+| `ALT + CTRL + SHIFT + F` | float, fill the work area and pin: a Lua function with `hl.get_active_monitor().work_area`, `resize`/`move` with `relative = false` and `pin` (the host uses the monitor's size; here the bar stays visible) |
 | `ALT + Return`, `+ W`, `+ E` | Termux, Chromium, Files |
 | `ALT + L`, `ALT + R` | notifications, quick settings (the host's left and right panels) |
 | `ALT + arrows`, `ALT + h n c t` | focus left, right, up, down |
@@ -338,10 +340,13 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + S`, `ALT + CTRL + S` | the special workspace over the current one, toggled; the focused window into it (again: back out; Phase E5) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
-Left out, with no counterpart here: pin, screenshots and screen
+Left out, with no counterpart here: screenshots and screen
 recording, the bar and panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
-moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there. It loads with no
-warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
+moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there.
+With the later steps' binds (E1's pin binds among them) the user's copy loaded with 81 binds on
+Waydroid (2026-11-22; the only warnings: E10's zoom binds, `repeating` ignored). Before them it
+loaded with no warnings and 67 binds (60 keys and the 7 default gestures) on the host build of
+hyprlua.
 Checked on Waydroid (2026-11-22, user data): all 60 key binds installed, none taken by AOSP;
 open, focus (`h`/`n`), move, resize, float, maximize, silent and following moves, the shade
 (`ALT + L` and `ALT + R` open SystemUI's large-screen shade, quick settings and
@@ -413,12 +418,15 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.window.move({ workspace = "special[:name]" })` | `movetoworkspace special[:name]` | move the focused window to that special workspace and show it; a window already there goes back to the active workspace; `follow = false` (`movetoworkspacesilent`) moves it there hidden |
 | `hl.dsp.window.move({ direction = "left" })` | `movewindow` | tiled: swap with the neighbour; floating: to that edge |
 | `hl.dsp.window.swap({ direction = "left" })` | `movewindow` | the same |
-| `hl.dsp.window.float()` | `togglefloating` | only `action = "toggle"` |
+| `hl.dsp.window.float({ action = "toggle" })` | `togglefloating` | also `"on"` (`setfloating`), `"off"` (`settiled`); `window = w` for another window than the focused one |
+| `hl.dsp.window.pin({ action = "toggle" })` | `pin` | a pinned window floats (a tiled one leaves its layout, centred), stays on top of the other windows and shows on every workspace (it follows the active one); `"on"`, `"off"`, `window = w`; unpinned it stays floating |
 | `hl.dsp.window.fullscreen({ mode = "maximized" })` | `fullscreen 1` | fill the work area, keep the tile; again to go back |
 | `hl.dsp.window.fullscreen()` | `fullscreen 0` | Android's fullscreen, out of the desktop and back |
 | `hl.dsp.window.close()` | `killactive` | close the focused window |
 | `hl.dsp.window.kill()` | `forcekillactive` | force-stop the focused window's app, as Settings' Force stop (E11; the host's `hyprctl kill` picks a window by click) |
 | `hl.dsp.window.resize({ x = 40, y = 0 })` | `resizeactive` | tiled: move its splits; floating: grow (px) |
+| `hl.dsp.window.resize({ x = W, y = H, relative = false })` | `resizeactive exact` | floating: that size (px, or `"N%"` of the work area), the top-left corner stays |
+| `hl.dsp.window.move({ x = X, y = Y, relative = false })` | `moveactive exact` | floating: to that display position (px, or `"N%"` across the work area); without `relative = false` it moves by X, Y |
 | `hl.dsp.layout("togglesplit")` | `togglesplit` | dwindle: flip the focused window's split |
 | `hl.dsp.exec_cmd("com.termux")` | `exec` | start a package's launcher activity (a package name, not a shell command); it opens on the active workspace |
 | `hl.dsp.launcher()` | `launcher` | the rofi-like app launcher |
@@ -586,7 +594,8 @@ hidden (minimized), visible, active, at = { x, y }, size = { x, y }, workspace }
 | `hl.get_active_window()` | the focused window or nil |
 | `hl.get_last_window()`, `hl.get_urgent_window()` | the window focused before the active one, the newest urgent one, or nil (E3) |
 | `hl.get_last_workspace()` | the workspace `previous` goes to, or nil |
-| `hl.get_window("taskid:N")` | one window or nil |
+| `hl.get_window("taskid:N")` | one window or nil; windows carry `pinned` |
+| `hl.get_active_monitor()`, `hl.get_monitors()` | the display: `width`, `height`, `x = 0`, `y = 0`, `scale = 1`, `reserved` (hyprctl's left, top, right, bottom, also by name: the bar and system bars) and `work_area` (`x`, `y`, `width`, `height`: the display without them); nil (an empty list) before the shell answers |
 | `hl.get_workspaces()`, `hl.get_active_workspace()`, `hl.get_workspace(N)` | the workspaces that exist (as `hyprctl workspaces`: the active one and the ones with windows), the active one, any one by number |
 | `hl.get_config(name)` | an option's value as a string |
 | `hl.notify(text, { timeout = ms, color = "rgba(...)" })` | a notification under the bar (also `hl.notification.create({ text, timeout, color })`) |

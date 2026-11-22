@@ -351,7 +351,20 @@ class HyprTileController(
             Log.d(TAG, "request ${request.type} task ${task.taskId} desk $deskId -> relayout")
             addBounds(layoutKey, task.displayId, wct, task)
         }
+        if (opening && !tile.isPinned(task.taskId)) keepPinnedOnTop(deskId, wct)
         return other ?: Transitions.RequestResult(wct)
+    }
+
+    /**
+     * A task that opens goes to the top of its desk, above always-on-top siblings too (only
+     * reordering keeps them above), so the desk's pinned windows are reordered above it again.
+     */
+    private fun keepPinnedOnTop(deskId: Int, wct: WindowContainerTransaction) {
+        for (id in tile.pinned()) {
+            if (repository.getDeskIdForTask(id) != deskId || repository.isMinimizedTask(id)) continue
+            val pinned = taskOrganizer.getRunningTaskInfo(id) ?: continue
+            wct.reorder(pinned.token, true)
+        }
     }
 
     /**

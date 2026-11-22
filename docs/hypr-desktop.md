@@ -1844,6 +1844,89 @@ Not checked: a second display; `binds.hide_special_on_workspace_change` (one lin
 own path); a reboot with a special workspace shown (it comes back hidden, by design: the shown
 state is not kept).
 
+## Pin (Phase E1)
+
+Hyprland's `pin`: a pinned window floats, stays above the other windows and shows on every
+workspace. Code: `hyprtile/Pin.kt` (argument parsing: `pin [toggle|on|off] [taskid:N]`,
+`moveactive`/`resizeactive [exact] X Y` with `N%`), `HyprTile` (the pinned set: pinning takes a
+tiled window out of its layout; tiling it again or closing it drops the pin; moving it to
+another workspace as a floating window keeps it), `HyprTileController` (the dispatchers),
+`hyprlua`'s prelude (`hl.dsp.window.pin`, `float({ action = "on"|"off" })`, `move`/`resize`
+with `relative = false`, `hl.get_active_monitor()`), the window menu (Pin/Unpin).
+
+Decisions:
+
+- **On top: WindowManager's always-on-top, inside the desk.** `pin` sets
+  `WindowContainerTransaction.setAlwaysOnTop(task, true)` and reorders the task to the top.
+  A freeform task with always-on-top stays above its non-always-on-top siblings in its parent
+  (`Task.positionChildAt`), here the desk root, so windows brought to front later go under
+  it. A task that opens is added at the top of the desk all the same (checked on Waydroid:
+  Calendar opened above a pinned Files), so the request that opens it also reorders the
+  desk's pinned windows to the top (`keepPinnedOnTop`). Unpinning clears the flag; the window
+  stays floating where it is (Hyprland does the same).
+- **Every workspace: the window goes along to the active desk.** A task lives in exactly one
+  desk root, and Shell hides inactive desks, so a pinned task is moved into the desk that
+  becomes active: in the desk-switch transaction this controller builds (`workspace N`,
+  `movetoworkspace`, the bar, key gestures) with `addMoveToDeskTaskChanges` and its own bounds
+  again (Shell's move would cascade it), and recorded in `DesktopRepository` with
+  `addTaskToDesk` (as `movetoworkspacesilent` does). Switches Shell makes by itself (from home,
+  a window brought to front on another desk) are caught by the sync after the transition. In the
+  desk-switch animation the pinned window does not slide with the desks. A minimized pinned
+  window stays on its desk. Reparenting it out of the desks (a root task of its own) was not
+  chosen: Shell's desktop code expects every freeform task in a desk, and would move it back.
+- **Floating first.** Hyprland pins floating windows only; the host's binds float the window
+  before pinning. Here `pin` on a tiled window floats it first (centred, as `togglefloating`),
+  so `ALT + CTRL + Space` is just `hl.dsp.window.pin()`.
+- **Fill the work area and pin** (`ALT + CTRL + SHIFT + F`): a Lua function, as on the host:
+  `float({ action = "on" })`, `resize`/`move` with `relative = false` to
+  `hl.get_active_monitor().work_area`, then `pin`. The shell's state (`IHyprShell.getState`)
+  now carries `display`, `workArea` and `taskPinned`; Lua windows have `pinned`. The four
+  dispatches arrive before the first transition lands, so floating bounds the controller set
+  but WindowManager has not applied yet are kept (`pendingBounds`) and the next dispatcher
+  builds on them.
+- New dispatchers next to `pin`: `setfloating`/`settiled` (Hyprland's), `togglefloating` with a
+  window, `moveactive [exact] X Y`, `resizeactive exact W H` (floating windows; exact values are
+  display pixels or `N%` of the work area).
+
+### Checked on Waydroid (2026-11-22)
+
+On the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`: the user's data stays
+`RUNNING_LOCKED` after a restart, so its launcher and binds never come up), with the user's
+binds plus the pin block (81 binds, the 2 warnings are E10's `repeating`):
+
+- `ALT + CTRL + Space` on a tiled Files: it floats, centred (`634,204 - 1903,887`), the tiles
+  close the gap, `dumpsys activity activities` shows `isAlwaysOnTop` under its task. Pressed
+  again (on Contacts): unpinned, still floating.
+- Calendar and microG opened after it go under the pinned Files (task order and screenshot,
+  `out/hypr-e1/pin-then-open.png`); before `keepPinnedOnTop` they opened above it. A tap on a
+  tiled window keeps Files drawn above it.
+- `ALT + CTRL + SHIFT + F` on microG: floating, resized to the work area (2538 x 1025 at 0,33),
+  pinned.
+- The window menu (long press on the caption) shows Pin, and Unpin on a pinned window; Pin
+  from the menu pins.
+- `ALT + 2`, and a desk switch Shell made by itself: the pinned task is reparented into the new
+  desk, keeps its bounds and `isAlwaysOnTop` (log `pin task N: true`, then the task under the
+  new desk in the dump).
+
+### Known limits
+
+- **A pinned window carried to another desk is not drawn there.** After `ALT + 2` the task is in
+  the new desk with its bounds and the always-on-top flag, but the screen shows only the
+  wallpaper (`ws2.png`, `ws2-fix.png`); a key event then waits on it and ends in an ANR
+  ("Application does not have a focused window"). Not fixed in E1: the next step is to look at
+  the carried task's leash in `animateDeskSwitch` (it is neither in the sliding sets nor shown
+  on the new desk) and at the app window's visibility after the reparent.
+- **Key focus stays with the pinned window.** The pinned task is the desk's top child, so it is
+  the focused app and the top resumed activity; `DisplayContent` gives key focus to the topmost
+  focusable window, and the always-on-top skip there applies only to always-on-top root tasks
+  (with `ENABLE_INTERACTIVE_PICTURE_IN_PICTURE`). Clicking a window under it draws nothing over
+  the pinned one, but keys still go to the pinned window. `setFocusable(false)` does not help
+  (`ActivityRecord.windowsAreFocusable` checks `canReceiveKeys`). Fixing it needs a
+  WindowManager patch.
+- With host game pads passed into the container, a pad held on the host sends its keys to the
+  pinned window (the point above) and can press its buttons, which minimized it during the
+  test.
+
 ## As built
 
 | Piece | Where | Process | What it does |
