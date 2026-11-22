@@ -763,7 +763,8 @@ commit (or `(partial: ...)`).
   on Waydroid (docs/hypr-desktop.md, "Pin (Phase E1)"). The follow-up fixed the carried window
   (drawn on the new desk, no ANR) and made key focus follow the click under a pinned window,
   both with `tools/patches/aosp17-wm-pinned-focus.patch` (frameworks/base WindowManager),
-  checked through the overlay; the image needs a rebuild to carry it.
+  checked through the overlay and then on the image `eng.caoanh.20261123.0047` (test data;
+  the user's data boots it, locked).
 - **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
   only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20). Done
   2026-11-22 (docs/hypr-desktop.md, "Workspaces (E2)": a desk per workspace number, made on

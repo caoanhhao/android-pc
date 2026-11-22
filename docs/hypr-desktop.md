@@ -2031,19 +2031,26 @@ gamepads off`, on again after), helpers and screenshots in `out/hypr-e1b/`:
   Files gives it back to Files; `hyprctl dispatch focuswindow 190` (the pinned task) from
   Settings focuses Files.
 
+On the image (2026-11-23, build `eng.caoanh.20261123.0047`: the five images built with the
+patch, packed with `tools/waydroid/aosp17-pack.sh`, copied to `/var/lib/waydroid/images-aosp17/`;
+the overlay's `PcSystemUI` moved to `/var/lib/waydroid/overlay-e1-tests.20261123-0051/`), test
+data, host game pads off for the run:
+
+- The checks above again: a tap on Settings under the pinned Files focuses Settings, a tap on
+  Files focuses Files; `ALT + 2` shows Files on workspace 2 above that workspace's tiles (`n2.png`),
+  no ANR after a key; `ALT + 1` brings it back.
+- Two pinned windows (Files and Settings): Files minimized from its caption, the focus goes to
+  Settings; `hyprctl dispatch focuswindow 194` brings Files back and gives it the focus (before,
+  Shell's unminimize left the focus with Settings): `focusWhenShown` calls `setFocusedTask` at
+  the next sync.
+
 ### Known limits
 
-- **The fixes need the WindowManager patch in the image.** `PcSystemUI` alone (the overlay on
-  the user's data) still has both old bugs; the patch was tried through the overlay's
-  `services.jar` and taken out again, so the next image build carries it (the build of
-  2026-11-22 22:18 got through system.img, system_ext.img and product.img, then hung with the
-  host; not packed).
-- With several pinned windows on a desk, the one brought back from minimized by a reorder
-  (Shell's unminimize) did not take the focus from another pinned one. Fixed in code, not yet
-  checked: `focuswindow` on a minimized pinned window focuses it after the next sync
-  (`focusWhenShown`, `setFocusedTask`), and a running task brought to front by a launch
-  (`Task.moveTaskToFront`) takes the focus too. The image build for it stopped on a host RCU
-  stall (2026-11-22 22:27, CPU 1, "Flaky host" in docs/aosp-build.md).
+- On the user's data the image boots (`eng.caoanh.20261123.0047`) but stays `RUNNING_LOCKED`
+  until its owner unlocks it, so the carry and the click focus were checked on the test data
+  only.
+- A running pinned task brought to front by a launch (`Task.moveTaskToFront`) takes the focus
+  in the patch, but was not checked: the test's `am start` of Files opened a new task instead.
 - Host game pads passed into the container send their keys to the focused window, pinned or
   not; a pad used on the host pressed BACK and minimized windows during the test.
 - Not pin's: `am start` of a task that is on another desk while workspace 2 shows leaves every
