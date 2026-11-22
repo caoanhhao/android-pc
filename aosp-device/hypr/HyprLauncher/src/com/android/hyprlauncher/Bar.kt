@@ -1,5 +1,8 @@
 package com.android.hyprlauncher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.StatusBarManager
 import android.content.Context
 import android.content.res.ColorStateList
@@ -10,25 +13,31 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Binder
 import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
 import android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+import android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 import android.view.WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
 import android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
 import android.view.WindowManager.LayoutParams.TYPE_STATUS_BAR_ADDITIONAL
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
 import android.view.InsetsFrameProvider
 import com.android.hyprlua.BarConfig
+import com.android.hyprtile.AnimationConfig
+import com.android.hyprtile.BarVisibility
 
 /**
  * The waybar-like bar along the top of the default display (Phase D4): an Apps button,
@@ -45,6 +54,13 @@ import com.android.hyprlua.BarConfig
  * SystemUI's own status bar has zero height (hypr RRO), so this is the only top bar.
  * Shell's desktop bounds do not count such insets, so the bar also tells hyprtile its strip
  * through IHyprShell.setReserved (waybar's exclusive zone).
+ *
+ * Phase E7: the `bar` dispatcher hides, shows, toggles and reloads it, and `hl.bar({ autohide
+ * = true })` keeps it hidden until the pointer reaches the top edge ([BarVisibility]). A hidden
+ * bar gives its strip back (no insets, reserved 0, the tiles re-lay out); its window stays as
+ * a thin strip along the edge that catches the pointer (and touches) when it auto-hides, and
+ * a revealed bar floats over the windows without moving them. It slides in and out with the
+ * `layersIn`/`layersOut` animations (style `fade` fades instead).
  */
 class Bar(private val desktop: Desktop) {
     private val ctx: Context = desktop.context.createDisplayContext(desktop.display)
@@ -53,8 +69,15 @@ class Bar(private val desktop: Desktop) {
     private val insetsOwner = Binder()
     var config = BarConfig()
         private set
-    var reservedTop = desktop.dp(config.heightDp.toFloat())
+    /** The bar's height in pixels, whether it shows or not. */
+    var heightPx = desktop.dp(config.heightDp.toFloat())
         private set
+    private val vis = BarVisibility(config.autohide, config.autohideDelayMs)
+    /** The strip the bar keeps out of the work area: its height while it reserves, else 0. */
+    val reservedTop: Int get() = if (vis.reserves) heightPx else 0
+    private var reportedTop = reservedTop
+    var anims = AnimationConfig()
+    var animationsEnabled = true
     private var names: Map<Int, String> = emptyMap()
     private var state = ShellState.EMPTY
 
@@ -66,6 +89,37 @@ class Bar(private val desktop: Desktop) {
     /** Lua modules' views by name; their text comes from [setModuleText]. */
     private val custom = HashMap<String, TextView>()
     private var shown = false
+    /** The content is on screen or sliding in; false while it slides out or is gone. */
+    private var onScreen = vis.visible
+    private var slidingOut = false
+    private var animator: ValueAnimator? = null
+    private var timerGen = 0
+    private val hideTimer = Runnable { if (vis.expire(timerGen)) sync() }
+
+    /** The bar's window: [root] at the top, clipped to a thin strip while hidden. */
+    private val frame = object : FrameLayout(ctx) {
+        override fun dispatchHoverEvent(ev: MotionEvent): Boolean {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER -> pointer(true)
+                MotionEvent.ACTION_HOVER_MOVE -> if (!vis.pointerInside) pointer(true)
+                MotionEvent.ACTION_HOVER_EXIT -> pointer(false)
+            }
+            return super.dispatchHoverEvent(ev)
+        }
+
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN &&
+                !ev.isFromSource(InputDevice.SOURCE_MOUSE)) {
+                val wasVisible = vis.visible
+                schedule(vis.touched())
+                if (!wasVisible) {
+                    sync()
+                    return true // the touch only reveals the bar
+                }
+            }
+            return super.dispatchTouchEvent(ev)
+        }
+    }
 
     init {
         root.orientation = LinearLayout.HORIZONTAL
@@ -95,25 +149,176 @@ class Bar(private val desktop: Desktop) {
                 false
             }
         }
+        frame.addView(root, FrameLayout.LayoutParams(MATCH_PARENT, heightPx, Gravity.TOP))
+        if (!onScreen) root.translationY = -heightPx.toFloat()
         layoutModules()
     }
 
     /**
      * Takes the bar's configuration from init.lua and [workspaceNames] (workspace rules'
-     * names); returns true when its height changed (the reserved strip must follow).
+     * names); a new height or auto-hide setting moves the reserved strip
+     * ([Desktop.barReserved]).
      */
-    fun configure(cfg: BarConfig, workspaceNames: Map<Int, String>): Boolean {
+    fun configure(cfg: BarConfig, workspaceNames: Map<Int, String>) {
         names = workspaceNames
+        vis.configure(cfg.autohide, cfg.autohideDelayMs)
         if (cfg == config) {
             update(state)
-            return false
+            sync()
+            return
         }
         val heightChanged = cfg.heightDp != config.heightDp
         config = cfg
-        reservedTop = desktop.dp(cfg.heightDp.toFloat())
+        heightPx = desktop.dp(cfg.heightDp.toFloat())
+        if (heightChanged) {
+            root.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, heightPx, Gravity.TOP)
+            if (!onScreen) root.translationY = -heightPx.toFloat()
+        }
         layoutModules()
-        if (shown && heightChanged) wm.updateViewLayout(root, params())
-        return heightChanged
+        sync()
+    }
+
+    /**
+     * The `bar` dispatcher: `show`, `hide`, `toggle`, `reveal` (an auto-hiding bar for a
+     * while), `reload` (the bar re-created from the configuration in force, as a restarted
+     * waybar: its views, its Lua modules and its configured visibility).
+     */
+    fun dispatch(action: String) {
+        if (action == "reload") {
+            reload()
+            return
+        }
+        try {
+            schedule(vis.dispatch(action))
+        } catch (e: IllegalArgumentException) {
+            Log.w(Desktop.TAG, "bar: ${e.message}")
+            return
+        }
+        sync()
+    }
+
+    private fun reload() {
+        animator?.cancel()
+        desktop.handler.removeCallbacks(hideTimer)
+        if (shown) wm.removeViewImmediate(frame)
+        shown = false
+        vis.reset()
+        onScreen = vis.visible
+        slidingOut = false
+        root.alpha = 1f
+        root.translationY = if (onScreen) 0f else -heightPx.toFloat()
+        layoutModules()
+        desktop.lua.restartModules()
+        show()
+        reportReserved()
+        Log.i(Desktop.TAG, "bar reloaded")
+    }
+
+    private fun pointer(inside: Boolean) {
+        val wasVisible = vis.visible
+        schedule(if (inside) vis.pointerEntered() else vis.pointerLeft())
+        if (vis.visible != wasVisible) sync()
+    }
+
+    /** Arms the hide timer for [delayMs], or leaves it when null. */
+    private fun schedule(delayMs: Long?) {
+        delayMs ?: return
+        timerGen = vis.generation
+        desktop.handler.removeCallbacks(hideTimer)
+        desktop.handler.postDelayed(hideTimer, delayMs)
+    }
+
+    /** Brings the window, the slide and the reserved strip in line with [vis]. */
+    private fun sync() {
+        if (shown) {
+            val want = vis.visible
+            if (want != onScreen) {
+                onScreen = want
+                slide(want)
+            } else {
+                wm.updateViewLayout(frame, params())
+            }
+        }
+        reportReserved()
+    }
+
+    /**
+     * Tells hyprtile about a new reserved strip. A strip given back waits for the window's next
+     * layout: WindowManager keeps freeform windows below the insets the bar still provides
+     * (Task.computeFreeformBounds), so tiles laid out before the window dropped them would be
+     * pushed down by the old strip and stay there.
+     */
+    private fun reportReserved() {
+        val top = reservedTop
+        if (top == reportedTop) return
+        if (top > reportedTop || !shown) {
+            publishReserved()
+            return
+        }
+        val observer = frame.viewTreeObserver
+        observer.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                frame.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                publishReserved()
+            }
+        })
+        frame.requestLayout()
+    }
+
+    private fun publishReserved() {
+        val top = reservedTop
+        if (top == reportedTop) return
+        reportedTop = top
+        desktop.barReserved()
+    }
+
+    /** Slides (or fades) the content in or out with the layersIn/layersOut animation. */
+    private fun slide(inward: Boolean) {
+        animator?.cancel()
+        val spec = anims.resolve(if (inward) "layersIn" else "layersOut")
+        val fade = spec.style.trim().startsWith("fade")
+        val duration = if (animationsEnabled) spec.durationMs else 0L
+        val curve = anims.curveNamed(spec.curve)
+        val h = heightPx.toFloat()
+        slidingOut = !inward
+        // The window takes the bar's height before the content comes in, and keeps it until
+        // the content is out.
+        wm.updateViewLayout(frame, params())
+        if (fade) {
+            root.translationY = 0f
+            if (inward && root.alpha >= 1f) root.alpha = 0f
+        } else {
+            root.alpha = 1f
+        }
+        val fromT = root.translationY
+        val toT = if (inward) 0f else -h
+        val fromA = root.alpha
+        val toA = if (inward) 1f else 0f
+        val a = ValueAnimator.ofFloat(0f, 1f)
+        a.duration = duration
+        a.interpolator = android.animation.TimeInterpolator { curve.value(it) }
+        a.addUpdateListener {
+            val f = it.animatedValue as Float
+            if (fade) root.alpha = fromA + (toA - fromA) * f
+            else root.translationY = fromT + (toT - fromT) * f
+        }
+        a.addListener(object : AnimatorListenerAdapter() {
+            private var cancelled = false
+            override fun onAnimationCancel(animation: Animator) {
+                cancelled = true
+            }
+
+            override fun onAnimationEnd(animation: Animator) {
+                if (animator === animation) animator = null
+                if (cancelled || inward) return
+                slidingOut = false
+                root.translationY = -h
+                root.alpha = 1f
+                if (shown) wm.updateViewLayout(frame, params())
+            }
+        })
+        animator = a
+        a.start()
     }
 
     /** The text of the Lua module [name]. */
@@ -186,13 +391,17 @@ class Bar(private val desktop: Desktop) {
     fun show() {
         if (shown) return
         shown = true
-        wm.addView(root, params())
+        wm.addView(frame, params())
     }
 
     private fun params(): WindowManager.LayoutParams {
+        val full = onScreen || slidingOut
+        val touchable = full || vis.edgeStrip
         val lp = WindowManager.LayoutParams(
-            MATCH_PARENT, reservedTop, TYPE_STATUS_BAR_ADDITIONAL,
-            FLAG_NOT_FOCUSABLE or FLAG_LAYOUT_IN_SCREEN or FLAG_SPLIT_TOUCH,
+            MATCH_PARENT, if (full) heightPx else maxOf(2, desktop.dp(EDGE_DP)),
+            TYPE_STATUS_BAR_ADDITIONAL,
+            FLAG_NOT_FOCUSABLE or FLAG_LAYOUT_IN_SCREEN or FLAG_SPLIT_TOUCH or
+                (if (touchable) 0 else FLAG_NOT_TOUCHABLE),
             PixelFormat.TRANSLUCENT,
         )
         lp.gravity = Gravity.TOP
@@ -200,7 +409,9 @@ class Bar(private val desktop: Desktop) {
         lp.setFitInsetsTypes(0)
         lp.layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         lp.setTrustedOverlay()
-        val size = Insets.of(0, reservedTop, 0, 0)
+        // WindowManager refuses a different number of inset providers after the window is
+        // added (relayoutWindow), so a bar that gives its strip back keeps them at size 0.
+        val size = if (vis.reserves) Insets.of(0, heightPx, 0, 0) else Insets.NONE
         lp.providedInsets = arrayOf(
             InsetsFrameProvider(insetsOwner, 0, WindowInsets.Type.statusBars()).setInsetsSize(size),
             InsetsFrameProvider(insetsOwner, 0, WindowInsets.Type.tappableElement())
@@ -308,6 +519,8 @@ class Bar(private val desktop: Desktop) {
 
     companion object {
         const val HEIGHT_DP = 30f
+        /** The strip along the top edge an auto-hiding bar keeps for the pointer. */
+        const val EDGE_DP = 2f
         val BG = Color.parseColor("#E61E1E2E")
         val BG_SOLID = Color.parseColor("#1E1E2E")
         val FG = Color.parseColor("#CDD6F4")

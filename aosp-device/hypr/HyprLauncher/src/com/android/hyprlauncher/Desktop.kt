@@ -13,6 +13,7 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Display
 import com.android.hyprlua.BarConfig
+import com.android.hyprtile.AnimationConfig
 import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
 import com.android.hyprtile.defaultBinds
@@ -70,6 +71,7 @@ class Desktop private constructor(context: Context) {
                     "launcher" -> launcher.toggle()
                     "overview", "hyprexpo:expo" -> overview.toggle()
                     "lua" -> lua.callBind(arg)
+                    "bar" -> bar.dispatch(arg.trim())
                     "reload" -> lua.reloadNow()
                     "wallpaper" -> wallpapers.dispatch(arg)
                 }
@@ -149,13 +151,23 @@ class Desktop private constructor(context: Context) {
         lua.onShellAttached()
     }
 
-    /** The bar's part of init.lua; a new height moves the reserved strip and the messages. */
+    /** The bar's part of init.lua, with the shell's animations (the bar slides with `layers`). */
     fun applyBar(cfg: BarConfig, workspaceNames: Map<Int, String>) {
-        if (bar.configure(cfg, workspaceNames)) {
-            val top = bar.reservedTop
-            notifier.setTop(top)
-            shellCall { it.setReserved(Display.DEFAULT_DISPLAY, top, 0) }
+        lua.current?.wire?.let { w ->
+            var a = AnimationConfig()
+            for (line in w.lists["bezier"].orEmpty()) a = runCatching { a.withBezier(line) }.getOrDefault(a)
+            for (line in w.lists["animation"].orEmpty()) a = runCatching { a.withAnimation(line) }.getOrDefault(a)
+            bar.anims = a
+            bar.animationsEnabled = w.values["animations"] != "false"
         }
+        bar.configure(cfg, workspaceNames)
+    }
+
+    /** The bar's strip changed (height, hidden, shown): it moves the tiles and the messages. */
+    fun barReserved() {
+        val top = bar.reservedTop
+        notifier.setTop(top)
+        shellCall { it.setReserved(Display.DEFAULT_DISPLAY, top, 0) }
     }
 
     /**

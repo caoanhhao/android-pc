@@ -7,6 +7,7 @@ import com.android.hyprtile.MouseInput
 import com.android.hyprtile.defaultMouseBinds
 import com.android.hyprtile.CaptionMode
 import com.android.hyprtile.AltTabMode
+import com.android.hyprtile.BarVisibility
 import com.android.hyprtile.DISPATCHERS
 import com.android.hyprtile.parsePin
 import com.android.hyprtile.clampZoom
@@ -73,6 +74,10 @@ data class BarConfig(
     val foreground: Int = 0xFFCDD6F4.toInt(),
     val accent: Int = 0xFF33CCFF.toInt(),
     val modules: Map<String, BarModule> = emptyMap(),
+    /** Hidden until the pointer reaches the top edge (Phase E7). */
+    val autohide: Boolean = false,
+    /** How long an auto-hiding bar stays after the pointer left it, ms. */
+    val autohideDelayMs: Long = 500,
 )
 
 /** What a configuration produces: the shell's part, the bar's part, and the warnings. */
@@ -382,6 +387,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "background" -> b.copy(background = color(k, v))
                 "foreground" -> b.copy(foreground = color(k, v))
                 "accent" -> b.copy(accent = color(k, v))
+                "autohide" -> b.copy(autohide = v.toBooleanStrictOrNull() ?: fail("bar autohide is true or false"))
+                "autohide_delay" -> b.copy(autohideDelayMs = v.toDoubleOrNull()?.toLong()?.takeIf { it in 0..60_000 }
+                    ?: fail("bar autohide_delay must be 0..60000 (ms)"))
                 else -> fail("unknown bar option $k")
             }
         }
@@ -715,6 +723,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "exec" -> if (a.isEmpty()) "exec needs a package name" else null
                 "execr" -> if (a.isEmpty()) "execr needs a shell command" else null
                 "togglespecialworkspace" -> if (a.contains(' ')) "bad special workspace name '$a'" else null
+                "bar" -> if (a !in BarVisibility.ACTIONS) "bar takes ${BarVisibility.ACTIONS.joinToString()}" else null
                 "focuswindow", "swapwindow" -> runCatching { WindowSelector.parse(a) }.exceptionOrNull()?.message
                 "cyclenext", "cycleprev" ->
                     if (CycleOptions.parse(a) == null) "$dispatcher takes prev, tiled, floating, hist, visible" else null

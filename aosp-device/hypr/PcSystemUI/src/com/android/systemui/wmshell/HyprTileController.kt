@@ -785,8 +785,8 @@ class HyprTileController(
             // SystemUI-side system actions (E9): clipboard, translate, screenshot, lock, users.
             in HyprSystemActions.NAMES -> return HyprSystemActions.dispatch(name, arg)
             "zoom" -> return zoom.dispatch(arg)
-            // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
-            "launcher", "overview", "hyprexpo:expo", "lua" ->
+            // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions, the bar).
+            "launcher", "overview", "hyprexpo:expo", "lua", "bar" ->
                 return launcherDispatch?.invoke(name, arg) ?: false
             // Host-only functions (E11): system keys, display modes; reload and wallpaper are
             // HyprLauncher's.

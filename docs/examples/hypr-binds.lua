@@ -3,7 +3,7 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (bar and panel widgets) are left out; see docs/hypr-lua.md for what the
+-- (panel widgets) are left out; see docs/hypr-lua.md for what the
 -- dispatchers can do. Keys the host keeps for itself under Waydroid (ALT + TAB, ALT + F2/F3/
 -- F11/F12, CTRL + ALT + P) never reach Android there: ALT + Tab (the switcher, which also does
 -- the host's SUPER + TAB) is for the real PC and works in Waydroid only with injected keys.
@@ -57,6 +57,16 @@ hl.bind(mainMod .. " + L", hl.dsp.notifications())
 hl.bind(mainMod .. " + R", hl.dsp.quick_settings())
 -- The host opens its app launcher on a SUPER tap; D stays the launcher here.
 hl.bind(mainMod .. " + D", hl.dsp.launcher())
+
+------------------------
+---- BAR ---------------
+------------------------
+
+-- The host's SUPER + B (waybar's SIGUSR1) and SUPER + SHIFT + B (waybar restarted). Hiding
+-- the bar gives its strip back to the windows. For a bar that hides by itself and comes back
+-- when the pointer reaches the top edge: hl.bar({ autohide = true }).
+hl.bind(mainMod .. " + B", hl.dsp.bar.toggle())
+hl.bind(mainMod .. " + SHIFT + B", hl.dsp.bar.reload())
 
 ------------------------
 ---- FOCUS, MOVE, SIZE -

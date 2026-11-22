@@ -216,6 +216,10 @@ data class AnimationConfig(
             "workspaces" to "global",
             "workspacesIn" to "workspaces",
             "workspacesOut" to "workspaces",
+            // The bar (Phase E7): Hyprland animates layer surfaces (waybar) with these.
+            "layers" to "global",
+            "layersIn" to "layers",
+            "layersOut" to "layers",
         )
         val ANIMATIONS: Set<String> = PARENT.keys + "global"
 
@@ -240,7 +244,8 @@ data class AnimationConfig(
 
         /**
          * Hyprland's example configuration, except workspaces: a 250 ms easeOutQuint slide
-         * (Hyprland's own default style) instead of its almostLinear fade.
+         * (Hyprland's own default style) instead of its almostLinear fade, and layers (the bar):
+         * a slide instead of a fade.
          */
         val DEFAULT_ANIMATIONS: Map<String, AnimSpec> = mapOf(
             "global" to AnimSpec(true, 10f, "default"),
@@ -252,6 +257,9 @@ data class AnimationConfig(
             "fadeOut" to AnimSpec(true, 1.46f, "almostLinear"),
             "fade" to AnimSpec(true, 3.03f, "quick"),
             "workspaces" to AnimSpec(true, 2.5f, "easeOutQuint", "slide"),
+            "layers" to AnimSpec(true, 3.81f, "easeOutQuint", "slide"),
+            "layersIn" to AnimSpec(true, 4f, "easeOutQuint"),
+            "layersOut" to AnimSpec(true, 1.5f, "linear"),
         )
     }
 }

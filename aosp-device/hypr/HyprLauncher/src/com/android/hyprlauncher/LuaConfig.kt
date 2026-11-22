@@ -204,6 +204,11 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         }
     }
 
+    /** The bar was re-created (`bar reload`): its Lua modules start over. */
+    fun restartModules() {
+        lua.post { current?.let { startModules(it) } }
+    }
+
     /** A click on a Lua bar module. */
     fun click(m: BarModule) {
         val (name, arg) = m.click ?: return

@@ -1675,6 +1675,81 @@ the mode switched with a test file required from init.lua (helpers in `out/hypr-
 | `alt_tab = "bind"` | every Tab while ALT is held runs the example's `ALT + Tab` bind (`focuscurrentorlast`) |
 | `alt_tab = "overview"`, `"off"` | the overview on the next window, focused on release; nothing |
 
+## Bar visibility (E7)
+
+Phase E7 (PLAN.md, "Phase E"): hide, show, toggle and reload the bar, and an auto-hiding bar,
+as waybar's `SIGUSR1`/`SIGUSR2` and its auto-hide patches.
+
+### Decisions
+
+- **Dispatchers.** `bar show|hide|toggle|reveal|reload` (Lua `hl.dsp.bar.show()`, ...). The
+  launcher runs them (`IHyprShellListener.onDispatch`, as `launcher` and `lua`). There is no
+  "build bar": a new configuration already rebuilds it.
+- **Pinned and revealed.** `hyprtile`'s `BarVisibility` holds the state, plain Kotlin with host
+  tests. show/hide/toggle *pin* or *unpin* the bar. A pinned bar shows and reserves its strip
+  (the insets it provides and hyprtile's `setReserved` exclusive zone). An unpinned bar gives
+  the strip back, so the work area grows and the tiles re-lay out.
+- **Auto-hide.** `hl.bar({ autohide = true, autohide_delay = 500 })` (ms, 0..60000, default
+  500) starts the bar unpinned. The bar window then stays as a 2 dp strip at the top edge.
+  When the pointer reaches the strip the bar is *revealed*: it slides in over the windows,
+  without reserving anything, so nothing re-lays out under the pointer (waybar's auto-hide
+  does the same). It goes `autohide_delay` ms after the pointer leaves it. Pinning an
+  auto-hiding bar (`ALT + B`) makes it reserve its strip until it is toggled again.
+- **Touch.** A tap on the strip reveals the bar for 3 s (or `autohide_delay`, if that is
+  longer); taps on the revealed bar keep it out. A swipe down from the top edge stays D6's
+  `gesture:edge_top` (notifications): two gestures on one edge would fight, and the strip is
+  only 2 dp. Users who want the swipe to reveal the bar bind
+  `hl.bind("gesture:edge_top", hl.dsp.bar.reveal())`; `bar reveal` is the same reveal.
+- **A new configuration** keeps the user's choice (a bar hidden with `ALT + B` stays hidden
+  after a config reload) unless `autohide` changed: then the bar goes back to the configured
+  state. **`bar reload`** re-creates the window, its views and its Lua modules (`hl.bar_module`
+  timers and callbacks start again) from the configuration in force, without running init.lua
+  again, and goes back to the configured state.
+- **Animation.** The bar uses Hyprland's `layers`, `layersIn` and `layersOut` nodes and the
+  configured beziers: by default it slides in with easeOutQuint in 400 ms (speed 4) and out
+  linearly in 150 ms (speed 1.5). Style `fade` fades instead of sliding; `animations { enabled = false }`
+  shows and hides at once.
+- **Binds** as the host's waybar binds: `ALT + B` toggles, `ALT + SHIFT + B` reloads
+  (`docs/examples/hypr-binds.lua`, the BAR section).
+
+### Checked on Waydroid (2026-11-22)
+
+Test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`), PcSystemUI and HyprLauncher from the
+working tree in the overlay, the BAR section of `docs/examples/hypr-binds.lua` in binds.lua,
+three tiled windows. Keys by `input keycombination`; hover by a throwaway `injectInputEvent`
+tool (`app_process`, mouse `HOVER_MOVE`; the `wl_pointer_events` pipe moves Waydroid's cursor
+but dispatches no hover to windows); window frames and task bounds from `dumpsys`.
+
+| Check | Result |
+|---|---|
+| `ALT + B` | bar slides out, its window shrinks to 2 px and provides no insets; tiles go from top 45 to 12 (`bar reserves top=0`) |
+| `ALT + B` again | bar back, tiles at 45 again |
+| `ALT + B`, then `ALT + SHIFT + B` | `bar reloaded`: back in its configured (shown) state, strip reserved again |
+| `autohide = true` saved | 2 px strip, tiles at 12 |
+| Pointer to y = 1 | bar slides in over the windows; tiles stay at 12 (no re-layout) |
+| Pointer on the bar's buttons | stays out |
+| Pointer leaves | strip again 669 ms later (500 ms delay, 150 ms slide, polling) |
+| Tap on the strip | bar out for 3 s (3189 ms until the strip) |
+| Swipe down from the top edge | the notification shade (D6's `edge_top`), not the bar |
+| `ALT + B` with auto-hide | pinned: tiles at 45, bar stays when the pointer leaves; again: strip, tiles at 12 |
+
+Two bugs were found on the device and fixed:
+
+- WindowManager refuses a different number of inset providers after a window is added
+  (`relayoutWindow`), and then ignores the whole new layout: the hidden bar kept its 33 px
+  frame and insets. The bar now always declares both providers and sets their size to 0.
+- WindowManager keeps freeform windows below the stable insets (`Task.computeFreeformBounds`
+  offsets them down). Tiles laid out before the bar's window dropped its insets were pushed
+  21 px down, past the bottom of the screen. A strip given back now reaches hyprtile only after
+  the bar window's next layout (an `OnGlobalLayoutListener`).
+
+Also found: a Lua file written to `/data/media/0/...` through `waydroid shell` is not seen by
+the launcher while FUSE has it cached (see "Waydroid notes"). The user's binds.lua (user's data)
+has the BAR section (written with owner and mode kept, backup
+`/data/local/tmp/binds.lua.before-e7`); it loads once the user unlocks. Not checked: the slide
+itself on a screenshot (`screencap` is slower than the 400 ms slide-in), a fade style, a second
+display.
+
 ## Mouse binds (E6)
 
 Phase E6 (PLAN.md, "Phase E"): Hyprland's mouse binds. `mouse:272`..`mouse:276` (left, right,
@@ -1990,7 +2065,10 @@ Collected from D1-D7 (details in each sub-phase's section):
   place of Cuttlefish (`tools/waydroid/container-guard.sh check` first).
 - init.lua lives in the container's shared storage (`/sdcard/Documents/hypr/`); write it with
   `cat init.lua | sudo waydroid shell -- sh -c 'cat > /sdcard/Documents/hypr/init.lua'`
-  (redirecting the file into `waydroid shell` makes it root-owned).
+  (redirecting the file into `waydroid shell` makes it root-owned). Write through
+  `/sdcard` (`/storage/emulated/0`), never `/data/media/0`: a write to the lower directory
+  bypasses FUSE, and the launcher keeps reading the old content from FUSE's cache, even after
+  a restart (seen in E7: 5548 bytes through `/storage`, 5961 in `/data/media`).
 - `waydroid shell` (lxc-attach) makes its stdout and stderr root-owned when they are files:
   pipe its output (`... </dev/null 2>&1 | cat`) when a tool captures it to a file.
 - The host's Hyprland tiles the Waydroid window too; move it alone onto a workspace

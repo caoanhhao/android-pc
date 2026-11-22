@@ -168,6 +168,7 @@ class HyprLuaTest {
             hl.animation("workspaces", { speed = 5, curve = "old", style = "slidevert" })
             hl.animation({ leaf = "fadeOut", enabled = false })
             hl.animation({ leaf = "layers", speed = 3, bezier = "snappy" })
+            hl.animation({ leaf = "fadeLayers", speed = 3, bezier = "snappy" })
         """)
         var a = AnimationConfig()
         c.wire.lists.getValue("bezier").forEach { a = a.withBezier(it) }
@@ -179,7 +180,8 @@ class HyprLuaTest {
         assertEquals("slidevert", a.resolve("workspacesIn").style)
         assertEquals("old", a.resolve("workspacesOut").curve)
         assertFalse(a.resolve("fadeOut").enabled)
-        assertTrue(c.warnings.any { "layers" in it })
+        assertEquals(3f, a.resolve("layers").speed)
+        assertTrue(c.warnings.any { "fadeLayers" in it })
         assertTrue(error("hl.animation({ leaf = 'windows', speed = 3, bezier = 'nope' })").contains("unknown curve nope"))
         assertTrue(error("hl.animation({ leaf = 'wobble', speed = 3 })").contains("unknown animation wobble"))
         assertTrue(error("hl.animation({ leaf = 'windowsIn', speed = 3, style = 'spin' })").contains("windowsIn"))
@@ -379,6 +381,25 @@ class HyprLuaTest {
         assertEquals("hi 2", lua.call(m.textFn!!))
         assertTrue(error("hl.bar({ modules_left = { 'nope' } })").contains("unknown module nope"))
         assertTrue(error("hl.bar({ clock_format = 'HH:mm q' })").contains("clock_format"))
+    }
+
+    @Test
+    fun barAutohideAndDispatchers() {
+        val c = load("""
+            hl.bar({ autohide = true, autohide_delay = 800 })
+            hl.bind("ALT + B", hl.dsp.bar.toggle())
+            hl.bind("ALT + SHIFT + B", hl.dsp.bar.reload())
+            hl.bind("gesture:edge_top", hl.dsp.bar.reveal())
+        """)
+        assertTrue(c.bar.autohide)
+        assertEquals(800L, c.bar.autohideDelayMs)
+        assertTrue(Bind(setOf(Mod.ALT), "B", "bar", "toggle") in binds(c))
+        assertTrue(Bind(setOf(Mod.ALT, Mod.SHIFT), "B", "bar", "reload") in binds(c))
+        assertFalse(load("hl.bar({ height = 30 })").bar.autohide)
+        assertTrue(error("hl.bar({ autohide = 'yes' })").contains("autohide is true or false"))
+        assertTrue(error("hl.bar({ autohide_delay = -1 })").contains("autohide_delay"))
+        assertTrue(error("hl.bind('ALT + B', hl.dsp.raw('bar', 'sideways'))").contains("bar takes"))
+        assertTrue(error("hl.bind('ALT + B', hl.dsp.bar.build())").contains("not supported"))
     }
 
     @Test

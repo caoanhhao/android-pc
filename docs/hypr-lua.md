@@ -115,16 +115,19 @@ hl.animation("workspaces", { speed = 5, curve = "snappy", style = "slidevert" })
 - Leaves played here, in Hyprland's tree (a leaf not set takes its parent's settings, an empty
   style its parent's style): `global` > `windows` > `windowsIn`, `windowsOut`, `windowsMove`;
   `global` > `fade` > `fadeIn`, `fadeOut`, `fadeSwitch`; `global` > `border`; `global` >
-  `workspaces` > `workspacesIn`, `workspacesOut`. Other Hyprland leaves (`layers`, `fadeLayers*`,
+  `workspaces` > `workspacesIn`, `workspacesOut`; `global` > `layers` > `layersIn`,
+  `layersOut` (the bar sliding in and out). Other Hyprland leaves (`fadeLayers*`,
   `specialWorkspace*`, `zoomFactor`, ...) warn.
 - Window styles: `popin N%`, `slide [left|right|top|bottom]`, `fade`. Workspace styles:
-  `slide`, `slidevert`, `fade`, `slidefade N%`, `slidefadevert N%`.
+  `slide`, `slidevert`, `fade`, `slidefade N%`, `slidefadevert N%`. Layers (the bar): `fade`
+  fades, anything else slides from the top.
 
 Defaults (Hyprland's example configuration, but a slide for workspaces):
 `global 10 default`, `border 5.39 easeOutQuint`, `windows 4.79 easeOutQuint`,
 `windowsIn 4.1 easeOutQuint popin 87%`, `windowsOut 1.49 linear popin 87%`,
 `fadeIn 1.73 almostLinear`, `fadeOut 1.46 almostLinear`, `fade 3.03 quick`,
-`workspaces 2.5 easeOutQuint slide`.
+`workspaces 2.5 easeOutQuint slide`, `layers 3.81 easeOutQuint slide`, `layersIn 4
+easeOutQuint`, `layersOut 1.5 linear` (Hyprland's example fades layers; the bar slides here).
 
 ## Binds
 
@@ -338,11 +341,12 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + wheel down / up` | next / previous workspace (E6) |
 | `ALT + Tab` | the switcher (`shell.alt_tab`, E4): tapped, the window focused before (the host's `SUPER + TAB`); held, walk the focus history, release to switch. The file's `ALT + Tab` bind is what `alt_tab = "bind"` would run. Not under Waydroid, where the host keeps `ALT + TAB` |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
+| `ALT + B`, `ALT + SHIFT + B` | hide/show the bar, re-create it (Phase E7) |
 | `ALT + S`, `ALT + CTRL + S` | the special workspace over the current one, toggled; the focused window into it (again: back out; Phase E5) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
 Left out, with no counterpart here: screenshots and screen
-recording, the bar and panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
+recording, panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
 moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there.
 With the later steps' binds (E1's pin binds among them) the user's copy loaded with 81 binds on
 Waydroid (2026-11-22; the only warnings: E10's zoom binds, `repeating` ignored). Before them it
@@ -435,6 +439,9 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
 | `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |
 | `hl.dsp.quick_settings()` | `quicksettings` | SystemUI's quick settings |
+| `hl.dsp.bar.toggle()`, `.show()`, `.hide()` | `bar toggle\|show\|hide` | the bar; hidden, it gives its strip back to the windows (waybar's `SIGUSR1`) |
+| `hl.dsp.bar.reveal()` | `bar reveal` | an auto-hiding bar comes out for 3 s (or `autohide_delay`, if longer) |
+| `hl.dsp.bar.reload()` | `bar reload` | re-creates the bar from the configuration in force (its views, Lua modules and configured visibility), without running init.lua again |
 | `hl.dsp.zoom({ delta = 0.5 })` | `zoom +0.5` | zoom the whole screen around the pointer by that much (negative: out), between 1 and 8 (Phase E10, ours: Hyprland zooms with `cursor:zoom_factor`) |
 | `hl.dsp.zoom({ factor = 1 })` | `zoom 1` | set the zoom factor; 1 is no zoom |
 | `hl.dsp.clipboard_history()` | `clipboardhistory` | SystemUI's clipboard history picker (Phase E9, ours): type to filter, Enter pastes, SHIFT + Enter copies, Delete removes; text only, in memory, sensitive clips never kept |
@@ -546,6 +553,8 @@ hl.bar({
     clock_format   = "EEE d MMM  HH:mm",
     height = 30,                       -- dp, 16..64
     background = "rgba(1e1e2ee6)", foreground = "#cdd6f4", accent = "#33ccff",
+    autohide = false,                  -- true: hidden until the pointer reaches the top edge
+    autohide_delay = 500,              -- ms the auto-hiding bar stays after the pointer left
 })
 
 hl.bar_module("battery", {
@@ -562,6 +571,19 @@ names from workspace rules), `title` (the focused window), `windows` (running ap
 click to focus), `notifications` and `quicksettings` (the shade), `tray` (both), `clock`
 (`clock_format` is an Android date pattern: `HH:mm`, `EEE d MMM`, ...). The centre group takes
 the room the others leave. An unknown module name is an error.
+
+Hiding and auto-hide (Phase E7). `hl.dsp.bar.hide()` / `.show()` / `.toggle()` (the
+example binds: `ALT + B`) take the bar away and give its strip back: the windows re-tile
+into the whole display and apps lose the status bar inset. With `autohide = true` the bar
+starts hidden; when the pointer touches the top edge (a 2 dp strip the hidden bar keeps) it
+slides in over the windows, without moving them, and slides out `autohide_delay` ms after
+the pointer left it. A touch on that strip brings it out too, for 3 s. Showing an
+auto-hiding bar with `bar show` (or `toggle`) pins it: it reserves its strip again until
+`bar hide`. The slide follows the `layersIn`/`layersOut` animations. A swipe down from the
+top edge stays `gesture:edge_top` (notifications); to have it bring the bar instead:
+`hl.bind("gesture:edge_top", hl.dsp.bar.reveal())`. `hl.dsp.bar.reload()` (`ALT + SHIFT +
+B`) re-creates the bar as a waybar restart does; a new configuration keeps the user's
+hidden/shown choice unless `autohide` changed.
 
 ## Events
 

@@ -340,6 +340,15 @@ hl.dsp = namespace("hl.dsp", {
     end
     error("hl.dsp.zoom needs delta = or factor = (a number)", 2)
   end,
+  -- The bar (Phase E7; waybar's SIGUSR1 and a restart on the host): hide/show/toggle move the
+  -- work area, reveal shows an auto-hiding bar for a while, reload re-creates it.
+  bar = namespace("hl.dsp.bar", {
+    show = function() return dsp("bar", "show") end,
+    hide = function() return dsp("bar", "hide") end,
+    toggle = function() return dsp("bar", "toggle") end,
+    reveal = function() return dsp("bar", "reveal") end,
+    reload = function() return dsp("bar", "reload") end,
+  }),
   -- What the host's scripts do (Phase E11): the system's own keys and dialogs.
   volume = function(a) return dsp("volume", one_of("hl.dsp.volume", a, { "up", "down", "mute" }, 2)) end,
   brightness = function(a) return dsp("brightness", one_of("hl.dsp.brightness", a, { "up", "down" }, 2)) end,
