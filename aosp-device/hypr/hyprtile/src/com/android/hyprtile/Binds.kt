@@ -128,4 +128,5 @@ val DISPATCHERS = setOf(
     "resizeactive", "launcher", "overview", "hyprexpo:expo", "lua",
     "notifications", "quicksettings",
     "pin", "setfloating", "settiled", "moveactive",
+    "zoom",
 )

@@ -8,6 +8,8 @@ import com.android.hyprtile.defaultMouseBinds
 import com.android.hyprtile.CaptionMode
 import com.android.hyprtile.DISPATCHERS
 import com.android.hyprtile.parsePin
+import com.android.hyprtile.clampZoom
+import com.android.hyprtile.parseZoom
 import com.android.hyprtile.parseWindow
 import com.android.hyprtile.parseXY
 import com.android.hyprtile.DecorationConfig
@@ -545,6 +547,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.pass_mouse_when_bound" to "pass_mouse_when_bound",
             "binds.scroll_event_delay" to "scroll_event_delay",
             "shell.workspaces" to "workspaces",
+            "cursor.zoom_factor" to "zoom_factor",
         )
 
         private val tile = TileConfig()
@@ -581,6 +584,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.pass_mouse_when_bound" to "false",
             "binds.scroll_event_delay" to "300",
             "shell.workspaces" to "$DEFAULT_WORKSPACES",
+            "cursor.zoom_factor" to "1.0",
         )
 
         private fun intIn(range: IntRange): (String, String) -> String = { v, t ->
@@ -641,6 +645,12 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "shell.caption" to { v, _ -> CaptionMode.parse(v).name.lowercase() },
             "shell.tiling" to boolOpt,
             "shell.touch" to boolOpt,
+            // Hyprland's own zoom (E10): 1 or more; the shell stops at MAX_ZOOM.
+            "cursor.zoom_factor" to { v, t ->
+                val f = v.toFloatOrNull()?.takeIf { t == "number" && it >= 1f }
+                    ?: throw IllegalArgumentException("expected a number of 1 or more, got '$v'")
+                "${clampZoom(f)}"
+            },
             // 0 off, 1 (or true) back to the previous workspace, 2 the previous one on this display.
             "binds.workspace_back_and_forth" to { v, t ->
                 if (t == "boolean") (if (v == "true") "1" else "0") else intIn(0..2)(v, t)
@@ -689,6 +699,7 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
                 "pin" -> if (parsePin(a) == null) "pin takes [toggle|on|off] [taskid:N]" else null
                 "togglefloating", "setfloating", "settiled" ->
                     parseWindow(a).exceptionOrNull()?.message
+                "zoom" -> if (parseZoom(a) == null) "zoom takes +D, -D (a change) or F (a factor)" else null
                 else -> null
             }
         }

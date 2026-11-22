@@ -304,6 +304,19 @@ hl.dsp = namespace("hl.dsp", {
   -- SystemUI's notification shade and quick settings (the touch gestures' top edge).
   notifications = function() return dsp("notifications") end,
   quick_settings = function() return dsp("quicksettings") end,
+  -- Full-screen zoom around the pointer (Phase E10; Hyprland's cursor:zoom_factor):
+  -- { delta = 0.5 } changes the factor, { factor = 1 } sets it (1 is no zoom).
+  zoom = function(t)
+    if type(t) ~= "table" then error("hl.dsp.zoom({ delta = 0.5 } or { factor = 1 })", 2) end
+    if type(t.delta) == "number" then
+      return dsp("zoom", (t.delta >= 0 and "+" or "") .. str(t.delta))
+    end
+    if type(t.factor) == "number" then
+      if t.factor < 1 then error("hl.dsp.zoom: factor is 1 or more", 2) end
+      return dsp("zoom", str(t.factor))
+    end
+    error("hl.dsp.zoom needs delta = or factor = (a number)", 2)
+  end,
   -- Any dispatcher by its Hyprland name: hl.dsp.raw("movefocus", "l").
   raw = function(name, arg) return dsp(tostring(name), arg) end,
   window = window,

@@ -17,7 +17,7 @@ android_library {
     ],
     manifest: "AndroidManifest.xml",
     use_resource_processor: true,
-    resource_dirs: [],
+    resource_dirs: ["res"],
     static_libs: [
         "SystemUI-application",
         "dagger2",
@@ -51,7 +51,8 @@ android_app {
     static_libs: [
         "PcSystemUI-application",
     ],
-    resource_dirs: [],
+    // PcSystemUI-application's res/ again: its manifest (HyprZoomService) needs them here too.
+    resource_dirs: ["res"],
     enable_ksp: true,
 
     use_resource_processor: true,

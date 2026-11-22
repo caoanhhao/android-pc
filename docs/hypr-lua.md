@@ -77,6 +77,7 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `shell.caption` | `"none"`, `"floating"`, `"all"` | `floating` | which windows keep Shell's title bar (close, maximize, drag) |
 | `shell.tiling` | bool | true | false: no tiling, Shell's own desktop windowing |
 | `shell.touch` | bool | true | false: no touch gestures (edge swipes, pinches, the window frame's long-press) |
+| `cursor.zoom_factor` | number, 1 or more | 1.0 | Hyprland's zoom: magnifies the screen around the pointer (Phase E10; above 8 acts as 8). A change applies at once, so the host's `hl.config({ cursor = { zoom_factor = z } })` bind functions work; binds are better off with `hl.dsp.zoom` |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
 `ALT`, `SUPER` (`META`, `WIN`), `CTRL`, `SHIFT`, joined by spaces or `+`.
@@ -253,9 +254,10 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + 1..9`, `+ CTRL + 1..9`, `+ SHIFT + 1..9` | switch workspace, move the window and follow, move it silently |
 | `ALT + Tab` | the window focused before (the host's `SUPER + TAB`; not under Waydroid, where the host keeps `ALT + TAB`) (E3) |
 | `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
+| `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
 Left out, with no counterpart here: the special workspace, pin, screenshots and screen
-recording, the bar and panel widgets, lock and suspend, zoom and wheel binds. The shell's
+recording, the bar and panel widgets, lock and suspend, wheel binds. The shell's
 default `ALT + grave` (overview) moves to `ALT + SHIFT + grave` in this file, as the host puts
 the previous workspace there. It loads with no
 warnings and 67 binds (60 keys and the 7 default gestures) on the host build of hyprlua.
@@ -338,6 +340,8 @@ dispatchers this shell does not have (`hl.dsp.window.pin`, `hl.dsp.workspace.*`,
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
 | `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |
 | `hl.dsp.quick_settings()` | `quicksettings` | SystemUI's quick settings |
+| `hl.dsp.zoom({ delta = 0.5 })` | `zoom +0.5` | zoom the whole screen around the pointer by that much (negative: out), between 1 and 8 (Phase E10, ours: Hyprland zooms with `cursor:zoom_factor`) |
+| `hl.dsp.zoom({ factor = 1 })` | `zoom 1` | set the zoom factor; 1 is no zoom |
 | `hl.dsp.raw(name, arg)` | any of the above | by Hyprland's name: `hl.dsp.raw("movefocus", "l")` |
 | a Lua function | `lua` | runs in the launcher's Lua state |
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HyprZoomService (Phase E10), as listed in accessibility settings. -->
+    <string name="hypr_zoom_service_label" translatable="false">Hypr zoom</string>
+    <string name="hypr_zoom_service_description" translatable="false">Zooms the screen around the pointer for the desktop shell\'s zoom binds. Turned on and off by the shell.</string>
+</resources>

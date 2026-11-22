@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HyprZoomService (Phase E10): full-screen magnification only; no events, gestures or keys. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canControlMagnification="true"
+    android:isAccessibilityTool="true"
+    android:description="@string/hypr_zoom_service_description" />

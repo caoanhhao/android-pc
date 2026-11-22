@@ -3,7 +3,7 @@
 -- Put it next to init.lua (/sdcard/Documents/hypr/binds.lua) and add require("binds") at the
 -- end of init.lua. The host's SUPER binds are on ALT here (main_mod stays ALT: SUPER belongs
 -- to the host's compositor under Waydroid). Host binds with no counterpart in this shell
--- (special workspace, pin, screenshots, bar and panel widgets, lock, zoom, wheel binds) are
+-- (special workspace, pin, screenshots, bar and panel widgets, lock, wheel binds) are
 -- left out; see docs/hypr-lua.md for what the dispatchers can do. Keys the host keeps for
 -- itself under Waydroid (ALT + TAB, ALT + F2/F3/F11/F12, CTRL + ALT + P) never reach Android
 -- there: ALT + Tab (the host's SUPER + TAB) is bound for the real PC and works in Waydroid
@@ -84,3 +84,16 @@ for i = 1, 9 do
     hl.bind(mainMod .. " + CTRL + " .. i, hl.dsp.window.move({ workspace = i }))
     hl.bind(mainMod .. " + SHIFT + " .. i, hl.dsp.window.move({ workspace = i, follow = false }))
 end
+
+------------------------
+---- ZOOM --------------
+------------------------
+
+-- The host's zoom (cursor:zoom_factor, around the pointer): the whole screen is magnified and
+-- follows the pointer. A delta changes the factor, factor = 1 resets it. As on the host,
+-- wheel down zooms in and wheel up zooms out.
+hl.bind(mainMod .. " + SHIFT + equal", hl.dsp.zoom({ delta = 0.5 }), { repeating = true })
+hl.bind(mainMod .. " + SHIFT + minus", hl.dsp.zoom({ delta = -0.5 }), { repeating = true })
+hl.bind(mainMod .. " + SHIFT + mouse_down", hl.dsp.zoom({ delta = 0.2 }))
+hl.bind(mainMod .. " + SHIFT + mouse_up", hl.dsp.zoom({ delta = -0.2 }), { repeating = true })
+hl.bind(mainMod .. " + SHIFT + mouse:274", hl.dsp.zoom({ factor = 1 }))

@@ -131,6 +131,7 @@ class HyprTileController(
             mainExecutor.execute {
                 onConfigChanged?.invoke()
                 mouse.onConfigChanged()
+                zoom.onConfigChanged(value.getString("zoom_factor"))
                 sync()
             }
         }
@@ -169,6 +170,7 @@ class HyprTileController(
     private val touch = HyprTouch(context, inputManager, this, mainExecutor)
     /** Window history and Hyprland's window switching dispatchers (Phase E3). */
     val focus = HyprFocus(context, this, taskOrganizer, transitions, focusTransitionObserver, mainExecutor)
+    private val zoom = HyprZoom(context, inputManager, mainExecutor)
     /** The window a dispatcher acts on instead of the focused one (the touch window menu). */
     private var dispatchTarget: RunningTaskInfo? = null
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
@@ -213,6 +215,7 @@ class HyprTileController(
     }
 
     private fun onInit() {
+        zoom.start()
         if (!userRepositories.isPresent) {
             Log.w(TAG, "desktop mode is off, no tiling")
             return
@@ -688,6 +691,7 @@ class HyprTileController(
             "quicksettings" ->
                 context.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
             "exec" -> exec(arg.trim())
+            "zoom" -> return zoom.dispatch(arg)
             // Run by HyprLauncher (rofi-like launcher, hyprexpo-like overview, Lua functions).
             "launcher", "overview", "hyprexpo:expo", "lua" ->
                 return launcherDispatch?.invoke(name, arg) ?: false

@@ -1302,6 +1302,97 @@ on the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`): the user's data
 | Lua queries | `hl.get_last_window()` is the window focused before; `get_urgent_window()` nil without urgency |
 | Urgency | the notification listener is registered (`dumpsys notification`: `HyprFocus.Urgency`, SYSTEM). Not checked end to end: no app on the test data posts an alerting notification on demand (`cmd notification` posts only as the shell, whose dialog closes when it loses the focus; the test data's Calendar crashed on a provider-made event). The first build crashed SystemUI on a posted notification (the listener used the Service's own `getMainExecutor()`, a null context); fixed |
 
+## Zoom (E10)
+
+Phase E10 (PLAN.md, "Phase E"): the host's zoom binds. The host zooms with Hyprland's
+`cursor:zoom_factor` (its `set_zoom` helper in Lua: `hl.config({ cursor = { zoom_factor = z } })`);
+Hyprland 0.57's Lua API has no zoom dispatcher, so this shell has both:
+
+- **`hl.dsp.zoom({ delta = D })`, `hl.dsp.zoom({ factor = F })`** (ours): the wire dispatcher
+  `zoom` with `+D`/`-D` (a change) or `F` (a factor; `1` and `reset` end the zoom), parsed by
+  `hyprtile`'s `parseZoom` (`Zoom.kt`). The factor stays between 1 and 8 (Android's
+  `MagnificationScaleProvider.MAX_SCALE`) and is rounded to hundredths, so 1.2 + 0.2 is 1.4.
+- **`cursor.zoom_factor`** (Hyprland's own option, 1 or more): applied when it changes, so a
+  host-style `set_zoom` in `init.lua` works too. The first configuration after SystemUI starts
+  only zooms when it asks for more than 1.
+
+The example binds (`docs/examples/hypr-binds.lua`, the host's `SUPER + SHIFT` with
+`main_mod = ALT`):
+
+| Bind | Dispatcher |
+|---|---|
+| `ALT + SHIFT + equal` | `zoom({ delta = 0.5 })` |
+| `ALT + SHIFT + minus` | `zoom({ delta = -0.5 })` |
+| `ALT + SHIFT + wheel down` | `zoom({ delta = 0.2 })` (as on the host: down zooms in) |
+| `ALT + SHIFT + wheel up` | `zoom({ delta = -0.2 })` |
+| `ALT + SHIFT + middle button` | `zoom({ factor = 1 })` |
+
+### How the screen is zoomed
+
+Android's full-screen magnification does the scaling (system_server's
+`FullScreenMagnificationController`, a magnification spec on the display); what had to be
+found is a way for the shell to set its scale and centre without the accessibility settings
+and without the user turning a magnification shortcut on first. Tried and decided:
+
+- `IAccessibilityManager` only has `enableMagnificationAndZoomIn` (one fixed step, no position)
+  and the keyboard handler (`MagnificationKeyHandler`, META + ALT + `=`/`-`) acts only while
+  magnification is already on: neither does a factor or follows the pointer.
+- **An accessibility service with `canControlMagnification`** can call
+  `MagnificationController.setMagnificationConfig(FULLSCREEN, scale, centre)`, and binding one
+  is also what makes AccessibilityManagerService install the magnifier on the displays. Chosen.
+
+`HyprZoomService` (PcSystemUI, `res/xml/hypr_zoom_service.xml`) is that service: only
+`canControlMagnification` and `isAccessibilityTool`, no events, no gestures, no key filtering.
+It runs in SystemUI's process, so `HyprZoom` calls it directly. `HyprZoom` turns it on by
+adding it to the current user's `enabled_accessibility_services` (SystemUI holds
+`WRITE_SECURE_SETTINGS`; the user's own services stay in the list) when the zoom goes above 1,
+and takes it out again a second after the zoom is back at 1 (after the reset animation). With
+no other service AccessibilityManagerService then turns accessibility off again
+(`accessibility_enabled` 0), so apps see accessibility on only while the screen is zoomed. A
+service entry left behind by a SystemUI crash is removed at the next start.
+
+The zoom centres on the pointer the way Hyprland's does: the content under the pointer stays
+under it. Android puts the magnification centre `c` in the middle of the screen, so content at
+`q` shows at `(q - c) * scale + size / 2`; `zoomCentre` solves that for `q = pointer`:
+`c = p - (p - size / 2) / scale` per axis (host tests check the invariant and that the view
+stays on the screen). While zoomed, a gesture monitor (`hypr-zoom`, only while zoomed) follows
+hover and drag events and recentres without animation; factor changes animate. Each zoom from 1
+starts at `InputManager.getCursorPosition` when Android knows the pointer, else at the last
+position seen, else the middle of the screen.
+
+### Checked on Waydroid
+
+On the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`; the user's data is locked after a
+restart), with the PcSystemUI APK in the overlay. Keys by `input keycombination`; hover, wheel
+and button events with modifiers by a small `injectInputEvent` tool (`input` has neither hover
+nor modifiers on mouse events), state from `dumpsys accessibility`:
+
+| Check | Result |
+|---|---|
+| `ALT + SHIFT + equal` | service enabled silently (no dialog, no settings screen), connected 2 ms later; `MagnificationConfig[mode 1, scale 1.5]`; again → 2.0 |
+| Follows the pointer | hover at (100, 100) → centre (879.3, 386.0), at (2400, 1000) → (1646, 686), exactly `zoomCentre`; the magnified view shows the top-left corner when the pointer is there |
+| `ALT + SHIFT + minus` | 2.0 → 1.5 → 1.0: magnification off, the service out of `enabled_accessibility_services` a second later, `accessibility_enabled` back to 0 |
+| Wheel, middle button | `ALT + SHIFT` + wheel down → 1.2, again → 1.4, wheel up → 1.2; middle button → 1.0 (HyprMouse's monitor sees the injected events; real wheel events with modifiers need E6's InputDispatcher patch in libinputflinger) |
+| Rebuilt with rounding | wheel down twice → 1.4 (was 1.4000001), `ALT + SHIFT + equal` → 1.9, middle button → 1.0, `accessibility_enabled` 0 |
+
+### Limits
+
+- **Android's magnification indicators show while zoomed**: SystemUI's `MagnificationImpl` (in
+  this process) draws an orange border round the screen and the floating magnification
+  settings button (capabilities "full screen and window", the default), which Hyprland's zoom
+  does not. Hiding them needs a PcSystemUI binding that replaces `MagnificationImpl` (Dagger,
+  `AccessibilityModule`) or skips its border and button while `HyprZoom` is zoomed; not done.
+- **Key repeat**: binds act on the key gesture's completion, so holding `ALT + SHIFT + equal`
+  zooms one step; `{ repeating = true }` matters only for wheel binds (E6's
+  `binds.scroll_event_delay`).
+- The service is listed in Settings → Accessibility as "Hypr zoom"; turning it on there does
+  nothing by itself. Only the current user is zoomed.
+- Android's own pointer following (`magnificationCursorFollowingMode`) may also move the view
+  on mouse moves. With injected hover events the centre was always `HyprZoom`'s; with the host's
+  real pointer (the Waydroid window on another workspace than the user's) it was not checked.
+  Under Waydroid `getCursorPosition` answered the middle of the screen (injected events do not
+  move Android's pointer), so a zoom from 1 started there and moved with the next hover.
+
 ## As built
 
 | Piece | Where | Process | What it does |
@@ -1312,6 +1403,7 @@ on the test data (`XDG_DATA_HOME=~/.local/share/waydroid-test`): the user's data
 | `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; MOD + mouse binds |
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
+| `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |
 | `hyprtile` | `aosp-device/hypr/hyprtile/` (plain Kotlin, 70 host tests) | (library) | dwindle, master, gaps, rules, binds, gestures, colours, beziers, fuzzy matching |
 | `HyprLauncher` | `aosp-device/hypr/HyprLauncher/` (system_ext, privileged, platform key, overrides Launcher3) | its own | HOME, recents provider (`QUICKSTEP_SERVICE`), bar, app launcher, overview, Alt+Tab, notifications and the error strip |
 | `hyprlua` | `aosp-device/hypr/hyprlua/` (Lua 5.4 from `external/lua`, JNI, 25 host tests) | HyprLauncher | `init.lua` with Hyprland 0.57's Lua API subset → the configuration Bundle; hooks, timers, bar modules |
