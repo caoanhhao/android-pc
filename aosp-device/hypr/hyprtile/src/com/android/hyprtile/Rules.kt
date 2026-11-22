@@ -38,7 +38,9 @@ data class WindowRule(
     val float: Boolean? = null,
     /** Workspace number the window opens on. */
     val workspace: Int? = null,
-    /** With [workspace]: move it there without following it. */
+    /** Special workspace the window opens on (`workspace = "special:name"`), instead of [workspace]. */
+    val special: String? = null,
+    /** With [workspace] or [special]: move it there without following it (not shown). */
     val silent: Boolean = false,
     /** Opacity of the window when focused and when not. */
     val opacityActive: Float? = null,
@@ -66,7 +68,8 @@ data class WindowRule(
         "class" to matchClass,
         "title" to matchTitle,
         "float" to float?.toString(),
-        "workspace" to workspace?.let { if (silent) "$it silent" else "$it" },
+        "workspace" to (special?.let { "special:$it" } ?: workspace?.toString())
+            ?.let { if (silent) "$it silent" else it },
         "opacity" to opacityActive?.let { "$it ${opacityInactive ?: it}" },
     ))
 
@@ -81,7 +84,8 @@ data class WindowRule(
                 matchClass = f["class"],
                 matchTitle = f["title"],
                 float = f["float"]?.let(::parseBoolField),
-                workspace = ws?.get(0)?.toInt(),
+                workspace = ws?.get(0)?.takeIf { specialName(it) == null }?.toInt(),
+                special = ws?.get(0)?.let { specialName(it) },
                 silent = ws?.getOrNull(1) == "silent",
                 opacityActive = opacity?.getOrNull(0),
                 opacityInactive = opacity?.let { it.getOrNull(1) ?: it[0] },
@@ -95,10 +99,11 @@ fun <T> List<WindowRule>.effect(packageName: String?, title: String?, pick: (Win
     lastOrNull { pick(it) != null && it.matches(packageName, title) }?.let(pick)
 
 /**
- * Hyprland's `workspace` rule for one numbered workspace: its own layout and gaps, a name the
- * bar shows, and an app started when it is opened empty (`on_created_empty`).
+ * Hyprland's `workspace` rule for one numbered (or special) workspace: its own layout and gaps,
+ * a name the bar shows, and an app started when it is opened empty (`on_created_empty`).
  */
 data class WorkspaceRule(
+    /** The workspace number; 0 when the rule is for the special workspace [special]. */
     val workspace: Int,
     val name: String? = null,
     val layout: LayoutKind? = null,
@@ -106,9 +111,11 @@ data class WorkspaceRule(
     val gapsOut: Int? = null,
     /** Package started when the workspace becomes active with no window on it. */
     val onCreatedEmpty: String? = null,
+    /** The special workspace (`workspace = "special:name"`) the rule is for (E5). */
+    val special: String? = null,
 ) {
     init {
-        require(workspace >= 1) { "workspace must be 1 or more" }
+        require(workspace >= 1 || (workspace == 0 && special != null)) { "workspace must be 1 or more" }
         require((gapsIn ?: 0) >= 0 && (gapsOut ?: 0) >= 0) { "gaps must not be negative" }
     }
 
@@ -120,7 +127,7 @@ data class WorkspaceRule(
     )
 
     fun encode(): String = encodeFields(listOf(
-        "workspace" to "$workspace",
+        "workspace" to (special?.let { "special:$it" } ?: "$workspace"),
         "name" to name,
         "layout" to layout?.name?.lowercase(),
         "gaps_in" to gapsIn?.toString(),
@@ -131,8 +138,11 @@ data class WorkspaceRule(
     companion object {
         fun decode(line: String): WorkspaceRule {
             val f = decodeFields(line)
+            val ws = requireNotNull(f["workspace"]) { "workspace rule without workspace" }
+            val special = specialName(ws)
             return WorkspaceRule(
-                workspace = requireNotNull(f["workspace"]) { "workspace rule without workspace" }.toInt(),
+                workspace = if (special != null) 0 else ws.toInt(),
+                special = special,
                 name = f["name"],
                 layout = f["layout"]?.let { parseLayout(it) },
                 gapsIn = f["gaps_in"]?.toInt(),

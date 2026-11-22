@@ -29,6 +29,8 @@ data class TileConfig(
     val newIsMaster: Boolean = false,
     /** master:new_on_top: a new stack window goes to the top of the stack. */
     val newOnTop: Boolean = false,
+    /** dwindle/master:special_scale_factor: share of the work area a special workspace tiles in. */
+    val specialScaleFactor: Float = 1f,
     /** Packages that always float (`persist.hypr.float_packages`; Lua has window rules). */
     val floatPackages: Set<String> = emptySet(),
     /** Hyprland's window rules (float, tile, workspace, opacity), later ones win. */
@@ -38,6 +40,7 @@ data class TileConfig(
         require(gapsIn >= 0 && gapsOut >= 0) { "gaps must not be negative" }
         require(defaultSplitRatio in 0.1f..1.9f) { "default_split_ratio must be in 0.1..1.9" }
         require(masterFactor in 0.05f..0.95f) { "mfact must be in 0.05..0.95" }
+        require(specialScaleFactor in 0.1f..1f) { "special_scale_factor must be in 0.1..1" }
         require(forceSplit in 1..2) { "force_split must be 1 or 2" }
     }
 }

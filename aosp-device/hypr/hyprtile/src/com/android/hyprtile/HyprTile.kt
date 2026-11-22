@@ -115,7 +115,9 @@ class HyprTile(config: TileConfig = TileConfig()) {
     fun arrange(workspace: Int, display: Box): Map<Int, Box> {
         val layout = layouts[workspace] ?: return emptyMap()
         val cfg = configOf(workspace)
-        return layout.arrange(display.inset(cfg.reserved), cfg)
+        val area = display.inset(cfg.reserved)
+        // Special workspaces (negative keys, Special.kt) may take a smaller, centred area.
+        return layout.arrange(if (workspace < 0) specialArea(area, cfg.specialScaleFactor) else area, cfg)
     }
 
     /** Hyprland's `resizeactive` for a tiled window: [dx] wider, [dy] taller. */
