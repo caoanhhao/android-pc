@@ -197,8 +197,14 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         val parsed = checked("bind '$keys'") { parseKeys(keys) }
         val (mods, key) = parsed
         MouseInput.parse(key)?.let { return mouseBind(keys, mods, it, dispatcher, arg, mouse, flags) }
-        if (flags.isNotEmpty()) warn("bind '$keys': ${flags.replace(",", ", ")} not supported, ignored")
-        if (TouchGesture.isGestureKey(key)) {
+        val flagSet = flags.split(',').filter { it.isNotEmpty() }.toSet()
+        val gesture = TouchGesture.isGestureKey(key)
+        // `repeating` works on key binds (InputManager sends the key repeats, E13); not on gestures.
+        val supported = if (gesture) emptySet() else setOf("repeating")
+        (flagSet - supported).takeIf { it.isNotEmpty() }?.let {
+            warn("bind '$keys': ${it.joinToString(", ")} not supported, ignored")
+        }
+        if (gesture) {
             if (mods.isNotEmpty()) fail("bind '$keys': gestures take no modifiers")
             val name = checked("bind '$keys'") { TouchGesture.nameOf(key) }
             if (dispatcher == "__drag" || dispatcher == "__resize") fail("bind '$keys': drag and resize are mouse binds")
@@ -213,7 +219,8 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             fail("bind '$keys': drag and resize are mouse binds (mouse:272, mouse:273)")
         }
         checkDispatcher(dispatcher, arg)?.let { fail("bind '$keys': $it") }
-        return addOp(mods to key, Bind(mods, key, dispatcher, arg))
+        val bind = if ("repeating" in flagSet) Bind.repeating(mods, key, dispatcher, arg) else Bind(mods, key, dispatcher, arg)
+        return addOp(mods to key, bind)
     }
 
     private fun mouseBind(keys: String, mods: Set<Mod>, input: MouseInput, dispatcher: String, arg: String,

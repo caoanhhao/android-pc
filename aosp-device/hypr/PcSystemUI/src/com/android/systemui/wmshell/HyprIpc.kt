@@ -618,7 +618,8 @@ class HyprIpc(
         val list = controller.configOverrides.getStringArray("binds") ?: return emptyList()
         return list.mapNotNull { runCatching { parseBind(it) }.getOrNull() }.map {
             val mouse = it.key.startsWith("MOUSE:") && it.dispatcher in setOf("movewindow", "resizewindow")
-            IpcBind(it.mods, it.key, it.dispatcher, it.arg, flags = if (mouse) "m" else "")
+            val flags = (if (mouse) "m" else "") + (if (it.repeating) "e" else "")
+            IpcBind(it.mods, it.baseKey, it.dispatcher, it.arg, flags = flags)
         }
     }
 

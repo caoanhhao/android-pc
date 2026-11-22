@@ -1,6 +1,7 @@
 package com.android.hyprtile
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -18,6 +19,20 @@ class BindsTest {
         assertEquals(emptySet<Mod>(), parseMods(""))
         assertEquals("exec", parseBind("ALT, RETURN, exec, com.termux, extra").dispatcher)
         assertEquals("com.termux, extra", parseBind("ALT, RETURN, exec, com.termux, extra").arg)
+    }
+
+    @Test
+    fun repeatingKeyBindsCarryTheirFlagOnTheKey() {
+        val b = Bind.repeating(setOf(Mod.ALT, Mod.SHIFT), "EQUAL", "zoom", "+0.5")
+        assertEquals("EQUAL", b.baseKey)
+        assertTrue(b.repeating)
+        // As a line of the bind list and back.
+        assertEquals(b, parseBind(b.toString()))
+        assertTrue(parseBind(b.toString()).repeating)
+        val plain = parseBind("ALT, Q, killactive")
+        assertEquals("Q", plain.baseKey)
+        assertFalse(plain.repeating)
+        assertNull(MouseBind.from(b))
     }
 
     @Test(expected = IllegalArgumentException::class)

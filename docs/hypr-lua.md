@@ -158,8 +158,11 @@ hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
   keys, so leave them unbound (E11).
 - A bind on keys that already have one replaces it (the defaults included); `hl.unbind` and a
   disabled bind leave the keys free. At most 256 binds are installed.
-- Options: `description` is kept; `repeating`, `locked`, `release`, `non_consuming`, ... warn
-  (InputManager's key gestures fire once, on release of the trigger).
+- Options: `description` is kept; `repeating = true` (Hyprland's `binde`) fires the bind again
+  at the keyboard's repeat rate (400 ms, then every 50 ms) while the key is held (E13: the shell
+  times it, InputManager reports the release, `tools/patches/aosp17-input-hypr-repeat-binds.patch`); `locked`, `release`,
+  `non_consuming`, ... warn (InputManager's key gestures fire once, on the first press), as
+  `repeating` does on gesture binds.
 - Binds are InputManager custom key gestures (docs/hypr-desktop.md, "Keybinds without a
   framework patch"): keys that a user shortcut or AOSP (all META shortcuts) already
   uses are skipped with a log line in SystemUI (`HyprKeybinds`). `ALT + Tab`, `ALT + SHIFT +
@@ -351,7 +354,8 @@ Left out, with no counterpart here: screenshots and screen
 recording, panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
 moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there.
 With the later steps' binds (E1's pin binds among them) the user's copy loaded with 81 binds on
-Waydroid (2026-11-22; the only warnings: E10's zoom binds, `repeating` ignored). Before them it
+Waydroid (2026-11-22; the only warnings then: E10's zoom binds, `repeating` ignored, which E13
+made work). Before them it
 loaded with no warnings and 67 binds (60 keys and the 7 default gestures) on the host build of
 hyprlua.
 Checked on Waydroid (2026-11-22, user data): all 60 key binds installed, none taken by AOSP;

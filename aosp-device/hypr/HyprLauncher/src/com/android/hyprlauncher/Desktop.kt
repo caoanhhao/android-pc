@@ -178,7 +178,7 @@ class Desktop private constructor(context: Context) {
         val binds = lua.current?.wire?.lists?.get("binds")
             ?.mapNotNull { runCatching { parseBind(it) }.getOrNull() }
             ?: defaultBinds(setOf(Mod.ALT))
-        return binds.lastOrNull { it.key == "TAB" && it.mods == mods }
+        return binds.lastOrNull { it.baseKey == "TAB" && it.mods == mods }
     }
 
     /** Whether the configuration binds `ALT + Tab` or `ALT + SHIFT + Tab` (`shell.alt_tab = "bind"`). */

@@ -4,6 +4,7 @@ import com.android.hyprtile.Mod
 import com.android.hyprtile.androidKeyName
 import com.android.hyprtile.parseBind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,12 +31,17 @@ class ZoomLuaTest {
             hl.bind("ALT + SHIFT + minus", hl.dsp.zoom({ delta = -0.5 }), { repeating = true })
             hl.bind("ALT + SHIFT + 0", hl.dsp.zoom({ factor = 1 }))
         """.trimIndent())
+        // `repeating` works on key binds (E13): no warning, the flag rides on the key.
+        assertTrue(c.warnings.isEmpty())
         val binds = c.wire.lists.getValue("binds").map { parseBind(it) }
-        val zoom = binds.filter { it.dispatcher == "zoom" }.associate { androidKeyName(it.key) to it.arg }
+        val zoom = binds.filter { it.dispatcher == "zoom" }.associate { androidKeyName(it.baseKey) to it.arg }
         assertEquals("+0.5", zoom["EQUALS"])
         assertEquals("-0.5", zoom["MINUS"])
         assertEquals("1", zoom["0"])
-        assertTrue(binds.first { androidKeyName(it.key) == "EQUALS" }.mods == setOf(Mod.ALT, Mod.SHIFT))
+        val plus = binds.first { androidKeyName(it.baseKey) == "EQUALS" }
+        assertTrue(plus.mods == setOf(Mod.ALT, Mod.SHIFT))
+        assertTrue(plus.repeating)
+        assertFalse(binds.first { it.baseKey == "0" && it.dispatcher == "zoom" }.repeating)
     }
 
     @Test

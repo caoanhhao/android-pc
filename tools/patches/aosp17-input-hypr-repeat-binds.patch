@@ -1,0 +1,60 @@
+diff --git a/services/core/java/com/android/server/input/KeyGestureController.java b/services/core/java/com/android/server/input/KeyGestureController.java
+index c332f36e9..eec8fabad 100644
+--- a/services/core/java/com/android/server/input/KeyGestureController.java
++++ b/services/core/java/com/android/server/input/KeyGestureController.java
+@@ -123,6 +123,18 @@ final class KeyGestureController {
+     // 'adb shell setprop log.tag.KeyGestureController DEBUG' (requires restart)
+     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
+ 
++    // android-pc: custom gestures from this type on also report their key's release
++    // (aosp-device/hypr). AOSP's own types are below 100; PcSystemUI's binds start at 0x48590000.
++    private static final int HYPR_PRIVATE_TYPE_MIN = 0x10000;
++    /** android-pc: KeyGestureEvent flag of the release of a private custom gesture's key. */
++    private static final int HYPR_FLAG_KEY_RELEASE = 1 << 17;
++    /** android-pc: held keys (device << 32 | key code) whose press fired a private gesture. */
++    private final java.util.HashMap<Long, Integer> mHyprHeldGestures = new java.util.HashMap<>();
++
++    private static long hyprHeldKey(int deviceId, int keyCode) {
++        return ((long) deviceId << 32) | (keyCode & 0xffffffffL);
++    }
++
+     // Maximum key gesture events that are tracked and will be available in input dump.
+     private static final int MAX_TRACKED_EVENTS = 10;
+     private static final int SHORTCUT_META_MASK =
+@@ -1051,6 +1063,22 @@ final class KeyGestureController {
+         final int deviceId = event.getDeviceId();
+         final boolean firstDown = down && repeatCount == 0;
+ 
++        // android-pc: Hyprland-style repeating binds (aosp-device/hypr, HyprKeybinds). The
++        // release of a key whose press fired a custom gesture of a private type (one past AOSP's
++        // own types, so never an app launch or a Settings shortcut) is sent to its handler too,
++        // flagged HYPR_FLAG_KEY_RELEASE, whatever modifiers are still held: the handler repeats
++        // its binds itself until then (dispatcher key repeats stop whenever an input filter is
++        // installed or removed, as turning the zoom's accessibility service on does).
++        if (!down) {
++            final Integer held = mHyprHeldGestures.remove(hyprHeldKey(deviceId, keyCode));
++            if (held != null) {
++                handleKeyGesture(deviceId, new int[]{keyCode}, metaState, held,
++                        KeyGestureEvent.ACTION_GESTURE_COMPLETE, displayId, focusedToken,
++                        HYPR_FLAG_KEY_RELEASE, /* appLaunchData = */null);
++                return true;
++            }
++        }
++
+         // Handle App launch shortcuts
+         AppLaunchShortcutManager.InterceptKeyResult result = mAppLaunchShortcutManager.interceptKey(
+                 event);
+@@ -1093,8 +1121,11 @@ final class KeyGestureController {
+                         event);
+             }
+             if (customGesture != null) {
+-                handleKeyGesture(deviceId, new int[]{keyCode}, metaState,
+-                        customGesture.getAction().keyGestureType(),
++                final int type = customGesture.getAction().keyGestureType();
++                if (type >= HYPR_PRIVATE_TYPE_MIN) {
++                    mHyprHeldGestures.put(hyprHeldKey(deviceId, keyCode), type);
++                }
++                handleKeyGesture(deviceId, new int[]{keyCode}, metaState, type,
+                         KeyGestureEvent.ACTION_GESTURE_COMPLETE, displayId, focusedToken,
+                         /* flags = */0, customGesture.getAction().appLaunchData());
+                 return true;

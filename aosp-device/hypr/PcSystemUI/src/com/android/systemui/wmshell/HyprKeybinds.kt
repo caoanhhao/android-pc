@@ -6,9 +6,11 @@ import android.hardware.input.InputManager.CUSTOM_INPUT_GESTURE_RESULT_SUCCESS
 import android.hardware.input.InputManager.KeyGestureEventHandler
 import android.hardware.input.KeyGestureEvent
 import android.os.IBinder
+import android.os.SystemClock
 import android.os.SystemProperties
 import android.util.Log
 import android.view.KeyEvent
+import android.view.ViewConfiguration
 import com.android.hyprtile.Bind
 import com.android.hyprtile.Mod
 import com.android.hyprtile.MouseBind
@@ -100,9 +102,9 @@ class HyprKeybinds(
         // ALT + Tab, ALT + SHIFT + Tab and META + Tab are InputManager's recents gestures (it
         // refuses custom gestures on them); HyprLauncher, their handler, runs these binds (E3).
         for (bind in keyBinds.filterNot { isRecentsKey(it) }.take(MAX_BINDS)) {
-            val keycode = keyCode(bind.key)
+            val keycode = keyCode(bind.baseKey)
             if (keycode == KeyEvent.KEYCODE_UNKNOWN) {
-                Log.w(TAG, "bind $bind: unknown key ${bind.key}")
+                Log.w(TAG, "bind $bind: unknown key ${bind.baseKey}")
                 continue
             }
             val gesture = InputGestureData.Builder()
@@ -126,9 +128,18 @@ class HyprKeybinds(
         val type = event.keyGestureType
         if (type >= TYPE_BASE) {
             val bind = binds.getOrNull(type - TYPE_BASE) ?: return
+            if (event.flags and FLAG_KEY_RELEASE != 0) {
+                // The key of this bind is up (tools/patches/aosp17-input-hypr-repeat-binds.patch).
+                mainExecutor.execute { if (repeatingType == type) stopRepeat() }
+                return
+            }
             mainExecutor.execute {
+                // Any new press ends the repeat of the key held before, as xkb's repeat does.
+                stopRepeat()
                 if (!controller.dispatch(bind.dispatcher, bind.arg)) {
                     Log.w(TAG, "bind $bind: unknown dispatcher or argument")
+                } else if (bind.repeating) {
+                    startRepeat(type, bind)
                 }
             }
             return
@@ -146,6 +157,39 @@ class HyprKeybinds(
         } else {
             shellHandler.ifPresent { it.handleKeyGestureEvent(event, focusedToken) }
         }
+    }
+
+    /** The gesture type of the `repeating` bind held now, or 0. Main thread only. */
+    private var repeatingType = 0
+    private var repeatStarted = 0L
+    private val repeat = object : Runnable {
+        var bind: Bind? = null
+        override fun run() {
+            val b = bind ?: return
+            // A lost release (a keyboard unplugged mid-press) must not repeat forever.
+            if (SystemClock.uptimeMillis() - repeatStarted > MAX_REPEAT_MS) return stopRepeat()
+            controller.dispatch(b.dispatcher, b.arg)
+            mainExecutor.executeDelayed(this, ViewConfiguration.getKeyRepeatDelay().toLong())
+        }
+    }
+
+    /**
+     * Repeats [bind] while its key is held, at the keyboard's repeat rate (Hyprland's `binde`).
+     * The shell keeps the time itself: the input dispatcher's own key repeats stop whenever an
+     * input filter is installed or removed, as the zoom's accessibility service does on the first
+     * zoom step, and InputManager consumes them anyway.
+     */
+    private fun startRepeat(type: Int, bind: Bind) {
+        repeatingType = type
+        repeatStarted = SystemClock.uptimeMillis()
+        repeat.bind = bind
+        mainExecutor.executeDelayed(repeat, ViewConfiguration.getKeyRepeatTimeout().toLong())
+    }
+
+    private fun stopRepeat() {
+        repeatingType = 0
+        repeat.bind = null
+        mainExecutor.removeCallbacks(repeat)
     }
 
     private fun mainMod(): Set<Mod> =
@@ -169,11 +213,11 @@ class HyprKeybinds(
                     .onFailure { Log.w(TAG, "bad bind '$line': ${it.message}") }.getOrNull()
             }
         // An extra bind replaces a default one on the same keys.
-        val taken = extra.map { it.mods to it.key }.toSet()
-        return extra + defaultBinds(mod, terminal).filter { (it.mods to it.key) !in taken }
+        val taken = extra.map { it.mods to it.baseKey }.toSet()
+        return extra + defaultBinds(mod, terminal).filter { (it.mods to it.baseKey) !in taken }
     }
 
-    private fun isRecentsKey(bind: Bind) = bind.key == "TAB" &&
+    private fun isRecentsKey(bind: Bind) = bind.baseKey == "TAB" &&
         (bind.mods == setOf(Mod.ALT) || bind.mods == setOf(Mod.ALT, Mod.SHIFT) || bind.mods == setOf(Mod.SUPER))
 
     /** Android's key code for a Hyprland key name (`LEFT`, `RETURN`, `Q`, `KEYCODE_...`). */
@@ -207,6 +251,10 @@ class HyprKeybinds(
         /** "HY" << 16: far from AOSP's gesture types (below 100). */
         const val TYPE_BASE = 0x48590000
         const val MAX_BINDS = 256
+        /** KeyGestureController's flag on the release of a bind's key (the input patch). */
+        const val FLAG_KEY_RELEASE = 1 shl 17
+        /** The longest a key repeats without its release arriving. */
+        const val MAX_REPEAT_MS = 30_000L
 
         /** The types DesktopModeKeyGestureHandler registers; this handler takes them over. */
         val SHELL_TYPES = listOf(

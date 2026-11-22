@@ -2233,8 +2233,38 @@ Also seen:
 |---|---|---|---|
 | `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
 | `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
-| `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types; Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
+| `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types (E13: `repeating` binds also need `tools/patches/aosp17-input-hypr-repeat-binds.patch` in `frameworks/base`); Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
 | `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) |
+## Repeating key binds (E13)
+
+The user's `binds.lua` (from the host's configuration) zooms with `ALT + SHIFT + equal` and
+`ALT + SHIFT + minus` and `{ repeating = true }` (Hyprland's `binde`: holding the keys keeps
+zooming). Key binds are InputManager custom gestures, and `KeyGestureController` matches them
+on the first press only: the key repeats are consumed (the key is in its consumed set until
+release) and reach neither the handler nor any window or monitor. So hyprlua warned
+`repeating not supported, ignored` and each press zoomed once.
+
+- **Framework** (`tools/patches/aosp17-input-hypr-repeat-binds.patch`, `frameworks/base`):
+  `KeyGestureController` remembers the keys whose first press fired a custom gesture of a
+  private type (`>= 0x10000`; AOSP's own types are below 100, so app launch shortcuts and
+  Settings' shortcuts are untouched) and, on that key's release (whatever modifiers are still
+  held, or a cancel), sends the gesture to its handler once more with the flag `1 << 17`.
+- **Why not the dispatcher's own repeats:** sending each key repeat on (the first version of
+  this patch) worked, but the input dispatcher resets its key repeat whenever an input filter
+  is installed or removed (`setInputFilterEnabled` → `resetAndDropEverythingLocked`), and the
+  first zoom step from 1.0 does exactly that (the zoom's accessibility service brings the
+  magnifier's filter): holding `ALT + SHIFT + equal` zoomed once and stopped.
+- **Timing in the shell:** `HyprKeybinds` fires a `repeating` bind on the press, then again
+  after `ViewConfiguration.getKeyRepeatTimeout()` (400 ms) and every `getKeyRepeatDelay()`
+  (50 ms) until the release arrives. A new press of any bind ends the repeat (as xkb's repeat
+  follows the last key); a release that never comes (keyboard unplugged mid-press) stops it
+  after 30 s.
+- **Bind list:** a key bind carries its flag on the key as mouse binds do (`EQUAL/E`;
+  `Bind.baseKey`, `Bind.repeating`). Any other bind still fires once per press. `hyprctl
+  binds` reports `repeat: true` for them.
+- **Lua:** `repeating` is accepted on key binds (no warning) and still warned on gesture binds;
+  binding the same keys again without the flag replaces the repeating bind.
+
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
 | `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |
@@ -2251,7 +2281,9 @@ Also seen:
 | `hypr.mk` | `aosp-device/hypr/` | | adds the above, drops Smart Dock |
 
 Changes outside `aosp-device/`: one Shell patch (`WindowDecorStyle`, applied to
-`aosp/frameworks/base` and built into the `PcSystemUI` APK only) and none in the system image.
+`aosp/frameworks/base` and built into the `PcSystemUI` APK only) and, since E6 and E13, two
+small input patches in the system image (wheel binds in `frameworks/native`'s dispatcher,
+the key release of repeating binds in `frameworks/base`'s `KeyGestureController`).
 
 ## Known limits
 

@@ -285,7 +285,10 @@ class HyprLuaTest {
         assertTrue(error("hl.bind('ALT + Q', hl.dsp.focus({ direction = 'sideways' }))").contains("bad direction"))
         assertTrue(error("hl.bind('ALT + mouse:272', hl.dsp.window.close(), { mouse = true })").contains("drag()"))
         val c = load("hl.bind('ALT + Q', hl.dsp.window.close(), { repeating = true, locked = true })")
-        assertTrue(c.warnings.any { "repeating, locked not supported" in it })
+        assertTrue(c.warnings.any { "bind 'ALT + Q': locked not supported" in it })
+        assertTrue(c.warnings.none { "repeating" in it })
+        val g = load("hl.bind('gesture:edge_bottom', hl.dsp.overview(), { repeating = true })")
+        assertTrue(g.warnings.any { "repeating not supported" in it })
     }
 
     @Test

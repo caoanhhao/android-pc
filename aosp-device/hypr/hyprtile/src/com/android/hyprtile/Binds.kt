@@ -10,6 +10,18 @@ enum class Mod { SHIFT, CTRL, ALT, SUPER }
 data class Bind(val mods: Set<Mod>, val key: String, val dispatcher: String, val arg: String = "") {
     override fun toString() =
         "${mods.sorted().joinToString(" ")}, $key, $dispatcher${if (arg.isEmpty()) "" else ", $arg"}"
+
+    /** [key] without its flags (key binds carry them after a `/` as mouse binds do: `EQUAL/E`). */
+    val baseKey: String get() = key.substringBefore('/')
+
+    /** Hyprland's `binde` (`repeating = true`): the bind fires again while its key is held. */
+    val repeating: Boolean get() = 'E' in key.substringAfter('/', "").uppercase()
+
+    companion object {
+        /** A key bind that fires again at every key repeat while [key] is held. */
+        fun repeating(mods: Set<Mod>, key: String, dispatcher: String, arg: String = "") =
+            Bind(mods, "$key/E", dispatcher, arg)
+    }
 }
 
 /**
