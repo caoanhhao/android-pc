@@ -53,6 +53,16 @@ class HostActionsLuaTest {
     }
 
     @Test
+    fun floatingExec() {
+        val b = binds(load("""
+            hl.bind("ALT + KP_Enter", hl.dsp.exec_cmd("com.termux"))
+            hl.bind("ALT + CTRL + KP_Enter", hl.dsp.exec_cmd("com.termux", { float = true }))
+        """.trimIndent()))
+        assertEquals("com.termux", b.getValue("ALT+NUMPAD_ENTER").arg)
+        assertEquals("[float] com.termux", b.getValue("CTRL+ALT+NUMPAD_ENTER").arg)
+    }
+
+    @Test
     fun hostKeyNames() {
         assertEquals("VOLUME_UP", androidKeyName("XF86AudioRaiseVolume"))
         assertEquals("MEDIA_NEXT", androidKeyName("XF86AudioNext"))

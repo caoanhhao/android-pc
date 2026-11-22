@@ -438,6 +438,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.layout("togglesplit")` | `togglesplit` | dwindle: flip the focused window's split |
 | `hl.dsp.exec_cmd("com.termux")` | `exec` | start a package's launcher activity (a package name, not a shell command); it opens on the active workspace |
 | `hl.dsp.exec_cmd("com.android.hyprtop", { workspace = 5 })` | `exec [workspace 5] pkg` | Hyprland's exec rules: the package's next window (within 30 s) opens on workspace 5 and is followed; `silent = true` leaves it there (`[workspace 5 silent]`); a rule string works too. Other rules warn: use `hl.window_rule` |
+| `hl.dsp.exec_cmd("com.termux", { float = true })` | `exec [float] pkg` | the package's next window opens floating (`float = false`: tiled), with `workspace` too (`[workspace 2; float]`; E11) |
 | `hl.dsp.launcher()` | `launcher` | the rofi-like app launcher |
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
 | `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |

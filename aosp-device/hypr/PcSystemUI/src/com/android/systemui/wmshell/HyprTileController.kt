@@ -1733,9 +1733,14 @@ class HyprTileController(
             for (r in command.substring(1, end).split(';').map { it.trim() }.filter { it.isNotEmpty() }) {
                 val words = r.split(Regex("\\s+"))
                 val n = words.getOrNull(1)?.toIntOrNull()
+                val rule = execRules[packageName]?.first ?: WindowRule(name = "exec",
+                    matchClass = "^${Regex.escape(packageName)}$")
                 if (words[0] == "workspace" && n != null && n >= 1) {
-                    execRules[packageName] = WindowRule(name = "exec", matchClass = "^${Regex.escape(packageName)}$",
-                        workspace = n, silent = words.getOrNull(2) == "silent") to SystemClock.uptimeMillis()
+                    execRules[packageName] = rule.copy(workspace = n, silent = words.getOrNull(2) == "silent") to
+                        SystemClock.uptimeMillis()
+                } else if (words[0] == "float" || words[0] == "tile") {
+                    // E11: `[float]` (Hyprland's exec rule), checked when the window opens.
+                    execRules[packageName] = rule.copy(float = words[0] == "float") to SystemClock.uptimeMillis()
                 } else {
                     Log.w(TAG, "exec: rule '$r' is ignored")
                 }
@@ -2186,6 +2191,7 @@ class HyprTileController(
     }
 
     private fun floats(task: RunningTaskInfo): Boolean {
+        task.baseActivity?.packageName?.let { execRules[it]?.first?.float }?.let { return it }
         val layout = task.topActivityInfo?.windowLayout
         return shouldFloat(
             WindowTraits(

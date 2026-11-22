@@ -213,5 +213,6 @@ hl.bind(mainMod .. " + SHIFT + R", hl.dsp.reload())
 -- both binds do the same).
 hl.bind(mainMod .. " + SHIFT + W", hl.dsp.wallpaper({ workspace = "current" }))
 hl.bind(mainMod .. " + CTRL + SHIFT + W", hl.dsp.wallpaper({ workspace = "all" }))
--- The keypad's Enter: Termux.
+-- The keypad's Enter: Termux, and Termux floating.
 hl.bind(mainMod .. " + KP_Enter", hl.dsp.exec_cmd("com.termux"))
+hl.bind(mainMod .. " + CTRL + KP_Enter", hl.dsp.exec_cmd("com.termux", { float = true }))

@@ -291,12 +291,15 @@ local window = namespace("hl.dsp.window", {
 local function exec_rules(rules)
   if rules == nil then return "" end
   if type(rules) == "string" then return "[" .. rules .. "] " end
-  if type(rules) ~= "table" then error("exec_cmd rules: { workspace = N } or a rule string", 3) end
+  if type(rules) ~= "table" then error("exec_cmd rules: { workspace = N, float = true } or a rule string", 3) end
   for k in pairs(rules) do
-    if k ~= "workspace" and k ~= "silent" then H(4, "warn", "exec_cmd: rule " .. tostring(k) .. " is ignored (use hl.window_rule)") end
+    if k ~= "workspace" and k ~= "silent" and k ~= "float" then H(4, "warn", "exec_cmd: rule " .. tostring(k) .. " is ignored (use hl.window_rule)") end
   end
-  if rules.workspace == nil then return "" end
-  return "[workspace " .. tostring(rules.workspace) .. (rules.silent and " silent" or "") .. "] "
+  local r = {}
+  if rules.workspace ~= nil then r[#r + 1] = "workspace " .. tostring(rules.workspace) .. (rules.silent and " silent" or "") end
+  if rules.float ~= nil then r[#r + 1] = rules.float and "float" or "tile" end
+  if #r == 0 then return "" end
+  return "[" .. concat(r, "; ") .. "] "
 end
 
 hl.dsp = namespace("hl.dsp", {
