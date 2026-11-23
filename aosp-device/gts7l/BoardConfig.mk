@@ -21,33 +21,42 @@ TARGET_NO_BOOTLOADER := true
 # TWRP keeps the recovery partition; we build no recovery image (docs/gts7l.md §6/T6).
 TARGET_NO_RECOVERY := true
 
-# Kernel modules from tools/gts7l-kernel.sh (out/gts7l/modules, copied to
+# Kernel modules and DTB from tools/gts7l-kernel.sh (out/gts7l/, copied to
 # device/android-pc/gts7l-kernel by tools/aosp-device-link.sh); the kernel itself is a
 # PRODUCT_COPY_FILES entry in aosp_gts7l.mk.
 GTS7L_KERNEL_DIR := device/android-pc/gts7l-kernel
 BOARD_VENDOR_KERNEL_MODULES := $(sort $(wildcard $(GTS7L_KERNEL_DIR)/modules/*.ko))
 
-# Boot image: header v1 with the DTB appended to Image.gz (Samsung's ABL on kona), the
-# generic ramdisk with first-stage init and fstab.gts7l. Offsets are those of the stock
-# boot.img. The Soong-only build's boot.img (fsgen) ignores BOARD_MKBOOTIMG_ARGS, so
-# tools/gts7l-image.sh (S4) packs the flashable boot.img with them. TODO(S1): check header version, base, offsets and page size against the unpacked
-# stock T875XXS8DXH1 boot.img (docs/gts7l-inventory.md).
-BOARD_BOOT_HEADER_VERSION := 1
+# Boot image: header v2 like the stock boot.img (docs/gts7l-inventory.md): kernel, the generic
+# ramdisk with first-stage init and fstab.gts7l, and the DTB in its own section; stock base,
+# page size and offsets. The boot partition is 71303168 bytes. The Soong-only build's
+# boot.img (fsgen) ignores BOARD_MKBOOTIMG_ARGS, so tools/gts7l-image.sh (S4) packs the
+# flashable boot.img with them, the gts7l DTB as the dtb section.
+BOARD_BOOT_HEADER_VERSION := 2
+BOARD_BOOTIMAGE_PARTITION_SIZE := 71303168
 BOARD_KERNEL_BASE := 0x00000000
 BOARD_KERNEL_PAGESIZE := 4096
 BOARD_MKBOOTIMG_ARGS += \
     --kernel_offset 0x00008000 \
     --ramdisk_offset 0x02000000 \
-    --tags_offset 0x01e00000
+    --tags_offset 0x01e00000 \
+    --dtb_offset 0x01f00000
+ifneq (,$(wildcard $(GTS7L_KERNEL_DIR)/dtb/*.dtb))
+BOARD_INCLUDE_DTB_IN_BOOTIMG := true
+BOARD_PREBUILT_DTBIMAGE_DIR := $(GTS7L_KERNEL_DIR)/dtb
+endif
 # androidboot.boot_devices: the UFS controller's platform device on mainline, for the
 # /dev/block/by-name links. fstab_suffix: ABL may pass its own androidboot.hardware (qcom).
 # firmware_class.path: the link tree into the tablet's firmware partitions
 # (firmware/init.gts7l.firmware.rc).
-# TODO(S6): check the UFS device path and the console UART on the running kernel.
+# usbcontroller: the DWC3 core for the USB gadget (sys.usb.controller); stock passes
+# a600000.dwc3, mainline names the device a600000.usb.
+# TODO(S6): check the UFS and DWC3 device names and the console UART on the running kernel.
 BOARD_KERNEL_CMDLINE := \
     androidboot.boot_devices=soc@0/1d84000.ufshc \
     androidboot.fstab_suffix=gts7l \
     androidboot.hardware=gts7l \
+    androidboot.usbcontroller=a600000.usb \
     firmware_class.path=/mnt/vendor/firmware
 # Bring-up: our vendor policy is new and untested on hardware, so SELinux starts permissive
 # until the first boots have shown the denials. TODO(S7): set to false.
@@ -75,13 +84,13 @@ TARGET_COPY_OUT_VENDOR := vendor
 # userdata is formatted on the tablet (TWRP, first boot), never written by an update.
 BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := f2fs
 
-# super: one group for the four images. The size is a placeholder (8 GiB); the group leaves
-# 4 MiB for the non-A/B metadata.
-# TODO(S1): BOARD_SUPER_PARTITION_SIZE = the exact byte size of sda29 from the stock layout
-# (docs/gts7l-inventory.md), and the group size = that minus 4 MiB.
-BOARD_SUPER_PARTITION_SIZE := 8589934592
+# super (sda29): 10171187200 bytes, two metadata slots (non-A/B), one group of at most
+# 10166992896 bytes, as in the stock layout (stock: qti_dynamic_partitions with system,
+# vendor, product, odm).
+BOARD_SUPER_PARTITION_SIZE := 10171187200
+BOARD_SUPER_PARTITION_METADATA_DEVICE := super
 BOARD_SUPER_PARTITION_GROUPS := gts7l_dynamic_partitions
-BOARD_GTS7L_DYNAMIC_PARTITIONS_SIZE := 8585740288
+BOARD_GTS7L_DYNAMIC_PARTITIONS_SIZE := 10166992896
 BOARD_GTS7L_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext product vendor
 
 # Verified boot stays off: the unlocked ABL ignores it, and S4 flashes a vbmeta with

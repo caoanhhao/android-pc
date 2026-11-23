@@ -86,10 +86,11 @@ PRODUCT_PACKAGES += \
     com.android.hardware.gatekeeper.nonsecure
 
 # Kernel: mainline v7.3 with our patches, built by tools/gts7l-kernel.sh into out/gts7l/
-# (Image.gz with the gts7l DTB appended, modules/), which tools/aosp-device-link.sh copies to
-# device/android-pc/gts7l-kernel. Without that build a placeholder lets the product analyse;
-# its boot.img does not boot.
-GTS7L_KERNEL := device/android-pc/gts7l-kernel/Image.gz-dtb
+# (Image.gz, sm8250-samsung-gts7l.dtb, modules/), which tools/aosp-device-link.sh copies to
+# device/android-pc/gts7l-kernel; the DTB goes in the boot image's own section
+# (BoardConfig.mk). Without that build a placeholder lets the product analyse; its boot.img
+# does not boot.
+GTS7L_KERNEL := device/android-pc/gts7l-kernel/Image.gz
 ifeq (,$(wildcard $(GTS7L_KERNEL)))
 $(warning aosp_gts7l: no kernel at $(GTS7L_KERNEL), run tools/gts7l-kernel.sh; using a placeholder)
 GTS7L_KERNEL := $(GTS7L_DEVICE_DIR)/prebuilt/kernel-placeholder

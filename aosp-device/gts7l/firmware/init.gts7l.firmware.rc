@@ -7,6 +7,11 @@
 #   gts7l/apnhlos/  -> /mnt/vendor/apnhlos/image  Wi-Fi/BT (QCA6390) and the rest of NON-HLOS
 #   gts7l/vendor/   -> /vendor/firmware           files of our own vendor image
 #
+# The GPU (a650_sqe.fw, a650_gmu.bin), Wi-Fi (QCA6390 ath11k), Bluetooth (htbtfw20, htnv20)
+# and CS35L41 speaker protection firmware lives in the stock vendor partition, which our super
+# replaces. TODO(S4): keep a copy taken from the tablet (never in git) where these links can
+# reach it.
+#
 # So the DTS names firmware as "gts7l/modem/adsp.mdt" and the kernel finds the split
 # .mdt/.bNN segments next to it. TODO(S1/S2): check which partition holds each file the DTS
 # and drivers request (docs/gts7l-inventory.md) and name them this way in
