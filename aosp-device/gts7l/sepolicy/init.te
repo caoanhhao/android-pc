@@ -1,0 +1,10 @@
+# fstab.gts7l: the firmware and efs partitions, mounted read-only with context=.
+allow init { firmware_file vendor_efs_file }:filesystem { mount unmount relabelfrom relabelto associate };
+allow init { firmware_file vendor_efs_file }:dir mounton;
+allow init { gts7l_firmware_block_device gts7l_efs_block_device }:blk_file r_file_perms;
+
+# firmware/init.gts7l.firmware.rc builds the link tree on a tmpfs and labels it.
+allow init gts7l_firmware_link:dir { create_dir_perms mounton relabelto };
+allow init gts7l_firmware_link:lnk_file { create getattr relabelto };
+allow init tmpfs:dir relabelfrom;
+allow init tmpfs:lnk_file relabelfrom;

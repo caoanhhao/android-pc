@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!-- WindowManager base display settings, tablet variant (PC_DESKTOP_VARIANT=tablet, gts7l).
+     identifier 1: displays are named by their physical port.
+     port:0 is the built-in panel:
+       windowingMode 5          WINDOWING_MODE_FREEFORM, so the display is desktop-first;
+       rotation is left to the user and the accelerometer (no lock, unlike the PC's
+       display_settings.xml). -->
+<display-settings>
+    <config identifier="1" />
+    <display name="port:0"
+        windowingMode="5" />
+</display-settings>

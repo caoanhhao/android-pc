@@ -1,0 +1,8 @@
+# Co-processor firmware on the apnhlos and modem partitions (vfat, context= mounts in
+# fstab.gts7l, read-only).
+type firmware_file, fs_type, contextmount_type;
+# efs, sec_efs, persist: calibration and identity, read-only context= mounts for now.
+type vendor_efs_file, fs_type, contextmount_type;
+# /mnt/vendor/firmware, the tmpfs link tree into the partitions above
+# (firmware/init.gts7l.firmware.rc).
+type gts7l_firmware_link, file_type;

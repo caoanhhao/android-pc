@@ -1,0 +1,3 @@
+# Firmware loaded by the kernel itself (firmware_class.path=/mnt/vendor/firmware).
+r_dir_file(kernel, gts7l_firmware_link)
+r_dir_file(kernel, firmware_file)

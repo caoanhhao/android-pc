@@ -44,3 +44,11 @@ rsync -a --delete --delete-excluded "${excludes[@]}" "$SRC/aosp-device/" "$DST/"
 # (libpcfmq re-exports libfmq_rust for the audio HAL).
 mkdir -p "$ROOT/aosp/vendor/android-pc"
 rsync -a --delete "$SRC/aosp-device-vendor/" "$ROOT/aosp/vendor/android-pc/"
+# The gts7l kernel (tools/gts7l-kernel.sh writes out/gts7l/ of the main checkout): Image.gz-dtb
+# and modules/ for aosp-device/gts7l (aosp_gts7l.mk, BoardConfig.mk), which use a placeholder
+# without it.
+if [[ -f $ROOT/out/gts7l/Image.gz-dtb ]]; then
+    mkdir -p "$ROOT/aosp/device/android-pc/gts7l-kernel"
+    rsync -a --delete --include=/Image.gz-dtb --include='/modules/***' --exclude='*' \
+        "$ROOT/out/gts7l/" "$ROOT/aosp/device/android-pc/gts7l-kernel/"
+fi
