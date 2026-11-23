@@ -1,0 +1,97 @@
+From 787b1cdae28c97b79b9a9ca9f5d5e31f0f0f2b13 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Mon, 23 Nov 2026 22:58:23 +0700
+Subject: [PATCH] DEBUG drm/panel: nt36523: bring-up switches for gts7l
+
+Module parameters to keep the bootloader's panel state (no reset, no init
+sequence) or to send commands in high-speed mode, applied on the next prepare.
+For bring-up only.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/panel/panel-novatek-nt36523.c | 40 ++++++++++++++++---
+ 1 file changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-novatek-nt36523.c b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
+index 554ad47d2..2dd378788 100644
+--- a/drivers/gpu/drm/panel/panel-novatek-nt36523.c
++++ b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
+@@ -24,6 +24,18 @@
+ 
+ #define DSI_NUM_MIN 1
+ 
++/*
++ * Bring-up switches (gts7l), writable in /sys/module/panel_novatek_nt36523/parameters and
++ * applied on the next prepare (fbdev blank/unblank): keep the panel as the bootloader left
++ * it, skip the init sequence, or send commands in high-speed mode.
++ */
++static bool skip_reset = true;
++module_param(skip_reset, bool, 0644);
++static bool skip_init = true;
++module_param(skip_init, bool, 0644);
++static bool cmd_hs;
++module_param(cmd_hs, bool, 0644);
++
+ struct panel_info {
+ 	struct drm_panel panel;
+ 	struct mipi_dsi_device *dsi[2];
+@@ -1411,7 +1423,7 @@ static void nt36523_reset(struct panel_info *pinfo)
+ static int nt36523_prepare(struct drm_panel *panel)
+ {
+ 	struct panel_info *pinfo = to_panel_info(panel);
+-	int ret;
++	int i, ret;
+ 
+ 	ret = regulator_enable(pinfo->vddio);
+ 	if (ret) {
+@@ -1419,9 +1431,26 @@ static int nt36523_prepare(struct drm_panel *panel)
+ 		return ret;
+ 	}
+ 
+-	nt36523_reset(pinfo);
++	if (!skip_reset)
++		nt36523_reset(pinfo);
++
++	for (i = 0; i < DSI_NUM_MIN + pinfo->desc->is_dual_dsi; i++) {
++		if (cmd_hs)
++			pinfo->dsi[i]->mode_flags &= ~MIPI_DSI_MODE_LPM;
++		else
++			pinfo->dsi[i]->mode_flags |= pinfo->desc->mode_flags & MIPI_DSI_MODE_LPM;
++	}
++
++	dev_info(panel->dev, "prepare: reset %d init %d hs %d\n", !skip_reset, !skip_init, cmd_hs);
++	if (skip_init) {
++		struct mipi_dsi_multi_context dsi_ctx = { .dsi = NULL };
+ 
+-	ret = pinfo->desc->init_sequence(pinfo);
++		mipi_dsi_dual(mipi_dsi_dcs_set_display_on_multi, &dsi_ctx,
++			      pinfo->dsi[0], pinfo->dsi[1]);
++		ret = dsi_ctx.accum_err;
++	} else {
++		ret = pinfo->desc->init_sequence(pinfo);
++	}
+ 	if (ret < 0) {
+ 		regulator_disable(pinfo->vddio);
+ 		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
+@@ -1457,7 +1486,8 @@ static int nt36523_unprepare(struct drm_panel *panel)
+ {
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 
+-	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
++	if (!skip_reset)
++		gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
+ 	regulator_disable(pinfo->vddio);
+ 
+ 	return 0;
+@@ -1591,7 +1621,7 @@ static int nt36523_probe(struct mipi_dsi_device *dsi)
+ 	if (IS_ERR(pinfo->vddio))
+ 		return dev_err_probe(dev, PTR_ERR(pinfo->vddio), "failed to get vddio regulator\n");
+ 
+-	pinfo->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	pinfo->reset_gpio = devm_gpiod_get(dev, "reset", skip_reset ? GPIOD_ASIS : GPIOD_OUT_HIGH);
+ 	if (IS_ERR(pinfo->reset_gpio))
+ 		return dev_err_probe(dev, PTR_ERR(pinfo->reset_gpio), "failed to get reset gpio\n");
+ 
+-- 
+2.56.1
+

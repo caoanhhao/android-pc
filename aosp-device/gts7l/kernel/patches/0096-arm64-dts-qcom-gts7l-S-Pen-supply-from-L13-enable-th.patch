@@ -1,0 +1,118 @@
+From b43315d9c8a075fa0995a452619bef2d7efff74a Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Mon, 23 Nov 2026 22:50:46 +0700
+Subject: [PATCH 96/96] arm64: dts: qcom: gts7l: S Pen supply from L13, enable
+ the DSI panel
+
+The S Pen digitizer is powered by pm8150 L13 at 3.008 V on this board (stock
+wacom,regulator_avdd), not by GPIO 93, which enables the LCD bias buck and kept
+the buck regulator from probing. Enable both DSI hosts and their C-PHYs for the
+NT36523 panel.
+
+caoanhhao used AI to code
+---
+ .../boot/dts/qcom/sm8250-samsung-gts7l.dts    | 35 +++++++------------
+ 1 file changed, 13 insertions(+), 22 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index 0d11c9629..a34cdb8df 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -132,15 +132,6 @@ lcd_buck: lcd-buck-regulator {
+ 		regulator-always-on;
+ 	};
+ 
+-	vdd_spen: spen-3v3-regulator {
+-		compatible = "regulator-fixed";
+-		regulator-name = "vdd_spen_3p3";
+-		regulator-min-microvolt = <3300000>;
+-		regulator-max-microvolt = <3300000>;
+-		gpio = <&tlmm 93 GPIO_ACTIVE_HIGH>;
+-		enable-active-high;
+-	};
+-
+ 	cam_rear_vana: cam-rear-vana-regulator {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "cam_rear_vana";
+@@ -642,16 +633,15 @@ &mdss {
+  * halves), C-PHY with 3 trios per DSI, 120 Hz video burst mode, 24 bpp, DCS backlight
+  * 4..462 (stock ss_dsi_panel_NT36523_PPA957DB1_WQXGA). Wiring follows the Xiaomi Pad 5
+  * Pro (sm8250-xiaomi-elish-csot), the same SoC with a CSOT NT36523 panel.
+- * TODO(S6): an entry for this panel in panel-novatek-nt36523.c (stock on-commands, mode:
+- * clock 997999999 Hz, h pulse 2 / bp 30 / fp 84, v pulse 1 / bp 7 / fp 26), then
+- * enable both DSI hosts and PHYs. Until then the bootloader's framebuffer is used.
++ * Driver: panel-novatek-nt36523.c "samsung,gts7l-csot-nt36523" (stock on-commands, per
++ * half h pulse 2 / bp 30 / fp 84, v pulse 1 / bp 7 / fp 26, 120 Hz).
+  * TODO(S6): DSI vdda: stock names pm8150a_l11 (vdd) and pm8150_l14 (vddio); the S7+'s
+  * L9A below is unverified here. ESD lines (gpio66, gpio46) and the ISL98608 bias chip
+  * are not described yet.
+  */
+ &mdss_dsi0 {
+ 	vdda-supply = <&vreg_l9a_1p2>;
+-	status = "disabled";
++	status = "okay";
+ 
+ 	display_panel: panel@0 {
+ 		compatible = "samsung,gts7l-csot-nt36523", "novatek,nt36523";
+@@ -691,7 +681,7 @@ &mdss_dsi0_out {
+ &mdss_dsi0_phy {
+ 	vdds-supply = <&vreg_l5a_0p88>;
+ 	phy-type = <PHY_TYPE_CPHY>;
+-	status = "disabled";
++	status = "okay";
+ };
+ 
+ &mdss_dsi1 {
+@@ -701,7 +691,7 @@ &mdss_dsi1 {
+ 	/* DSI1 is the slave and runs from DSI0's PLL */
+ 	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
+ 				 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
+-	status = "disabled";
++	status = "okay";
+ };
+ 
+ &mdss_dsi1_out {
+@@ -712,7 +702,7 @@ &mdss_dsi1_out {
+ &mdss_dsi1_phy {
+ 	vdds-supply = <&vreg_l5a_0p88>;
+ 	phy-type = <PHY_TYPE_CPHY>;
+-	status = "disabled";
++	status = "okay";
+ };
+ 
+ &framebuffer {
+@@ -869,10 +859,11 @@ vreg_s6a_0p95: smps6 {
+ 				regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 			};
+ 
+-		vreg_l13a_3p3: ldo13 {
+-			regulator-name = "vreg_l13a_3p3";
+-			regulator-min-microvolt = <3304000>;
+-			regulator-max-microvolt = <3304000>;
++		/* S Pen digitizer (stock pm8150_l13, 3.008 V) */
++		vreg_l13a_3p0: ldo13 {
++			regulator-name = "vreg_l13a_3p0";
++			regulator-min-microvolt = <3008000>;
++			regulator-max-microvolt = <3008000>;
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
+ 
+@@ -937,13 +928,13 @@ &i2c17 {
+ 	clock-frequency = <400000>;
+ 	status = "okay";
+ 
+-	/* Matches stock (wacom@56, IRQ gpio136, FWE gpio6); TODO(S6): PDCT gpio7, supply */
++	/* Matches stock (wacom@56, IRQ gpio136, FWE gpio6, supply pm8150_l13); TODO(S6): PDCT gpio7 */
+ 	pen@56 {
+ 		compatible = "samsung,wacom-w90xx";
+ 		reg = <0x56>;
+ 		interrupt-parent = <&tlmm>;
+ 		interrupts = <136 IRQ_TYPE_LEVEL_LOW>;
+-		vdd-supply = <&vdd_spen>;
++		vdd-supply = <&vreg_l13a_3p0>;
+ 		fwe-gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&pen_default>;
+-- 
+2.56.1
+

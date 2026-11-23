@@ -276,3 +276,29 @@ group). Stable, no pstore records. Seen:
 
 Raw logs: `gts7l-stock/s6/dmesg-1.txt`, `gts7l-stock/s6/survey-1.txt`. Next in S6: the DTS GPIOs
 from the stock dtbo (lcd buck, S Pen 3.3 V), PCIe/Wi-Fi, then the NT36523 panel driver and touch.
+
+### Panel bring-up status (2026-11-23, kernel #6)
+
+Patches 0095 (NT36523 entry for the CSOT PPA957DB1 panel, stock on-commands as a table, DCS
+backlight 4..462) and 0096 (DTS: S Pen supply from pm8150 L13 at 3.008 V instead of GPIO 93, which
+is the LCD bias buck; DSI0/DSI1 and both C-PHYs enabled). 0097-0099 are DEBUG switches in
+`/sys/module/panel_novatek_nt36523/parameters` (`skip_reset`, `skip_init`, `skip_disable`,
+`cmd_hs`, `init_limit`, `init_dsi`), applied on the next fbdev blank/unblank; drop them once
+the panel works. `tools/gts7l-netflash.sh` writes a boot image from the running bring-up
+shell over the NCM link and reboots into it (no recovery round trip).
+
+- S Pen (Wacom W90xx) probes; the LCD buck regulator probes.
+- DSI: both hosts bound, connector 1600x2560 connected, clocks as stock (VCO 997.96 MHz,
+  pclk 285.13 MHz, byte 142.57 MHz, DSI1 from DSI0's PLL), no DPU underruns.
+- With the bootloader's panel state kept (no reset, no init): the panel shows our frames,
+  but only on the DSI0 half and only the first ~100-150 lines of each frame; below that the
+  panel repeats garbage lines. The DSI1 half stays black. Writing noise to `/dev/fb0` changes
+  the top lines, so video reaches the panel.
+- Full reset + stock init: black, backlight off. The init tests with blank/unblank were
+  invalid until `skip_disable` (disable sent display off + sleep in).
+- Suspects: C-PHY signal tuning that the stock DT sets and mainline does not
+  (`samsung,phy_vreg_ctrl_0`, `phy_ctrl2`, `phy_offset_{top,mid,bot}_ctrl`,
+  `phy_str_swi_cal_sel_ctrl`, stock phy-timings `[00 24 0a 0a 11 3e 0d 1e 0a 02 04 00 1e 1a]`),
+  `DSI PLL(0) lock failed` at PHY probe, and DSI1 never starting.
+
+Photos: `gts7l-stock/s6/panel-test1.jpg`, `panel-k6.jpg`, `panel-pattern.jpg`.
