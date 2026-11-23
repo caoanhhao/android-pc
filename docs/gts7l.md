@@ -492,3 +492,61 @@ Adreno 650 GPU node enabled (one device: `card0` for KMS, `renderD128` for Mesa)
 the device's signed zap shader (the DTS `firmware-name`, from the stock vendor, never in git)
 under the kernel's firmware path. Without the zap shader the GPU stays in secure mode and
 `msm` fails to bring it up.
+
+### Panel bring-up, kernels #10-#13 (2026-11-24 morning, verified on screen)
+
+The tablet came back through the LineageOS recovery (`boot-k10-good.img` written to `boot` as in
+section 12). Kernel #10 ran fine. From here on, every result was checked with a webcam photo.
+The webcam is held by OBS, so the photos are grabs of OBS's preview
+(`gts7l-stock/s6/pt/obscap`). They are in `gts7l-stock/s6/cam/`. The camera sees the tablet
+in landscape, so the DSI0 half (portrait x 0-799) is the lower half of each photo.
+
+| Test (kernel #10, bootloader panel state) | Result |
+|---|---|
+| Our test pattern, computed C-PHY timings | portrait rows 0-~160 right on the DSI0 half, the rest white; DSI1 half dark (`k10-bootstate-pattern.jpg`) |
+| `cphy_timing` = stock bytes | no change (`k10-stock-phy-timings.jpg`) |
+| `CLOCK_NON_CONTINUOUS` (as stock) | no change (`k10-noncont-clock.jpg`) |
+| non-burst sync pulse | no picture at all (`k10-sync-pulse.jpg`) |
+| non-burst sync event | as burst (`k10-sync-event.jpg`) |
+| DSI1 PHY `CLK_CFG1` DSICLK_SEL 3, as on DSI0 | no change |
+| `byte_intf` clocks / 2 (dispcc dividers 0x2128/0x2144) | slightly different garbage, not fixed (`k10-byteintf-div2.jpg`) |
+| DSI controller test pattern generator | no checkered pattern; the panel decays to grey |
+| DSI1 controller disabled | DSI0 half unchanged (`k10-dsi1-ctrl-off.jpg`) |
+| stock init without reset (`skip_init=N`) | black, backlight off |
+
+**Backlight bug, fixed (patch 0103, clean):** with `qcom,sync-dual-dsi`, msm only queues a
+command sent to DSI0 and transmits it with the next DSI1 command. The nt36523 backlight wrote
+to DSI0 only, so no brightness ever reached the panel. The stock init sets `51 00 00`, so
+after the init the panel stayed dark. That was the "full reset + init: black" of kernel #6. Now
+the brightness goes to both links and is read back from the first link that answers. Verified:
+sysfs brightness 462 and 4 give clearly different screen brightness.
+
+Kernel #13 (0103 + 0104 DEBUG `dcs_write`, built with `CONFIG_DEVMEM=y` by hand):
+- **Cold reset + stock init now lights the panel** (`skip_reset=N skip_init=N`, blank/unblank):
+  our frame, the same picture as with the bootloader state (`k13-cold-reset-init.jpg`).
+  `0x0a` = `0x9e` afterwards.
+- LP and HS DCS writes work: brightness 0 vs 0x1ce changes the photo's mean from 17 to 136.
+- Measured with 20-line colour bands: exactly the first **~160 portrait lines** are right; from
+  there on the DSI0 half is white (`k13-bands-160lines.png`). A solid colour makes the tail show
+  wrong colours (blue becomes yellow/white), so data still arrives but is corrupted. The fault
+  is deterministic and resets every frame.
+- Both DSI controllers had `TIMEOUT_STATUS` = 1 (HS TX timeout): `HS_TIMER_CTRL` is 0xffff
+  byte clocks = 460 µs ≈ 143 lines, and the link never returns to LP inside a frame (58 spare
+  byte clocks per line). With the timer at resolution 0xf the status stays clear, but the picture
+  is the same. `HS_TX_TO_STOP_EN` is off, so this timeout is not the cause.
+- No effect either: `GLBL_HSTX_STR_CTRL_0` 0x00-0xff (`k13-hstx-sweep.jpg`), resync FIFO
+  toggle (`RBUF_CTRL`), `HS_REQ_SEL_PHY` (`k13-hs-req-sel-phy.jpg`).
+- The DPU is fine (debugfs `encoder-0/status`: both INTFs in video mode, no underruns; plane
+  split 800+800 on SSPP 8/9).
+
+Open:
+- Why only ~160 lines arrive intact on DSI0, and why DSI1 never shows video. Only DSI1 answers
+  reads, so DSI1 is probably the panel's primary port. If that port's video is not accepted, the
+  panel may lose DSI0's data after a buffer of ~160 lines. Next: compare the DSI1 lane registers
+  (0xae96600) with DSI0's, and get the bootloader's DSI/PHY registers in a safe way (from the
+  recovery's 4.19 kernel while it drives the panel, or from the DSI driver after it takes its
+  clocks, never at PHY probe).
+- 0097-0099, 0102, 0104 stay DEBUG. Clean: 0100/0101 (C-PHY tuning from DT) and 0103 (backlight).
+
+The tablet runs kernel #13 (`gts7l-stock/s6/boot-k13.img`, SHA-256 `993fdd5ec1545d0c...`,
+booted and tested). `boot-k10-good.img` stays the fallback.
