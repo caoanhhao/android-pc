@@ -3,6 +3,7 @@ package com.android.systemui.wmshell
 import android.app.ActivityManager.RunningTaskInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Rect
@@ -59,6 +60,11 @@ class HyprDecorations(
      */
     val propOpacity = HashMap<Int, Pair<Float?, Float?>>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    /** Opaque base under the border, so a translucent border colour does not show the app. */
+    private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.BLACK
+    }
 
     /** Starts styling Shell's decorations. */
     fun install() {
@@ -269,7 +275,11 @@ class HyprDecorations(
             val half = bw / 2f
             val box = RectF(half, half, w - half, h - half)
             val radius = max(cfg.rounding - half, 0f)
+            // The base covers the stroke and one pixel past the edge, so it also hides the anti-aliased rim
+            // the task's corner clip leaves outside the stroke.
+            val baseBox = RectF(box).apply { inset(-0.5f, -0.5f) }
             paint.strokeWidth = bw.toFloat()
+            basePaint.strokeWidth = bw + 1f
             if (g.colors.size == 1) {
                 paint.shader = null
                 paint.color = g.colors[0]
@@ -284,6 +294,10 @@ class HyprDecorations(
                 val bmp = Bitmap.createBitmap(r.width(), r.height(), Bitmap.Config.ARGB_8888)
                 Canvas(bmp).apply {
                     translate(-r.left.toFloat(), -r.top.toFloat())
+                    // The border lies over the window's outer pixels: without an opaque base,
+                    // a translucent colour (the inactive default is rgba(595959aa)) lets the
+                    // app's edge show through and the line looks broken wherever it changes.
+                    drawRoundRect(baseBox, radius + 0.5f, radius + 0.5f, basePaint)
                     drawRoundRect(box, radius, radius, paint)
                 }
                 val hw = bmp.copy(Bitmap.Config.HARDWARE, false)
