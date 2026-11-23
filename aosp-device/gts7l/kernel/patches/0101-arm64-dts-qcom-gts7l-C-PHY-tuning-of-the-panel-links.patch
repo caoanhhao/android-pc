@@ -1,0 +1,49 @@
+From 4df1d9c5a28236f168cffaa9d53dd89ed54e2431 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Tue, 24 Nov 2026 00:16:09 +0700
+Subject: [PATCH 101/102] arm64: dts: qcom: gts7l: C-PHY tuning of the panel
+ links
+
+The stock values (samsung,phy_vreg_ctrl_0, phy_ctrl2, phy_str_swi_cal_sel_ctrl,
+phy_offset_{top,bot,mid}_ctrl of the CSOT PPA957DB1 panel node) for both DSI
+PHYs.
+
+caoanhhao used AI to code
+---
+ arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index a34cdb8df..bc22fe526 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -681,6 +681,13 @@ &mdss_dsi0_out {
+ &mdss_dsi0_phy {
+ 	vdds-supply = <&vreg_l5a_0p88>;
+ 	phy-type = <PHY_TYPE_CPHY>;
++	/* Stock samsung,phy_* tuning of the CSOT PPA957DB1 panel node */
++	qcom,cphy-vreg-ctrl-0 = <0x50>;
++	qcom,cphy-ctrl-2 = <0x64>;
++	qcom,cphy-str-swi-cal-sel = <0x04>;
++	qcom,cphy-rescode-offset-top = <0x1f>;
++	qcom,cphy-rescode-offset-bot = <0x1f>;
++	qcom,cphy-rescode-offset-mid = <0x1f>;
+ 	status = "okay";
+ };
+ 
+@@ -702,6 +709,12 @@ &mdss_dsi1_out {
+ &mdss_dsi1_phy {
+ 	vdds-supply = <&vreg_l5a_0p88>;
+ 	phy-type = <PHY_TYPE_CPHY>;
++	qcom,cphy-vreg-ctrl-0 = <0x50>;
++	qcom,cphy-ctrl-2 = <0x64>;
++	qcom,cphy-str-swi-cal-sel = <0x04>;
++	qcom,cphy-rescode-offset-top = <0x1f>;
++	qcom,cphy-rescode-offset-bot = <0x1f>;
++	qcom,cphy-rescode-offset-mid = <0x1f>;
+ 	status = "okay";
+ };
+ 
+-- 
+2.56.1
+
