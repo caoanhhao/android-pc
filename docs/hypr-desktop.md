@@ -411,6 +411,12 @@ ones, and resizing a tiled window resizes its neighbours so the layout stays til
     `HyprTileController.clickFocus`, which gives the focus (`setFocusedTask`) to the top window
     of the top layer under the pointer when that one does not have it. `focuswindow` on a
     floating window uses `setFocusedTask` too (it was only for pinned ones).
+  - A tile brought to front under a floating window (`focuswindow`, `movefocus`, some taps)
+    got WindowManager's focused app but not the key focus (2026-11-23): in a multi-resumed
+    desk `TaskFragment.resumeTopActivity` sets the focused app of an already resumed activity
+    without asking for the focused window again, and the reorder that ran before had computed
+    it with the old app. The same patch now marks the focus as changed
+    (`mFocusMayChange` and a traversal) when that call changes the focused app.
   - Shell drew no caption on an always-on-top task (`CaptionVisibilityHelper.allowedForTask`,
     meant for PiP and bubbles). With `shell.caption = "floating"` or `"all"` floating windows
     would have lost theirs; `tools/patches/aosp17-shell-floating-caption.patch` (Shell, so it
@@ -2486,9 +2492,9 @@ logcat (`HyprTile: hover focuses task N`).
 
 Not checked: the input method case (LatinIME's palette over another window), the zoom case,
 `follow_mouse_shrink` (host tests only), the real PC. Seen while testing, also with
-`follow_mouse = 3` (hovering inert), so not from this change: `focuswindow` / `movefocus` onto a
-tile, and sometimes a tap on one, left `mCurrentFocus` on the previous tile while a floating
-window was up (Shell's focus and `mFocusedApp` moved, the window focus did not).
+`follow_mouse = 3`: `focuswindow` / `movefocus` onto a tile, and sometimes a tap on one, left
+`mCurrentFocus` on the previous window while a floating window was up; a WindowManager bug,
+fixed in `aosp17-wm-pinned-focus.patch` ("Stacking and resizing tiles").
 
 ## As built
 

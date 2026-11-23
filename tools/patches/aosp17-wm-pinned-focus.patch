@@ -147,10 +147,10 @@ index ef60ace52..b8b85e5f5 100644
          // Don't refocus if invisible to current user
          final ActivityRecord top = tr.getTopNonFinishingActivity();
 diff --git a/services/core/java/com/android/server/wm/TaskFragment.java b/services/core/java/com/android/server/wm/TaskFragment.java
-index d84d8882a..78b1ff1bf 100644
+index d84d8882a..f3823a1ba 100644
 --- a/services/core/java/com/android/server/wm/TaskFragment.java
 +++ b/services/core/java/com/android/server/wm/TaskFragment.java
-@@ -1395,9 +1395,12 @@ class TaskFragment extends WindowContainer<WindowContainer> {
+@@ -1395,10 +1395,18 @@ class TaskFragment extends WindowContainer<WindowContainer> {
              // same task because it can break focused state. (e.g. activity embedding)
              if (taskDisplayArea.inMultiWindowMode() && taskDisplayArea.mDisplayContent != null) {
                  final ActivityRecord focusedApp = taskDisplayArea.mDisplayContent.mFocusedApp;
@@ -160,11 +160,18 @@ index d84d8882a..78b1ff1bf 100644
 +                if ((focusedApp == null || (focusedApp.getTask() != next.getTask()
                          && (!com.android.window.flags.Flags.fixMultiWindowTaskFocusChange()
 -                                || next.getTask().compareTo(focusedApp.getTask()) > 0))) {
+-                    taskDisplayArea.mDisplayContent.setFocusedApp(next);
 +                                || next.getTask().compareTo(focusedApp.getTask()) > 0)))
-+                        && !Task.yieldsFocus(next.getTask())) {
-                     taskDisplayArea.mDisplayContent.setFocusedApp(next);
++                        && !Task.yieldsFocus(next.getTask())
++                        && taskDisplayArea.mDisplayContent.setFocusedApp(next)) {
++                    // android-pc: the focused window follows the new focused app. Without this a
++                    // tile brought to front under an always-on-top sibling (a floating window of
++                    // a desk) got mFocusedApp but the key focus stayed where it was.
++                    mWmService.mFocusMayChange = true;
++                    mWmService.mWindowPlacerLocked.requestTraversal();
                  }
              }
+             ProtoLog.d(WM_DEBUG_STATES, "resumeTopActivity: Top activity "
 diff --git a/services/core/java/com/android/server/wm/Transition.java b/services/core/java/com/android/server/wm/Transition.java
 index 960066fb7..9b5a12a25 100644
 --- a/services/core/java/com/android/server/wm/Transition.java
