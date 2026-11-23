@@ -2405,6 +2405,91 @@ release) and reach neither the handler nor any window or monitor. So hyprlua war
 - **Lua:** `repeating` is accepted on key binds (no warning) and still warned on gesture binds;
   binding the same keys again without the flag replaces the repeating bind.
 
+## Focus follows the mouse
+
+Hyprland's `input:follow_mouse` (default 1): the window under the pointer becomes the focused,
+active window as the pointer moves over it, with the key focus, the active border gradient and
+a place at the front of the focus history (E3's ALT + arrows, `focuscurrentorlast`, ALT + Tab).
+Options: docs/hypr-lua.md (`input.follow_mouse`, `follow_mouse_threshold`,
+`follow_mouse_shrink`, `float_switch_override_focus`); the decision is plain Kotlin,
+`hyprtile`'s `FollowMouse.kt` (host tests in `FollowMouseTest`, `FollowMouseLuaTest`).
+
+### How
+
+- `HyprMouse`'s gesture monitor (the spy window of the mouse binds) sees every hover move of
+  the mouse and hands it to `HyprTileController.hoverMoved`; the app gets the hover as before.
+- **Debounce:** the window under the pointer is looked up once the pointer has rested 60 ms, or
+  250 ms after it started moving if it never rests. Sweeping across three windows focuses the
+  one the pointer stops on, not each one on the way. A window already asked for is not asked
+  again for 500 ms unless the focus moved meanwhile.
+- **Focusing** is `ActivityTaskManager.setFocusedTask`, what WindowManager does for a tap on a
+  window, so hovering and clicking go the same way: E3's history and the border follow
+  through `FocusTransitionObserver` as they do for a click.
+- **Hit test:** the active workspace's windows in the shell's stacking order (pinned, special,
+  floating, then tiled; within a layer WindowManager's order), the topmost whose bounds hold the
+  pointer. Gaps, the bar and the wallpaper focus nothing.
+
+### Decisions
+
+- **Hovering never changes what shows.** Focusing brings a window to the top of its layer
+  (floating windows stay above tiled ones whatever is focused). A tiled window does not move
+  visibly. A floating window that another floating window partly covers is not focused by
+  hovering its visible part: that would raise it over the other, which a pointer passing by must
+  not do. A click focuses and raises it, as before.
+- **When hovering does nothing:** during a `bindm` drag or resize (and a touch drag); while
+  HyprLauncher's launcher, overview or ALT + Tab switcher is open (the launcher reports them
+  with `IHyprShell.setOverlay`, and they are forgotten when it reconnects); while the touch
+  window menu is open; while the input method shows (focusing another window would close it,
+  e.g. LatinIME's emoji palette under the pointer); while a `fullscreen 0` window is up; while
+  zoomed (E10: pointer and window coordinates differ); on the lock screen; and when the focus is
+  on something that is not a window of the active workspace (another display, an app outside
+  the desk).
+- **Special workspaces:** while one shows, only its windows and pinned windows are hovered; the
+  dimmed windows behind it do not take the focus away from it.
+- **Pinned windows** are the top layer and focus like any floating window. **Maximized** tiles
+  (`fullscreen 1`) cover the tiles under them, so the pointer only ever finds the maximized one
+  or a floating window above it.
+- **Modes:** 1 as Hyprland. 0 and 2 both focus on click: Android sends pointer events (hover,
+  wheel) to the window under the pointer whatever has the key focus, which is Hyprland's 2, so
+  the two are the same here; `float_switch_override_focus` (1 by default) still focuses when the
+  pointer crosses from a tiled to a floating window or back (2: onto any floating window).
+  3 (pointer never moves the key focus) is half done: hovering never focuses, but
+  WindowManager still focuses a window on click, which the shell cannot stop; hyprlua warns.
+- **Threshold:** `follow_mouse_threshold` counts from where the pointer was at the first move
+  after a focus change, so with a threshold a focus change by key (ALT + arrows) is not undone by
+  a twitch of the mouse. With the default 0 it is, as in Hyprland.
+- Only mouse hovers count (`SOURCE_MOUSE`); a stylus hovering does not focus.
+
+### Checked on Waydroid (2026-11-23)
+
+Test data, PcSystemUI and HyprLauncher from the working tree in the overlay; two tiles
+(`portrait36` left, `portrait` right), Settings floating in the middle and the trading app
+floating on the right. Hover moves injected as `SOURCE_MOUSE` `ACTION_HOVER_MOVE` with
+`aosp-device/hypr/tools/touchinject` (`TouchInject hover 600,500 @400 2200,300~200`: jumps,
+waits and glides); the focus read from `dumpsys window` (`mCurrentFocus`), the requests from
+logcat (`HyprTile: hover focuses task N`).
+
+| Check | Result |
+|---|---|
+| Pointer onto the left tile, then the right one | each takes the focus; bar title and active border follow |
+| Glide across three windows in 200 ms | one request, for the window it stops on |
+| Glide across two tiles over 1.5 s | two requests, about 500 ms apart |
+| Tile → floating window → back to a tile | focus follows each way |
+| Visible part of a floating window partly under another floating one | no focus (would raise it); after moving the upper one away, hovering it focuses |
+| Launcher, then overview open, pointer over a tile | focus stays on the panel; after ESC hovering focuses again |
+| Special workspace shown, pointer over the dimmed tile | focus stays on the special window; hidden again, hovering focuses the tile |
+| Touch window menu open, pointer over the other tile | no focus change; menu closed, hovering focuses |
+| Pinned floating window | hovering focuses it |
+| `fullscreen 0` window, pointer moving over where other windows are | no request |
+| `follow_mouse = 0` in init.lua (live) | tile → tile: nothing; tile → floating and back: focus (`float_switch_override_focus` 1) |
+| `follow_mouse_threshold = 300` after a tap moved the focus away | 60 px of movement over the old window: nothing; 450 px: focus |
+
+Not checked: the input method case (LatinIME's palette over another window), the zoom case,
+`follow_mouse_shrink` (host tests only), the real PC. Seen while testing, also with
+`follow_mouse = 3` (hovering inert), so not from this change: `focuswindow` / `movefocus` onto a
+tile, and sometimes a tap on one, left `mCurrentFocus` on the previous tile while a floating
+window was up (Shell's focus and `mFocusedApp` moved, the window focus did not).
+
 ## As built
 
 | Piece | Where | Process | What it does |
@@ -2412,7 +2497,7 @@ release) and reach neither the handler nor any window or monitor. So hyprlua war
 | `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
 | `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
 | `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types (E13: `repeating` binds also need `tools/patches/aosp17-input-hypr-repeat-binds.patch` in `frameworks/base`); Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
-| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) |
+| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) and the hover moves of focus follows the mouse |
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
 | `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |

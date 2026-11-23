@@ -60,6 +60,8 @@ class HyprTouch(
     /** The same without WindowManager's limit on the side edges. */
     private val excludedAll = Region()
     private val menu = HyprWindowMenu(context, controller)
+    /** The window menu is open. */
+    val menuShown get() = menu.isShown
 
     /** The window the first finger may pick up (on its frame), until it moves or lifts. */
     private var holdCandidate: RunningTaskInfo? = null

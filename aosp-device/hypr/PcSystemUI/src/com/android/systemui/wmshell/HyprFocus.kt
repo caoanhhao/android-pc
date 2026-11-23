@@ -65,6 +65,7 @@ class HyprFocus(
                 isFocusedOnDisplay: Boolean,
                 isFocusedGlobally: Boolean,
             ) {
+                if (isFocusedGlobally) controller.onFocusChanged()
                 if (isFocusedOnDisplay) onFocused(taskInfo)
             }
         }, mainExecutor)

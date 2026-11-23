@@ -1,7 +1,9 @@
 package com.android.systemui.wmshell
 
 import android.app.ActivityManager.RunningTaskInfo
+import android.app.ActivityTaskManager.INVALID_TASK_ID
 import android.app.ActivityTaskManager
+import android.app.KeyguardManager
 import android.app.StatusBarManager
 import android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD
 import android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM
@@ -36,6 +38,9 @@ import android.window.WindowContainerTransaction
 import com.android.hyprtile.Box
 import com.android.hyprtile.Direction
 import com.android.hyprtile.DwindleLayout
+import com.android.hyprtile.FollowMouse
+import com.android.hyprtile.FollowMouseConfig
+import com.android.hyprtile.HoverWindow
 import com.android.hyprtile.HyprTile
 import com.android.hyprtile.Insets
 import com.android.hyprtile.Coord
@@ -62,6 +67,7 @@ import com.android.systemui.hypr.HyprHostActions
 import com.android.systemui.hypr.HyprSystemActions
 import com.android.wm.shell.ShellTaskOrganizer
 import com.android.wm.shell.common.DisplayController
+import com.android.wm.shell.common.DisplayImeController
 import com.android.wm.shell.common.ShellExecutor
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.EnterReason
 import com.android.wm.shell.desktopmode.DesktopModeEventLogger.Companion.ExitReason
@@ -132,6 +138,7 @@ class HyprTileController(
     private val mixedHandler: Optional<DesktopMixedTransitionHandler>,
     inputManager: InputManager,
     private val decorViewModel: Optional<DesktopModeWindowDecorViewModel>,
+    private val displayImeController: DisplayImeController,
 ) : Transitions.TransitionHandler, Transitions.TransitionObserver {
 
     /**
@@ -146,6 +153,7 @@ class HyprTileController(
                 onConfigChanged?.invoke()
                 mouse.onConfigChanged()
                 zoom.onConfigChanged(value.getString("zoom_factor"))
+                followMouse.config = FollowMouseConfig.read(::option)
                 sync()
             }
         }
@@ -191,6 +199,18 @@ class HyprTileController(
     /** Window history and Hyprland's window switching dispatchers (Phase E3). */
     val focus = HyprFocus(context, this, taskOrganizer, transitions, focusTransitionObserver, mainExecutor)
     private val zoom = HyprZoom(context, inputManager, mainExecutor)
+    /** Focus follows the mouse (`input.follow_mouse`): which window hovering focuses. */
+    private val followMouse = FollowMouse(FollowMouseConfig.read(::option))
+    private val hoverRunnable = Runnable { hoverFocus() }
+    private var hoverScheduled = false
+    private var hoverSince = 0L
+    private var hoverDisplay = DEFAULT_DISPLAY
+    private var hoverX = 0f
+    private var hoverY = 0f
+    /** HyprLauncher's panels that are open (launcher, overview, alt-tab): hovering waits. */
+    private val overlays = HashSet<String>()
+    /** Displays showing the input method: hovering would take the focus from its window. */
+    private val imeShown = HashSet<Int>()
     /** The window a dispatcher acts on instead of the focused one (the touch window menu). */
     private var dispatchTarget: RunningTaskInfo? = null
     /** TRANSIT_CHANGE transitions this controller started (re-tiling): it animates them. */
@@ -283,6 +303,11 @@ class HyprTileController(
         mouse.start()
         touch.start()
         focus.start()
+        displayImeController.addPositionProcessor(object : DisplayImeController.ImePositionProcessor {
+            override fun onImeVisibilityChanged(displayId: Int, isShowing: Boolean) {
+                if (isShowing) imeShown += displayId else imeShown -= displayId
+            }
+        })
         // Window titles change without a transition; the bar shows the focused one.
         taskOrganizer.addTaskInfoChangedListener(object : ShellTaskOrganizer.TaskInfoChangedListener {
             override fun onTaskInfoChanged(taskInfo: RunningTaskInfo) {
@@ -2290,6 +2315,79 @@ class HyprTileController(
             .onFailure { Log.w(TAG, "focus task $hit", it) }
     }
 
+    /**
+     * The pointer hovers at ([x], [y]) (no button down): focus follows the mouse
+     * (`input.follow_mouse`, docs/hypr-desktop.md, "Focus follows the mouse"). The window under
+     * it is looked up once the pointer has been quiet for [HOVER_DELAY_MS] (at the latest
+     * [HOVER_MAX_WAIT_MS] after it started moving), so sweeping across several windows focuses
+     * only the one it stops on.
+     */
+    fun hoverMoved(displayId: Int, x: Float, y: Float) {
+        val c = followMouse.config
+        if (c.mode == 3 || (c.mode != 1 && c.floatSwitch == 0)) return
+        followMouse.moved(x, y)
+        hoverDisplay = displayId
+        hoverX = x
+        hoverY = y
+        val now = SystemClock.uptimeMillis()
+        if (!hoverScheduled) {
+            hoverScheduled = true
+            hoverSince = now
+        }
+        mainExecutor.removeCallbacks(hoverRunnable)
+        mainExecutor.executeDelayed(hoverRunnable,
+            minOf(HOVER_DELAY_MS, maxOf(0L, hoverSince + HOVER_MAX_WAIT_MS - now)))
+    }
+
+    /** The focused task changed (a click, a key, hovering): [FollowMouse] starts over. */
+    internal fun onFocusChanged() = followMouse.focusChanged()
+
+    /** HyprLauncher opened or closed one of its panels (IHyprShell.setOverlay). */
+    fun setOverlay(name: String, shown: Boolean) {
+        if (shown) overlays += name else overlays -= name
+    }
+
+    /** HyprLauncher (re)connected: panels a dead launcher left open are gone. */
+    fun clearOverlays() = overlays.clear()
+
+    private fun hoverFocus() {
+        hoverScheduled = false
+        val displayId = hoverDisplay
+        // Not while something else is in charge of the pointer or the keys: a drag, the
+        // launcher's panels, the window menu, the input method, a fullscreen window, the zoom
+        // (pointer and window coordinates differ), the lock screen.
+        if (!enabled || mouseDrag != null || overlays.isNotEmpty() || touch.menuShown ||
+            displayId in imeShown || zoom.factor > 1f || fullscreenTop(displayId) != null ||
+            context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+        ) {
+            return
+        }
+        val repo = repository
+        val deskId = repo.getActiveDeskId(displayId) ?: return
+        // A shown special workspace keeps the focus among its windows (and pinned ones).
+        val shownSpecial = special.shownOn(displayId) != null
+        val z = repo.getFreeformTasksIdsInDeskInZOrder(deskId).filter { !repo.isMinimizedTask(it) }
+        val windows = z.indices.sortedWith(compareByDescending<Int> { zRank(z[it]) }.thenBy { it })
+            .map { z[it] }
+            .filter { !shownSpecial || zRank(it) >= 2 }
+            .mapNotNull { id ->
+                taskOrganizer.getRunningTaskInfo(id)?.takeIf { it.isVisible && it.isFreeform }
+                    ?.let { HoverWindow(id, it.bounds(), zRank(id)) }
+            }
+        val focusedId = focusTransitionObserver.globallyFocusedTaskId
+        val focused = when {
+            focusedId == INVALID_TASK_ID -> null
+            windows.any { it.id == focusedId } -> focusedId
+            // Something else has the focus (another display, an app outside the desk).
+            else -> return
+        }
+        val target = followMouse.target(windows, hoverX, hoverY, focused, SystemClock.uptimeMillis())
+            ?: return
+        Log.d(TAG, "hover focuses task $target at $hoverX,$hoverY")
+        runCatching { ActivityTaskManager.getService().setFocusedTask(target) }
+            .onFailure { Log.w(TAG, "hover focus task $target", it) }
+    }
+
     fun mouseDown(displayId: Int, x: Float, y: Float, button: Int): Boolean {
         if (!enabled) return false
         val deskId = repository.getActiveDeskId(displayId) ?: return false
@@ -2594,6 +2692,10 @@ class HyprTileController(
      * Reads the configuration: the launcher's (Lua, IHyprShell.setConfig) over the
      * persist.hypr.* properties. Returns true when the tiling changed.
      */
+    /** A configuration value by its wire name: Lua's, else the `persist.hypr.` property. */
+    private fun option(name: String): String? =
+        configOverrides.getString(name) ?: SystemProperties.get("persist.hypr.$name").ifEmpty { null }
+
     private fun updateConfig(): Boolean {
         val o = configOverrides
         decorations.setConfig(HyprStyleProps.decoration(o))
@@ -2615,6 +2717,10 @@ class HyprTileController(
         const val TAG = "HyprTile"
         const val PROP_ENABLED = "persist.hypr.tiling"
         const val SYNC_DELAY_MS = 100L
+        /** Focus follows the mouse once the pointer rests this long ... */
+        const val HOVER_DELAY_MS = 60L
+        /** ... or has been moving this long. */
+        const val HOVER_MAX_WAIT_MS = 250L
         /** How long after a sync empty desks are removed (Hyprland removes them at once). */
         const val REMOVE_DESKS_DELAY_MS = 400L
         /** How long an exec rule waits for its package's window. */

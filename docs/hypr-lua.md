@@ -15,7 +15,7 @@ clear error. The bar (`hl.bar`, `hl.bar_module`) is this shell's own.
 | Split files | `require("name")` reads `name.lua` next to init.lua; `require("config.binds")` reads `config/binds.lua`. A module runs once; its return value is cached. Names are letters, digits, `_`, `-` and dots, never `..` or `/` |
 | Reload | on save (FileObserver on the directory and its sub-directories, plus a modification-time check every 3 s for writes that bypass the FUSE mount); 300 ms after the last write, so an editor's several writes give one reload |
 | Errors | a syntax or runtime error, a bad value or an unknown option: the new file is not used, the last good configuration stays, and a red strip under the bar shows `init.lua: config error` and the message with its line (`init.lua:12: general.gaps_in: expected a whole number, got 'wide'`), until a save loads again. Errors in event hooks, Lua binds and timers show as notifications |
-| Warnings | options that exist in Hyprland but do nothing here (`decoration.blur.*`, `input.*`, ...), unsupported bind flags, ignored rule effects: the file loads, a yellow notification lists them, logcat (`HyprLua`) has all |
+| Warnings | options that exist in Hyprland but do nothing here (`decoration.blur.*`, most of `input.*`, ...), unsupported bind flags, ignored rule effects: the file loads, a yellow notification lists them, logcat (`HyprLua`) has all |
 | Before unlock | the shared storage is not mounted; the last good configuration (kept in device-protected storage) is applied until the user unlocks, then init.lua loads |
 
 Edit live from the host (Waydroid or adb):
@@ -86,6 +86,10 @@ is `general.col.active_border`). `hl.get_config("general.gaps_in")` reads one ba
 | `dwindle.special_scale_factor`, `master.special_scale_factor` | 0.1..1 | 1.0 | share of the work area a special workspace tiles in, centred (the active layout's value applies) |
 | `binds.hide_special_on_workspace_change` | bool | false | switching workspace hides a shown special workspace (else it stays over the new one) |
 | `cursor.zoom_factor` | number, 1 or more | 1.0 | Hyprland's zoom: magnifies the screen around the pointer (Phase E10; above 8 acts as 8). A change applies at once, so the host's `hl.config({ cursor = { zoom_factor = z } })` bind functions work; binds are better off with `hl.dsp.zoom` |
+| `input.follow_mouse` | 0..3 | 1 | focus follows the mouse: 1 the window under the pointer takes the focus (key focus, active border, focus history); 0 and 2 a click focuses (2 is 0 on Android, which always sends pointer events to the window under the pointer); 3 the pointer never focuses, though a click still does (warns). docs/hypr-desktop.md, "Focus follows the mouse" |
+| `input.follow_mouse_threshold` | 0..10000 | 0.0 | px the pointer must travel after a focus change (a key, a click) before hovering focuses another window |
+| `input.follow_mouse_shrink` | int 0..10000 | 0 | px of a window's edges that do not count for hovering |
+| `input.float_switch_override_focus` | 0..2 | 1 | with `follow_mouse` 0 or 2: crossing from a tiled to a floating window or back focuses (1), so does moving onto any floating window (2); 0 never |
 
 Types: integers must be whole numbers; booleans are `true`/`false` (or 0/1); modifiers are
 `ALT`, `SUPER` (`META`, `WIN`), `CTRL`, `SHIFT`, joined by spaces or `+`.
@@ -95,7 +99,7 @@ Colours: `rgba(33ccffee)`, `rgb(33ccff)`, `0xee33ccff` (ARGB, also as a Lua numb
 (`"rgba(33ccffee) rgba(00ff99ee) 45deg"`) or a table `{ colors = { ... }, angle = 45 }`;
 the angle is evaluated as Hyprland's border shader does.
 
-Every other option name of Hyprland 0.57 (`decoration.blur.*`, `input.*`, `misc.*`,
+Every other option name of Hyprland 0.57 (`decoration.blur.*`, most of `input.*`, `misc.*`,
 `general.resize_on_border`, ...) is accepted with a warning. A name that is not Hyprland's
 either is an error.
 

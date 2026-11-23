@@ -8,8 +8,9 @@ import android.view.MotionEvent;
 import java.lang.reflect.Method;
 
 /**
- * Injects multi-finger touchscreen gestures for testing the shell's touch support (Phase D6);
- * `input` only injects one pointer. Run as shell (INJECT_EVENTS):
+ * Injects multi-finger touchscreen gestures for testing the shell's touch support (Phase D6),
+ * and mouse hovers (focus follows the mouse); `input` only injects one pointer. Run as shell
+ * (INJECT_EVENTS):
  *
  *   CLASSPATH=/data/local/tmp/touchinject.dex app_process / TouchInject <command> ...
  *
@@ -23,6 +24,9 @@ import java.lang.reflect.Method;
  *                               `+KEY` (down), `-KEY` (up), `KEY` (down and up) or `@MS` (wait);
  *                               KEY is a KeyEvent name without KEYCODE_. Example:
  *                               keys +ALT_LEFT TAB @300 TAB +SHIFT_LEFT TAB -SHIFT_LEFT @500 -ALT_LEFT
+ *   hover STEP...               mouse hover moves (focus follows the mouse): a step is `X,Y` (the
+ *                               pointer jumps there), `X,Y~MS` (it glides there over MS, a move
+ *                               every 8 ms) or `@MS` (wait). Example: hover 600,500 @400 1900,500~200
  */
 public final class TouchInject {
     private static Object sInput;
@@ -66,6 +70,9 @@ public final class TouchInject {
                 break;
             case "keys":
                 keys(args);
+                break;
+            case "hover":
+                hover(args);
                 break;
             default:
                 throw new IllegalArgumentException("unknown command " + args[0]);
@@ -122,6 +129,43 @@ public final class TouchInject {
         }
         MotionEvent e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, count, props,
                 coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+        sInject.invoke(sInput, e, 0);
+        e.recycle();
+    }
+
+    private static void hover(String[] args) throws Exception {
+        float x = Float.NaN, y = Float.NaN;
+        for (int i = 1; i < args.length; i++) {
+            String a = args[i];
+            if (a.startsWith("@")) {
+                Thread.sleep(Long.parseLong(a.substring(1)));
+                continue;
+            }
+            String[] xy = a.split("~")[0].split(",");
+            float tx = f(xy[0]), ty = f(xy[1]);
+            long ms = a.contains("~") ? Long.parseLong(a.substring(a.indexOf('~') + 1)) : 0;
+            int steps = Float.isNaN(x) ? 1 : (int) Math.max(1, ms / 8);
+            for (int s = 1; s <= steps; s++) {
+                float px = Float.isNaN(x) ? tx : x + (tx - x) * s / steps;
+                float py = Float.isNaN(y) ? ty : y + (ty - y) * s / steps;
+                hoverAt(px, py);
+                if (s < steps) Thread.sleep(8);
+            }
+            x = tx;
+            y = ty;
+        }
+    }
+
+    private static void hoverAt(float x, float y) throws Exception {
+        long now = SystemClock.uptimeMillis();
+        MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
+        props[0].id = 0;
+        props[0].toolType = MotionEvent.TOOL_TYPE_MOUSE;
+        MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
+        coords[0].x = x;
+        coords[0].y = y;
+        MotionEvent e = MotionEvent.obtain(now, now, MotionEvent.ACTION_HOVER_MOVE, 1, props,
+                coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
         sInject.invoke(sInput, e, 0);
         e.recycle();
     }

@@ -141,6 +141,9 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
         } catch (e: IllegalArgumentException) {
             fail("$key: ${e.message}")
         }
+        if (key == "input.follow_mouse" && values[key] == "3") {
+            warn("input.follow_mouse = 3: a click still moves the key focus on Android")
+        }
         dirty = true
     }
 
@@ -581,6 +584,10 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "cursor.zoom_factor" to "zoom_factor",
             "decoration.dim_special" to "dim_special",
             "binds.hide_special_on_workspace_change" to "hide_special_on_workspace_change",
+            "input.follow_mouse" to "follow_mouse",
+            "input.follow_mouse_threshold" to "follow_mouse_threshold",
+            "input.follow_mouse_shrink" to "follow_mouse_shrink",
+            "input.float_switch_override_focus" to "float_switch_override_focus",
         )
 
         private val tile = TileConfig()
@@ -624,6 +631,10 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.hide_special_on_workspace_change" to "false",
             "dwindle.special_scale_factor" to "1.0",
             "master.special_scale_factor" to "1.0",
+            "input.follow_mouse" to "1",
+            "input.follow_mouse_threshold" to "0.0",
+            "input.follow_mouse_shrink" to "0",
+            "input.float_switch_override_focus" to "1",
         )
 
         private fun intIn(range: IntRange): (String, String) -> String = { v, t ->
@@ -707,6 +718,11 @@ class ConfigBuilder(private val isKey: (androidName: String) -> Boolean) {
             "binds.hide_special_on_workspace_change" to boolOpt,
             "dwindle.special_scale_factor" to floatIn(0.1f, 1f),
             "master.special_scale_factor" to floatIn(0.1f, 1f),
+            // Focus follows the mouse (FollowMouseConfig): 1 hover, 0 and 2 click, 3 never.
+            "input.follow_mouse" to intIn(0..3),
+            "input.follow_mouse_threshold" to floatIn(0f, 10_000f),
+            "input.follow_mouse_shrink" to intIn(0..10_000),
+            "input.float_switch_override_focus" to intIn(0..2),
         )
 
         /** Why [arg] does not suit [dispatcher], or null when it does. */

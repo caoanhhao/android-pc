@@ -180,6 +180,7 @@ class AltTabSwitcher(private val desktop: Desktop) {
         try {
             wm.addView(root, lp)
             added = true
+            desktop.overlay("alttab", true)
             root.requestFocus()
         } catch (e: Exception) {
             Log.w(Desktop.TAG, "alt-tab window: $e")
@@ -194,6 +195,7 @@ class AltTabSwitcher(private val desktop: Desktop) {
         if (added) {
             added = false
             wm.removeViewImmediate(root)
+            desktop.overlay("alttab", false)
         }
         row.removeAllViews()
     }

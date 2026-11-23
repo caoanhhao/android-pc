@@ -92,6 +92,7 @@ class Overview(private val desktop: Desktop) {
         lp.title = "HyprOverview"
         lp.setFitInsetsTypes(0)
         wm.addView(grid, lp)
+        desktop.overlay("overview", true)
         grid.requestFocus()
         loadSnapshots()
     }
@@ -100,6 +101,7 @@ class Overview(private val desktop: Desktop) {
         if (!shown) return
         shown = false
         wm.removeViewImmediate(grid)
+        desktop.overlay("overview", false)
         grid.removeAllViews()
         snapshots.clear()
     }

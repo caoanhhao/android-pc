@@ -34,6 +34,9 @@ hl.config({
     dwindle = { preserve_split = false },
     master = { new_status = "slave", mfact = 0.55 },
 
+    -- Focus follows the mouse: 1 hovering focuses, 0 a click does.
+    input = { follow_mouse = 1 },
+
     -- This shell's own settings.
     shell = {
         main_mod = mainMod,     -- modifier of the default binds and of the mouse binds

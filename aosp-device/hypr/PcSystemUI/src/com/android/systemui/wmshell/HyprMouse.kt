@@ -36,6 +36,8 @@ import com.android.hyprtile.parseMods
  * (tools/patches/aosp17-input-hypr-wheel-binds.patch). Unbound events, and bound ones with
  * `non_consuming` or `binds.pass_mouse_when_bound`, go to the app as before.
  *
+ * Hover moves go to [HyprTileController.hoverMoved] (focus follows the mouse).
+ *
  * Touch (no button) counts as the left button, for `bindm` drags only. Created and fed on
  * Shell's main thread.
  */
@@ -99,6 +101,13 @@ class HyprMouse(
         }
         when (e.actionMasked) {
             MotionEvent.ACTION_SCROLL -> return onScroll(e)
+            // Focus follows the mouse (the controller debounces); the app gets the hover too.
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                if (!active && e.isFromSource(InputDevice.SOURCE_MOUSE)) {
+                    controller.hoverMoved(displayId, e.rawX, e.rawY)
+                }
+                return false
+            }
             MotionEvent.ACTION_DOWN -> {
                 active = false
                 swallowing = false

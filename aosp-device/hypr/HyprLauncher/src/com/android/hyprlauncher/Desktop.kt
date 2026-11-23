@@ -201,6 +201,11 @@ class Desktop private constructor(context: Context) {
         shellCall { if (!it.dispatch(name, arg)) Log.w(TAG, "dispatch $name $arg refused") }
     }
 
+    /** Tells the shell a panel opened or closed (focus does not follow the mouse meanwhile). */
+    fun overlay(name: String, shown: Boolean) {
+        shellCall { it.setOverlay(name, shown) }
+    }
+
     fun shellCall(block: (IHyprShell) -> Unit) {
         val s = shell ?: return
         shellThread.execute {

@@ -159,6 +159,12 @@ class HyprShell(
             }
         }
 
+        override fun setOverlay(name: String?, shown: Boolean) {
+            executeRemoteCallWithTaskPermission(shell, "setOverlay") {
+                it.controller.setOverlay(name ?: "", shown)
+            }
+        }
+
         override fun getState(displayId: Int): Bundle {
             var result = Bundle()
             executeRemoteCallWithTaskPermission(shell, "getState", {
@@ -169,7 +175,11 @@ class HyprShell(
 
         override fun addListener(listener: IHyprShellListener?) {
             listener ?: return
-            executeRemoteCallWithTaskPermission(shell, "addListener") { it.addListener(listener) }
+            executeRemoteCallWithTaskPermission(shell, "addListener") {
+                // A launcher that (re)connects has no panel open.
+                it.controller.clearOverlays()
+                it.addListener(listener)
+            }
         }
 
         override fun removeListener(listener: IHyprShellListener?) {

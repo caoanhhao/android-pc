@@ -32,4 +32,10 @@ interface IHyprShell {
     void addListener(IHyprShellListener listener) = 5;
 
     void removeListener(IHyprShellListener listener) = 6;
+
+    /**
+     * The launcher opened or closed a panel that takes the keys ([name]: launcher, overview,
+     * alttab): focus does not follow the mouse while one is open.
+     */
+    void setOverlay(String name, boolean shown) = 7;
 }

@@ -5,6 +5,7 @@ import android.hardware.input.InputManager;
 
 import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.common.DisplayController;
+import com.android.wm.shell.common.DisplayImeController;
 import com.android.wm.shell.common.ShellExecutor;
 import com.android.wm.shell.dagger.WMShellModule;
 import com.android.wm.shell.dagger.WMSingleton;
@@ -58,11 +59,12 @@ public abstract class PcWMShellModule {
             SnapController snapController,
             Optional<DesktopMixedTransitionHandler> mixedHandler,
             InputManager inputManager,
-            Optional<DesktopModeWindowDecorViewModel> decorViewModel) {
+            Optional<DesktopModeWindowDecorViewModel> decorViewModel,
+            DisplayImeController displayImeController) {
         return new HyprTileController(context, shellInit, transitions, taskOrganizer, displayController,
                 userRepositories, desktopTasksController, deskSwitchTransitionHandler,
                 focusTransitionObserver, shellKeyGestureHandler, mainExecutor, snapController,
-                mixedHandler, inputManager, decorViewModel);
+                mixedHandler, inputManager, decorViewModel, displayImeController);
     }
 
     @WMSingleton

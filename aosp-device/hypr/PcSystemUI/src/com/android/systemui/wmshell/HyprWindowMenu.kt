@@ -30,6 +30,8 @@ class HyprWindowMenu(
     private var view: View? = null
     private val frame = android.graphics.Rect()
 
+    val isShown get() = view != null
+
     /** Whether ([x], [y]) is on the open menu. */
     fun contains(x: Float, y: Float) = view != null && frame.contains(x.toInt(), y.toInt())
 

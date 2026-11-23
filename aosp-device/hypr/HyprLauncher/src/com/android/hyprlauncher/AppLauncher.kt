@@ -121,6 +121,7 @@ class AppLauncher(private val desktop: Desktop) {
         lp.softInputMode = SOFT_INPUT_ADJUST_NOTHING
         lp.setFitInsetsTypes(0)
         wm.addView(root, lp)
+        desktop.overlay("launcher", true)
         search.requestFocus()
     }
 
@@ -128,6 +129,7 @@ class AppLauncher(private val desktop: Desktop) {
         if (!shown) return
         shown = false
         wm.removeViewImmediate(root)
+        desktop.overlay("launcher", false)
     }
 
     private fun filter() {
