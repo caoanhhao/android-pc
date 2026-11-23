@@ -310,3 +310,73 @@ orientation (portrait top-left = red "1", yellow border) on the DSI0 half. The l
 right on every line, the full line width only for the first ~150 lines; the rest of each line
 turns white. DSI1 half still black. Next: the stock PHY timings instead of mainline's computed
 ones, burst vs. non-burst video, then DSI1. Photo: `gts7l-stock/s6/panel-pattern-k7.jpg`.
+
+### Panel bring-up, kernels #8-#10 (2026-11-24, night run)
+
+**Nothing in this section was verified on the screen.** The webcam (`/dev/video0`) showed the
+user and then a dark room, never the tablet, so every picture result below is unverified; the
+checks were made over the USB shell (kernel log, DSI/PHY registers, DCS reads).
+
+Kernel #8 (patch 0102 now, DEBUG), built with `CONFIG_DEVMEM=y` added to the fragment by hand
+(not committed; `busybox devmem` needs it), plus
+- `/sys/module/msm/parameters/cphy_timing`: the 14 stock phy-timing bytes for the C-PHY
+  `TIMING_CTRL` registers (bytes 12/13 to the host's `CLKOUT_TIMING_CTRL`, as downstream);
+- `/sys/module/msm/parameters/dbg_flags_{set,clear}`: `MIPI_DSI_MODE_*` bits forced in
+  `dsi_ctrl_enable()` (burst/sync pulse/`NO_HSA/HBP/HFP`/`CLOCK_NON_CONTINUOUS`/LPM);
+- `/sys/module/panel_novatek_nt36523/parameters/dcs_read` (`echo 0x0a > ...`): reads a DCS
+  register over each link and logs it.
+
+Findings (bootloader panel state kept, computed timings):
+- Mainline's C-PHY timings at 997.96 Msym/s: `hs_exit 39, clk_pre 43, clk_prepare 10,
+  clk_post 26, hs_rqst 11`; stock writes `hs_exit 0x11, 0x3e, 0x0d, 0x1e, 0x0a` (TIMING_CTRL_4..8)
+  and `CLKOUT_TIMING_CTRL` 0x1e/0x1a.
+- Link budget: the byte clock (142.57 MHz, 16 bits x 3 trios = 6 bytes per cycle) carries exactly
+  the pixel rate (285.13 MHz x 3 bytes) including blanking: a line is 458 byte clocks, the
+  800-pixel payload 400, leaving 58. Both timing sets need about 130 byte clocks for an HS
+  exit/entry, so the link cannot drop to LP inside a line in either case; the timings can only
+  matter at frame boundaries. This weakens the "per-line LP overhead" explanation of the
+  ~150-good-lines symptom.
+- Both DSI controllers are programmed alike and match the stock mode per link: active 800x2560,
+  h total 916 (HSA 2, HBP 30, HFP 84), v total 2594 (VSA 1, VBP 7, VFP 26), `VID_CFG0 0x9230`
+  (burst, RGB888, BLLP/EOF-BLLP LP), `CPHY_MODE_CTRL 1`, lanes 0-2 out of stop state (HS), no
+  FIFO under/overflow, no ACK errors, `LANE_CTRL` with the clock-lane HS force request
+  (continuous clock; stock is non-continuous). DSI1's `STATUS0` has bit 13 set, DSI0's not.
+- DCS reads: DSI1 answers (`0x0a` = `0x9e`: booster on, sleep out, normal mode, display on;
+  `0x0e` = `0x80`; `0x05` error count 1 at boot, then 0). DSI0 reads return no data (also the
+  backlight's `actual_brightness`), so on this panel only the DSI1 port answers reads: DSI1's
+  link works in LP and BTA, its black half is a video-path problem.
+- PHY common registers differ between the links only in `CLK_CFG0/1` (0x10/0x14) and 0x3c, as
+  expected for the slave PLL.
+
+Hazards found:
+- Reading the DPU `INTF_1` registers (0x0ae6a800) with `devmem` rebooted the tablet.
+- Kernel #9 dumped the bootloader's DSI/PHY/INTF registers from the first DSI PHY probe (guarded
+  by the dispcc `CBCR` CLK_OFF bits of the AHB and MDP clocks). It never came back: no USB
+  device since 00:04:45, so the tablet hangs or boot-loops in the early boot and needs a
+  person. The dump code is not in the series (`gts7l-stock/s6/k9-bootloader-dump.diff`).
+
+**Recovery (needs the user):** force a restart (Power + Volume Down, ~7 s), enter the
+recovery (LineageOS, root adb) or Download mode, and write `gts7l-stock/s6/boot-k10-good.img`
+(kernel #10: the code and config of the tested kernel #8, 16314368 bytes, SHA-256
+`1bbd9e45a204868a...`) to `boot` as in section 12 (zero
+`boot`, dd, compare SHA-256, clear byte 0 of `param`, sysrq reboot), or from Download mode with
+`samloader flash -p BOOT`. Then `tools/gts7l-netflash.sh` works again.
+
+Series after this run:
+- 0100 (clean): `drm/msm/dsi/phy: 7nm` reads optional `qcom,cphy-{vreg-ctrl-0,ctrl-2,
+  str-swi-cal-sel,rescode-offset-{top,bot,mid}}` from the PHY node (binding updated) and uses
+  them in C-PHY mode; 0101 (clean): the stock values in the gts7l DTS for both PHYs. Same
+  register values as the old DEBUG 0100 (kernel #7, verified on screen: right colours), but
+  the clean build itself (#11, `gts7l-stock/s6/boot-k11-untested.img`, also the current
+  `out/gts7l/bringup/boot.img`) was never booted: flash `boot-k10-good.img` first.
+- 0097-0099 and 0102 stay DEBUG: the panel does not work from a cold reset yet, so there are
+  no verified values to turn them into clean patches.
+
+Next, once the tablet is back and the webcam sees it:
+1. `echo 0,0x24,0x0a,0x0a,0x11,0x3e,0x0d,0x1e,0x0a,0x02,0x04,0x00,0x1e,0x1a >
+   /sys/module/msm/parameters/cphy_timing`, blank/unblank (with `skip_disable`), photo.
+2. `dbg_flags_set=0x400` (non-continuous clock, as stock), then sync-pulse/sync-event modes
+   (`dbg_flags_clear=0x2`, `dbg_flags_set=0x4`), each with a photo.
+3. DSI1 black: compare the DPU INTF_2/CTL setup with the bootloader's (read it safely: from
+   the DPU driver after it takes its clocks, not with `devmem`), and check that the panel's
+   second port gets video at all (DSI1 `STATUS0` bit 13).

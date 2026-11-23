@@ -1,0 +1,193 @@
+From 3f075c32e32344b2173fc93c686827fb832e59d0 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Tue, 24 Nov 2026 00:16:03 +0700
+Subject: [PATCH 100/102] drm/msm/dsi/phy: 7nm: board C-PHY analog tuning from
+ the device tree
+
+The Galaxy Tab S7 LTE (gts7l) drives its NT36523 panel over two C-PHY links
+whose analog settings differ from the driver's defaults: the vendor kernel
+overrides VREG_CTRL_0, CTRL_2, STR_SWI_CAL_SEL and the three RESCODE offsets
+per board (samsung,phy_* in its panel node). With the defaults the panel
+shows wrong colours; with the vendor values the colours are right.
+
+Read optional qcom,cphy-* properties from the PHY node and use them in place
+of the defaults in C-PHY mode.
+
+caoanhhao used AI to code
+---
+ .../bindings/phy/qcom,dsi-phy-7nm.yaml        | 36 ++++++++++
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c     | 69 +++++++++++++++++++
+ 2 files changed, 105 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/phy/qcom,dsi-phy-7nm.yaml b/Documentation/devicetree/bindings/phy/qcom,dsi-phy-7nm.yaml
+index f397ba3fa..c9efe6db7 100644
+--- a/Documentation/devicetree/bindings/phy/qcom,dsi-phy-7nm.yaml
++++ b/Documentation/devicetree/bindings/phy/qcom,dsi-phy-7nm.yaml
+@@ -61,6 +61,42 @@ properties:
+     enum: [ 10, 11 ]
+     default: 10
+ 
++  qcom,cphy-vreg-ctrl-0:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, LDO setting; the value for PHY_CMN_VREG_CTRL_0. Used only in C-PHY mode.
++
++  qcom,cphy-ctrl-2:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, rate mode setting; the value for PHY_CMN_CTRL_2. Used only in C-PHY mode.
++
++  qcom,cphy-str-swi-cal-sel:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, drive strength calibration select; the value for PHY_CMN_GLBL_STR_SWI_CAL_SEL_CTRL. Used only in C-PHY mode.
++
++  qcom,cphy-rescode-offset-top:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, top impedance code offset; the value for PHY_CMN_GLBL_RESCODE_OFFSET_TOP_CTRL. Used only in C-PHY mode.
++
++  qcom,cphy-rescode-offset-bot:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, bottom impedance code offset; the value for PHY_CMN_GLBL_RESCODE_OFFSET_BOT_CTRL. Used only in C-PHY mode.
++
++  qcom,cphy-rescode-offset-mid:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 0xff
++    description:
++      Board C-PHY tuning, middle impedance code offset; the value for PHY_CMN_GLBL_RESCODE_OFFSET_MID_CTRL. Used only in C-PHY mode.
++
+ required:
+   - compatible
+   - reg
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 5d805a797..2523b439f 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -13,6 +13,26 @@
+ #include "dsi.xml.h"
+ #include "dsi_phy_7nm.xml.h"
+ 
++/**
++ * struct dsi_phy_7nm_tuning_cfg - board C-PHY analog tuning from the device tree
++ * @vreg_ctrl_0: PHY_CMN_VREG_CTRL_0
++ * @ctrl_2: PHY_CMN_CTRL_2
++ * @str_swi_cal_sel: PHY_CMN_GLBL_STR_SWI_CAL_SEL_CTRL
++ * @rescode_top: PHY_CMN_GLBL_RESCODE_OFFSET_TOP_CTRL
++ * @rescode_bot: PHY_CMN_GLBL_RESCODE_OFFSET_BOT_CTRL
++ * @rescode_mid: PHY_CMN_GLBL_RESCODE_OFFSET_MID_CTRL
++ *
++ * A negative value keeps the driver's default for that register.
++ */
++struct dsi_phy_7nm_tuning_cfg {
++	s32 vreg_ctrl_0;
++	s32 ctrl_2;
++	s32 str_swi_cal_sel;
++	s32 rescode_top;
++	s32 rescode_bot;
++	s32 rescode_mid;
++};
++
+ /*
+  * DSI PLL 7nm - clock diagram (eg: DSI0): TODO: updated CPHY diagram
+  *
+@@ -965,6 +985,7 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	u32 const delay_us = 5;
+ 	u32 const timeout_us = 1000;
+ 	struct msm_dsi_dphy_timing *timing = &phy->timing;
++	const struct dsi_phy_7nm_tuning_cfg *tuning = phy->tuning_cfg;
+ 	struct dsi_pll_7nm *pll = phy->pll_data;
+ 	void __iomem *base = phy->base;
+ 	bool less_than_1500_mhz;
+@@ -1090,6 +1111,17 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 		glbl_rescode_bot_ctrl = 0x3c;
+ 	}
+ 
++	if (phy->cphy_mode && tuning) {
++		if (tuning->vreg_ctrl_0 >= 0)
++			vreg_ctrl_0 = tuning->vreg_ctrl_0;
++		if (tuning->str_swi_cal_sel >= 0)
++			glbl_str_swi_cal_sel_ctrl = tuning->str_swi_cal_sel;
++		if (tuning->rescode_top >= 0)
++			glbl_rescode_top_ctrl = tuning->rescode_top;
++		if (tuning->rescode_bot >= 0)
++			glbl_rescode_bot_ctrl = tuning->rescode_bot;
++	}
++
+ 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+ 	pll->pll_enable_cnt = 1;
+ 	/* de-assert digital and pll power down */
+@@ -1135,6 +1167,9 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	writel(glbl_rescode_bot_ctrl,
+ 	       base + REG_DSI_7nm_PHY_CMN_GLBL_RESCODE_OFFSET_BOT_CTRL);
+ 	writel(0x55, base + REG_DSI_7nm_PHY_CMN_GLBL_LPTX_STR_CTRL);
++	if (phy->cphy_mode && tuning && tuning->rescode_mid >= 0)
++		writel(tuning->rescode_mid,
++		       base + REG_DSI_7nm_PHY_CMN_GLBL_RESCODE_OFFSET_MID_CTRL);
+ 
+ 	/* Remove power down from all blocks */
+ 	writel(0x7f, base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+@@ -1144,6 +1179,8 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	/* Select full-rate mode */
+ 	if (!phy->cphy_mode)
+ 		writel(0x40, base + REG_DSI_7nm_PHY_CMN_CTRL_2);
++	else if (tuning && tuning->ctrl_2 >= 0)
++		writel(tuning->ctrl_2, base + REG_DSI_7nm_PHY_CMN_CTRL_2);
+ 
+ 	ret = dsi_7nm_set_usecase(phy);
+ 	if (ret) {
+@@ -1274,6 +1311,37 @@ static const struct regulator_bulk_data dsi_phy_7nm_98400uA_regulators[] = {
+ 	{ .supply = "vdds", .init_load_uA = 98400 },
+ };
+ 
++static s32 dsi_7nm_phy_read_tuning(struct device_node *np, const char *name)
++{
++	u32 val;
++
++	return of_property_read_u32(np, name, &val) ? -1 : (val & 0xff);
++}
++
++static int dsi_7nm_phy_parse_dt(struct msm_dsi_phy *phy)
++{
++	struct device *dev = &phy->pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct dsi_phy_7nm_tuning_cfg *tuning;
++
++	if (!phy->cphy_mode)
++		return 0;
++
++	tuning = devm_kzalloc(dev, sizeof(*tuning), GFP_KERNEL);
++	if (!tuning)
++		return -ENOMEM;
++
++	tuning->vreg_ctrl_0 = dsi_7nm_phy_read_tuning(np, "qcom,cphy-vreg-ctrl-0");
++	tuning->ctrl_2 = dsi_7nm_phy_read_tuning(np, "qcom,cphy-ctrl-2");
++	tuning->str_swi_cal_sel = dsi_7nm_phy_read_tuning(np, "qcom,cphy-str-swi-cal-sel");
++	tuning->rescode_top = dsi_7nm_phy_read_tuning(np, "qcom,cphy-rescode-offset-top");
++	tuning->rescode_bot = dsi_7nm_phy_read_tuning(np, "qcom,cphy-rescode-offset-bot");
++	tuning->rescode_mid = dsi_7nm_phy_read_tuning(np, "qcom,cphy-rescode-offset-mid");
++	phy->tuning_cfg = tuning;
++
++	return 0;
++}
++
+ const struct msm_dsi_phy_cfg dsi_phy_7nm_cfgs = {
+ 	.has_phy_lane = true,
+ 	.regulator_data = dsi_phy_7nm_36mA_regulators,
+@@ -1285,6 +1353,7 @@ const struct msm_dsi_phy_cfg dsi_phy_7nm_cfgs = {
+ 		.save_pll_state = dsi_7nm_pll_save_state,
+ 		.restore_pll_state = dsi_7nm_pll_restore_state,
+ 		.set_continuous_clock = dsi_7nm_set_continuous_clock,
++		.parse_dt_properties = dsi_7nm_phy_parse_dt,
+ 	},
+ 	.min_pll_rate = 600000000UL,
+ #ifdef CONFIG_64BIT
+-- 
+2.56.1
+
