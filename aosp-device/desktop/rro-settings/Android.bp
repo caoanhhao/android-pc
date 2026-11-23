@@ -1,0 +1,13 @@
+// SettingsProvider defaults for the PC's landscape display (docs/desktop-mode.md, "Every app
+// in landscape"): auto-rotation off, rotation 0, on a fresh userdata.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "pc_desktop_overlay_settings_provider",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

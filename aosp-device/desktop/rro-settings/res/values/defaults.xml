@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings.System.ACCELEROMETER_ROTATION and USER_ROTATION: a PC monitor does not
+         turn, so rotation is locked at 0, the 2560x1080 panel's own landscape. -->
+    <bool name="def_accelerometer_rotation">false</bool>
+    <integer name="def_user_rotation">0</integer>
+</resources>

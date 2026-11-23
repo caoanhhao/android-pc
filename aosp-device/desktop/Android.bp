@@ -20,3 +20,21 @@ sh_binary {
     product_specific: true,
     visibility: ["//visibility:public"],
 }
+
+// Every app in landscape (docs/desktop-mode.md): at each boot, the device config that makes
+// WindowManager ignore apps' fixed orientation, and once per userdata the rotation lock.
+// On /product for the same reason as above (su domain).
+prebuilt_etc {
+    name: "init.landscape.rc",
+    src: "init.landscape.rc",
+    sub_dir: "init",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}
+
+sh_binary {
+    name: "landscape-defaults.sh",
+    src: "landscape-defaults.sh",
+    product_specific: true,
+    visibility: ["//visibility:public"],
+}

@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.android.providers.settings.pc.desktop.overlay">
+
+    <application android:hasCode="false" />
+
+    <!-- Above Cuttlefish's SettingsProvider overlay (priority 1), which turns auto-rotation
+         on, and next to the Wi-Fi one (priority 10). -->
+    <overlay
+      android:targetPackage="com.android.providers.settings"
+      android:isStatic="true"
+      android:priority="11"
+      />
+</manifest>

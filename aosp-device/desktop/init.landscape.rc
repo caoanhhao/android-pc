@@ -1,0 +1,10 @@
+# Every app in landscape (docs/desktop-mode.md): device config and rotation defaults.
+on property:sys.boot_completed=1
+    start landscape_defaults
+
+service landscape_defaults /product/bin/landscape-defaults.sh
+    user root
+    group root
+    seclabel u:r:su:s0
+    disabled
+    oneshot

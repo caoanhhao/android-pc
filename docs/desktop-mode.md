@@ -167,10 +167,10 @@ Launcher3, Quickstep or Smart Dock entries in the crash log.
   setting.
 - **Orientation.** A 2560x1080 panel is landscape at rotation 0, its natural orientation.
   `display_settings.xml` locks it there: `userRotationMode="1"` (locked), `userRotation="0"`,
-  `fixedToUserRotation="2"` (portrait-only apps are letterboxed instead of turning the
-  screen) and `ignoreOrientationRequest="true"`. The overlay also sets
-  `config_supportAutoRotation=false` (no accelerometer on a PC; Cuttlefish's virtual one is
-  ignored).
+  `fixedToUserRotation="2"` (an app's orientation request never turns the screen) and
+  `ignoreOrientationRequest="true"`. The overlay also sets `config_supportAutoRotation=false`
+  (no accelerometer on a PC; Cuttlefish's virtual one is ignored). Portrait-only apps are
+  no longer letterboxed either: see "Every app in landscape" below.
 - **Density** is 160 since H4 (`androidboot.lcd_density` in the stick's bootconfig,
   `tools/mkusb-aosp17.sh --density N`): 1 dp = 1 px, so the 2560x1080 screen is
   2560x1080 dp (`sw1080dp`), about the size of Windows' 100 % scale. The user asked for a
@@ -178,6 +178,109 @@ Launcher3, Quickstep or Smart Dock entries in the crash log.
   1707x720 dp (`sw720dp`), a touch-tablet size. `--density 240` (or `adb shell wm density
   240` at run time) brings the larger UI back. Checked on Cuttlefish with `dpi=160`:
   Settings, Chromium, Smart Dock's dock and start menu lay out normally.
+
+## Every app in landscape
+
+Every app opens in a desktop window on a desk (tiled by hyprtile) and fills it in landscape,
+including apps that declare a portrait-only `screenOrientation` and `resizeableActivity=false`;
+the same app in fullscreen ("Android mode": Shell's fullscreen, exit-desktop, `am start
+--windowingMode 1`) fills the landscape screen. The display never rotates.
+
+### How
+
+AOSP 17's own "universal resizable" behaviour does it. On a large screen (`sw >= 600dp`)
+whose display ignores orientation requests, `ActivityRecord.isUniversalResizeable()` makes
+WindowManager ignore an activity's fixed orientation, min/max aspect ratio and
+non-resizability: the activity's `overrideOrientation` becomes `UNSPECIFIED`, it counts as
+resizable, and it gets no letterbox. Apps that target SDK 36 or higher get it already
+(compat change `UNIVERSAL_RESIZABLE_BY_DEFAULT`, 357141415). For every other app it is
+the `window_manager` device config `ignore_activity_orientation_request_screens=large`
+(`WindowManagerConstants`), which is what we set:
+
+| Piece | Where | Effect |
+|---|---|---|
+| `device_config put window_manager ignore_activity_orientation_request_screens large` | `landscape-defaults.sh` (`/product/bin`), started by `init.landscape.rc` at `sys.boot_completed=1` | universal resizable for apps that target SDK < 36. Put only while the key is unset, so it is there from the first boot on fresh and existing userdata and survives a device-config reset; WindowManager listens to the key, so it applies without a reboot |
+| `settings put system accelerometer_rotation 0`, `user_rotation 0` | same script, once per userdata (marker `/data/misc/pc-landscape-rotation.done`) | rotation locked at 0 on an existing userdata, which had auto-rotation on (`USER_ROTATION_FREE`) from Cuttlefish's SettingsProvider defaults |
+| `def_accelerometer_rotation=false`, `def_user_rotation=0` | RRO `pc_desktop_overlay_settings_provider` (`desktop/rro-settings/`, `/vendor/overlay`, priority 11 over Cuttlefish's priority 1, which sets auto-rotation on) | the same on a fresh userdata |
+| `ignoreOrientationRequest`, `fixedToUserRotation`, `config_supportAutoRotation=false` | `display_settings.xml`, framework overlay (above) | the display stays at rotation 0 whatever an app asks; `ignoreOrientationRequest` is also what lets universal resizable apply |
+
+No `frameworks/base` change. The script runs in the `su` domain from `/product`, as H4's
+`smartdock-setup.sh` did (userdebug only, which this product is).
+
+Where the window's shape comes from: hyprtile gives every tiled window its tile, whatever the
+app declares, and the app now fills it. Shell's own placement (`DesktopModeUtils.
+calculateInitialBounds`, used when a task opens in a desk or comes back to one) still reads the
+manifest's `screenOrientation`, and the task still counts as non-resizable for it
+(`Task.updateForceResizeOverrides` asks `isUniversalResizeable()` before the activity is attached
+to the display, so it answers false), so it picks a portrait-shaped window (about 318x761 here)
+for a portrait app. Only a window that keeps those bounds shows that:
+
+- a window that comes back from fullscreen to its desk kept them until hyprtile forgot its tile
+  while fullscreen (`HyprTileController.sync`, docs/hypr-desktop.md, `fullscreen 0`); now it
+  takes its tile again, for every app;
+- a window that floats from the moment it opens (a Lua window rule, an exec rule) keeps Shell's
+  portrait shape; `togglefloating` gives hyprtile's own landscape size (half the width, two
+  thirds of the height of the work area).
+
+A tile can be taller than wide (dwindle splits the newest window's tile in turn, so the third
+window on a 2560-wide desk gets a narrow column); the app then lays out for that shape, as any
+app does there. That is the layout, not the app's request.
+
+What stays as the app asks:
+
+- **Games** (`android:appCategory="game"`, `ApplicationInfo.CATEGORY_GAME`) are never
+  universal resizable; a portrait-only game is letterboxed (pillarboxed) in its window.
+- An app that sets `android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` (application
+  or activity `<property>`) opts itself out.
+- A per-app aspect ratio the user picks in Settings → Apps → the app → Aspect ratio (when that
+  page is offered) wins over universal resizable.
+
+### Opting an app out
+
+If an app misbehaves in landscape (crashes, a stretched or sideways camera preview, a layout
+it was never tested in), put it on WindowManager's opt-out list (comma-separated package
+names, kept in userdata, applies to the app's next launch):
+
+```
+adb shell device_config put window_manager opt_out_ignore_activity_orientation_request_list com.example.app,com.example.other
+adb shell am force-stop com.example.app
+```
+
+That is enough for an app that targets SDK < 36. One that targets 36+ is also universal
+resizable through the compat change, so it needs the list *and* a per-app compat override
+(allowed on this userdebug build): `adb shell am compat disable UNIVERSAL_RESIZABLE_BY_DEFAULT
+com.example.app` (`am compat reset ...` undoes it). Checked with two portrait-only,
+non-resizable test apps (target 33 and 36): letterboxed again only with those steps. An
+opted-out app keeps its portrait window, letterboxed in a landscape tile; to give it a
+floating window instead, add a window rule to `init.lua` (docs/hypr-lua.md):
+`hl.window_rule({ match = { class = "^com\\.example\\.app$" }, float = true })`. Turning the whole thing
+off is `device_config put window_manager ignore_activity_orientation_request_screens none`
+(the script leaves a set value alone).
+
+Apps found to misbehave so far: none.
+
+### Checked on Waydroid (2026-11-23)
+
+Two test APKs made for this (`aapt2` only, no code: `android.app.Activity` with
+`screenOrientation="portrait"`, `resizeableActivity="false"`, target SDK 33 and 36), TCInvest
+(`com.fss.tcbs.mobiletrading`: portrait, non-resizable, target 36) and Settings. State read with
+`dumpsys activity containers` / `activities` (`overrideOrientation`, `areBoundsLetterboxed`) and
+`hyprctl clients` inside the container, screenshots with `screencap`.
+
+| Case | Before | After |
+|---|---|---|
+| target-33 portrait app in a tile (2560-wide desk, 623x500 tile) | letterboxed: a 186x446 portrait window in the middle of the tile, config `port` | fills the tile, `overrideOrientation=UNSPECIFIED`, `land` |
+| target-36 portrait app, TCInvest | already universal resizable (compat change): fill their tile | same |
+| alone on a desk | — | the whole work area, `[12,45][2526,1046]` |
+| `am start --windowingMode 1`, Shell's `moveTaskOutOfDesk` (exit desktop) | pillarboxed portrait | fullscreen `[0,0][2538,1058]`, not letterboxed, rotation 0 |
+| `fullscreen 0` and back, Shell's exit-desktop and `moveTaskToDesk` back | back with Shell's bounds: 318x761 (portrait app), 1827x761 (Settings), not tiled | back in its tile (hyprtile fix) |
+| `fullscreen 1` (maximize) and back | work area, then the tile | same |
+| Settings, Files, Contacts | tiled | unchanged |
+| rotation (existing userdata with auto-rotation on) | `USER_ROTATION_FREE`, `accelerometer_rotation=1` | `USER_ROTATION_LOCKED`, 0, rotation 0 |
+| desktop-first | `DefaultTaskDisplayArea mode=FREEFORM`, `force_desktop_first...=true` | unchanged |
+
+Opt-out (list, and list + `am compat disable` for target 36) gave the letterboxed portrait window
+back, as described above.
 
 ## Testing on Cuttlefish
 

@@ -26,3 +26,11 @@ PRODUCT_PRODUCT_PROPERTIES += \
 # longer installed (docs/desktop-mode.md, "Smart Dock" and "Launcher3 only as the recents
 # provider", kept for the record).
 PRODUCT_PACKAGES += pc_desktop_overlay_frameworks_base_core
+
+# Every app in landscape: portrait-only and non-resizable apps fill their window in
+# landscape (device config set by landscape-defaults.sh), rotation locked at 0 on fresh and
+# existing userdata (docs/desktop-mode.md, "Every app in landscape").
+PRODUCT_PACKAGES += \
+    pc_desktop_overlay_settings_provider \
+    init.landscape.rc \
+    landscape-defaults.sh
