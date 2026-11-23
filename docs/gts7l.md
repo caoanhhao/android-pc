@@ -160,7 +160,7 @@ parallel sessions (they touch different files); builds still go one at a time.
 | S1 ✅ | T0 | Stock firmware: download `T875XXS8DXH1` XXV, extract `boot`/`dtbo`/`vendor_boot` DTBs to DTS, list partitions and firmware files; write `docs/gts7l-inventory.md` | tablet over adb (read-only) | panel, touch, regulators, modem wiring documented; firmware kept under `gts7l-stock/` (gitignored) |
 | S2 | T2 | Kernel tree: `tools/gts7l-kernel.sh` fetches mainline v7.3 into `gts7l-kernel/`, applies the gts7xl patch series kept in `aosp-device/gts7l/kernel/patches`, builds `Image.gz` + DTB with an arm64 cross toolchain | nothing (DTS from S1 later) | `Image.gz-dtb` for `sm8250-samsung-gts7xl` builds; `sm8250-samsung-gts7l.dts` stub ready for S1's data |
 | S3 | T3 | Product scaffolding: `aosp_gts7l` in `AndroidProducts.mk`, `gts7l/aosp_gts7l.mk`, `BoardConfig.mk`, fstab/init/ueventd, sepolicy, `hals.list`; `hals/*/hal.mk` split so the PC product keeps Cuttlefish and the tablet does not | nothing | `lunch aosp_gts7l-cp2a-userdebug` passes Soong analysis; PC product unchanged |
-| S4 | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v2 as stock, Image.gz + DTB section, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
+| S4 ✅ | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v2 as stock, Image.gz + DTB section, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
 | S5 | T1 | Unlock, TWRP, full partition backup | **user's go-ahead** (wipes tablet, trips Knox) | backups of §6/T1 partitions on the host, checksummed |
 | S6 | T2 | Boot S2's kernel with a USB-gadget-shell initramfs, then port drivers in order | S1, S2, S5 | shell over USB on the tablet |
 | S7 | T3 | First `aosp_gts7l` boot to PcSystemUI | S3, S4, S6 | HyprLauncher on the panel with touch |
@@ -207,3 +207,26 @@ Open TODOs:
 - S4: `boot.img` packed with the stock offsets (the product is Soong-only, as the PC one is, and
   Soong's boot.img ignores `BOARD_MKBOOTIMG_ARGS`), `super.img`, disabled `vbmeta`.
 - S7: sepolicy compiled and checked on the device, then enforcing; density/orientation.
+
+## 10. Images (S4)
+
+`tools/gts7l-image.sh` builds system, system_ext, product, vendor and the generated ramdisk
+(one step at a time, under the shared lock) and packs `out/gts7l/images/` of the main checkout:
+`boot.img` (header v2, `Image.gz`, ramdisk + `fstab.gts7l`, gts7l DTB, stock offsets),
+`super.img` (sparse, 10171187200 B, group `gts7l_dynamic_partitions`), `vbmeta.img` (flags 3),
+`dtbo.img` (zeroed) and `AP_gts7l-<build>.tar.md5` for Odin's AP slot (those four images only;
+userdata, efs and firmware partitions stay). `tools/gts7l-image.sh pack` repacks without
+building. The script and the build wrappers run from a git worktree: device files from the
+worktree, `aosp/` and `out/` from the main checkout.
+
+First build 2026-11-23 (`eng.caoanh.20261123.1606`): system 861 MB, system_ext 215 MB, product
+313 MB, vendor 44 MB; super.img 1.4 GB sparse; Odin tar 969 MB.
+
+Soong-only quirks found on the way: the generated `boot.img` is GKI-style with no ramdisk; the
+generated ramdisk (`aosp_gts7l_generated_ramdisk_image`, no phony target) drops ramdisk
+`PRODUCT_COPY_FILES`, so the script appends `fstab.gts7l`; nothing is staged under
+`$PRODUCT_OUT/system`, so build props are read from `system.img`.
+
+Not in this image yet: Mesa (no `gts7l-mesa` prebuilts, so no GPU), the device firmware copy
+from the stock vendor, panel/touch drivers (S6). It is the first-boot test image for S6/S7,
+flashed only after S5.

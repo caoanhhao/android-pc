@@ -26,6 +26,7 @@ P=$ROOT/aosp/out/target/product/gts7l
 # Host tools from the AOSP build, the system ones (simg2img) otherwise.
 export PATH=$ROOT/aosp/out/host/linux-x86/bin:$PATH
 BOARD=$WT/aosp-device/gts7l/BoardConfig.mk
+RAMDISK=$ROOT/aosp/out/soong/.intermediates/build/soong/fsgen/aosp_gts7l_generated_ramdisk_image/android_common/ramdisk.img
 
 for f in Image.gz sm8250-samsung-gts7l.dtb; do
     [[ -f $K/$f ]] || { echo "gts7l-image: $K/$f missing, run tools/gts7l-kernel.sh first" >&2; exit 1; }
@@ -35,8 +36,14 @@ if [[ ${1:-} != pack ]]; then
     # boot.img gives the generic ramdisk; the flashable boot.img is packed below.
     LOCK=$ROOT/out/.phase-e.lock
     flock "$LOCK" env PRODUCT=aosp_gts7l \
-        STEPS="${STEPS:-system.img system_ext.img product.img vendor.img boot.img}" \
+        STEPS="${STEPS:-system.img system_ext.img product.img vendor.img}" \
         "$WT/tools/aosp17-build.sh"
+    # The Soong-only build's boot.img is GKI-style and carries no ramdisk (that goes to
+    # init_boot); the generated ramdisk module has no phony target, so build its file.
+    flock "$LOCK" bash -c 'cd "$1/aosp" && source build/envsetup.sh >/dev/null &&
+        lunch aosp_gts7l-cp2a-userdebug >/dev/null &&
+        SOONG_GOMEMLIMIT=14GiB SOONG_INCREMENTAL_ANALYSIS=false NINJA_ARGS= \
+        "$1/tools/limited-build.sh" m -j8 "${2#$1/aosp/}"' _ "$ROOT" "$RAMDISK"
 fi
 
 # Board values, read from BoardConfig.mk so the two never disagree.
@@ -49,15 +56,24 @@ group_size=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_SIZE)
 boot_size=$(board BOARD_BOOTIMAGE_PARTITION_SIZE)
 parts=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_PARTITION_LIST)
 
+# The Soong-only build stages nothing under $P/system: read build.prop from the image.
+prop() { debugfs -R 'cat /system/build.prop' "$P/system.img" 2>/dev/null | sed -n "s/^$1=//p"; }
+
 mkdir -p "$OUT"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-# boot.img
-[[ -f $P/boot.img ]] || { echo "gts7l-image: $P/boot.img missing (build step boot.img)" >&2; exit 1; }
-unpack_bootimg --boot_img "$P/boot.img" --out "$tmp/boot" >/dev/null
+# boot.img. The generated ramdisk lacks the ramdisk PRODUCT_COPY_FILES, so fstab.gts7l (for
+# first-stage mount, found as /fstab.<androidboot.fstab_suffix>) is appended as a second cpio
+# archive; the kernel unpacks both.
+[[ -f $RAMDISK ]] || { echo "gts7l-image: $RAMDISK missing" >&2; exit 1; }
+mkdir -p "$tmp/frag"
+install -m 0644 "$WT/aosp-device/gts7l/fstab.gts7l" "$tmp/frag/fstab.gts7l"
+lz4 -dc "$RAMDISK" > "$tmp/ramdisk.cpio"
+(cd "$tmp/frag" && echo fstab.gts7l | cpio -o -H newc -R 0:0 --quiet) >> "$tmp/ramdisk.cpio"
+lz4 -l -12 -q -f "$tmp/ramdisk.cpio" "$tmp/ramdisk"
 mkbootimg --header_version 2 --os_version 17.0.0 \
-    --os_patch_level "$(sed -n 's/^ro.build.version.security_patch=//p' "$P/system/build.prop" | cut -c1-7)" \
-    --kernel "$K/Image.gz" --ramdisk "$tmp/boot/ramdisk" --dtb "$K/sm8250-samsung-gts7l.dtb" \
+    --os_patch_level "$(prop ro.build.version.security_patch | cut -c1-7)" \
+    --kernel "$K/Image.gz" --ramdisk "$tmp/ramdisk" --dtb "$K/sm8250-samsung-gts7l.dtb" \
     --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x02000000 \
     --tags_offset 0x01e00000 --dtb_offset 0x01f00000 \
     --cmdline "${cmdline% }" --output "$OUT/boot.img"
@@ -82,7 +98,7 @@ avbtool make_vbmeta_image --flags 3 --padding_size 4096 --output "$OUT/vbmeta.im
 head -c 4096 /dev/zero > "$OUT/dtbo.img"
 
 # Odin AP tar
-build=$(sed -n 's/^ro.build.version.incremental=//p' "$P/system/build.prop")
+build=$(prop ro.build.version.incremental)
 for f in boot super vbmeta dtbo; do lz4 -q -f -B6 --content-size "$OUT/$f.img" "$tmp/$f.img.lz4"; done
 tar=$OUT/AP_gts7l-$build.tar
 tar -C "$tmp" -H ustar -cf "$tar" boot.img.lz4 super.img.lz4 vbmeta.img.lz4 dtbo.img.lz4
