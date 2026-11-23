@@ -542,8 +542,9 @@ Kernel #13 (0103 + 0104 DEBUG `dcs_write`, built with `CONFIG_DEVMEM=y` by hand)
 Open:
 - Why only ~160 lines arrive intact on DSI0, and why DSI1 never shows video. Only DSI1 answers
   reads, so DSI1 is probably the panel's primary port. If that port's video is not accepted, the
-  panel may lose DSI0's data after a buffer of ~160 lines. Next: compare the DSI1 lane registers
-  (0xae96600) with DSI0's, and get the bootloader's DSI/PHY registers in a safe way (from the
+  panel may lose DSI0's data after a buffer of ~160 lines. The per-lane PHY registers (0xae94600
+  and 0xae96600, 0x280 bytes) are identical on both links, LP RX enabled on lane 0 of both. Next:
+  get the bootloader's DSI/PHY registers in a safe way (from the
   recovery's 4.19 kernel while it drives the panel, or from the DSI driver after it takes its
   clocks, never at PHY probe).
 - 0097-0099, 0102, 0104 stay DEBUG. Clean: 0100/0101 (C-PHY tuning from DT) and 0103 (backlight).
