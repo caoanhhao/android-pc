@@ -5,6 +5,7 @@ import android.app.ActivityTaskManager
 import android.app.StatusBarManager
 import android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD
 import android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM
+import android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN
 import android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED
 import android.content.ComponentName
 import android.content.Context
@@ -730,6 +731,16 @@ class HyprTileController(
         val configChanged = updateConfig()
         val repo = repository
         pendingBounds.clear()
+        // A tiled window Shell took into fullscreen (`fullscreen 0`, its caption, exit desktop)
+        // comes back to its desk with Shell's own initial bounds (portrait-shaped for an app
+        // that declares portrait). Its desk is inactive meanwhile and not synced, so its tile
+        // is forgotten here (a maximized one comes back tiled): the sync after it returns
+        // writes the tile again.
+        val inFullscreen = applied.keys.filter { id ->
+            taskOrganizer.getRunningTaskInfo(id)?.windowingMode == WINDOWING_MODE_FULLSCREEN
+        }
+        applied.keys.removeAll(inFullscreen)
+        maximized.removeAll(inFullscreen)
         focusShownPinned()
         val displays = repo.getAllDeskIds()
             .mapNotNull { runCatching { repo.getDisplayForDesk(it) }.getOrNull() }.toSet()
