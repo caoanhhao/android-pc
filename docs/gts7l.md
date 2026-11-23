@@ -345,6 +345,10 @@ generic backend (linear buffers). The msm backend for UBWC is still a TODO; Mesa
 for it. SELinux labels for `/dev/dri` and the libraries (`same_process_hal_file`) are in
 `sepolicy/file_contexts`.
 
+Checked 2026-11-24: the Mesa modules and `gralloc.minigbm` build through Soong, `vendor.img`
+(75 MB, was 44 MB) holds all five libraries, the properties and the Vulkan/GLES permission
+files, and `tools/gts7l-image.sh pack` packs it into `super.img`. Not yet run on the device.
+
 What the kernel and firmware must provide (S2/firmware session): the msm DRM driver with the
 Adreno 650 GPU node enabled (one device: `card0` for KMS, `renderD128` for Mesa), the GPU's
 `qcom,gmu` and zap-shader nodes, and the firmware `qcom/a650_sqe.fw`, `qcom/a650_gmu.bin` plus
