@@ -95,7 +95,7 @@ class HyprTileTest {
     fun floatRules() {
         val cfg = TileConfig(floatPackages = setOf("com.example.calc"))
         assertFalse(shouldFloat(WindowTraits("com.android.settings"), cfg))
-        assertTrue(shouldFloat(WindowTraits(resizeable = false), cfg))
+        assertFalse(shouldFloat(WindowTraits(resizeable = false), cfg))
         assertTrue(shouldFloat(WindowTraits(translucent = true), cfg))
         assertTrue(shouldFloat(WindowTraits(dialog = true), cfg))
         assertTrue(shouldFloat(WindowTraits("com.example.calc"), cfg))

@@ -36,9 +36,9 @@ class RulesTest {
         ))
         assertTrue(shouldFloat(WindowTraits("com.example.tool"), cfg))
         assertFalse(shouldFloat(WindowTraits("com.example.toolbox"), cfg))
-        // A rule tiles a dialog-themed window, but never one that cannot be resized.
+        // A rule tiles a dialog-themed window; a rule floats one that cannot be resized.
         assertFalse(shouldFloat(WindowTraits("x", "Permission", dialog = true), cfg))
-        assertTrue(shouldFloat(WindowTraits("x", "Permission", resizeable = false), cfg))
+        assertTrue(shouldFloat(WindowTraits("com.example.tool", resizeable = false), cfg))
     }
 
     @Test

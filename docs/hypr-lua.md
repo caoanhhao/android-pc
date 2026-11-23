@@ -485,7 +485,7 @@ r:set_enabled(false)
 |---|---|
 | `match.class` (`initial_class`) | Java regular expression on the package name, searched (`firefox` matches `org.mozilla.firefox`; anchor with `^...$`). In a Lua string a regex backslash is `\\` |
 | `match.title` (`initial_title`) | regular expression on the window title (the task's label) |
-| `float = true` / `tile = true` (`float = false`) | float or tile when it opens; a rule wins over the float defaults (dialogs, translucent activities), but a window that cannot be resized always floats |
+| `float = true` / `tile = true` (`float = false`) | float or tile when it opens; a rule wins over the float defaults (dialogs, translucent activities). Apps that declare themselves not resizable (TCInvest, Camera) tile like the rest unless a rule floats them; one that handles size changes itself may only lay out for its tile when it starts there |
 | `workspace = "N"` / `"N silent"` | open on workspace N (1..1000, up to `shell.workspaces`): moved there and followed, or moved without following |
 | `workspace = "special[:name]"` / `"special:name silent"` | open on that special workspace, shown, or hidden in it (E5) |
 | `opacity = "A [I]"` | active and inactive opacity of the window (`override` words are ignored) |

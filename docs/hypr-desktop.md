@@ -263,7 +263,7 @@ host and device), package `com.android.hyprtile`:
 | `DwindleLayout.kt` | Hyprland's dwindle: a binary tree; a new window splits the target window's box (the focused one, else the newest); top/bottom when `height * split_width_multiplier > width`, else side by side, recomputed on every arrange unless `preserve_split`; closing gives the box to the sibling; `togglesplit`, `swap`, `splitratio` |
 | `MasterLayout.kt` | Hyprland's master, orientation left: master takes `mfact` of the width, the stack shares the rest in rows; closing the master promotes the top of the stack |
 | `HyprTile.kt` | one layout per workspace (an AOSP desk), floating windows, `open`/`close`/`toggleFloating`/`swap`/`arrange`; switching the layout kind keeps the windows |
-| `FloatRules.kt` | `shouldFloat`: not resizeable, translucent, dialog-themed (`windowIsFloating`), listed in `floatPackages`, or a minimum size larger than the work area |
+| `FloatRules.kt` | `shouldFloat`: a `float` window rule, translucent, dialog-themed (`windowIsFloating`), listed in `floatPackages`, or a minimum size larger than the work area |
 
 Gaps follow Hyprland: the work area is the display's stable bounds minus `reserved`; a window
 side on the work area's edge gets `gaps_out`, an inner side `gaps_in`, so neighbours are
@@ -484,7 +484,7 @@ call the same method):
 | `movetoworkspace N` | move the focused window and follow it |
 | `movefocus l/r/u/d` | brings the neighbour to front (focus follows): the closest window beyond that edge that overlaps on the other axis, ties to the larger overlap; with none, the nearest window wholly beyond the edge (floating ones); nothing at the layout's edge |
 | `movewindow l/r/u/d` | tiled: swaps with that neighbour in the layout tree; floating: moves to that edge of the work area |
-| `togglefloating` | tiled → floating, centred, half the work area's width and two thirds of its height; floating → back into the layout next to the newest tiled window. A window the user floated stays floating (the sync and float rules leave it); non-resizeable windows stay floating |
+| `togglefloating` | tiled → floating, centred, half the work area's width and two thirds of its height; floating → back into the layout next to the newest tiled window. A window the user floated stays floating (the sync and float rules leave it); apps that declare themselves not resizable tile and float like any other |
 | `togglesplit` | dwindle: flips the split that holds the focused window |
 | `fullscreen 1` | maximize inside the desk: the work area without gaps, the tile is kept; again, and the window goes back to its tile |
 | `fullscreen` / `fullscreen 0` | Shell's real fullscreen, out of the desk and back; the window still belongs to its workspace: `workspace` to that one changes nothing, to another one puts the window back in its desk (hidden there, earlier bounds), and showing its workspace again makes it fullscreen in the same transaction that leaves the other desk (no step through its desk) |

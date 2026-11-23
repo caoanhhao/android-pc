@@ -97,7 +97,7 @@ import java.util.Optional
  *
  * A task's bounds are written only when its tile changes. Dragging a tiled window's edge
  * (Shell's resize handles) moves the split lines on that side and re-tiles the neighbours
- * ([onEdgeResize]). Floating windows (not resizeable, translucent, too large a minimum size)
+ * ([onEdgeResize]). Floating windows (translucent, dialogs, too large a minimum size, rules)
  * are left alone, and always stack above the tiled ones ([raiseAboveTiled]).
  *
  * Each desk (Shell's multidesks) is a Hyprland workspace with its own layout tree: workspace N
@@ -1364,7 +1364,6 @@ class HyprTileController(
         if (tile.isTiled(id)) {
             if (!floatOut(task, deskId, wct)) return
         } else {
-            if (!task.isResizeable) return
             userFloated -= id
             pendingBounds.remove(id)
             // Tiled again (a pinned window is no longer pinned: hyprtile drops the pin).
@@ -2103,7 +2102,7 @@ class HyprTileController(
         val dir = if (left) Direction.LEFT else Direction.RIGHT
         if (tile.isTiled(id)) {
             neighbor(tile.arrange(deskId, area), id, dir, slack = slack())?.let { tile.swap(id, it) }
-        } else if (task.isResizeable) {
+        } else {
             userFloated -= id
             val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId)
                 .firstOrNull { it != id && tile.isTiled(it) }
