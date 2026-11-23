@@ -162,7 +162,7 @@ parallel sessions (they touch different files); builds still go one at a time.
 | S3 | T3 | Product scaffolding: `aosp_gts7l` in `AndroidProducts.mk`, `gts7l/aosp_gts7l.mk`, `BoardConfig.mk`, fstab/init/ueventd, sepolicy, `hals.list`; `hals/*/hal.mk` split so the PC product keeps Cuttlefish and the tablet does not | nothing | `lunch aosp_gts7l-cp2a-userdebug` passes Soong analysis; PC product unchanged |
 | S4 ✅ | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v2 as stock, Image.gz + DTB section, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
 | S5 ✅ | T1 | Unlock, TWRP, full partition backup | **user's go-ahead** (wipes tablet, trips Knox) | backups of §6/T1 partitions on the host, checksummed |
-| S6 | T2 | Boot S2's kernel with a USB-gadget-shell initramfs, then port drivers in order | S1, S2, S5 | shell over USB on the tablet |
+| S6 🟡 | T2 | Boot S2's kernel with a USB-gadget-shell initramfs, then port drivers in order | S1, S2, S5 | shell over USB on the tablet |
 | S7 | T3 | First `aosp_gts7l` boot to PcSystemUI | S3, S4, S6 | HyprLauncher on the panel with touch |
 | S8.. | T4-T7 | Rust HALs, tablet desktop, TWRP update zip, later items | S7 | per §6 |
 
@@ -247,3 +247,32 @@ flashed only after S5.
 - `tools/gts7l-backup.sh`: 72 partitions (all but userdata, super, cache) read with dd and their
   SHA-256 compared on the tablet and the host: all OK, in `gts7l-backup/20261123-2230/` (main
   checkout root, gitignored, read-only, `SHA256SUMS`). Keep a second copy off this machine.
+
+## 12. First mainline boot (S6, 2026-11-23)
+
+`tools/gts7l-bringup.sh BUSYBOX` packs `out/gts7l/bringup/boot.img`: header v1, page 2048, base
+0x10000000, `Image.gz` + gts7l DTB, a busybox initramfs (`aosp-device/gts7l/bringup/init`) with
+`usbroute` (Rust, MAX77705 USB data switch) and a configfs gadget: ACM serial + NCM
+(`172.16.42.1`, telnet). It never mounts UFS. Busybox: Debian `busybox-static` 1.38.0 arm64.
+
+Flashing from the recovery's root adb, as on gts7xl-mainline: zero `boot`, dd the image, read
+back and compare SHA-256; zero the first 4 KiB of `dtbo`; clear byte 0 of `param`.
+**Rebooting from the recovery with `adb reboot` boots the recovery again** (ABL passes
+`androidboot.boot_recovery=1`; the recovery's 4.19 kernel sets the flag on its way down). A sysrq
+reboot (`echo b > /proc/sysrq-trigger`) after clearing `param` boots `boot`.
+
+Result: `Linux 7.3.0-gts7l` up, gadget on the host 12 s after reset (host side: NetworkManager
+connection `gts7l-bringup`, 172.16.42.2/24 on the NCM interface; `/dev/ttyACM0` needs the `uucp`
+group). Stable, no pstore records. Seen:
+
+| Works | Not yet |
+|---|---|
+| 8 CPUs with cpufreq, 5.5 GiB RAM, 25 thermal zones | remoteprocs (ADSP/CDSP/SLPI): none registered, no firmware in the initramfs |
+| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` |
+| USB gadget (DWC3 peripheral) after `usbroute` | display: `msm_dpu` binds (DP only), DSI and the NT36523 panel are off, no simpledrm/fbdev |
+| Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS |
+| power key, volume down (resin), gpio-keys, regulator haptics | S Pen (i2c-17 0x56): deferred on `spen-3v3-regulator`, GPIO from the S7+ wiring |
+| MAX77705 charger and Type-C, CS35L41 x4 (i2c-11), PS5169 (i2c-14) probed | `lcd-buck-regulator`: GPIO from the S7+ wiring; fuel gauge deferred (`max17042: temp channel`) |
+
+Raw logs: `gts7l-stock/s6/dmesg-1.txt`, `gts7l-stock/s6/survey-1.txt`. Next in S6: the DTS GPIOs
+from the stock dtbo (lcd buck, S Pen 3.3 V), PCIe/Wi-Fi, then the NT36523 panel driver and touch.
