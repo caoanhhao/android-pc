@@ -487,7 +487,7 @@ call the same method):
 | `togglefloating` | tiled → floating, centred, half the work area's width and two thirds of its height; floating → back into the layout next to the newest tiled window. A window the user floated stays floating (the sync and float rules leave it); non-resizeable windows stay floating |
 | `togglesplit` | dwindle: flips the split that holds the focused window |
 | `fullscreen 1` | maximize inside the desk: the work area without gaps, the tile is kept; again, and the window goes back to its tile |
-| `fullscreen` / `fullscreen 0` | Shell's real fullscreen (`toggleFocusedTaskFullscreenState`), out of the desk and back |
+| `fullscreen` / `fullscreen 0` | Shell's real fullscreen, out of the desk and back; the window still belongs to its workspace: `workspace` to that one changes nothing, to another one puts the window back in its desk (hidden there, earlier bounds) and it is fullscreen again when its workspace is shown next |
 | `killactive` | Shell's `quitFocusedDesktopTask()` (what its close key gesture does) |
 | `exec <package>` | starts the package's launcher activity as the current user; desktop mode puts it on the active desk, where it is tiled |
 
@@ -2375,14 +2375,6 @@ Also seen:
   user data, where `-j` gives `{}`; passed on to E12.
 - The example's two zoom binds warn that `repeating` is not supported (Known limits).
 
-## As built
-
-| Piece | Where | Process | What it does |
-|---|---|---|---|
-| `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
-| `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
-| `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types (E13: `repeating` binds also need `tools/patches/aosp17-input-hypr-repeat-binds.patch` in `frameworks/base`); Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
-| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) |
 ## Repeating key binds (E13)
 
 The user's `binds.lua` (from the host's configuration) zooms with `ALT + SHIFT + equal` and
@@ -2413,6 +2405,14 @@ release) and reach neither the handler nor any window or monitor. So hyprlua war
 - **Lua:** `repeating` is accepted on key binds (no warning) and still warned on gesture binds;
   binding the same keys again without the flag replaces the repeating bind.
 
+## As built
+
+| Piece | Where | Process | What it does |
+|---|---|---|---|
+| `PcSystemUI` | `aosp-device/hypr/PcSystemUI/` (system_ext, privileged, platform key, `overrides: ["SystemUI"]`) | SystemUI | SystemUI with its own root component, `PcWMComponent` and `PcWMShellModule` (CarSystemUI's pattern); creates the controllers below at ShellInit |
+| `HyprTileController` | `PcSystemUI/.../wmshell/` | SystemUI | the newest Shell transition handler and an observer: tiles desktop tasks per desk, dispatchers, workspaces, rules, config from `IHyprShell` |
+| `HyprKeybinds`, `HyprSnapHandler` | same | SystemUI | binds as InputManager custom key gestures with private types (E13: `repeating` binds also need `tools/patches/aosp17-input-hypr-repeat-binds.patch` in `frameworks/base`); Shell's snap/desk gestures and drag-to-snap routed to hyprtile |
+| `HyprDecorations`, `HyprAnimator`, `HyprMouse`, `HyprStyleProps` | same | SystemUI | `WindowDecorStyle` (the one Shell patch, `tools/patches/aosp17-shell-decor-style.patch`): no caption on tiles, corners, opacity, gradient borders; bezier animations on transition leashes; mouse binds (E6: wheel binds also need `tools/patches/aosp17-input-hypr-wheel-binds.patch` in `frameworks/native`) |
 | `HyprTouch`, `HyprWindowMenu` | same | SystemUI | touch gestures as binds, the window menu |
 | `HyprShell` | same | SystemUI | `IHyprShell` as a Shell external interface, handed to the recents provider |
 | `HyprZoom`, `HyprZoomService` | same | SystemUI | the `zoom` dispatcher and `cursor.zoom_factor`: full-screen magnification around the pointer through an accessibility service enabled only while zoomed (E10) |

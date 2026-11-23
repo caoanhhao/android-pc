@@ -435,7 +435,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.window.float({ action = "toggle" })` | `togglefloating` | also `"on"` (`setfloating`), `"off"` (`settiled`); `window = w` for another window than the focused one |
 | `hl.dsp.window.pin({ action = "toggle" })` | `pin` | a pinned window floats (a tiled one leaves its layout, centred), stays on top of the other windows and shows on every workspace (it follows the active one); `"on"`, `"off"`, `window = w`; unpinned it stays floating |
 | `hl.dsp.window.fullscreen({ mode = "maximized" })` | `fullscreen 1` | fill the work area, keep the tile; again to go back |
-| `hl.dsp.window.fullscreen()` | `fullscreen 0` | Android's fullscreen, out of the desktop and back |
+| `hl.dsp.window.fullscreen()` | `fullscreen 0` | Android's fullscreen, out of the desktop and back; the window stays with its workspace (switching away hides it, coming back shows it fullscreen again) |
 | `hl.dsp.window.close()` | `killactive` | close the focused window |
 | `hl.dsp.window.kill()` | `forcekillactive` | force-stop the focused window's app, as Settings' Force stop (E11; the host's `hyprctl kill` picks a window by click) |
 | `hl.dsp.window.resize({ x = 40, y = 0 })` | `resizeactive` | tiled: move its splits; floating: grow (px) |
