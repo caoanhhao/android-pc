@@ -763,7 +763,7 @@ commit (or `(partial: ...)`).
   on Waydroid (docs/hypr-desktop.md, "Pin (Phase E1)"). The follow-up fixed the carried window
   (drawn on the new desk, no ANR) and made key focus follow the click under a pinned window,
   both with `tools/patches/aosp17-wm-pinned-focus.patch` (frameworks/base WindowManager),
-  checked through the overlay and then on the image `eng.caoanh.20261123.0047` (test data;
+  checked through the overlay and then on the image `eng.builder.20261123.0047` (test data;
   the user's data boots it, locked).
 - **E2 — workspaces:** up to 1000 workspaces, 10 by default (`ALT + 0` is 10); the bar shows
   only the active and occupied ones; the numpad binds of the host (`KP_*`, 11-20). Done
@@ -837,7 +837,7 @@ commit (or `(partial: ...)`).
   `windowtitle` are sent but were not provoked.
 
 Phase E status (2026-11-22): done. The full image (build
-`eng.caoanh.20261122.1905`) ran E1-E12 end to end on Waydroid (docs/hypr-desktop.md, "Phase E
+`eng.builder.20261122.1905`) ran E1-E12 end to end on Waydroid (docs/hypr-desktop.md, "Phase E
 on the full image"). Commits: E1 f0b595e f609e77 6c3f426 and "hypr: E1 follow-up"; E2 14a244f 220b51b 061673b
 108c1d6 a118732; E3 c78fb8d 025e081 bc3034c; E4 5df9b20 b63bc90; E5 0e1dd17 1226223 c5f8901;
 E6 e503b92 909f88e 55a9636; E7 4d738d1 7532557; E8 21d08b3 77cfb3e; E9 4ab0f21 1001035; E10

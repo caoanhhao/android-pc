@@ -2114,7 +2114,7 @@ gamepads off`, on again after), helpers and screenshots in `out/hypr-e1b/`:
   Files gives it back to Files; `hyprctl dispatch focuswindow 190` (the pinned task) from
   Settings focuses Files.
 
-On the image (2026-11-23, build `eng.caoanh.20261123.0047`: the five images built with the
+On the image (2026-11-23, build `eng.builder.20261123.0047`: the five images built with the
 patch, packed with `tools/waydroid/aosp17-pack.sh`, copied to `/var/lib/waydroid/images-aosp17/`;
 the overlay's `PcSystemUI` moved to `/var/lib/waydroid/overlay-e1-tests.20261123-0051/`), test
 data, host game pads off for the run:
@@ -2129,7 +2129,7 @@ data, host game pads off for the run:
 
 ### Known limits
 
-- On the user's data the image boots (`eng.caoanh.20261123.0047`) but stays `RUNNING_LOCKED`
+- On the user's data the image boots (`eng.builder.20261123.0047`) but stays `RUNNING_LOCKED`
   until its owner unlocks it, so the carry and the click focus were checked on the test data
   only.
 - A running pinned task brought to front by a launch (`Task.moveTaskToFront`) takes the focus
@@ -2321,14 +2321,14 @@ same). A full image has a new fingerprint and needs neither.
 ### The image
 
 E11 built the five images Waydroid needs (`tools/aosp17-build.sh` with `STEPS="system.img
-system_ext.img product.img vendor.img odm.img"`, build `eng.caoanh.20261122.1905`), packed them
+system_ext.img product.img vendor.img odm.img"`, build `eng.builder.20261122.1905`), packed them
 (`tools/waydroid/aosp17-pack.sh`) and copied `system.img` and `vendor.img` into
 `/var/lib/waydroid/images-aosp17/`. The Phase E test entries of the overlay (`PcSystemUI`,
 `HyprLauncher`, `HyprTop`, `ExactCalculator`, `hyprctl`, `hyprtopd` with its `hyprtopd.rc`,
 and E6's `libinputflinger.so`, identical to the image's) went to
 `/var/lib/waydroid/overlay-phase-e-tests.20261122-1852/`; the overlay keeps only what
 `aosp17-switch.sh` puts there and `vulkan.nvidia.so`. A first image
-(`eng.caoanh.20261122.1833`) ran the check below; the ALT + Tab fix found there made the second
+(`eng.builder.20261122.1833`) ran the check below; the ALT + Tab fix found there made the second
 one, on which ALT + Tab and a short pass were run again.
 
 ### End-to-end check (2026-11-22)
