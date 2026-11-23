@@ -8,5 +8,3 @@
 /dev/block/by-name/efs         u:object_r:gts7l_efs_block_device:s0
 /dev/block/by-name/sec_efs     u:object_r:gts7l_efs_block_device:s0
 /dev/block/by-name/persist     u:object_r:gts7l_efs_block_device:s0
-
-/mnt/vendor/firmware(/.*)?     u:object_r:gts7l_firmware_link:s0

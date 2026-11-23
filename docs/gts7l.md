@@ -46,7 +46,7 @@ and the LTE modem. Those are the device-specific work.
 | Layer | Who owns it | Plan |
 |---|---|---|
 | Bootloader (PBL/XBL/ABL), TrustZone, hypervisor | Samsung/Qualcomm, signed | Untouched; we only boot through ABL |
-| Co-processor firmware (ADSP, CDSP, SLPI, modem, GPU zap/GMU, Venus, Wi-Fi/BT, CS35L41 protection) | Samsung/Qualcomm, signed | **Not in our build.** Read at runtime from the tablet's own `apnhlos`, `modem` and vendor partitions; they run on the DSPs, not on Android |
+| Co-processor firmware (ADSP, CDSP, SLPI, modem, GPU zap/GMU, Venus, Wi-Fi/BT, CS35L41 protection) | Samsung/Qualcomm, signed | **Not in our build or git.** Read at runtime from the tablet's own `apnhlos` and `modem`; the files of the stock vendor go into a local-only `gts7l_fw` partition made from the tablet's own data (§13); they run on the DSPs, not on Android |
 | Linux kernel | **Ours** | Mainline v7.3 + our patch series (forked from gts7xl-mainline) + our `sm8250-samsung-gts7l.dts` |
 | Android framework | **Ours** | android-pc's AOSP 17 tree and patches, PcSystemUI/Hypr |
 | GPU userspace | Open source (Mesa freedreno/Turnip), built from source in our tree | A GPU driver in Rust is out of scope |
@@ -196,10 +196,8 @@ Open TODOs:
 
 - S1 data is in (super and boot sizes, header v2 and offsets, docs/gts7l-inventory.md); still
   open: the userdata file system in `fstab.gts7l`, which partition holds each firmware file.
-- S4: the device firmware in the stock vendor (GPU sqe/gmu, ath11k, BT, CS35L41) needs a copy
-  from the tablet (never in git) that `/mnt/vendor/firmware/gts7l/vendor` can reach.
-- S2/S6: the DTS names firmware `gts7l/modem/<file>` / `gts7l/apnhlos/<file>`; the kernel
-  needs ext4, f2fs, vfat; check `androidboot.boot_devices=soc@0/1d84000.ufshc` and
+- Device firmware: done, §13 (`gts7l_fw` partition, `tools/gts7l-firmware.sh`).
+- S2/S6: the kernel needs ext4, f2fs, vfat; check `androidboot.boot_devices=soc@0/1d84000.ufshc` and
   `androidboot.usbcontroller=a600000.usb`.
 - T3: Mesa freedreno/Turnip build (`tools/gts7l-mesa.sh`, AOSP 17's `external/mesa3d` builds
   only lavapipe and gfxstream); minigbm AIDL allocator/mapper with the msm backend; power HAL
@@ -227,8 +225,9 @@ generated ramdisk (`aosp_gts7l_generated_ramdisk_image`, no phony target) drops 
 `PRODUCT_COPY_FILES`, so the script appends `fstab.gts7l`; nothing is staged under
 `$PRODUCT_OUT/system`, so build props are read from `system.img`.
 
-Not in this image yet: Mesa (no `gts7l-mesa` prebuilts, so no GPU), the device firmware copy
-from the stock vendor, panel/touch drivers (S6). It is the first-boot test image for S6/S7,
+Not in this image yet: Mesa (no `gts7l-mesa` prebuilts, so no GPU), panel/touch drivers (S6).
+The device firmware (§13) goes into `super.img` as `gts7l_fw` when `tools/gts7l-firmware.sh`
+has made it. It is the first-boot test image for S6/S7,
 flashed only after S5.
 
 ## 11. Unlock and backup (S5, 2026-11-23)
@@ -310,3 +309,71 @@ orientation (portrait top-left = red "1", yellow border) on the DSI0 half. The l
 right on every line, the full line width only for the first ~150 lines; the rest of each line
 turns white. DSI1 half still black. Next: the stock PHY timings instead of mainline's computed
 ones, burst vs. non-burst video, then DSI1. Photo: `gts7l-stock/s6/panel-pattern-k7.jpg`.
+
+## 13. Device firmware (`gts7l_fw`)
+
+The co-processors need firmware that is Samsung/Qualcomm/Cirrus-signed and must never go into
+git. The tablet holds it in three places: `apnhlos` (vfat: ADSP, CDSP, SLPI, Venus, GPU zap,
+IPA), `modem` (the X55) and the stock `vendor` in `super`. Our `super` replaces that vendor,
+which had the only copies of the GPU microcode (`a650_sqe.fw`, `a650_gmu.bin`), the QCA6390
+Wi-Fi (`qca6390/*`) and Bluetooth (`htbtfw20.tlv`, `htnv20.bin`) firmware and the CS35L41
+speaker-protection firmware.
+
+**Where it lives: a `gts7l_fw` logical partition in `super`**, ext4, read-only, about 11 MiB,
+mounted at `/mnt/vendor/firmware` (`fstab.gts7l`, `wait,logical,nofail`). Why:
+
+- Updates stay userdata-safe: every update rewrites `super` whole (Odin AP or the netflash
+  path), and `gts7l_fw` is packed into it each time, so the firmware always matches the
+  image and never depends on what `/data` holds. `userdata`, `efs`, `persist` and the firmware
+  partitions are never written.
+- A copy on `/data` at first boot has no source once our `super` is flashed (the stock
+  vendor is gone from the tablet), and a factory reset would lose it. `persist` is Samsung's
+  sensor calibration (32 MiB) and stays read-only.
+- No first-boot logic: first-stage init maps every logical partition of `super`, so
+  `mount_all` mounts `gts7l_fw` like any partition.
+- The bring-up initramfs cannot map `super` (no dm-linear in busybox), so it gets the same
+  tree as real files (`tools/gts7l-bringup.sh --firmware`, `/lib/firmware`, ~23 MB gzip; the
+  boot image stays under 40 of the 68 MiB of `boot`).
+
+The cost: `super.img` and the Odin tar now contain this tablet's firmware. They are built and
+kept on this host only and are never published (`out/` is gitignored).
+
+**`tools/gts7l-firmware.sh`** reads only host copies of the tablet's own data, checked against
+their checksums: `gts7l-backup/<latest>/` (S5: `apnhlos.img`, `sec_efs.img`; `modem.img` and
+`dsp.img` only listed), the stock `vendor.img` of the `T875XXS8DXH1` Odin package
+(`gts7l-stock/ap/super/vendor.img`) and the kernel's DTB. Output in `out/gts7l/firmware/`:
+`tree/` (real files), `gts7l_fw.img`, `MANIFEST.tsv` (path, size, sha256, source, driver, form),
+`SHA256SUMS`, `SOURCES`, `partitions/{modem,dsp}.txt`. Names are the ones the kernel requests:
+
+| Path | Source | Driver |
+|---|---|---|
+| `qcom/sm8250/gts7xl/{adsp,cdsp,slpi}.mbn` + `.bNN`, `*.jsn` | apnhlos `<dsp>.mdt`, segments, PD maps | `qcom_q6v5_pas`; pd-mapper (userspace) |
+| `qcom/sm8250/gts7xl/venus.mbn` + `.bNN` | apnhlos `venus.*` | `qcom_iris` |
+| `qcom/sm8250/a650_zap.mbn` + `.bNN` | apnhlos `a650_zap.*` | `msm` (zap shader) |
+| `qcom/a650_sqe.fw`, `qcom/a650_gmu.bin` | vendor | `msm` (Adreno 650) |
+| `ath11k/QCA6390/hw2.0/{amss,m3,board,regdb}.bin` | vendor `qca6390/{amss20.bin,m3.bin,bdwlan.elf,regdb.bin}` | `ath11k_pci` |
+| `qca/htbtfw20.tlv`, `qca/htnv20.bin` | vendor | `btqca` (hci_uart) |
+| `cirrus/cs35l41-dsp1-spk-prot.{wmfw,bin}` | vendor `cs35l40-spk-dsp1-spk-prot.*` | `snd-soc-cs35l41` (wm_adsp) |
+| `cirrus/cs35l41-cal-11-00{40..43}.bin` | made from `sec_efs:/cirrus/*_cal*` (rdc, temp, vsc, isc; suffix per address from the stock DT: 40 `_r`, 41 none, 42 `_br`, 43 `_b`) | `snd-soc-cs35l41` (our calibration patch) |
+| `ipa_fws.*`, `ipa_uc.*` | apnhlos (TZ rejects the vendor copies) | `ipa` (node not enabled yet) |
+
+The remoteproc, Venus and zap names are read from the DTB's `firmware-name` properties, so the
+layout follows the DTS (today it still uses the S7+'s `gts7xl/` directory). In `gts7l_fw.img`
+the vendor-only and generated files are real files and the apnhlos ones are symlinks to
+`/mnt/vendor/apnhlos/image/<file>`, so Android still reads those from the partition; the
+script checks every manifest entry in the image. `gts7l/{apnhlos,modem,vendor}` links stay.
+Not laid out: `modem` (X55 over MHI, T7) and `dsp` (FastRPC shared objects, userspace; no
+fstab entry yet).
+
+Android side: `firmware/init.gts7l.firmware.rc` writes `/mnt/vendor/firmware` to
+`/sys/module/firmware_class/parameters/path` at early-init (the kernel's forced built-in
+command line says `/vendor/firmware`), and `init.gts7l.rc` loads the kernel modules after
+`mount_all --early`, so remoteproc, ath11k, cs35l41 and btqca find their firmware at probe.
+`tools/gts7l-image.sh` adds `gts7l_fw` to `super.img` when the image exists
+(`GTS7L_FIRMWARE=0` leaves it out).
+
+```
+tools/gts7l-firmware.sh                      # out/gts7l/firmware/
+tools/gts7l-bringup.sh --firmware BUSYBOX    # bring-up boot.img with /lib/firmware
+tools/gts7l-image.sh pack                    # super.img with gts7l_fw
+```

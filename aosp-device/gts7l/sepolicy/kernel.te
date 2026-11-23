@@ -1,3 +1,3 @@
-# Firmware loaded by the kernel itself (firmware_class.path=/mnt/vendor/firmware).
-r_dir_file(kernel, gts7l_firmware_link)
+# Firmware loaded by the kernel itself (firmware_class.path=/mnt/vendor/firmware): gts7l_fw and
+# the apnhlos files its links point to.
 r_dir_file(kernel, firmware_file)

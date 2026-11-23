@@ -1,10 +1,6 @@
 # Board init for gts7l (SM-T875, docs/gts7l.md). In /vendor/etc/init, so init reads it whatever
 # androidboot.hardware ABL passes.
 
-on early-init
-    # Kernel modules of tools/gts7l-kernel.sh that are not built in (modules.load order).
-    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -a -d /vendor/lib/modules --all=/vendor/lib/modules/modules.load
-
 on fs
     mkdir /mnt/vendor/apnhlos 0755 root root
     mkdir /mnt/vendor/modem 0755 root root
@@ -12,6 +8,10 @@ on fs
     mkdir /mnt/vendor/sec_efs 0755 root root
     mkdir /mnt/vendor/persist 0755 root root
     mount_all /vendor/etc/fstab.gts7l --early
+    # Kernel modules of tools/gts7l-kernel.sh that are not built in (modules.load order). Only
+    # now: remoteproc, ath11k, cs35l41 and btqca request their firmware at probe, and it is
+    # reachable once the mount_all above has mounted gts7l_fw and apnhlos.
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -a -d /vendor/lib/modules --all=/vendor/lib/modules/modules.load
 
 on late-fs
     mount_all /vendor/etc/fstab.gts7l --late

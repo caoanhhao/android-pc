@@ -1,30 +1,24 @@
-# Co-processor firmware from the tablet's own partitions (docs/gts7l.md §3): nothing of it is
-# in our images. fstab.gts7l mounts apnhlos and modem read-only under /mnt/vendor; this builds
-# /mnt/vendor/firmware, a tmpfs link tree the kernel loads from directly (firmware_class.path
-# on the kernel command line, BoardConfig.mk) and ueventd falls back to (ueventd.gts7l.rc):
+# Co-processor firmware of the tablet (docs/gts7l.md §3, §13): nothing of it is in our system or
+# vendor images. /mnt/vendor/firmware is the gts7l_fw logical partition (fstab.gts7l), made by
+# tools/gts7l-firmware.sh from the tablet's own stock data and added to super by
+# tools/gts7l-image.sh. It holds every file under the name the kernel requests:
 #
-#   gts7l/modem/    -> /mnt/vendor/modem/image    ADSP, CDSP, SLPI, modem, Venus, GPU zap
-#   gts7l/apnhlos/  -> /mnt/vendor/apnhlos/image  Wi-Fi/BT (QCA6390) and the rest of NON-HLOS
-#   gts7l/vendor/   -> /vendor/firmware           files of our own vendor image
+#   qcom/a650_{sqe.fw,gmu.bin}, ath11k/QCA6390/hw2.0/*, qca/htbtfw20.tlv, qca/htnv20.bin,
+#   cirrus/cs35l41-*        real files: only the stock vendor (which our super replaces) had
+#                           them; the amp calibration is made from sec_efs
+#   qcom/sm8250/..., ipa_*  symlinks into /mnt/vendor/apnhlos/image (ADSP, CDSP, SLPI, Venus,
+#                           GPU zap, IPA), so those are still read from apnhlos itself
+#   gts7l/{apnhlos,modem,vendor}  links to the partitions and our /vendor/firmware
 #
-# The GPU (a650_sqe.fw, a650_gmu.bin), Wi-Fi (QCA6390 ath11k), Bluetooth (htbtfw20, htnv20)
-# and CS35L41 speaker protection firmware lives in the stock vendor partition, which our super
-# replaces. TODO(S4): keep a copy taken from the tablet (never in git) where these links can
-# reach it.
+# MANIFEST.tsv at its root lists each file, its source and the driver that loads it.
 #
-# So the DTS names firmware as "gts7l/modem/adsp.mdt" and the kernel finds the split
-# .mdt/.bNN segments next to it. TODO(S1/S2): check which partition holds each file the DTS
-# and drivers request (docs/gts7l-inventory.md) and name them this way in
-# sm8250-samsung-gts7l.dts; files with fixed names in drivers (ath11k, GPU sqe/gmu) get
-# links of their own below.
+# This file sorts before init.gts7l.rc, so its "on fs" runs before that file's mount_all, which
+# mounts the partition here; init.gts7l.rc loads the kernel modules only after that mount.
 
-# The tree is not a context= mount (those must stay read-only, system/sepolicy domain.te):
-# restorecon labels it gts7l_firmware_link (sepolicy/file_contexts).
+on early-init
+    # The kernel loads from here. Its built-in command line (CONFIG_CMDLINE_FORCE in
+    # tools/gts7l-kernel.sh's config) may name another path; the parameter is writable.
+    write /sys/module/firmware_class/parameters/path /mnt/vendor/firmware
+
 on fs
     mkdir /mnt/vendor/firmware 0755 root root
-    mount tmpfs tmpfs /mnt/vendor/firmware nosuid nodev noexec mode=0755,uid=0,gid=0
-    mkdir /mnt/vendor/firmware/gts7l 0755 root root
-    symlink /mnt/vendor/modem/image /mnt/vendor/firmware/gts7l/modem
-    symlink /mnt/vendor/apnhlos/image /mnt/vendor/firmware/gts7l/apnhlos
-    symlink /vendor/firmware /mnt/vendor/firmware/gts7l/vendor
-    restorecon_recursive /mnt/vendor/firmware

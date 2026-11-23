@@ -1,0 +1,1 @@
+genfscon sysfs /module/firmware_class/parameters/path u:object_r:sysfs_gts7l_firmware_path:s0

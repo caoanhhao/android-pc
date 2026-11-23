@@ -1,3 +1,2 @@
 # Firmware requests the kernel falls back to ueventd for (firmware_directories).
-r_dir_file(ueventd, gts7l_firmware_link)
 r_dir_file(ueventd, firmware_file)

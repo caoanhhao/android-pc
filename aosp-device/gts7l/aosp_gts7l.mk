@@ -98,7 +98,7 @@ endif
 PRODUCT_COPY_FILES += $(GTS7L_KERNEL):kernel
 
 # Board files: fstab (also in the boot ramdisk, for first-stage mount), init, ueventd, the
-# firmware links into the tablet's own partitions.
+# firmware tree of the gts7l_fw partition.
 PRODUCT_COPY_FILES += \
     $(GTS7L_DEVICE_DIR)/fstab.gts7l:$(TARGET_COPY_OUT_RAMDISK)/fstab.gts7l \
     $(GTS7L_DEVICE_DIR)/fstab.gts7l:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.gts7l \

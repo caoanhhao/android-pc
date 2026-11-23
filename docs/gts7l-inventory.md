@@ -135,9 +135,9 @@ From the stock `vendor` (in `super`, `/vendor/firmware`): `a650_sqe.fw`, `a650_g
 (GPU), `qca6390/{amss20.bin,m3.bin,bdwlan.e05,bdwlan.elf*,regdb.bin}` (ath11k), `htbtfw20.tlv`
 + `htnv20.bin` (QCA6390 Bluetooth), `cs35l40-spk-dsp1-spk-prot{.wmfw,.bin,-calib.bin}` (speaker
 protection DSP for the CS35L41s), `ipa_fws.*`, `ipa_uc.*` (IPA, LTE data path), `CAMERA_ICP.elf`.
-Our `super` replaces the stock vendor, so these files are copied once from the tablet into a
-partition we keep (decision for S4: a small `gts7l_fw` image in `super`, or a copy on
-`/data`/`persist` at first boot; they never go into our git tree).
+Our `super` replaces the stock vendor, so `tools/gts7l-firmware.sh` copies the ones the
+kernel needs into a `gts7l_fw` logical partition in our `super`, built on this host only and
+never in git (docs/gts7l.md §13).
 
 ## How it was made
 

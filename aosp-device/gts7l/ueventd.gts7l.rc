@@ -1,7 +1,7 @@
 # /vendor/etc/ueventd.rc for gts7l (imported by /system/etc/ueventd.rc).
 
 # Firmware requests the kernel cannot serve itself (firmware_class.path) go to ueventd, which
-# looks here: the link tree of firmware/init.gts7l.firmware.rc first, then our own files.
+# looks here: the gts7l_fw tree of firmware/init.gts7l.firmware.rc first, then our own files.
 firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
 
 # Backlight for the lights HAL (user system).

@@ -10,7 +10,11 @@
 # Output in out/gts7l/images/ of the main checkout:
 #   boot.img     header v2 like stock: Image.gz, the generic ramdisk, the gts7l DTB in the dtb
 #                section, stock offsets and our command line (BoardConfig.mk)
-#   super.img    sparse, the stock super size, one group: system system_ext product vendor
+#   super.img    sparse, the stock super size, one group: system system_ext product vendor, and
+#                gts7l_fw (the device firmware, out/gts7l/firmware/gts7l_fw.img of
+#                tools/gts7l-firmware.sh) when it exists; GTS7L_FIRMWARE=0 leaves it out.
+#                With gts7l_fw, super.img and the Odin tar carry Samsung/Qualcomm firmware of
+#                this tablet: keep them on this host, never publish them.
 #   vbmeta.img   empty, verification and hashtree disabled (flags 3)
 #   dtbo.img     zeroed: ABL finds no overlay table, so the stock board overlays (written for
 #                Samsung's 4.19 DT) are not applied onto our mainline DTB, as on gts7xl-mainline
@@ -55,6 +59,7 @@ super_size=$(board BOARD_SUPER_PARTITION_SIZE)
 group_size=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_SIZE)
 boot_size=$(board BOARD_BOOTIMAGE_PARTITION_SIZE)
 parts=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_PARTITION_LIST)
+FW_IMG=$K/firmware/gts7l_fw.img
 
 # The Soong-only build stages nothing under $P/system: read build.prop from the image.
 prop() { debugfs -R 'cat /system/build.prop' "$P/system.img" 2>/dev/null | sed -n "s/^$1=//p"; }
@@ -91,6 +96,14 @@ for p in $parts; do
     fi
     args+=(--partition "$p:readonly:$(stat -c %s "$img"):gts7l_dynamic_partitions" --image "$p=$img")
 done
+# gts7l_fw is not a Soong partition (it never enters the build): added here, mounted by
+# fstab.gts7l at /mnt/vendor/firmware.
+if [[ ${GTS7L_FIRMWARE:-1} != 0 && -f $FW_IMG ]]; then
+    args+=(--partition "gts7l_fw:readonly:$(stat -c %s "$FW_IMG"):gts7l_dynamic_partitions" --image "gts7l_fw=$FW_IMG")
+    echo "gts7l-image: super.img includes gts7l_fw ($FW_IMG)"
+else
+    echo "gts7l-image: WARNING: no gts7l_fw in super.img (run tools/gts7l-firmware.sh): no GPU/Wi-Fi/BT/DSP firmware" >&2
+fi
 lpmake "${args[@]}" >/dev/null
 
 # vbmeta.img, dtbo.img

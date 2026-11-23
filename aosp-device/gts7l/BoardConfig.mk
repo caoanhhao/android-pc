@@ -47,8 +47,8 @@ BOARD_PREBUILT_DTBIMAGE_DIR := $(GTS7L_KERNEL_DIR)/dtb
 endif
 # androidboot.boot_devices: the UFS controller's platform device on mainline, for the
 # /dev/block/by-name links. fstab_suffix: ABL may pass its own androidboot.hardware (qcom).
-# firmware_class.path: the link tree into the tablet's firmware partitions
-# (firmware/init.gts7l.firmware.rc).
+# firmware_class.path: the gts7l_fw firmware tree (firmware/init.gts7l.firmware.rc, which
+# also sets it at early-init in case the kernel's forced built-in command line differs).
 # usbcontroller: the DWC3 core for the USB gadget (sys.usb.controller); stock passes
 # a600000.dwc3, mainline names the device a600000.usb.
 # TODO(S6): check the UFS and DWC3 device names and the console UART on the running kernel.
