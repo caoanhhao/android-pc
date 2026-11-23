@@ -347,14 +347,14 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 | `ALT + KP_End..KP_Insert`, `+ CTRL`, `+ SHIFT` | workspaces 11-20 on the keypad (Android's `NUMPAD_1..NUMPAD_0`), the same three (E2; the file sets `shell.workspaces = 20`) |
 | `ALT + wheel down / up` | next / previous workspace (E6) |
 | `ALT + Tab` | the switcher (`shell.alt_tab`, E4): tapped, the window focused before (the host's `SUPER + TAB`); held, walk the focus history, release to switch. The file's `ALT + Tab` bind is what `alt_tab = "bind"` would run. Not under Waydroid, where the host keeps `ALT + TAB` |
-| `ALT + grave`, `ALT + SHIFT + grave` | the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too), the overview (E3) |
+| `ALT + grave`, `ALT + SHIFT + grave` | the overview (the shell's default), the previous workspace (the host's `SUPER + GRAVE`; `binds.workspace_back_and_forth` too) |
 | `ALT + B`, `ALT + SHIFT + B` | hide/show the bar, re-create it (Phase E7) |
 | `ALT + S`, `ALT + CTRL + S` | the special workspace over the current one, toggled; the focused window into it (again: back out; Phase E5) |
 | `ALT + SHIFT + equal / minus`, `ALT + SHIFT + wheel down / up`, `ALT + SHIFT + middle button` | zoom in / out by 0.5, by 0.2, reset (Phase E10) |
 
 Left out, with no counterpart here: screenshots and screen
 recording, panel widgets, lock and suspend. The shell's default `ALT + grave` (overview)
-moves to `ALT + SHIFT + grave` in this file, as the host puts the previous workspace there.
+stays; the host's previous workspace (`SUPER + GRAVE`) goes on `ALT + SHIFT + grave`.
 With the later steps' binds (E1's pin binds among them) the user's copy loaded with 81 binds on
 Waydroid (2026-11-22; the only warnings then: E10's zoom binds, `repeating` ignored, which E13
 made work). Before them it
