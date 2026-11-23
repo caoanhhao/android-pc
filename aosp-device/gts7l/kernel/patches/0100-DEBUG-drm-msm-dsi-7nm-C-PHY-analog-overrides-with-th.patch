@@ -1,0 +1,82 @@
+From 534e92e36c6432d42d2b66aef5ed506c27f49317 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Mon, 23 Nov 2026 23:31:03 +0700
+Subject: [PATCH] DEBUG drm/msm/dsi: 7nm C-PHY analog overrides with the stock
+ gts7l values
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c | 36 +++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 5d805a797..c3f374b0d 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -13,6 +13,24 @@
+ #include "dsi.xml.h"
+ #include "dsi_phy_7nm.xml.h"
+ 
++/*
++ * DEBUG (gts7l bring-up): C-PHY analog overrides, -1 keeps the driver's value. Defaults are
++ * the stock Samsung values of the gts7l panel node (samsung,phy_vreg_ctrl_0, phy_ctrl2,
++ * phy_offset_{top,bot,mid}_ctrl, phy_str_swi_cal_sel_ctrl). Applied on the next PHY enable.
++ */
++static int cphy_vreg0 = 0x50;
++module_param(cphy_vreg0, int, 0644);
++static int cphy_ctrl2 = 0x64;
++module_param(cphy_ctrl2, int, 0644);
++static int cphy_rescode_top = 0x1f;
++module_param(cphy_rescode_top, int, 0644);
++static int cphy_rescode_bot = 0x1f;
++module_param(cphy_rescode_bot, int, 0644);
++static int cphy_rescode_mid = 0x1f;
++module_param(cphy_rescode_mid, int, 0644);
++static int cphy_swi_cal = 0x04;
++module_param(cphy_swi_cal, int, 0644);
++
+ /*
+  * DSI PLL 7nm - clock diagram (eg: DSI0): TODO: updated CPHY diagram
+  *
+@@ -1117,6 +1135,17 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	if (phy->cphy_mode)
+ 		writel(BIT(6), base + REG_DSI_7nm_PHY_CMN_GLBL_CTRL);
+ 
++	if (phy->cphy_mode) {
++		if (cphy_vreg0 >= 0)
++			vreg_ctrl_0 = cphy_vreg0;
++		if (cphy_swi_cal >= 0)
++			glbl_str_swi_cal_sel_ctrl = cphy_swi_cal;
++		if (cphy_rescode_top >= 0)
++			glbl_rescode_top_ctrl = cphy_rescode_top;
++		if (cphy_rescode_bot >= 0)
++			glbl_rescode_bot_ctrl = cphy_rescode_bot;
++	}
++
+ 	/* Enable LDO */
+ 	writel(vreg_ctrl_0, base + REG_DSI_7nm_PHY_CMN_VREG_CTRL_0);
+ 	writel(vreg_ctrl_1, base + REG_DSI_7nm_PHY_CMN_VREG_CTRL_1);
+@@ -1135,6 +1164,8 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	writel(glbl_rescode_bot_ctrl,
+ 	       base + REG_DSI_7nm_PHY_CMN_GLBL_RESCODE_OFFSET_BOT_CTRL);
+ 	writel(0x55, base + REG_DSI_7nm_PHY_CMN_GLBL_LPTX_STR_CTRL);
++	if (phy->cphy_mode && cphy_rescode_mid >= 0)
++		writel(cphy_rescode_mid, base + REG_DSI_7nm_PHY_CMN_GLBL_RESCODE_OFFSET_MID_CTRL);
+ 
+ 	/* Remove power down from all blocks */
+ 	writel(0x7f, base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+@@ -1144,6 +1175,11 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 	/* Select full-rate mode */
+ 	if (!phy->cphy_mode)
+ 		writel(0x40, base + REG_DSI_7nm_PHY_CMN_CTRL_2);
++	else if (cphy_ctrl2 >= 0)
++		writel(cphy_ctrl2, base + REG_DSI_7nm_PHY_CMN_CTRL_2);
++	DRM_DEV_INFO(&phy->pdev->dev, "cphy %d vreg0 %#x swi %#x rescode %#x/%#x/%#x ctrl2 %#x\n",
++		     phy->cphy_mode, vreg_ctrl_0, glbl_str_swi_cal_sel_ctrl, glbl_rescode_top_ctrl,
++		     glbl_rescode_bot_ctrl, cphy_rescode_mid, cphy_ctrl2);
+ 
+ 	ret = dsi_7nm_set_usecase(phy);
+ 	if (ret) {
+-- 
+2.56.1
+

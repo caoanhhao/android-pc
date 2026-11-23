@@ -302,3 +302,11 @@ shell over the NCM link and reboots into it (no recovery round trip).
   `DSI PLL(0) lock failed` at PHY probe, and DSI1 never starting.
 
 Photos: `gts7l-stock/s6/panel-test1.jpg`, `panel-k6.jpg`, `panel-pattern.jpg`.
+
+Kernel #7 (patch 0100, DEBUG: stock Samsung C-PHY analog values `vreg_ctrl_0 0x50`,
+rescode offsets top/bot/mid `0x1f`, `str_swi_cal_sel 0x04`, `ctrl_2 0x64`, module parameters
+`/sys/module/msm/parameters/cphy_*`): the 4-quadrant test pattern shows the right colours and
+orientation (portrait top-left = red "1", yellow border) on the DSI0 half. The left ~40 px are
+right on every line, the full line width only for the first ~150 lines; the rest of each line
+turns white. DSI1 half still black. Next: the stock PHY timings instead of mainline's computed
+ones, burst vs. non-burst video, then DSI1. Photo: `gts7l-stock/s6/panel-pattern-k7.jpg`.
