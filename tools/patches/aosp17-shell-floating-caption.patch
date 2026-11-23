@@ -1,0 +1,17 @@
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/common/CaptionVisibilityHelper.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/common/CaptionVisibilityHelper.kt
+index 20390ee00..730b414ce 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/common/CaptionVisibilityHelper.kt
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/common/CaptionVisibilityHelper.kt
+@@ -156,7 +156,11 @@ class CaptionVisibilityHelper(
+ 
+         return desktopState.canEnterDesktopModeOrShowAppHandle &&
+             taskInfo.windowingMode != WindowConfiguration.WINDOWING_MODE_PINNED &&
+-            !taskInfo.configuration.windowConfiguration.isAlwaysOnTop &&
++            // android-pc: a task that is always-on-top inside its desk (hyprtile's floating
++            // layer, aosp-device/hypr) is a desktop window and keeps its caption.
++            (!taskInfo.configuration.windowConfiguration.isAlwaysOnTop ||
++                (taskInfo.windowingMode == WINDOWING_MODE_FREEFORM &&
++                    taskInfo.parentTaskId != android.app.ActivityTaskManager.INVALID_TASK_ID)) &&
+             !taskInfo.isBubble()
+     }
+ 

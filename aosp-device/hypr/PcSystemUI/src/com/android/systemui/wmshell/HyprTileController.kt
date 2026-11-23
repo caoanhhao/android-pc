@@ -363,20 +363,38 @@ class HyprTileController(
             Log.d(TAG, "request ${request.type} task ${task.taskId} desk $deskId -> relayout")
             addBounds(layoutKey, task.displayId, wct, task)
         }
-        if (opening) raiseAboveTiled(deskId, wct, top = task.taskId)
+        if (opening) {
+            updateLayer(task, wct)
+            raiseAboveTiled(deskId, wct, top = task.taskId)
+        }
         return other ?: Transitions.RequestResult(wct)
     }
 
     /**
-     * Hyprland's stacking: tiled windows at the bottom, floating windows (and a maximized tiled
-     * one) above them, windows of a shown special workspace above those, pinned windows on top.
-     * Bringing a window to front only reorders it within its own kind.
+     * Hyprland's stacking, as two layers: tiled windows (a maximized one too) in the bottom
+     * layer, floating windows above them, then windows of a shown special workspace, then
+     * pinned windows. Bringing a window to front (focusing it) only reorders it within its
+     * layer: a focused tiled window stays under every floating one.
      */
     private fun zRank(id: Int): Int = when {
         tile.isPinned(id) -> 3
         special.isMember(id) -> 2
-        !tile.isTiled(id) || id in maximized -> 1
+        !tile.isTiled(id) -> 1
         else -> 0
+    }
+
+    /**
+     * Puts [task] in its layer: every window above the tiled layer is an always-on-top child of
+     * its desk, so WindowManager keeps it above the tiled ones whatever brings a tiled window to
+     * front (a click, Shell's taskbar, an app starting an activity), with no reorder of ours in
+     * between. Key focus still follows the click: `tools/patches/aosp17-wm-pinned-focus.patch`
+     * lets a task brought to front under always-on-top siblings keep the focus (E1).
+     */
+    private fun updateLayer(task: RunningTaskInfo, wct: WindowContainerTransaction) {
+        val on = zRank(task.taskId) > 0
+        if (task.configuration.windowConfiguration.isAlwaysOnTop != on) {
+            wct.setAlwaysOnTop(task.token, on)
+        }
     }
 
     /**
@@ -753,14 +771,18 @@ class HyprTileController(
                 if (tile.workspaceOf(id) == null) newTasks += id
                 changed = tile.open(id, deskId, focused, float) || changed
             }
-            // Shell brought a tiled window to front over floating ones (a tap, the taskbar):
-            // they go back above it. Once per stacking, in case the repository lags behind.
+            // Layers: windows that floated or tiled since (rules, dispatchers, Shell) move to
+            // theirs, and floating, special and pinned windows are put back in order among
+            // themselves. Once per stacking, in case the repository lags behind.
             val zWct = WindowContainerTransaction()
+            for (id in repo.getActiveTaskIdsInDesk(deskId)) {
+                taskOrganizer.getRunningTaskInfo(id)?.let { updateLayer(it, zWct) }
+            }
             val zNow = repo.getFreeformTasksIdsInDeskInZOrder(deskId)
             if (lastStacking[deskId] != zNow && raiseAboveTiled(deskId, zWct)) {
                 lastStacking[deskId] = zNow
-                startChange(zWct)
             }
+            if (!zWct.isEmpty) startChange(zWct)
             if (!changed) continue
             val wct = WindowContainerTransaction()
             addBounds(deskId, displayId, wct)
@@ -984,10 +1006,11 @@ class HyprTileController(
         }
         if (task == null) {
             controller.moveTaskToFront(taskId, repository.userId, null, UnminimizeReason.TASKBAR_TAP)
-        } else if (tile.isPinned(taskId) && !repository.isMinimizedTask(taskId)) {
-            // A pinned window is on top already; reordering it would not give it the focus (the
+        } else if (zRank(taskId) > 0 && !repository.isMinimizedTask(taskId)) {
+            // A floating (always-on-top) window: reordering it would not give it the focus (the
             // window last brought to front under it keeps it, tools/patches/
-            // aosp17-wm-pinned-focus.patch), focusing its activity does, as a tap on it.
+            // aosp17-wm-pinned-focus.patch), focusing its activity does, as a tap on it, and
+            // brings it to the top of its layer.
             runCatching { ActivityTaskManager.getService().setFocusedTask(taskId) }
                 .onFailure { Log.w(TAG, "focus pinned task $taskId", it) }
         } else {
@@ -1324,12 +1347,12 @@ class HyprTileController(
             if (!task.isResizeable) return
             userFloated -= id
             pendingBounds.remove(id)
-            // Tiled again, a pinned window is no longer pinned (hyprtile drops the pin).
-            if (tile.isPinned(id)) wct.setAlwaysOnTop(task.token, false)
+            // Tiled again (a pinned window is no longer pinned: hyprtile drops the pin).
             val focused = repository.getExpandedTasksIdsInDeskOrdered(deskId)
                 .firstOrNull { it != id && tile.isTiled(it) }
             tile.toggleFloating(id, deskId, focused)
         }
+        updateLayer(task, wct)
         addBounds(deskId, task.displayId, wct, task)
         if (!wct.isEmpty) startChange(wct)
     }
@@ -1373,8 +1396,9 @@ class HyprTileController(
             wct.setAlwaysOnTop(task.token, true)
             wct.reorder(task.token, true)
         } else {
+            // Unpinned, it stays floating: still above the tiled layer.
             tile.setPinned(id, false)
-            wct.setAlwaysOnTop(task.token, false)
+            updateLayer(task, wct)
         }
         Log.d(TAG, "pin task $id: $on")
         addBounds(deskId, task.displayId, wct, task)
@@ -1610,6 +1634,8 @@ class HyprTileController(
                 .firstOrNull { it != id && tile.workspaceOf(it) == desk }
             tile.open(id, desk, focused, float = floating)
             addBounds(desk, displayId, wct, task)
+            // A floating one stays above the tiled layer.
+            if (floating) wct.setAlwaysOnTop(task.token, true)
         }
         Log.d(TAG, "task $id left special:$name")
         // Emptied, a shown special workspace goes away, as Hyprland removes it.
@@ -2097,6 +2123,30 @@ class HyprTileController(
      * floating). Returns true when it hit a desktop window of the active desk, which then gets
      * the gesture.
      */
+    /**
+     * A press at [x], [y] (any button, or touch): if it lands on a floating window that does not
+     * have the focus, the window takes it. WindowManager misses this case when the window is on
+     * top of its layer already and the focus was moved to a tiled window under it by a reorder
+     * (`focuswindow`, the taskbar): no to-front request comes, as for an always-on-top child
+     * nothing moves. The window hit is the top one of the top layer at that point.
+     */
+    fun clickFocus(displayId: Int, x: Float, y: Float) {
+        if (!enabled) return
+        val repo = repository
+        val deskId = repo.getActiveDeskId(displayId) ?: return
+        val z = repo.getFreeformTasksIdsInDeskInZOrder(deskId).filter { !repo.isMinimizedTask(it) }
+        val hit = z.indices.sortedWith(compareByDescending<Int> { zRank(z[it]) }.thenBy { it })
+            .map { z[it] }
+            .firstOrNull { id ->
+                taskOrganizer.getRunningTaskInfo(id)?.bounds()
+                    ?.let { x >= it.left && x < it.right && y >= it.top && y < it.bottom } == true
+            } ?: return
+        if (zRank(hit) == 0 || focusTransitionObserver.globallyFocusedTaskId == hit) return
+        Log.d(TAG, "click focuses floating task $hit")
+        runCatching { ActivityTaskManager.getService().setFocusedTask(hit) }
+            .onFailure { Log.w(TAG, "focus task $hit", it) }
+    }
+
     fun mouseDown(displayId: Int, x: Float, y: Float, button: Int): Boolean {
         if (!enabled) return false
         val deskId = repository.getActiveDeskId(displayId) ?: return false

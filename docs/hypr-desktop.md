@@ -383,17 +383,40 @@ Known limits (left for later sub-phases):
 Asked by the user after D1: in the dwindle layout floating windows always stay above tiled
 ones, and resizing a tiled window resizes its neighbours so the layout stays tiled.
 
-- **Stacking** (`HyprTileController.raiseAboveTiled`). Hyprland's order, bottom to top: tiled
-  windows, floating windows (and a maximized tiled one), windows of a shown special workspace,
-  pinned windows. Bringing a window to front reorders it only within its kind. On a request
-  that brings a window to front (a click on a tiled window is a `TO_FRONT` request), the
-  reorders that put the floating, special and pinned windows back above it ride along in the
-  same transition. When Shell brings a tiled window to front by itself (`focuswindow`, the
-  taskbar), the observer's sync compares the desk's z-order
-  (`DesktopRepository.getFreeformTasksIdsInDeskInZOrder`) with that order and fixes it with one
-  `TRANSIT_CHANGE` (once per z-order, so a repository that lags cannot loop). This replaces
-  E1's `keepPinnedOnTop`, which kept only pinned windows above. It applies to every layout,
-  as in Hyprland.
+- **Stacking: two layers** (`HyprTileController.updateLayer`, `zRank`, `raiseAboveTiled`).
+  Tiled windows (a maximized one too) form the bottom layer; floating windows, windows of a
+  shown special workspace and pinned windows (in that order) the top one. Focusing a tiled
+  window (a click, `focuswindow`, the taskbar, an app starting an activity) never lifts it over
+  a floating window; floating windows stack among themselves, and the one focused goes to the
+  top. It applies to every layout, as in Hyprland.
+  - The first try only reordered the floating windows back above a tiled window brought to
+    front: in the same transition for a request (a click), but Shell brings windows to front
+    by itself too (`moveTaskToFront` from a press on a window, `focuswindow`, the taskbar), and
+    for those the fix came from the sync a moment later: the tiled window showed on top for
+    a frame (seen on Waydroid).
+  - So every window of the top layer is an **always-on-top child task of its desk**
+    (`WindowContainerTransaction.setAlwaysOnTop`, as pinned windows were since E1).
+    WindowManager then keeps them above the tiled ones whatever reorders a tiled window, with
+    nothing of ours in between. The flag follows the window's state: set in the transaction
+    that floats or tiles it (`togglefloating`, `pin`, leaving a special workspace, a request
+    that opens it), and checked for every task of the active desk on each sync (window rules,
+    anything else). Reorders within the top layer (pinned above floating above special) still
+    ride along with requests and the sync.
+  - Key focus: `tools/patches/aosp17-wm-pinned-focus.patch` (E1) lets a task brought to front
+    under always-on-top siblings keep the focus, so a focused tiled window under a floating
+    one does get the keys. A floating window takes the focus with a tap, as an activity
+    brought to front; one case was missing: when it was on top of its layer already and the
+    focus had gone to a tiled window by a reorder (`focuswindow`), a press on it produced no
+    to-front request at all and the focus stayed. `HyprMouse` now reports every press to
+    `HyprTileController.clickFocus`, which gives the focus (`setFocusedTask`) to the top window
+    of the top layer under the pointer when that one does not have it. `focuswindow` on a
+    floating window uses `setFocusedTask` too (it was only for pinned ones).
+  - Shell drew no caption on an always-on-top task (`CaptionVisibilityHelper.allowedForTask`,
+    meant for PiP and bubbles). With `shell.caption = "floating"` or `"all"` floating windows
+    would have lost theirs; `tools/patches/aosp17-shell-floating-caption.patch` (Shell, so it
+    ships in `PcSystemUI`) keeps the caption for a freeform task that has a parent task (a
+    desk). The default since `3526555` is no caption at all.
+  - This replaces E1's `keepPinnedOnTop`.
 - **Resizing a tile by its edges** (`onTransitionReady` / `onEdgeResize`). Shell's resize
   handles stay on tiled windows (only the caption is gone); a drag ends in a `TRANSIT_CHANGE`
   of that one task started by its `ResizeTaskPositioner`. The observer notes such a
@@ -407,9 +430,14 @@ ones, and resizing a tiled window resizes its neighbours so the layout stays til
   while the drag runs, only its veil).
 - Tests: `ResizeEdgesTest` (7; 160 in all pass).
 
-Checked on Waydroid (test data, 2538x1058): Settings and Contacts tiled, Files floating; a
-mouse click on Settings brought it to front with Files kept above (`desk 6 stacking: [202,
-195, 200]`), and so did `hyprctl dispatch focuswindow` on Contacts through the sync path.
+Checked on Waydroid (test data, 2538x1058): with Files and Clock floating over tiled
+Settings, Contacts and Files, `dumpsys activity activities` shows `isAlwaysOnTop` on the two
+floating tasks only. A mouse click on Settings and `hyprctl dispatch focuswindow` on Contacts
+give them the focus (`mFocusedApp`) while both floating windows stay above; a click on the
+lower floating window brings it above the other and focuses it; after `focuswindow` on a tiled
+window, a click on the top floating window focuses it (`click focuses floating task 224`).
+With `hyprctl keyword shell:caption floating` the floating Files keeps its caption.
+Screenshots `out/hypr-resize/tiled-focused-under-float.png`, `floating-layer-caption.png`.
 Dragging the edge between Settings and Contacts 200 px to the right gave Settings
 `[12,45][1464,1046]` and Contacts `[1474,45][2526,1046]`; with five tiles, dragging the line
 between Calendar and the microG window 100 px left moved only that line, and dragging the

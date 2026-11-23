@@ -102,6 +102,7 @@ class HyprMouse(
             MotionEvent.ACTION_DOWN -> {
                 active = false
                 swallowing = false
+                controller.clickFocus(displayId, e.rawX, e.rawY)
                 return onPress(e, displayId)
             }
             MotionEvent.ACTION_MOVE -> if (active) controller.mouseMove(e.rawX, e.rawY)
