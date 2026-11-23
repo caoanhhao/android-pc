@@ -58,3 +58,9 @@ if [[ -f $ROOT/out/gts7l/Image.gz && -f $ROOT/out/gts7l/sm8250-samsung-gts7l.dtb
         "$ROOT/out/gts7l/" "$K/"
     rsync -a --delete "$ROOT/out/gts7l/sm8250-samsung-gts7l.dtb" "$K/dtb/"
 fi
+# Mesa freedreno/Turnip for gts7l (tools/gts7l-mesa.sh writes out/gts7l-mesa/prebuilt/: the
+# libraries and their Android.bp), which aosp_gts7l.mk picks up when the Android.bp is there.
+if [[ -f $ROOT/out/gts7l-mesa/prebuilt/Android.bp ]]; then
+    mkdir -p "$ROOT/aosp/device/android-pc/gts7l-mesa"
+    rsync -a --delete "$ROOT/out/gts7l-mesa/prebuilt/" "$ROOT/aosp/device/android-pc/gts7l-mesa/"
+fi

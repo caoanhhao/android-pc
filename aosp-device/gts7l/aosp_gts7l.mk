@@ -42,22 +42,29 @@ PRODUCT_VENDOR_PROPERTIES += vendor.hwc.drm.device=/dev/dri/card0
 
 # Gralloc: minigbm's AIDL allocator and stable-C mapper. They are built with minigbm's
 # generic backend (dma-buf system heap); the msm backend (msm_cflags) exists only for the
-# HIDL gralloc4 and gralloc0 modules.
-# TODO(T3): an msm build of allocator-service.minigbm/mapper.minigbm (patch to
-# external/minigbm in tools/patches/) for UBWC and the GPU's tiling.
+# HIDL gralloc4 and gralloc0 modules. gralloc.minigbm (gralloc0, same generic backend) is
+# not a HAL here: Mesa's u_gralloc loads it through libhardware (ro.hardware.gralloc) for
+# the CrOS perform() that reads a buffer's planes, strides and modifier. Mesa built with the
+# NDK has no IMapper path, so without it EGL/Vulkan fall back to guessing a single plane.
+# TODO(T3): an msm build of allocator-service.minigbm/mapper.minigbm/gralloc.minigbm (patch
+# to external/minigbm in tools/patches/) for UBWC and the GPU's tiling; Mesa reads the
+# modifier from the handle, so it needs no change for that.
 PRODUCT_PACKAGES += \
     android.hardware.graphics.allocator-service.minigbm \
-    mapper.minigbm
+    mapper.minigbm \
+    gralloc.minigbm
 PRODUCT_VENDOR_PROPERTIES += ro.hardware.gralloc=minigbm
 
 # GPU: Mesa freedreno (EGL/GLES) and Turnip (Vulkan) for the Adreno 650. AOSP 17's
-# external/mesa3d builds only lavapipe and gfxstream, so Mesa comes from a separate meson
-# cross build installed as prebuilts in device/android-pc/gts7l-mesa (outside the mirror,
-# like the PC kernel's device/android-pc/kernel). Without it the image has no GLES driver
-# and SurfaceFlinger cannot start, but the product still analyses and builds.
-# TODO(T3): tools/gts7l-mesa.sh (meson cross build of freedreno + turnip for Android
-# arm64, installing libEGL_mesa, libGLESv1_CM_mesa, libGLESv2_mesa, libgallium_dri and
-# vulkan.freedreno with an Android.bp into device/android-pc/gts7l-mesa).
+# external/mesa3d has Soong files only for lavapipe, zink and gfxstream, so
+# tools/gts7l-mesa.sh cross builds external/mesa3d (and a static external/libdrm) with meson
+# and the NDK, and installs the libraries with a generated Android.bp in
+# out/gts7l-mesa/prebuilt; tools/aosp-device-link.sh copies that to
+# device/android-pc/gts7l-mesa (outside the mirror, like the kernel). Without it the image
+# has no GLES driver and SurfaceFlinger cannot start, but the product still analyses and
+# builds. The kernel side: the msm DRM driver with the Adreno GPU (card0 + renderD128) and the
+# GPU firmware (a650_sqe.fw, a650_gmu.bin and the device's signed zap shader), docs/gts7l.md
+# §13.
 GTS7L_MESA_DIR := device/android-pc/gts7l-mesa
 ifneq (,$(wildcard $(GTS7L_MESA_DIR)/Android.bp))
 PRODUCT_PACKAGES += \
@@ -66,7 +73,9 @@ PRODUCT_PACKAGES += \
     libGLESv2_mesa \
     libgallium_dri \
     vulkan.freedreno
+# HWUI stays on GLES (skiagl) until Turnip is proven on the device.
 PRODUCT_VENDOR_PROPERTIES += \
+    debug.hwui.renderer=skiagl \
     ro.hardware.egl=mesa \
     ro.hardware.vulkan=freedreno
 PRODUCT_COPY_FILES += \
