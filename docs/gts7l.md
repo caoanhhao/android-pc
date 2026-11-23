@@ -161,7 +161,7 @@ parallel sessions (they touch different files); builds still go one at a time.
 | S2 | T2 | Kernel tree: `tools/gts7l-kernel.sh` fetches mainline v7.3 into `gts7l-kernel/`, applies the gts7xl patch series kept in `aosp-device/gts7l/kernel/patches`, builds `Image.gz` + DTB with an arm64 cross toolchain | nothing (DTS from S1 later) | `Image.gz-dtb` for `sm8250-samsung-gts7xl` builds; `sm8250-samsung-gts7l.dts` stub ready for S1's data |
 | S3 | T3 | Product scaffolding: `aosp_gts7l` in `AndroidProducts.mk`, `gts7l/aosp_gts7l.mk`, `BoardConfig.mk`, fstab/init/ueventd, sepolicy, `hals.list`; `hals/*/hal.mk` split so the PC product keeps Cuttlefish and the tablet does not | nothing | `lunch aosp_gts7l-cp2a-userdebug` passes Soong analysis; PC product unchanged |
 | S4 ✅ | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v2 as stock, Image.gz + DTB section, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
-| S5 | T1 | Unlock, TWRP, full partition backup | **user's go-ahead** (wipes tablet, trips Knox) | backups of §6/T1 partitions on the host, checksummed |
+| S5 ✅ | T1 | Unlock, TWRP, full partition backup | **user's go-ahead** (wipes tablet, trips Knox) | backups of §6/T1 partitions on the host, checksummed |
 | S6 | T2 | Boot S2's kernel with a USB-gadget-shell initramfs, then port drivers in order | S1, S2, S5 | shell over USB on the tablet |
 | S7 | T3 | First `aosp_gts7l` boot to PcSystemUI | S3, S4, S6 | HyprLauncher on the panel with touch |
 | S8.. | T4-T7 | Rust HALs, tablet desktop, TWRP update zip, later items | S7 | per §6 |
@@ -230,3 +230,20 @@ generated ramdisk (`aosp_gts7l_generated_ramdisk_image`, no phony target) drops 
 Not in this image yet: Mesa (no `gts7l-mesa` prebuilts, so no GPU), the device firmware copy
 from the stock vendor, panel/touch drivers (S6). It is the first-boot test image for S6/S7,
 flashed only after S5.
+
+## 11. Unlock and backup (S5, 2026-11-23)
+
+- Bootloader unlocked from the Download-mode warning screen (long press Volume Up). The first try
+  only entered Download mode: `OEM LOCK : ON (U)` and Odin's `FAIL! Auth` ("Custom Binary Blocked
+  By OEM Lock"); after the real unlock the screen shows `OEM LOCK : OFF (U)`. No `KG STATE` line,
+  `FRP LOCK : OFF`.
+- Flashing from Linux with [samloader-rs](https://github.com/topjohnwu/samloader-rs) built from
+  source (`samloader flash --no-reboot -p VBMETA ... -p RECOVERY ...`); the PIT is in
+  `gts7l-stock/s5/gts7l.pit`. Partition names in the PIT: `VBMETA`, `RECOVERY`, `BOOT`, `SUPER`, `DTBO`.
+- `vbmeta`: ours (`out/gts7l/images/vbmeta.img`, unsigned, flags 3, rollback index 0); ABL
+  accepts it once unlocked (verified boot state `orange`).
+- `recovery`: no TWRP exists for gts7l, so the LineageOS 20261117 gts7l recovery is used as a tool
+  only (root adb). It stays until our own recovery replaces it (T6).
+- `tools/gts7l-backup.sh`: 72 partitions (all but userdata, super, cache) read with dd and their
+  SHA-256 compared on the tablet and the host: all OK, in `gts7l-backup/20261123-2230/` (main
+  checkout root, gitignored, read-only, `SHA256SUMS`). Keep a second copy off this machine.
