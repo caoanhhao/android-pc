@@ -157,7 +157,7 @@ parallel sessions (they touch different files); builds still go one at a time.
 
 | Step | Phase | What | Needs | Done when |
 |---|---|---|---|---|
-| S1 | T0 | Stock firmware: download `T875XXS8DXH1` XXV, extract `boot`/`dtbo`/`vendor_boot` DTBs to DTS, list partitions and firmware files; write `docs/gts7l-inventory.md` | tablet over adb (read-only) | panel, touch, regulators, modem wiring documented; firmware kept under `gts7l-stock/` (gitignored) |
+| S1 ✅ | T0 | Stock firmware: download `T875XXS8DXH1` XXV, extract `boot`/`dtbo`/`vendor_boot` DTBs to DTS, list partitions and firmware files; write `docs/gts7l-inventory.md` | tablet over adb (read-only) | panel, touch, regulators, modem wiring documented; firmware kept under `gts7l-stock/` (gitignored) |
 | S2 | T2 | Kernel tree: `tools/gts7l-kernel.sh` fetches mainline v7.3 into `gts7l-kernel/`, applies the gts7xl patch series kept in `aosp-device/gts7l/kernel/patches`, builds `Image.gz` + DTB with an arm64 cross toolchain | nothing (DTS from S1 later) | `Image.gz-dtb` for `sm8250-samsung-gts7xl` builds; `sm8250-samsung-gts7l.dts` stub ready for S1's data |
 | S3 | T3 | Product scaffolding: `aosp_gts7l` in `AndroidProducts.mk`, `gts7l/aosp_gts7l.mk`, `BoardConfig.mk`, fstab/init/ueventd, sepolicy, `hals.list`; `hals/*/hal.mk` split so the PC product keeps Cuttlefish and the tablet does not | nothing | `lunch aosp_gts7l-cp2a-userdebug` passes Soong analysis; PC product unchanged |
 | S4 | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v1, Image.gz + DTB, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
