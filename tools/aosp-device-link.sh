@@ -9,6 +9,10 @@
 # this before every build; never edit the mirror, edit aosp-device/.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Run from a git worktree (e.g. ../android-pc-gts7l), the worktree is the source while aosp/
+# and out/ are the main checkout's.
+WORKTREE=$ROOT
+[[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 # While parallel sessions share this checkout (Phase E), builds take out/.phase-e.lock with
 # flock. The mirror is the build's input, so refreshing it outside the lock would change
 # another session's running build: refuse unless the lock is held by this process or one of
@@ -33,7 +37,7 @@ if [[ -e $LOCK && -z ${HYPR_LINK_NO_LOCK:-} ]]; then
 fi
 # AOSP_DEVICE_SRC=DIR mirrors DIR/aosp-device and DIR/aosp-device-vendor instead (e.g. a
 # `git archive HEAD` export, so other sessions' uncommitted work stays out of a release build).
-SRC=${AOSP_DEVICE_SRC:-$ROOT}
+SRC=${AOSP_DEVICE_SRC:-$WORKTREE}
 DST=$ROOT/aosp/device/android-pc/pc_x86_64
 mkdir -p "$DST"
 # EXCLUDE_HALS="wifi camera" leaves those hals/ directories out (another session's

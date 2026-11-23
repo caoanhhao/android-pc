@@ -6,6 +6,8 @@
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRODUCT=${PRODUCT:-aosp_pc_x86_64}
 "$ROOT/tools/aosp-device-link.sh" || exit 1
+# From a git worktree the AOSP tree is the main checkout's (the mirror above came from the worktree).
+[[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 cd "$ROOT/aosp" || exit 1
 export TARGET_KERNEL_USE=${TARGET_KERNEL_USE:-6.18}   # android17-6.18 GKI instead of the 6.12 default
 # soong_build heap cap (local build/soong patch) and no incremental analysis: under the 20 GB
