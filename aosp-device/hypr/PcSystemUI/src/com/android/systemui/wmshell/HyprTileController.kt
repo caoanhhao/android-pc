@@ -167,8 +167,6 @@ class HyprTileController(
      * parks such a window back on its workspace instead of leaving it behind every desk.
      */
     private val fullscreenFrom = HashMap<Int, FullscreenOrigin>()
-    /** Desk switches that bring a parked fullscreen window back: transition -> task. */
-    private val refullscreen = HashMap<IBinder, Int>()
     /** Tasks opened since the last sync: window rules with a workspace apply to them once. */
     private val newTasks = HashSet<Int>()
     /**
@@ -715,9 +713,6 @@ class HyprTileController(
         specialMoves -= transition
         deskSwitches -= transition
         runningDeskSwitches -= transition
-        refullscreen.remove(transition)?.let { id ->
-            if (!aborted) mainExecutor.execute { enterFullscreen(id) }
-        }
         requests -= transition
         // Shell's animations end at alpha 1; this runs after the finish transaction is applied.
         mainExecutor.execute { decorations.reapplyOpacity() }
@@ -1229,6 +1224,13 @@ class HyprTileController(
             controller.activateDesk(to, repo.userId, enterReason = EnterReason.KEYBOARD_SHORTCUT_ENTER)
             return
         }
+        parkedOn(displayId, to)?.let { (id, origin) ->
+            val task = taskOrganizer.getRunningTaskInfo(id)
+            if (task != null) {
+                returnToFullscreen(task, origin, from)
+                return
+            }
+        }
         updateConfig()
         val wct = WindowContainerTransaction()
         val runOnStart = controller.addDeskActivationChanges(
@@ -1263,7 +1265,6 @@ class HyprTileController(
         runningDeskSwitches += transition
         runOnStart?.invoke(transition)
         recordCarried(displayId, to, carried)
-        parkedOn(displayId, to)?.let { refullscreen[transition] = it }
     }
 
     /**
@@ -1976,11 +1977,39 @@ class HyprTileController(
     }
 
     /** A window parked by [parkFullscreen] on desk [deskId], to make fullscreen again. */
-    private fun parkedOn(displayId: Int, deskId: Int): Int? {
+    private fun parkedOn(displayId: Int, deskId: Int): Pair<Int, FullscreenOrigin>? {
         val n = workspaces(displayId).numberOf(deskId) ?: return null
-        return parked.entries.firstOrNull { (id, origin) ->
+        val entry = parked.entries.firstOrNull { (id, origin) ->
             origin.displayId == displayId && origin.workspace == n && repository.getDeskIdForTask(id) == deskId
-        }?.key?.also { parked.remove(it) }
+        } ?: return null
+        parked.remove(entry.key)
+        return entry.key to entry.value
+    }
+
+    /**
+     * Showing the workspace of parked [task] again: one transaction makes it fullscreen and
+     * deactivates desk [from], so it comes back as it was left, without first showing in its
+     * desk.
+     */
+    private fun returnToFullscreen(task: RunningTaskInfo, origin: FullscreenOrigin, from: Int) {
+        val controller = desktopTasksController.orElse(null) ?: return
+        val wct = WindowContainerTransaction()
+        val moved = controller.addMoveToFullscreenChanges(wct, task, willExitDesktop = false)
+        val cleanup = controller.performDesktopExitCleanUp(
+            wct = wct,
+            deskId = from,
+            displayId = task.displayId,
+            userId = repository.userId,
+            willExitDesktop = true,
+            removingLastTaskId = null,
+            shouldEndUpAtHome = false,
+            exitReason = ExitReason.FULLSCREEN_LAUNCH,
+        )
+        fullscreenFrom[task.taskId] = origin
+        Log.d(TAG, "fullscreen task ${task.taskId} back on workspace ${origin.workspace}, leave desk $from")
+        val transition = transitions.startTransition(TRANSIT_CHANGE, wct, null)
+        moved?.invoke(transition)
+        cleanup?.invoke(transition)
     }
 
     /** Windows [parkFullscreen] put back on their workspace while another one is shown. */
@@ -1990,7 +2019,8 @@ class HyprTileController(
      * A workspace switch while [full] (from `fullscreen 0`) is shown: to its own workspace it
      * changes nothing (Hyprland shows that workspace already); to another one, [full] goes back
      * into its workspace's desk with its earlier bounds, hidden there, in the transaction that
-     * activates [to], and gets fullscreen again when its workspace is shown next.
+     * activates [to], and gets fullscreen again when its workspace is shown next
+     * ([returnToFullscreen]).
      */
     private fun parkFullscreen(full: RunningTaskInfo, to: Int) {
         val controller = desktopTasksController.orElse(null) ?: return
