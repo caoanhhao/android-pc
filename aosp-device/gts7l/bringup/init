@@ -1,0 +1,39 @@
+#!/bin/busybox sh
+# gts7l bring-up initramfs (docs/gts7l.md, S6): a shell over USB (ACM serial + NCM network)
+# and on the screen, logs in pstore. Never mounts or writes UFS.
+B=/bin/busybox
+$B --install -s /bin
+mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /sys/fs/pstore /tmp; mount -t devpts devpts /dev/pts
+mount -t pstore pstore /sys/fs/pstore; mount -t tmpfs tmpfs /tmp
+mount -t configfs configfs /sys/kernel/config
+echo "gts7l-bringup: init started" > /dev/kmsg
+
+# The MAX77705 MUIC holds the USB data lines until it is told to route them to the SoC.
+for i in 1 2 3 4 5 6 7 8 9 10; do ls /dev/i2c-* >/dev/null 2>&1 && break; sleep 1; done
+/bin/usbroute > /dev/kmsg 2>&1
+
+G=/sys/kernel/config/usb_gadget/g1
+mkdir -p $G/strings/0x409 $G/configs/c.1/strings/0x409 $G/functions/acm.0 $G/functions/ncm.0
+echo 0x1d6b > $G/idVendor; echo 0x0104 > $G/idProduct
+echo android-pc > $G/strings/0x409/manufacturer
+echo gts7l-bringup > $G/strings/0x409/product
+echo gts7l0001 > $G/strings/0x409/serialnumber
+echo bringup > $G/configs/c.1/strings/0x409/configuration
+ln -s $G/functions/acm.0 $G/configs/c.1/; ln -s $G/functions/ncm.0 $G/configs/c.1/
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+	udc=$(ls /sys/class/udc 2>/dev/null | head -1); [ -n "$udc" ] && break; sleep 1
+done
+if [ -n "$udc" ]; then
+	echo "$udc" > $G/UDC && echo "gts7l-bringup: gadget on $udc" > /dev/kmsg
+else
+	echo "gts7l-bringup: no UDC" > /dev/kmsg
+fi
+for i in 1 2 3 4 5; do ip link show usb0 >/dev/null 2>&1 && break; sleep 1; done
+ip addr add 172.16.42.1/24 dev usb0 2>/dev/null; ip link set usb0 up 2>/dev/null
+telnetd -l /bin/sh -b 172.16.42.1 2>/dev/null
+
+# Shells: USB serial (/dev/ttyACM0 on the host) and the bootloader framebuffer console.
+(while :; do setsid -c sh -c 'stty -F /dev/ttyGS0 sane -echo 2>/dev/null; exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'; sleep 1; done) &
+(while :; do setsid -c sh -c 'exec sh </dev/tty1 >/dev/tty1 2>&1'; sleep 1; done) &
+while :; do sleep 3600; done

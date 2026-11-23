@@ -1,0 +1,12 @@
+[package]
+name = "usbroute"
+version = "0.1.0"
+edition = "2021"
+description = "Routes the MAX77705 USB data switch to the SoC (gts7l bring-up)"
+license = "Apache-2.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
