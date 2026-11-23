@@ -1,0 +1,1826 @@
+From 1e4e528e2d1c31a391c7875cc32c1288f916f61a Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Mon, 23 Nov 2026 15:07:52 +0700
+Subject: [PATCH] arm64: dts: qcom: add a Samsung Galaxy Tab S7 LTE (gts7l)
+ stub
+
+Board file for the SM-T875, derived from sm8250-samsung-gts7xlwifi.dts (the
+Tab S7+ Wi-Fi, same SM8250 board family), with what the stock gts7l device
+tree (dtbo entry for board revision 7) gives so far: board id <8 7>, the
+Novatek NT36523 CSOT panel (1600x2560, dual DSI, C-PHY, wired like the Xiaomi
+Pad 5 Pro), its 1.8 V and bias-buck enable GPIOs, the Novatek touch controller
+at 0x62, and the panel size.
+
+Panel, DSI hosts and touch stay disabled until there are drivers for them
+(mainline's nt36523 panel driver and novatek-nvt-ts have no entry for these
+parts); the bootloader's simple-framebuffer is the display meanwhile. TODO
+markers name what is left: panel/touch drivers, DSI supplies, regulators,
+speaker amp GPIOs, the X55 LTE modem and the battery limits.
+
+caoanhhao used AI to code
+---
+ arch/arm64/boot/dts/qcom/Makefile             |    1 +
+ .../boot/dts/qcom/sm8250-samsung-gts7l.dts    | 1779 +++++++++++++++++
+ 2 files changed, 1780 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 92f3a645c..f0bdabf0e 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -364,6 +364,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-sony-xperia-kumano-bahamut.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-sony-xperia-kumano-griffin.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-hdk.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-mtp.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-samsung-gts7l.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-samsung-gts7xlwifi.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-samsung-r8q.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8250-samsung-x1q.dtb
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+new file mode 100644
+index 000000000..0d11c9629
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -0,0 +1,1779 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Samsung Galaxy Tab S7 LTE (SM-T875, gts7l).
++ *
++ * Stub derived from sm8250-samsung-gts7xlwifi.dts (Tab S7+ Wi-Fi, same SM8250 board
++ * family) as of JeyKul/gts7xl-mainline's series. Everything not marked TODO is the
++ * S7+'s wiring and still has to be checked against the stock gts7l device tree
++ * (docs/gts7l-inventory.md, step S1: stock dtbo entry for board-id 7). Known
++ * differences: 11" 1600x2560 LCD (Novatek NT36523, CSOT PPA957DB1, dual DSI, C-PHY)
++ * instead of the 12.4" AMOLED, Novatek touch controller, side-key fingerprint, an
++ * external X55 LTE modem, smaller battery.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/media/video-interfaces.h>
++#include <dt-bindings/clock/qcom,dispcc-sm8250.h>
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/phy/phy.h>
++#include <dt-bindings/sound/qcom,q6afe.h>
++#include <dt-bindings/sound/qcom,q6asm.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/usb/pd.h>
++#include "sm8250-samsung-common.dtsi"
++#include "pm8150l.dtsi"
++
++/ {
++	model = "Samsung Galaxy Tab S7 (LTE)";
++	compatible = "samsung,gts7l", "qcom,kona", "qcom,sm8250";
++	chassis-type = "tablet";
++
++	/* Values the bootloader accepts for a direct boot */
++	/* Stock gts7l dtbo, board revision 7 (SM8250 v2.1) */
++	qcom,msm-id = <356 0x20001>;
++	qcom,board-id = <8 7>;
++
++	aliases {
++		serial1 = &uart6;
++		serial2 = &uart3;
++	};
++
++	/*
++	 * TODO(S1): gts7l battery (8000 mAh nominal) and stock limits from the
++	 * stock DTB; S7+ values below except the capacity.
++	 */
++	battery: battery {
++		compatible = "simple-battery";
++		voltage-max-design-microvolt = <4350000>;
++		voltage-min-design-microvolt = <3400000>;
++		over-voltage-threshold-microvolt = <4500000>;
++		charge-full-design-microamp-hours = <8000000>;
++		constant-charge-voltage-max-microvolt = <4350000>;
++		constant-charge-current-max-microamp = <500000>;
++	};
++
++	qca6390_pmu: qca6390-pmu {
++		compatible = "qcom,qca6390-pmu";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&wlan_en_state>, <&bt_en_state>;
++
++		vddaon-supply = <&vreg_s6a_0p95>;
++		vddpmu-supply = <&vreg_s6a_0p95>;
++		vddrfa0p95-supply = <&vreg_s6a_0p95>;
++		vddrfa1p3-supply = <&vreg_s8c_1p35>;
++		vddrfa1p9-supply = <&vreg_s5a_1p9>;
++		vddpcie1p3-supply = <&vreg_s8c_1p35>;
++		vddpcie1p9-supply = <&vreg_s5a_1p9>;
++		vddio-supply = <&vreg_s4a_1p8>;
++
++		wlan-enable-gpios = <&tlmm 90 GPIO_ACTIVE_HIGH>;
++		bt-enable-gpios = <&tlmm 76 GPIO_ACTIVE_HIGH>;
++
++		regulators {
++			vreg_pmu_rfa_cmn: ldo0 {
++				regulator-name = "vreg_pmu_rfa_cmn";
++			};
++			vreg_pmu_aon_0p59: ldo1 {
++				regulator-name = "vreg_pmu_aon_0p59";
++			};
++			vreg_pmu_wlcx_0p8: ldo2 {
++				regulator-name = "vreg_pmu_wlcx_0p8";
++			};
++			vreg_pmu_wlmx_0p85: ldo3 {
++				regulator-name = "vreg_pmu_wlmx_0p85";
++			};
++			vreg_pmu_btcmx_0p85: ldo4 {
++				regulator-name = "vreg_pmu_btcmx_0p85";
++			};
++			vreg_pmu_rfa_0p8: ldo5 {
++				regulator-name = "vreg_pmu_rfa_0p8";
++			};
++			vreg_pmu_rfa_1p2: ldo6 {
++				regulator-name = "vreg_pmu_rfa_1p2";
++			};
++			vreg_pmu_rfa_1p7: ldo7 {
++				regulator-name = "vreg_pmu_rfa_1p7";
++			};
++			vreg_pmu_pcie_0p9: ldo8 {
++				regulator-name = "vreg_pmu_pcie_0p9";
++			};
++			vreg_pmu_pcie_1p8: ldo9 {
++				regulator-name = "vreg_pmu_pcie_1p8";
++			};
++		};
++	};
++
++	/*
++	 * Stock fixed_reg_lcd_1p8 and fixed_reg_buck_en (enables the ISL98608 bias buck).
++	 * Always on: the bootloader's framebuffer is the display until the panel driver
++	 * exists, and nothing else holds the buck.
++	 */
++	lcd_vddio: lcd-1p8-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "lcd-vdd";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&tlmm 135 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++		regulator-always-on;
++	};
++
++	lcd_buck: lcd-buck-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "lcd-buck";
++		gpio = <&tlmm 93 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++		regulator-always-on;
++	};
++
++	vdd_spen: spen-3v3-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vdd_spen_3p3";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&tlmm 93 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	cam_rear_vana: cam-rear-vana-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_rear_vana";
++		vin-supply = <&cam_vio>;
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 39 GPIO_ACTIVE_HIGH>;
++		off-on-delay-us = <50000>;
++		enable-active-high;
++	};
++
++	cam_vio: cam-vio-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_vio";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&tlmm 37 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		/* Shared by all three cameras: cycling it leaves them not answering */
++		regulator-always-on;
++	};
++
++	cam_front_vana: cam-front-vana-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_front_vana";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 38 GPIO_ACTIVE_HIGH>;
++		off-on-delay-us = <50000>;
++		enable-active-high;
++	};
++
++	cam_wide_vana: cam-wide-vana-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_wide_vana";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 42 GPIO_ACTIVE_HIGH>;
++		off-on-delay-us = <50000>;
++		enable-active-high;
++	};
++
++	vibrator {
++		compatible = "regulator-haptic";
++		haptic-supply = <&vreg_l7c_2p856>;
++		min-microvolt = <2856000>;
++		max-microvolt = <2856000>;
++	};
++
++	pogo_vdd: pogo-vdd-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "pogo_vdd_3v3";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&tlmm 70 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++};
++
++&pon {
++	mode-recovery = <0x01>;
++	mode-bootloader = <0x02>;
++};
++
++&soc {
++	imem@146bf000 {
++		compatible = "syscon", "simple-mfd";
++		reg = <0x0 0x146bf000 0x0 0x1000>;
++
++		/* Stock also passes the boot target in IMEM */
++		reboot-mode {
++			compatible = "syscon-reboot-mode";
++			offset = <0x65c>;
++			mask = <0xffffffff>;
++			mode-recovery = <0x77665502>;
++			mode-bootloader = <0x77665500>;
++		};
++	};
++};
++
++&gmu {
++	status = "okay";
++};
++
++&gpu {
++	status = "okay";
++};
++
++&gpu_zap_shader {
++	firmware-name = "qcom/sm8250/a650_zap.mbn";
++};
++
++&pcie0 {
++	status = "okay";
++};
++
++&pcie0_phy {
++	vdda-phy-supply = <&vreg_l5a_0p88>;
++	vdda-pll-supply = <&vreg_l9a_1p2>;
++	status = "okay";
++};
++
++&pcieport0 {
++	wifi@0 {
++		compatible = "pci17cb,1101";
++		reg = <0x10000 0x0 0x0 0x0 0x0>;
++
++		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
++		vddaon-supply = <&vreg_pmu_aon_0p59>;
++		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
++		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
++		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
++		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
++		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
++		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
++		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
++	};
++};
++
++/* Samsung moves these carveouts; values are from the stock device tree */
++&removed_mem {
++	reg = <0x0 0x80b00000 0x0 0x7900000>;
++};
++
++&slpi_mem {
++	reg = <0x0 0x89200000 0x0 0x1500000>;
++};
++
++&adsp_mem {
++	reg = <0x0 0x8a700000 0x0 0x2c00000>;
++};
++
++&spss_mem {
++	reg = <0x0 0x8d300000 0x0 0x100000>;
++};
++
++&npu_mem {
++	reg = <0x0 0x8d400000 0x0 0x500000>;
++};
++
++&video_mem {
++	reg = <0x0 0x8d900000 0x0 0x500000>;
++};
++
++&cvp_mem {
++	reg = <0x0 0x8de00000 0x0 0x500000>;
++};
++
++&cdsp_mem {
++	reg = <0x0 0x8e300000 0x0 0x1a00000>;
++};
++
++&camera_mem {
++	reg = <0x0 0x8fd00000 0x0 0x500000>;
++};
++
++&wlan_mem {
++	reg = <0x0 0x90200000 0x0 0x100000>;
++};
++
++&ipa_fw_mem {
++	reg = <0x0 0x90300000 0x0 0x10000>;
++};
++
++&ipa_gsi_mem {
++	reg = <0x0 0x90310000 0x0 0xa000>;
++};
++
++&gpu_mem {
++	reg = <0x0 0x9031a000 0x0 0x2000>;
++};
++
++&cdsp_secure_heap {
++	reg = <0x0 0x90400000 0x0 0x600000>;
++};
++
++&adsp {
++	firmware-name = "qcom/sm8250/gts7xl/adsp.mbn";
++	status = "okay";
++};
++
++&cdsp {
++	firmware-name = "qcom/sm8250/gts7xl/cdsp.mbn";
++	status = "okay";
++};
++
++&slpi {
++	firmware-name = "qcom/sm8250/gts7xl/slpi.mbn";
++	status = "okay";
++};
++
++&sound {
++	compatible = "qcom,sm8250-sndcard";
++	model = "Galaxy Tab S7+";
++	pinctrl-names = "default";
++	pinctrl-0 = <&pri_tdm_default>;
++
++	mm1-dai-link {
++		link-name = "MultiMedia1";
++
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
++		};
++	};
++
++	mm2-dai-link {
++		link-name = "MultiMedia2";
++
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
++		};
++	};
++
++	mm3-dai-link {
++		link-name = "MultiMedia3";
++
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA3>;
++		};
++	};
++
++	mic-dai-link {
++		link-name = "Mic";
++
++		cpu {
++			sound-dai = <&q6afedai VA_CODEC_DMA_TX_0>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&vamacro 0>;
++		};
++	};
++
++	speakers-dai-link {
++		link-name = "Speakers";
++
++		cpu {
++			sound-dai = <&q6afedai PRIMARY_TDM_RX_0>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&cs35l41_fl 0>, <&cs35l41_fr 0>,
++				    <&cs35l41_rl 0>, <&cs35l41_rr 0>;
++		};
++	};
++
++	dp-dai-link {
++		link-name = "DisplayPort Playback";
++
++		cpu {
++			sound-dai = <&q6afedai DISPLAY_PORT_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&mdss_dp>;
++		};
++	};
++};
++
++/* Sub mic: DMIC3 through DEC0. The main mic, DMIC1, reads zero so far */
++&vamacro {
++	pinctrl-0 = <&dmic01_active>, <&dmic23_active>;
++	pinctrl-names = "default";
++	vdd-micb-supply = <&vreg_l5c_1p8>;
++	qcom,dmic-sample-rate = <2400000>;
++	status = "okay";
++};
++
++/* Pin settings as stock: without input-enable the data line reads zero */
++&dmic01_active {
++	clk-pins {
++		drive-strength = <2>;
++	};
++
++	data-pins {
++		drive-strength = <2>;
++		input-enable;
++	};
++};
++
++&lpass_tlmm {
++	dmic23_active: dmic23-active-state {
++		clk-pins {
++			pins = "gpio8";
++			function = "dmic2_clk";
++			drive-strength = <2>;
++			output-high;
++		};
++
++		data-pins {
++			pins = "gpio9";
++			function = "dmic2_data";
++			drive-strength = <2>;
++			input-enable;
++		};
++	};
++};
++
++&camss {
++	/* The driver leaves these at the 19.2MHz the bootloader sets here */
++	assigned-clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK_SRC>,
++			  <&camcc CAM_CC_SLOW_AHB_CLK_SRC>;
++	assigned-clock-rates = <400000000>, <80000000>;
++
++	vdda-phy-supply = <&vreg_l5a_0p88>;
++	vdda-pll-supply = <&vreg_l9a_1p2>;
++	status = "okay";
++
++	ports {
++		port@2 {
++			csiphy2_ep: endpoint {
++				clock-lanes = <7>;
++				data-lanes = <0 1>;
++				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
++				remote-endpoint = <&cam_wide_ep>;
++			};
++		};
++
++		port@3 {
++			csiphy3_ep: endpoint {
++				clock-lanes = <7>;
++				data-lanes = <0 1 2 3>;
++				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
++				remote-endpoint = <&cam_front_ep>;
++			};
++		};
++
++		port@0 {
++			csiphy0_ep: endpoint {
++				clock-lanes = <7>;
++				/* Wired in reverse on this board */
++				data-lanes = <3 2 1 0>;
++				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
++				remote-endpoint = <&cam_rear_ep>;
++			};
++		};
++	};
++};
++
++&cci0 {
++	status = "okay";
++};
++
++&cci1 {
++	status = "okay";
++};
++
++&cci1_i2c0 {
++	/* Rear 5MP ultrawide */
++	camera@10 {
++		compatible = "samsung,s5k5e9";
++		reg = <0x10>;
++
++		clocks = <&camcc CAM_CC_MCLK1_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		reset-gpios = <&tlmm 78 GPIO_ACTIVE_LOW>;
++		vana-supply = <&cam_wide_vana>;
++		vio-supply = <&cam_vio>;
++
++		pinctrl-0 = <&cam_wide_default>;
++		pinctrl-names = "default";
++
++		orientation = <1>;
++		rotation = <90>;
++
++		port {
++			cam_wide_ep: endpoint {
++				data-lanes = <1 2>;
++				link-frequencies = /bits/ 64 <897600000>;
++				remote-endpoint = <&csiphy2_ep>;
++			};
++		};
++	};
++};
++
++&cci1_i2c1 {
++	/* Rear camera focus motor, a dw9808 */
++	cam_rear_focus: lens@c {
++		compatible = "dongwoon,dw9807-vcm";
++		reg = <0x0c>;
++		vdd-supply = <&cam_rear_vana>;
++	};
++};
++
++&cci0_i2c1 {
++	/* Front 8MP */
++	camera@2d {
++		compatible = "samsung,s5k4ha";
++		reg = <0x2d>;
++
++		clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		reset-gpios = <&tlmm 30 GPIO_ACTIVE_LOW>;
++		vana-supply = <&cam_front_vana>;
++		vio-supply = <&cam_vio>;
++
++		pinctrl-0 = <&cam_front_default>;
++		pinctrl-names = "default";
++
++		orientation = <0>;
++		rotation = <270>;
++
++		port {
++			cam_front_ep: endpoint {
++				data-lanes = <1 2 3 4>;
++				link-frequencies = /bits/ 64 <792000000>;
++				remote-endpoint = <&csiphy3_ep>;
++			};
++		};
++	};
++};
++
++&cci0_i2c0 {
++	/* Rear 13MP. Stock only switches VANA and VIO, the digital rail hangs off VANA */
++	camera@2d {
++		compatible = "samsung,s5k3m5";
++		reg = <0x2d>;
++
++		clocks = <&camcc CAM_CC_MCLK0_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		reset-gpios = <&tlmm 73 GPIO_ACTIVE_LOW>;
++
++		afvdd-supply = <&cam_rear_vana>;
++		vdda-supply = <&cam_rear_vana>;
++		vddd-supply = <&cam_rear_vana>;
++		vddio-supply = <&cam_vio>;
++
++		pinctrl-0 = <&cam_rear_default>;
++		pinctrl-names = "default";
++
++		lens-focus = <&cam_rear_focus>;
++
++		orientation = <1>;
++		rotation = <90>;
++
++		port {
++			cam_rear_ep: endpoint {
++				data-lanes = <1 2 3 4>;
++				link-frequencies = /bits/ 64 <691200000>;
++				remote-endpoint = <&csiphy0_ep>;
++			};
++		};
++	};
++};
++
++&q6asmdai {
++	dai@0 {
++		reg = <0>;
++	};
++
++	dai@1 {
++		reg = <1>;
++		direction = <Q6ASM_DAI_TX>;
++	};
++
++	/* MultiMedia3: DisplayPort playback */
++	dai@2 {
++		reg = <2>;
++		direction = <Q6ASM_DAI_RX>;
++	};
++};
++
++&q6afedai {
++	dai@2 {
++		reg = <PRIMARY_TDM_RX_0>;
++		qcom,tdm-sync-mode = <0>;
++		qcom,tdm-sync-src = <1>;
++		qcom,tdm-data-out = <0>;
++		qcom,tdm-invert-sync = <0>;
++		qcom,tdm-data-delay = <1>;
++		qcom,tdm-data-align = <0>;
++	};
++};
++
++&mdss {
++	status = "okay";
++};
++
++/*
++ * Panel: Novatek NT36523 (CSOT PPA957DB1), 1600x2560 portrait, dual DSI (two 800x2560
++ * halves), C-PHY with 3 trios per DSI, 120 Hz video burst mode, 24 bpp, DCS backlight
++ * 4..462 (stock ss_dsi_panel_NT36523_PPA957DB1_WQXGA). Wiring follows the Xiaomi Pad 5
++ * Pro (sm8250-xiaomi-elish-csot), the same SoC with a CSOT NT36523 panel.
++ * TODO(S6): an entry for this panel in panel-novatek-nt36523.c (stock on-commands, mode:
++ * clock 997999999 Hz, h pulse 2 / bp 30 / fp 84, v pulse 1 / bp 7 / fp 26), then
++ * enable both DSI hosts and PHYs. Until then the bootloader's framebuffer is used.
++ * TODO(S6): DSI vdda: stock names pm8150a_l11 (vdd) and pm8150_l14 (vddio); the S7+'s
++ * L9A below is unverified here. ESD lines (gpio66, gpio46) and the ISL98608 bias chip
++ * are not described yet.
++ */
++&mdss_dsi0 {
++	vdda-supply = <&vreg_l9a_1p2>;
++	status = "disabled";
++
++	display_panel: panel@0 {
++		compatible = "samsung,gts7l-csot-nt36523", "novatek,nt36523";
++		reg = <0>;
++		vddio-supply = <&lcd_vddio>;
++		reset-gpios = <&tlmm 82 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&panel_default>;
++		rotation = <0>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				panel_in_0: endpoint {
++					remote-endpoint = <&mdss_dsi0_out>;
++				};
++			};
++
++			port@1 {
++				reg = <1>;
++				panel_in_1: endpoint {
++					remote-endpoint = <&mdss_dsi1_out>;
++				};
++			};
++		};
++	};
++};
++
++&mdss_dsi0_out {
++	data-lanes = <0 1 2>;
++	remote-endpoint = <&panel_in_0>;
++};
++
++&mdss_dsi0_phy {
++	vdds-supply = <&vreg_l5a_0p88>;
++	phy-type = <PHY_TYPE_CPHY>;
++	status = "disabled";
++};
++
++&mdss_dsi1 {
++	vdda-supply = <&vreg_l9a_1p2>;
++	qcom,dual-dsi-mode;
++	qcom,sync-dual-dsi;
++	/* DSI1 is the slave and runs from DSI0's PLL */
++	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
++				 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
++	status = "disabled";
++};
++
++&mdss_dsi1_out {
++	data-lanes = <0 1 2>;
++	remote-endpoint = <&panel_in_1>;
++};
++
++&mdss_dsi1_phy {
++	vdds-supply = <&vreg_l5a_0p88>;
++	phy-type = <PHY_TYPE_CPHY>;
++	status = "disabled";
++};
++
++&framebuffer {
++	panel = <&fb_panel>;
++
++	/* The panel is portrait; TODO(S6): confirm the bootloader's scanout matches */
++	width = <1600>;
++	height = <2560>;
++	stride = <(1600 * 4)>;
++	/* Keep MDSS powered for the firmware-initialised scanout */
++	power-domains = <&dispcc MDSS_GDSC>;
++
++	/* Stock qcom,mdss-pan-physical-{width,height}-dimension */
++	fb_panel: panel-info {
++		width-mm = <148>;
++		height-mm = <236>;
++	};
++};
++
++&qupv3_id_0 {
++	status = "okay";
++};
++
++&qupv3_id_0 {
++	/*
++	 * GNSS: Broadcom BCM47531 at 921600 baud with RTS/CTS. Its power line
++	 * GPS_PWR_EN is TLMM 91, switched by the GNSS daemon in userspace.
++	 */
++	uart3: serial@98c000 {
++		compatible = "qcom,geni-uart";
++		reg = <0 0x0098c000 0 0x4000>;
++		clock-names = "se";
++		clocks = <&gcc GCC_QUPV3_WRAP0_S3_CLK>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&qup_uart3_default>;
++		interrupts = <GIC_SPI 604 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&rpmhpd RPMHPD_CX>;
++		operating-points-v2 = <&qup_opp_table>;
++		interconnects = <&qup_virt MASTER_QUP_CORE_0 0 &qup_virt SLAVE_QUP_CORE_0 0>,
++				<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_QUP_0 0>;
++		interconnect-names = "qup-core",
++				     "qup-config";
++	};
++};
++
++&venus {
++	/* Signed for this tablet: copied from its apnhlos partition on first boot */
++	firmware-name = "qcom/sm8250/gts7xl/venus.mbn";
++	status = "okay";
++};
++
++&uart6 {
++	status = "okay";
++
++	bluetooth {
++		compatible = "qcom,qca6390-bt";
++
++		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
++		vddaon-supply = <&vreg_pmu_aon_0p59>;
++		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
++		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
++		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
++		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
++	};
++};
++
++/*
++ * TODO(S1): RPMh regulators: check every rail, voltage and always-on flag against the
++ * stock gts7l DTB (panel and touch rails differ with the LCD); S7+ values below.
++ */
++&apps_rsc {
++	regulators-1 {
++		compatible = "qcom,pm8150l-rpmh-regulators";
++		qcom,pmic-id = "c";
++
++		/* Stock pm8150a_l8: the sensor rail, which Samsung's SSC driver switches on */
++		/* SD card I/O; Samsung DT: qcom,vdd-io-voltage-level 1800000 2960000 */
++		vreg_l6c_2p96: ldo6 {
++			regulator-name = "vreg_l6c_2p96";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <2960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/* SD card; Samsung DT: qcom,vdd-voltage-level 2950000 2960000 */
++		vreg_l9c_2p96: ldo9 {
++			regulator-name = "vreg_l9c_2p96";
++			regulator-min-microvolt = <2950000>;
++			regulator-max-microvolt = <2960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l8c_1p8: ldo8 {
++			regulator-name = "vreg_l8c_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++
++		/* Stock pm8150a_l4, always on; voltage as the bootloader leaves it, else the panel fails */
++		vreg_l4c_1p8: ldo4 {
++			regulator-name = "vreg_l4c_1p8";
++			regulator-min-microvolt = <1808000>;
++			regulator-max-microvolt = <1808000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++
++		/* Stock pm8150a_l7, the vibrator motor */
++		vreg_l7c_2p856: ldo7 {
++			regulator-name = "vreg_l7c_2p856";
++			regulator-min-microvolt = <2856000>;
++			regulator-max-microvolt = <2856000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/* Stock pm8150a_l5: rail of the digital mics, 1.8V to 2.8V */
++		vreg_l5c_1p8: ldo5 {
++			regulator-name = "vreg_l5c_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++
++		vreg_s8c_1p35: smps8 {
++				regulator-name = "vreg_s8c_1p35";
++				regulator-min-microvolt = <1350000>;
++				regulator-max-microvolt = <1400000>;
++				regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			};
++	};
++	regulators-0 {
++		vreg_s4a_1p8: smps4 {
++				regulator-name = "vreg_s4a_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1920000>;
++				regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++				regulator-allow-set-load;
++				regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
++						   RPMH_REGULATOR_MODE_HPM>;
++			};
++		vreg_s5a_1p9: smps5 {
++				regulator-name = "vreg_s5a_1p9";
++				regulator-min-microvolt = <1900000>;
++				regulator-max-microvolt = <2040000>;
++				regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			};
++		vreg_s6a_0p95: smps6 {
++				regulator-name = "vreg_s6a_0p95";
++				regulator-min-microvolt = <950000>;
++				regulator-max-microvolt = <1128000>;
++				regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			};
++
++		vreg_l13a_3p3: ldo13 {
++			regulator-name = "vreg_l13a_3p3";
++			regulator-min-microvolt = <3304000>;
++			regulator-max-microvolt = <3304000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l14a_1p8: ldo14 {
++			regulator-name = "vreg_l14a_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/* Stock pm8150_l10, always on; voltage as the bootloader leaves it, else the panel fails */
++		vreg_l10a_2p9: ldo10 {
++			regulator-name = "vreg_l10a_2p9";
++			regulator-min-microvolt = <2960000>;
++			regulator-max-microvolt = <2960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++
++		/* Stock pm8150_l16, always on; voltage as the bootloader leaves it, else the panel fails */
++		vreg_l16a_2p8: ldo16 {
++			regulator-name = "vreg_l16a_2p8";
++			regulator-min-microvolt = <2704000>;
++			regulator-max-microvolt = <2704000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++	};
++};
++
++&gpi_dma0 {
++	status = "okay";
++};
++
++&i2c5 {
++	/* Firmware disables the FIFO interface on this serial engine */
++	qcom,force-fifo;
++	status = "okay";
++
++	/*
++	 * Novatek NT36523 touch (stock novatek,nt-ts, firmware
++	 * tsp_novatek/nt36523_gts7l.bin), 1600x2560, IRQ on gpio15 like the S7+'s.
++	 * TODO(S6): mainline's novatek-nvt-ts knows only NT11205/NT36672A; add NT36523
++	 * (or port the stock driver), then the supplies and enable it.
++	 */
++	touchscreen@62 {
++		compatible = "novatek,nt36523-ts";
++		reg = <0x62>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <15 IRQ_TYPE_EDGE_RISING>;
++		touchscreen-size-x = <1600>;
++		touchscreen-size-y = <2560>;
++		status = "disabled";
++	};
++};
++
++&qupv3_id_2 {
++	status = "okay";
++};
++
++&i2c17 {
++	clock-frequency = <400000>;
++	status = "okay";
++
++	/* Matches stock (wacom@56, IRQ gpio136, FWE gpio6); TODO(S6): PDCT gpio7, supply */
++	pen@56 {
++		compatible = "samsung,wacom-w90xx";
++		reg = <0x56>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <136 IRQ_TYPE_LEVEL_LOW>;
++		vdd-supply = <&vdd_spen>;
++		fwe-gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&pen_default>;
++	};
++};
++
++/* Four CS35L41 at 0x40-0x43 as in stock; TODO(S6): reset GPIO, IRQs, TDM slots, calibration */
++&i2c11 {
++	clock-frequency = <400000>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&qup_i2c11_default>, <&amp_default>;
++	status = "okay";
++
++	cs35l41_fl: speaker-amp@40 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x40>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <84 IRQ_TYPE_LEVEL_LOW>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <2>;
++		cirrus,gpio2-output-enable;
++		sound-name-prefix = "FL";
++		#sound-dai-cells = <1>;
++	};
++
++	cs35l41_rl: speaker-amp@41 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x41>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <84 IRQ_TYPE_LEVEL_LOW>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <2>;
++		cirrus,gpio2-output-enable;
++		sound-name-prefix = "RL";
++		#sound-dai-cells = <1>;
++	};
++
++	cs35l41_fr: speaker-amp@42 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x42>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <84 IRQ_TYPE_LEVEL_LOW>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <2>;
++		cirrus,gpio2-output-enable;
++		sound-name-prefix = "FR";
++		#sound-dai-cells = <1>;
++	};
++
++	cs35l41_rr: speaker-amp@43 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x43>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <84 IRQ_TYPE_LEVEL_LOW>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <2>;
++		cirrus,gpio2-output-enable;
++		sound-name-prefix = "RR";
++		#sound-dai-cells = <1>;
++	};
++};
++
++&i2c0 {
++	status = "okay";
++
++	max77705: pmic@66 {
++		compatible = "maxim,max77705";
++		reg = <0x66>;
++		interrupt-parent = <&pm8150l_gpios>;
++		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&max77705_int_default>;
++	};
++
++	max77705_charger: charger@69 {
++		compatible = "maxim,max77705-charger";
++		reg = <0x69>;
++		monitored-battery = <&battery>;
++		interrupt-parent = <&max77705>;
++		interrupts = <0>;
++
++		max77705_otg_vbus: usb-otg-vbus {
++			regulator-name = "usb-otg-vbus";
++			regulator-min-microvolt = <5000000>;
++			regulator-max-microvolt = <5000000>;
++		};
++	};
++
++	/*
++	 * MAX77705 CCIC: CC, PD and the D+/D- switch run in its firmware,
++	 * driven through a mailbox by max77705_usbc. It sets dwc3's role and
++	 * VBUS. Until it loads, dwc3 stays a peripheral, so the USB gadget
++	 * still works without it. USB 2.0 only; no QMP PHY yet.
++	 */
++	typec@25 {
++		compatible = "maxim,max77705-usbc";
++		reg = <0x25>;
++		interrupt-parent = <&max77705>;
++		interrupts = <3>;
++		vbus-supply = <&max77705_otg_vbus>;
++		maxim,charger = <&max77705_charger>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			data-role = "dual";
++			try-power-role = "sink";
++			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
++						PDO_FIXED_HIGHER_CAP |
++						PDO_FIXED_USB_COMM |
++						PDO_FIXED_DATA_SWAP)
++				     PDO_FIXED(9000, 1650, 0)>;
++			op-sink-microwatt = <14850000>;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					max77705_typec_hs: endpoint {
++						remote-endpoint = <&usb_1_dwc3_hs_out>;
++					};
++				};
++
++				port@1 {
++					reg = <1>;
++
++					max77705_typec_ss: endpoint {
++						remote-endpoint = <&redriver_con_ss>;
++					};
++				};
++
++				port@2 {
++					reg = <2>;
++
++					max77705_typec_sbu: endpoint {
++						remote-endpoint = <&dp_aux_switch_in>;
++					};
++				};
++
++			};
++		};
++	};
++
++	fuel-gauge@36 {
++		compatible = "maxim,max77705-battery";
++		reg = <0x36>;
++		/*
++		 * 2 mOhm: in the constant-current phase the charger's programmed
++		 * current reads 2.6x the gauge at 5 mOhm (1.1-2.3 A steps), and
++		 * Samsung's DesignCap 0xeaa then gives 9385 mAh.
++		 */
++		maxim,rsns-microohm = <2000>;
++		power-supplies = <&max77705_charger>;
++		/* The gauge's own thermistor input is unused and reads 25 C */
++		io-channels = <&pm8150l_adc ADC5_AMUX_THM1_100K_PU>;
++		io-channel-names = "temp";
++	};
++};
++
++&gpio_keys {
++	/*
++	 * No lid switch on the flip-cover hall (TLMM 157): it never toggles for the
++	 * Book Cover Keyboard, which reports the lid over pogo instead, and UPower
++	 * follows only the first lid switch it finds.
++	 */
++	pinctrl-0 = <&vol_up_l>;
++
++	key-vol-up {
++		gpios = <&pm8150l_gpios 3 GPIO_ACTIVE_LOW>;
++	};
++};
++
++/*
++ * Thermal zones for the three PM8150L thermistors, for monitoring only (no
++ * trips: the charging and skin limits stay in userspace, gts7xl-charge-control
++ * and gts7xl-power, like Samsung's are in its battery driver and thermal HAL).
++ *
++ * batt_thm and chg_thm are 100k NTCs on the internal 100k pull-up, which the
++ * ADC already converts right (Samsung's battery tables agree within ~1 C).
++ *
++ * blkt_thm (GPIO4, Samsung's "adc-blkt-temp") is wired differently: it reads
++ * 439 mV at 25 C where a 100k NTC reads 937 mV, so the ADC's 100k table turns
++ * 25 C into 52 C. The lookup table below maps the ADC's value back through
++ * Samsung's blkt_temp_table (sec-battery node, kona-sec-gts7xlwifi r06):
++ * <real m°C, value the 100k table gives for Samsung's voltage at that
++ * temperature>, from 90 C down to -20 C (Samsung's range; clamped outside).
++ */
++/ {
++	batt_therm: thermal-sensor-batt {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&pm8150l_adc ADC5_AMUX_THM1_100K_PU>;
++		io-channel-names = "sensor-channel";
++	};
++
++	chg_therm: thermal-sensor-chg {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&pm8150l_adc ADC5_AMUX_THM3_100K_PU>;
++		io-channel-names = "sensor-channel";
++	};
++
++	/*
++	 * Stock skin-msm-therm-usr: a board thermistor next to the SoC, despite
++	 * the name (70 C under full load while the back stays cool). Stock's
++	 * skin-therm-usr input (PM8150 THM1) is open on this board.
++	 */
++	skin_msm_therm: thermal-sensor-skin-msm {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&pm8150l_adc ADC5_AMUX_THM2_100K_PU>;
++		io-channel-names = "sensor-channel";
++	};
++
++	blkt_therm: thermal-sensor-blkt {
++		compatible = "generic-adc-thermal";
++		#thermal-sensor-cells = <0>;
++		io-channels = <&pm8150l_adc ADC5_GPIO4_100K_PU>;
++		io-channel-names = "sensor-channel";
++		temperature-lookup-table = <
++			 90000 103986   85000 100186   80000  96547   75000  92639
++			 70000  88873   65000  85079   60000  81231   55000  77138
++			 50000  72940   45000  68761   40000  64348   35000  59647
++			 30000  55617   25000  52036   20000  48707   15000  45204
++			 10000  42338    5000  39546       0  37252  (-5000) 35237
++			(-10000) 33751 (-15000) 32290 (-20000) 30991>;
++	};
++
++	thermal-zones {
++		skin-msm-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&skin_msm_therm>;
++		};
++
++		batt-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&batt_therm>;
++		};
++
++		chg-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&chg_therm>;
++		};
++
++		blkt-thermal {
++			polling-delay-passive = <0>;
++			polling-delay = <0>;
++			thermal-sensors = <&blkt_therm>;
++		};
++	};
++};
++
++&pm8150l_adc {
++	channel@4e {
++		reg = <ADC5_AMUX_THM2_100K_PU>;
++		qcom,ratiometric;
++		qcom,hw-settle-time = <200>;
++		qcom,pre-scaling = <1 1>;
++		label = "skin_msm_therm";
++	};
++
++	channel@4d {
++		reg = <ADC5_AMUX_THM1_100K_PU>;
++		qcom,ratiometric;
++		qcom,hw-settle-time = <200>;
++		qcom,pre-scaling = <1 1>;
++		label = "batt_thm";
++	};
++
++	channel@4f {
++		reg = <ADC5_AMUX_THM3_100K_PU>;
++		qcom,ratiometric;
++		qcom,hw-settle-time = <200>;
++		qcom,pre-scaling = <1 1>;
++		label = "chg_thm";
++	};
++
++	channel@55 {
++		reg = <ADC5_GPIO4_100K_PU>;
++		qcom,ratiometric;
++		qcom,hw-settle-time = <200>;
++		qcom,pre-scaling = <1 1>;
++		label = "blkt_thm";
++	};
++};
++
++/* Rear LED, on both channels like stock. Currents are kept low until tested further */
++&pm8150l_flash {
++	status = "okay";
++
++	led-0 {
++		function = LED_FUNCTION_FLASH;
++		color = <LED_COLOR_ID_WHITE>;
++		led-sources = <1>, <2>;
++		led-max-microamp = <100000>;
++		flash-max-microamp = <500000>;
++		flash-max-timeout-us = <400000>;
++	};
++};
++
++&pm8150l_gpios {
++	vol_up_l: vol-up-l-state {
++		pins = "gpio3";
++		function = "normal";
++		power-source = <0>;
++		input-enable;
++		bias-pull-up;
++	};
++
++	max77705_int_default: max77705-int-default-state {
++		pins = "gpio11";
++		function = "normal";
++		input-enable;
++		bias-pull-up;
++		power-source = <1>;
++	};
++};
++
++&qupv3_id_1 {
++	status = "okay";
++};
++
++/* STM32 pogo keyboard at 0x2a as in stock; TODO(S6): check its GPIOs */
++&i2c9 {
++	clock-frequency = <100000>;
++	status = "okay";
++
++	keyboard@2a {
++		compatible = "samsung,stm32-pogo-keyboard";
++		reg = <0x2a>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <31 IRQ_TYPE_LEVEL_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&pogo_default>;
++		vdd-supply = <&pogo_vdd>;
++		conn-gpios = <&tlmm 43 GPIO_ACTIVE_HIGH>;
++		reset-gpios = <&tlmm 174 GPIO_ACTIVE_LOW>;
++		boot-gpios = <&tlmm 172 GPIO_ACTIVE_HIGH>;
++		keypad,num-rows = <8>;
++		keypad,num-columns = <24>;
++		linux,keymap = <
++			0x0004002C
++			0x00050056
++			0x0007002F
++			0x00080032
++			0x0009006C
++			0x000B0039
++			0x000C0067
++			0x00100001
++			0x00110072
++			0x001602C2
++			0x010201d0
++			0x0103007D
++			0x0104001E
++			0x0105002D
++			0x01060020
++			0x01070030
++			0x01090033
++			0x010A0034
++			0x010B0035
++			0x011002C1
++			0x01110073
++			0x01160066
++			0x0202007A
++			0x02040010
++			0x0206002E
++			0x02070021
++			0x02080024
++			0x02090025
++			0x020A0026
++			0x020B0027
++			0x020D001C
++			0x021000FE
++			0x021100A5
++			0x02160068
++			0x03020038
++			0x0304000F
++			0x03050011
++			0x03060012
++			0x03070022
++			0x03080023
++			0x03090017
++			0x030A0028
++			0x030B0019
++			0x031000AC
++			0x031100A4
++			0x0316006D
++			0x0400003A
++			0x04010064
++			0x04040002
++			0x04050003
++			0x04060004
++			0x04070013
++			0x04080016
++			0x04090009
++			0x040A0018
++			0x040B000B
++			0x040F002B
++			0x041000E0
++			0x041100A3
++			0x0416006B
++			0x0501001D
++			0x0503006A
++			0x05040029
++			0x0505003E
++			0x05060041
++			0x05070014
++			0x05080015
++			0x05090044
++			0x050A001A
++			0x050B000E
++			0x050D000C
++			0x050F001B
++			0x051000E1
++			0x051102C5
++			0x051502BD
++			0x06000036
++			0x06010069
++			0x0604003B
++			0x0605003D
++			0x06060040
++			0x06070005
++			0x06080008
++			0x06090043
++			0x060A000A
++			0x060B0058
++			0x060C0031
++			0x0610007D
++			0x0611006F
++			0x0700002A
++			0x070102C6
++			0x0703001F
++			0x07040001
++			0x0705003C
++			0x0706003F
++			0x07070006
++			0x07080007
++			0x07090042
++			0x070A000D
++			0x070B0057
++			0x070D0063
++			0x070E006F
++			0x07100071
++			0x07110214
++			0x07120213
++		>;
++	};
++};
++
++&sdhc_2 {
++	pinctrl-0 = <&sdc2_default_state &sdc2_card_det_n>;
++	pinctrl-1 = <&sdc2_sleep_state &sdc2_card_det_n>;
++	pinctrl-names = "default", "sleep";
++	vmmc-supply = <&vreg_l9c_2p96>;
++	vqmmc-supply = <&vreg_l6c_2p96>;
++	cd-gpios = <&tlmm 77 GPIO_ACTIVE_LOW>;
++	bus-width = <4>;
++	no-sdio;
++	no-mmc;
++	status = "okay";
++};
++
++&tlmm {
++	/* gpio43 is the pogo connection detect line on this board */
++	gpio-reserved-ranges = <20 4>;
++
++	/* Drive strengths and pulls from the Samsung DT (sdc2_*_on, storage_cd) */
++	sdc2_default_state: sdc2-default-state {
++		clk-pins {
++			pins = "sdc2_clk";
++			drive-strength = <12>;
++			bias-disable;
++		};
++
++		cmd-pins {
++			pins = "sdc2_cmd";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		data-pins {
++			pins = "sdc2_data";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	sdc2_card_det_n: sd-card-det-n-state {
++		pins = "gpio77";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	/* Samsung DT: qupv3_se3_ctsrx, _rts, _tx */
++	qup_uart3_default: qup-uart3-default-state {
++		cts-rx-pins {
++			pins = "gpio119", "gpio122";
++			function = "qup3";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		rts-pins {
++			pins = "gpio120";
++			function = "qup3";
++			drive-strength = <2>;
++			bias-pull-down;
++		};
++
++		tx-pins {
++			pins = "gpio121";
++			function = "qup3";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
++
++	panel_default: panel-default-state {
++		reset-pins {
++			pins = "gpio82";
++			function = "gpio";
++			drive-strength = <8>;
++			bias-disable;
++		};
++	};
++
++	wlan_en_state: wlan-en-state {
++		pins = "gpio90";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	bt_en_state: bt-en-state {
++		pins = "gpio76";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	pen_default: pen-default-state {
++		pins = "gpio136";
++		function = "gpio";
++		bias-disable;
++	};
++
++	/* Shared amp reset, released before the amps probe */
++	amp-reset-hog {
++		gpio-hog;
++		gpios = <69 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "amp_reset";
++	};
++
++	amp_default: amp-default-state {
++		pins = "gpio84";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-up;
++	};
++
++	pri_tdm_default: pri-tdm-default-state {
++		clk-pins {
++			pins = "gpio138";
++			function = "mi2s0_sck";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		ws-pins {
++			pins = "gpio141";
++			function = "mi2s0_ws";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		dout-pins {
++			pins = "gpio140";
++			function = "mi2s0_data1";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
++	cam_front_default: cam-front-default-state {
++		mclk-pins {
++			pins = "gpio96";
++			function = "cam_mclk";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		rst-pins {
++			pins = "gpio30";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		pwr-pins {
++			pins = "gpio38";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
++	cam_wide_default: cam-wide-default-state {
++		mclk-pins {
++			pins = "gpio95";
++			function = "cam_mclk";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		rst-pins {
++			pins = "gpio78";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		pwr-pins {
++			pins = "gpio42";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
++	cam_rear_default: cam-rear-default-state {
++		mclk-pins {
++			pins = "gpio94";
++			function = "cam_mclk";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		rst-pins {
++			pins = "gpio73";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		pwr-pins {
++			pins = "gpio37", "gpio39";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
++	hall_default: hall-default-state {
++		pins = "gpio157";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	pogo_default: pogo-default-state {
++		int-pins {
++			pins = "gpio31";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++
++		conn-pins {
++			pins = "gpio43";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		ldo-en-pins {
++			pins = "gpio70";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		boot-pins {
++			pins = "gpio172";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++
++		reset-pins {
++			pins = "gpio174";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++};
++
++&usb_1_dwc3 {
++	dr_mode = "otg";
++	usb-role-switch;
++	role-switch-default-mode = "peripheral";
++};
++
++&usb_1_dwc3_hs_out {
++	remote-endpoint = <&max77705_typec_hs>;
++};
++
++/ {
++	/* DP AUX to the plug: gpio10 enables (active low), gpio47 picks CC2 */
++	dp-aux-switch {
++		compatible = "gpio-sbu-mux";
++		enable-gpios = <&tlmm 10 GPIO_ACTIVE_LOW>;
++		select-gpios = <&tlmm 47 GPIO_ACTIVE_HIGH>;
++		pinctrl-0 = <&dp_aux_switch_default>;
++		pinctrl-names = "default";
++		mode-switch;
++		orientation-switch;
++
++		port {
++			dp_aux_switch_in: endpoint {
++				remote-endpoint = <&max77705_typec_sbu>;
++			};
++		};
++	};
++};
++
++&i2c14 {
++	clock-frequency = <100000>;
++	status = "okay";
++
++	redriver@28 {
++		compatible = "parade,ps5169";
++		reg = <0x28>;
++		mode-switch;
++		orientation-switch;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++
++				redriver_con_ss: endpoint {
++					remote-endpoint = <&max77705_typec_ss>;
++				};
++			};
++
++			port@1 {
++				reg = <1>;
++
++				redriver_phy_ss: endpoint {
++					remote-endpoint = <&usb_1_qmpphy_out>;
++				};
++			};
++		};
++	};
++};
++
++&tlmm {
++	dp_aux_switch_default: dp-aux-switch-default-state {
++		pins = "gpio10", "gpio47";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-high;
++	};
++};
++
++&apps_rsc {
++	regulators-0 {
++		/* Samsung DT: usb_qmp_dp_phy qcom,vdd-voltage-level 912000 */
++		vreg_l18a_0p91: ldo18 {
++			regulator-name = "vreg_l18a_0p91";
++			regulator-min-microvolt = <912000>;
++			regulator-max-microvolt = <912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++};
++
++&usb_1_qmpphy {
++	vdda-phy-supply = <&vreg_l18a_0p91>;
++	vdda-pll-supply = <&vreg_l9a_1p2>;
++	mode-switch;
++	status = "okay";
++};
++
++&usb_1_qmpphy_out {
++	remote-endpoint = <&redriver_phy_ss>;
++};
++
++&usb_1_qmpphy_dp_in {
++	remote-endpoint = <&mdss_dp_out>;
++};
++
++&mdss_dp {
++	status = "okay";
++};
++
++&mdss_dp_out {
++	data-lanes = <0 1>;
++	remote-endpoint = <&usb_1_qmpphy_dp_in>;
++};
++
++/*
++ * TODO(S1): the external Snapdragon X55 LTE modem: PCIe controller and PHY it hangs off,
++ * MHI node, its power/reset/status GPIOs (stock "mdm" nodes, mdm1m9kefs* partitions),
++ * the SIM detect line and its reserved memory. Not present on the S7+ Wi-Fi.
++ */
+-- 
+2.56.1
+
