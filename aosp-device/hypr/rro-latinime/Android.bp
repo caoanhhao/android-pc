@@ -1,0 +1,14 @@
+// LatinIME's hardware-key shortcuts on a PC keyboard (docs/hypr-desktop.md, "Emoji key"): the
+// emoji palette opens on ALT + . instead of a lone ALT tap, and a lone right ALT no longer
+// switches to the symbols layout.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "hypr_overlay_latinime",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

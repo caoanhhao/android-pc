@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="android.pc.hypr.overlay.latinime">
+
+    <application android:hasCode="false" />
+
+    <overlay
+      android:targetPackage="com.android.inputmethod.latin"
+      android:isStatic="true"
+      android:priority="11"
+      />
+</manifest>

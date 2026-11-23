@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LatinIME fires these on the key's release when the pair (key code, meta state) matches
+         exactly (EmojiAltPhysicalKeyDetector). Its default, a lone left ALT tap, fired after every
+         ALT bind of the shell too: InputManager eats the bind's key, so LatinIME sees ALT go down
+         and up with nothing between. Here it is ALT + . (KEYCODE_PERIOD 56) with either ALT;
+         the meta state carries the lock keys, so each pair is listed with Num Lock (0x200000) and
+         Caps Lock (0x100000) on and off. Left ALT: META_ALT_ON | META_ALT_LEFT_ON = 18; right ALT:
+         META_ALT_ON | META_ALT_RIGHT_ON = 34. -->
+    <string-array name="keyboard_switcher_emoji" translatable="false">
+        <item>56,18</item>
+        <item>56,2097170</item>
+        <item>56,1048594</item>
+        <item>56,3145746</item>
+        <item>56,34</item>
+        <item>56,2097186</item>
+        <item>56,1048610</item>
+        <item>56,3145762</item>
+    </string-array>
+
+    <!-- A lone right ALT (AltGr on many layouts) switched to the symbols layout; none here. -->
+    <string-array name="keyboard_switcher_symbols_shifted" translatable="false" />
+
+    <!-- The summary of Settings > Advanced > "Emoji for physical keyboard". -->
+    <string name="prefs_enable_emoji_alt_physical_key_summary">Alt + . shows the emoji palette</string>
+</resources>

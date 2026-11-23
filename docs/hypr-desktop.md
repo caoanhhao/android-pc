@@ -1221,6 +1221,20 @@ window during D7 (the user was in a full-screen game on the host, and keys sent 
 unfocused window through Hyprland's `sendshortcut` did not reach Android); the path is the
 one D2-D6 used, and the injected keys go through the same InputManager key gestures.
 
+### Emoji key: ALT + . (2026-11-23)
+
+LatinIME toggles its emoji palette when a lone left ALT is released, and its symbols layout on
+a lone right ALT (`keyboard_switcher_emoji`, `keyboard_switcher_symbols_shifted`, read by
+`EmojiAltPhysicalKeyDetector`). With ALT as `main_mod` that fired after every bind typed in a
+text field: InputManager takes the bind's key as a key gesture, so LatinIME sees only ALT go
+down and up. The `hypr_overlay_latinime` RRO (`aosp-device/hypr/rro-latinime`, static, on
+vendor) moves the emoji palette to `ALT + .` (either ALT; no default bind uses PERIOD) and
+leaves the symbols array empty. LatinIME matches the key code and the whole meta state, lock
+keys included, so each ALT + PERIOD pair is listed with Num Lock and Caps Lock on and off. It
+fires on the release of `.` with ALT still held. LatinIME's setting "Emoji for physical
+keyboard" (Advanced, on by default) still turns it off; the overlay changes its English
+summary to name `ALT + .` and its Vietnamese one (other languages keep LatinIME's "Physical Alt key" text).
+
 ### The USB stick build
 
 The same product builds for the stick: the D7 build's `super.img`, boot images and vbmeta
