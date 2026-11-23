@@ -5,3 +5,5 @@ out/
 *.iso
 __pycache__/
 gki/
+gts7l-kernel/
+gts7l-stock/
