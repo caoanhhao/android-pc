@@ -1,0 +1,3 @@
+# Partitions init mounts read-only (fstab.gts7l).
+type gts7l_firmware_block_device, dev_type;
+type gts7l_efs_block_device, dev_type;

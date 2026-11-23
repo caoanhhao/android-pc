@@ -1,0 +1,2 @@
+Not a kernel: aosp_gts7l.mk uses this file when tools/gts7l-kernel.sh has not built
+out/gts7l/Image.gz yet, so the product still analyses. A boot.img made with it does not boot.

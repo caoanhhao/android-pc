@@ -1,0 +1,12 @@
+# /vendor/etc/ueventd.rc for gts7l (imported by /system/etc/ueventd.rc).
+
+# Firmware requests the kernel cannot serve itself (firmware_class.path) go to ueventd, which
+# looks here: the link tree of firmware/init.gts7l.firmware.rc first, then our own files.
+firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
+
+# Backlight for the lights HAL (user system).
+/sys/class/backlight/*  brightness  0664  system  system
+
+# Input devices: touchscreen, S Pen, Book Cover keyboard and touchpad (core ueventd.rc covers
+# /dev/input). DRM card and render node: core ueventd.rc. TODO(T4): sensors (SLPI/QRTR),
+# vibrator (input force feedback), audio.

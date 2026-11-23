@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Desktop mode on a tablet (PC_DESKTOP_VARIANT=tablet, gts7l): overlay/ without the PC's
+     rotation lock and with the lock screen kept (a portable device). -->
+<resources>
+    <!-- AOSP desktop windowing: supported, and allowed on the internal (primary) display. -->
+    <bool name="config_isDesktopModeSupported">true</bool>
+    <bool name="config_canInternalDisplayHostDesktops">true</bool>
+    <!-- A display whose task area is freeform (display_settings_tablet.xml) is a desktop. -->
+    <bool name="config_enterDesktopByDefaultOnFreeformDisplay">true</bool>
+    <!-- The panel turns with the tablet. -->
+    <bool name="config_supportAutoRotation">true</bool>
+</resources>

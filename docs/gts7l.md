@@ -61,7 +61,7 @@ android-pc/
     AndroidProducts.mk          + aosp_gts7l (lunch aosp_gts7l-cp2a-userdebug)
     gts7l/                      new: the tablet target
       aosp_gts7l.mk             arm64 product: generic system + hypr.mk + desktop.mk (tablet variant) + Rust HALs
-      BoardConfig.mk            arm64, boot header v1, Image.gz-dtb, super layout of sda29, no A/B, no recovery image
+      BoardConfig.mk            arm64, boot header v2 (Image.gz + DTB section), super layout of sda29, no A/B, no recovery image
       fstab.gts7l, init.gts7l.rc, ueventd.gts7l.rc
       firmware/                 init script linking /vendor/firmware to apnhlos/modem/vendor partitions
       sepolicy/
@@ -160,10 +160,50 @@ parallel sessions (they touch different files); builds still go one at a time.
 | S1 ✅ | T0 | Stock firmware: download `T875XXS8DXH1` XXV, extract `boot`/`dtbo`/`vendor_boot` DTBs to DTS, list partitions and firmware files; write `docs/gts7l-inventory.md` | tablet over adb (read-only) | panel, touch, regulators, modem wiring documented; firmware kept under `gts7l-stock/` (gitignored) |
 | S2 | T2 | Kernel tree: `tools/gts7l-kernel.sh` fetches mainline v7.3 into `gts7l-kernel/`, applies the gts7xl patch series kept in `aosp-device/gts7l/kernel/patches`, builds `Image.gz` + DTB with an arm64 cross toolchain | nothing (DTS from S1 later) | `Image.gz-dtb` for `sm8250-samsung-gts7xl` builds; `sm8250-samsung-gts7l.dts` stub ready for S1's data |
 | S3 | T3 | Product scaffolding: `aosp_gts7l` in `AndroidProducts.mk`, `gts7l/aosp_gts7l.mk`, `BoardConfig.mk`, fstab/init/ueventd, sepolicy, `hals.list`; `hals/*/hal.mk` split so the PC product keeps Cuttlefish and the tablet does not | nothing | `lunch aosp_gts7l-cp2a-userdebug` passes Soong analysis; PC product unchanged |
-| S4 | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v1, Image.gz + DTB, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
+| S4 | T3 | Image tooling: `tools/gts7l-image.sh` packs `boot.img` (header v2 as stock, Image.gz + DTB section, our ramdisk) and `super.img` sized for `sda29`, plus `vbmeta` disabled | S2, S3 | `out/gts7l/boot.img` + `super.img` produced from a build |
 | S5 | T1 | Unlock, TWRP, full partition backup | **user's go-ahead** (wipes tablet, trips Knox) | backups of §6/T1 partitions on the host, checksummed |
 | S6 | T2 | Boot S2's kernel with a USB-gadget-shell initramfs, then port drivers in order | S1, S2, S5 | shell over USB on the tablet |
 | S7 | T3 | First `aosp_gts7l` boot to PcSystemUI | S3, S4, S6 | HyprLauncher on the panel with touch |
 | S8.. | T4-T7 | Rust HALs, tablet desktop, TWRP update zip, later items | S7 | per §6 |
 
 Group A (now, in parallel): S1, S2, S3. Then S4. S5 waits for the user. S6 and S7 follow.
+
+## 9. Product scaffolding (S3)
+
+`aosp-device/gts7l/` holds the `aosp_gts7l` product (`lunch aosp_gts7l-cp2a-userdebug`):
+
+| File | What |
+|---|---|
+| `aosp_gts7l.mk` | arm64 64-bit-only generic system + handheld/telephony system_ext + aosp_product, handheld vendor; `desktop.mk` with `PC_DESKTOP_VARIANT := tablet`, `hypr.mk`; drm_hwcomposer APEX, minigbm AIDL allocator + stable-C mapper; Mesa from `device/android-pc/gts7l-mesa` when present; software KeyMint/gatekeeper; kernel `Image.gz` and DTB from `device/android-pc/gts7l-kernel` (copied from `out/gts7l/` by `tools/aosp-device-link.sh`) or `prebuilt/kernel-placeholder` |
+| `BoardConfig.mk` | Soong-only build (set in `aosp_gts7l.mk`; with Kati the analysis exceeds the 20 GB cap), kona, armv8-2a-dotprod/cortex-a76, header v2 with the DTB section and stock offsets (boot 71303168 B), non-A/B, no recovery image, `super` 10171187200 B with one 10166992896 B group of system/system_ext/product/vendor (ext4), AVB off, SELinux permissive for bring-up (`GTS7L_SELINUX_PERMISSIVE`) |
+| `fstab.gts7l` | logical partitions (first-stage mount), metadata, userdata unencrypted (f2fs, ext4), apnhlos/modem vfat read-only, efs/sec_efs/persist read-only |
+| `init.gts7l.rc`, `ueventd.gts7l.rc` | modules, `mount_all`, schedutil; firmware directories, backlight |
+| `firmware/init.gts7l.firmware.rc` | `/mnt/vendor/firmware/gts7l/{modem,apnhlos,vendor}` links into the partitions; the kernel loads from there (`firmware_class.path`) and ueventd falls back to it |
+| `sepolicy/` | firmware/efs mount types, block devices, the link tree |
+| `hals.list`, `hals.mk` | Rust HALs of the tablet: health, power, thermal, light |
+
+Each `hals/<name>/hal.mk` now only adds packages (any product); `hals/<name>/hal-pc.mk` holds the
+PC product's Cuttlefish switches and PC-only files (health, light, thermal, power, audio).
+`aosp_pc_x86_64.mk` reads both for every HAL, so its package list is unchanged; `aosp_gts7l.mk`
+reads only `hal.mk` of the HALs in `hals.list` and inherits nothing of Cuttlefish.
+Checked 2026-11-23: `m nothing` passes for `aosp_gts7l-cp2a-userdebug` and for the PC product,
+whose dumpvars output (packages, copy files, overlays, properties, sepolicy dirs) is
+byte-identical before and after the split; the four HALs of `hals.list` build for arm64
+(they have no x86-only code; the power HAL only finds no `intel_pstate`). `hals/nvgpu`'s
+`vulkan.nvidia` is now x86_64-only like `nvglibc`, so arm64 analysis does not trip on it.
+
+Open TODOs:
+
+- S1 data is in (super and boot sizes, header v2 and offsets, docs/gts7l-inventory.md); still
+  open: the userdata file system in `fstab.gts7l`, which partition holds each firmware file.
+- S4: the device firmware in the stock vendor (GPU sqe/gmu, ath11k, BT, CS35L41) needs a copy
+  from the tablet (never in git) that `/mnt/vendor/firmware/gts7l/vendor` can reach.
+- S2/S6: the DTS names firmware `gts7l/modem/<file>` / `gts7l/apnhlos/<file>`; the kernel
+  needs ext4, f2fs, vfat; check `androidboot.boot_devices=soc@0/1d84000.ufshc` and
+  `androidboot.usbcontroller=a600000.usb`.
+- T3: Mesa freedreno/Turnip build (`tools/gts7l-mesa.sh`, AOSP 17's `external/mesa3d` builds
+  only lavapipe and gfxstream); minigbm AIDL allocator/mapper with the msm backend; power HAL
+  on cpufreq/devfreq (it only knows `intel_pstate`, hints are ignored without it).
+- S4: `boot.img` packed with the stock offsets (the product is Soong-only, as the PC one is, and
+  Soong's boot.img ignores `BOARD_MKBOOTIMG_ARGS`), `super.img`, disabled `vbmeta`.
+- S7: sepolicy compiled and checked on the device, then enforcing; density/orientation.

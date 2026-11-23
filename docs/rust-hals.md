@@ -20,13 +20,14 @@ as `aosp/device/android-pc/pc_x86_64`:
 ```
 aosp-device/
   AndroidProducts.mk        lunch target aosp_pc_x86_64-cp2a-userdebug
-  aosp_pc_x86_64.mk         product: reads hals/*/hal.mk, inherits the Cuttlefish phone
+  aosp_pc_x86_64.mk         product: reads every hals/*/hal.mk + hal-pc.mk, inherits the Cuttlefish phone
   BoardConfig.mk            Cuttlefish vsoc_x86_64_only board + our vendor sepolicy dirs
   Android.bp                rust_defaults "pc_hal_defaults" for HAL binaries
   sepolicy/vendor/te_macros pc_hal_service(domain, hal_attribute) macro
   libpchal/                 shared Rust library (rust_library, vendor_available)
   hals/<name>/              one directory per HAL
-    hal.mk                  PRODUCT_PACKAGES += ..., switches off the Cuttlefish HAL it replaces
+    hal.mk                  PRODUCT_PACKAGES += ... (any product: PC, gts7l)
+    hal-pc.mk               PC product only: switches off the Cuttlefish HAL it replaces
     Android.bp              rust_binary + vintf_fragment (+ rust_test)
     <service>.rc            init service
     <service>.xml           VINTF manifest fragment
@@ -69,8 +70,11 @@ Links do not work:
   `sepolicy/vendor` plus every `hals/*/sepolicy`.
 - The Cuttlefish makefile sets `PRODUCT_SOONG_ONLY` only when `TARGET_PRODUCT` is its own
   name, so our makefile sets it again (Soong-only build, as in F1).
-- `hals/*/hal.mk` files are included **before** the Cuttlefish product, so they can set
-  Cuttlefish's `LOCAL_ENABLE_*` switches (`?=` there) to drop the HAL they replace.
+- `hals/*/hal.mk` and `hals/*/hal-pc.mk` files are included **before** the Cuttlefish
+  product, so `hal-pc.mk` can set Cuttlefish's `LOCAL_ENABLE_*` switches (`?=` there) to drop
+  the HAL it replaces. `hal.mk` holds only what any product needs (the packages), so a
+  product without Cuttlefish (`gts7l/aosp_gts7l.mk`, docs/gts7l.md) includes just the
+  `hal.mk` files of the HALs in its `hals.list`.
 
 ## libpchal
 
@@ -118,7 +122,7 @@ It drives LED class devices (`/sys/class/leds`) and display backlights
 Why lights: it fits PC hardware (keyboard backlight, mic-mute LED, laptop panel
 backlight), is small, and Cuttlefish does not depend on it. Cuttlefish's own lights HAL
 (`com.google.cf.light`, a vsock bridge to the host) serves the same instance, so
-`hals/light/hal.mk` sets `LOCAL_ENABLE_LIGHT := false` and ours replaces it. The other
+`hals/light/hal-pc.mk` sets `LOCAL_ENABLE_LIGHT := false` and ours replaces it. The other
 candidate, vibrator, has no PC hardware behind it. On Cuttlefish there are no LEDs or
 backlights, so the HAL registers and reports an empty list. The service log says
 `found N lights`.
@@ -143,7 +147,7 @@ power HAL's `.rc`, see below), and the ACPI thermal zones appeared after the the
 had probed (it now probes again when the class directories change). The re-check on the
 PC is part of the combined F4–F8 USB test.
 
-| HAL | Binary / instance | Replaces (switch in `hal.mk`) |
+| HAL | Binary / instance | Replaces (switch in `hal-pc.mk`) |
 |---|---|---|
 | health V5 | `android.hardware.health-service.pc`, `IHealth/default` | `com.google.cf.health` (`LOCAL_HEALTH_PRODUCT_PACKAGE`; recovery keeps Cuttlefish's) |
 | thermal V3 | `android.hardware.thermal-service.pc`, `IThermal/default` | `com.android.hardware.thermal` (`LOCAL_THERMAL_HAL_PRODUCT_PACKAGE`) |

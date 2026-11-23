@@ -1,0 +1,7 @@
+# Rust HALs (aosp-device/hals/<name>) in aosp_gts7l: aosp_gts7l.mk includes each one's hal.mk
+# (never hal-pc.mk, the PC product's Cuttlefish switches) and BoardConfig.mk its sepolicy/.
+# One name per line; T3 starts with these (docs/gts7l.md §5), T4 adds the rest.
+health
+power
+thermal
+light

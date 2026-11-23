@@ -1,10 +1,21 @@
 # Desktop mode (phase F9f, docs/desktop-mode.md): AOSP's own desktop windowing on the
 # primary display (freeform windows), landscape only; the shell on top is Phase D's.
+# PC_DESKTOP_VARIANT=tablet (gts7l, docs/gts7l.md) keeps the freeform desktop but lets the
+# panel rotate: no landscape lock, auto-rotation on.
+PC_DESKTOP_VARIANT ?= pc
 
 # Freeform windows: without this feature WindowManager refuses WINDOWING_MODE_FREEFORM.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.software.freeform_window_management.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.freeform_window_management.xml
 
+ifeq ($(PC_DESKTOP_VARIANT),tablet)
+# The built-in panel starts in freeform (desktop) mode and turns with the tablet.
+PRODUCT_COPY_FILES += \
+    $(PC_DEVICE_DIR)/desktop/display_settings_tablet.xml:$(TARGET_COPY_OUT_VENDOR)/etc/display_settings.xml
+
+# Desktop mode supported on the internal display; auto-rotation on.
+DEVICE_PACKAGE_OVERLAYS += $(PC_DEVICE_DIR)/desktop/overlay-tablet
+else
 # The primary display (port 0, the PC's GOP framebuffer or Cuttlefish's display 0) starts
 # in freeform (desktop) mode, rotation locked at 0 (the panel's own landscape).
 PRODUCT_COPY_FILES += \
@@ -12,6 +23,7 @@ PRODUCT_COPY_FILES += \
 
 # Desktop mode supported on the internal display; auto-rotation off.
 DEVICE_PACKAGE_OVERLAYS += $(PC_DEVICE_DIR)/desktop/overlay
+endif
 
 # WM Shell (DesktopDisplayModeController) makes the default display desktop-first only on a
 # laptop (touchpad + keyboard) or with an external display, and turns the freeform display
@@ -30,7 +42,9 @@ PRODUCT_PACKAGES += pc_desktop_overlay_frameworks_base_core
 # Every app in landscape: portrait-only and non-resizable apps fill their window in
 # landscape (device config set by landscape-defaults.sh), rotation locked at 0 on fresh and
 # existing userdata (docs/desktop-mode.md, "Every app in landscape").
+ifneq ($(PC_DESKTOP_VARIANT),tablet)
 PRODUCT_PACKAGES += \
     pc_desktop_overlay_settings_provider \
     init.landscape.rc \
     landscape-defaults.sh
+endif

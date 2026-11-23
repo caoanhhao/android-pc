@@ -2,10 +2,14 @@
 
 PC_DEVICE_DIR := device/android-pc/pc_x86_64
 
-# Every hals/<name>/hal.mk adds its packages to PRODUCT_PACKAGES and may switch off the
-# Cuttlefish HAL it replaces (LOCAL_ENABLE_* ?= switches in device/google/cuttlefish),
-# so the HAL makefiles are read before the Cuttlefish product.
-$(foreach hal_mk,$(sort $(wildcard $(PC_DEVICE_DIR)/hals/*/hal.mk)),$(eval include $(hal_mk)))
+# Every HAL: hals/<name>/hal.mk adds its packages to PRODUCT_PACKAGES (any product), and
+# hals/<name>/hal-pc.mk, where present, switches off the Cuttlefish HAL it replaces
+# (LOCAL_ENABLE_* ?= switches in device/google/cuttlefish) or adds PC-only files. The HAL
+# makefiles are read before the Cuttlefish product. Other products pick their own list
+# (gts7l/hals.list).
+$(foreach hal_dir,$(sort $(dir $(wildcard $(PC_DEVICE_DIR)/hals/*/hal.mk))),\
+    $(eval include $(hal_dir)hal.mk)\
+    $(if $(wildcard $(hal_dir)hal-pc.mk),$(eval include $(hal_dir)hal-pc.mk)))
 
 $(call inherit-product, device/google/cuttlefish/vsoc_x86_64_only/phone/aosp_cf.mk)
 

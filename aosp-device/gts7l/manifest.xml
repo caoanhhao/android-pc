@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Device manifest of gts7l: the target FCM level; every HAL adds its own VINTF fragment. -->
+<manifest version="1.0" type="device" target-level="202604">
+</manifest>

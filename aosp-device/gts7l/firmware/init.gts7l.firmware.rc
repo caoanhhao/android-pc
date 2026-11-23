@@ -1,0 +1,30 @@
+# Co-processor firmware from the tablet's own partitions (docs/gts7l.md §3): nothing of it is
+# in our images. fstab.gts7l mounts apnhlos and modem read-only under /mnt/vendor; this builds
+# /mnt/vendor/firmware, a tmpfs link tree the kernel loads from directly (firmware_class.path
+# on the kernel command line, BoardConfig.mk) and ueventd falls back to (ueventd.gts7l.rc):
+#
+#   gts7l/modem/    -> /mnt/vendor/modem/image    ADSP, CDSP, SLPI, modem, Venus, GPU zap
+#   gts7l/apnhlos/  -> /mnt/vendor/apnhlos/image  Wi-Fi/BT (QCA6390) and the rest of NON-HLOS
+#   gts7l/vendor/   -> /vendor/firmware           files of our own vendor image
+#
+# The GPU (a650_sqe.fw, a650_gmu.bin), Wi-Fi (QCA6390 ath11k), Bluetooth (htbtfw20, htnv20)
+# and CS35L41 speaker protection firmware lives in the stock vendor partition, which our super
+# replaces. TODO(S4): keep a copy taken from the tablet (never in git) where these links can
+# reach it.
+#
+# So the DTS names firmware as "gts7l/modem/adsp.mdt" and the kernel finds the split
+# .mdt/.bNN segments next to it. TODO(S1/S2): check which partition holds each file the DTS
+# and drivers request (docs/gts7l-inventory.md) and name them this way in
+# sm8250-samsung-gts7l.dts; files with fixed names in drivers (ath11k, GPU sqe/gmu) get
+# links of their own below.
+
+# The tree is not a context= mount (those must stay read-only, system/sepolicy domain.te):
+# restorecon labels it gts7l_firmware_link (sepolicy/file_contexts).
+on fs
+    mkdir /mnt/vendor/firmware 0755 root root
+    mount tmpfs tmpfs /mnt/vendor/firmware nosuid nodev noexec mode=0755,uid=0,gid=0
+    mkdir /mnt/vendor/firmware/gts7l 0755 root root
+    symlink /mnt/vendor/modem/image /mnt/vendor/firmware/gts7l/modem
+    symlink /mnt/vendor/apnhlos/image /mnt/vendor/firmware/gts7l/apnhlos
+    symlink /vendor/firmware /mnt/vendor/firmware/gts7l/vendor
+    restorecon_recursive /mnt/vendor/firmware

@@ -1,7 +1,5 @@
-# Power HAL over intel_pstate. Replaces Cuttlefish's example power APEX
-# (com.android.hardware.power, via "overrides" in Android.bp), whose power.stats half is
-# installed here on its own. ueventd.pc.rc opens the intel_pstate knobs to the HAL.
+# Power HAL over intel_pstate (hints are ignored where there is none). The power.stats half of
+# the example power APEX it replaces is installed on its own.
 PRODUCT_PACKAGES += \
     android.hardware.power-service.pc \
-    android.hardware.power.stats-service.example \
-    ueventd.pc.rc
+    android.hardware.power.stats-service.example

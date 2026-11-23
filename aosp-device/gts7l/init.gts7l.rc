@@ -1,0 +1,25 @@
+# Board init for gts7l (SM-T875, docs/gts7l.md). In /vendor/etc/init, so init reads it whatever
+# androidboot.hardware ABL passes.
+
+on early-init
+    # Kernel modules of tools/gts7l-kernel.sh that are not built in (modules.load order).
+    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe -a -d /vendor/lib/modules --all=/vendor/lib/modules/modules.load
+
+on fs
+    mkdir /mnt/vendor/apnhlos 0755 root root
+    mkdir /mnt/vendor/modem 0755 root root
+    mkdir /mnt/vendor/efs 0755 root root
+    mkdir /mnt/vendor/sec_efs 0755 root root
+    mkdir /mnt/vendor/persist 0755 root root
+    mount_all /vendor/etc/fstab.gts7l --early
+
+on late-fs
+    mount_all /vendor/etc/fstab.gts7l --late
+
+on boot
+    # schedutil on every cpufreq policy (Kryo 585: cpu0-3 A55, cpu4-6 A77, cpu7 A77 prime).
+    write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor schedutil
+    write /sys/devices/system/cpu/cpufreq/policy4/scaling_governor schedutil
+    write /sys/devices/system/cpu/cpufreq/policy7/scaling_governor schedutil
+    # TODO(T4): the power HAL drives cpufreq/devfreq here (it only knows intel_pstate today
+    # and ignores hints without it).
