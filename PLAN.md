@@ -860,6 +860,16 @@ Goal: GitHub releases of the stick image that contain nothing we may not redistr
   on the real PC (docs/google-extras.md).
 - **R2. First release.** `tools/make-release.sh --upload`: draft release `aosp17-<date>`.
 
+## Phase G — the PC image on a Galaxy Tab S7 (gts7l)
+
+Decided 2026-11-23: one more android-pc build, `aosp_gts7l` (arm64), for the Samsung Galaxy
+Tab S7 LTE (SM-T875) on the desk, like Phase W is the PC build in Waydroid. It shares this
+tree's AOSP 17, patches, PcSystemUI/Hypr and `libpchal`; no LineageOS and no Samsung or
+Qualcomm userspace: mainline Linux (forked from gts7xl-mainline), Mesa freedreno,
+drm_hwcomposer, minigbm and our Rust HALs. Only that one tablet is supported. Work happens on
+branch `gts7l`; the plan, ownership boundary, phases T0-T7 and step breakdown are in
+docs/gts7l.md. Unlocking the tablet (T1) waits for the user's go-ahead.
+
 ## Risks
 
 - Disk space for AOSP (`/` is the limit; check free space between build steps).
