@@ -1063,5 +1063,13 @@ on its black background (`lineage-downstream-stripes-0006.jpg`), so they live in
 Android at 00:04 (`k35-android-stripes-0004.jpg`) had not visibly faded yet. Bright, changing
 content or the panel switched off for a few hours usually clears this kind of retention.
 
+Solid-colour test (bring-up shell, kernel #35, `k35-solid-colors.jpg`): black, white, green, red
+and grey frames fill the whole panel, including the striped area, so every pixel is refreshed.
+The stripes show only on black and grey. After 10 minutes of a white frame they were visibly
+fainter on grey (`k35-gray-white10-compare.jpg`). The tablet then rebooted into Android (boot
+reason `recovery`) and the stripes were still there. They come from the hours the broken link
+held the same lines; whether they clear fully is not known yet. `recovery` now holds the
+bring-up image with kernel #35 (`4b26de41...`), which drives the panel correctly.
+
 Next: rebuild the Android images with this kernel; retest touch (§17: the firmware reported a
 fixed palm, likely because the panel was not running).
