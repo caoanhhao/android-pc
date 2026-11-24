@@ -167,6 +167,13 @@ PRODUCT_VENDOR_PROPERTIES += \
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.wifi.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.wifi.xml
 
+# Bluetooth profiles (docs/gts7l.md §20). The Bluetooth app starts only the profiles whose
+# bluetooth.profile.*.enabled is set; without HID Host, keyboards and mice paired but never
+# connected. Only what works without a Bluetooth audio HAL.
+PRODUCT_PRODUCT_PROPERTIES += \
+    bluetooth.profile.gatt.enabled=true \
+    bluetooth.profile.hid.host.enabled=true
+
 # Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light and telephony
 # features once their HALs exist.
 PRODUCT_COPY_FILES += \
