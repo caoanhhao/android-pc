@@ -995,4 +995,21 @@ candidates: start the link in the bootloader's order (PHY + both controllers, th
 in one flush, display-on after video starts), and read the panel's error report (`0x05`,
 `0x0a`, `0x0e`) over DSI1 right after one frame.
 
+### Kernel #29 (same night)
+
+`msm.intf_reg` (DEBUG, in `k24-k29-debug.diff`): `echo IDX,OFF[,VAL]` reads/writes an INTF
+register through the DPU driver once it set the INTF up (IDX = enum: 2 = INTF_1, 3 = INTF_2).
+- INTF `0x1c4` (bootloader 0xe00, ours 0xa00) is read-only status.
+- Panel registers over DSI1 with video running: `0x05` 0 (one error at the first read only),
+  `0x0a` 0x9e, `0x0c` 0x07, `0x0e` 0x80, `0x0f` 0xc0 (self-diagnosis fine). The panel does not
+  see packet errors.
+- DSI0 video engine off (`DSI_CTRL` 0x71): the DSI1 half still shows nothing.
+- Display off/on (`28`/`29`) with video running, and the stock `TX_DFPS` sequence
+  (`ff 2a, fb 01, 23 0d|0c, ff 10, fb 01`; Samsung sends it in `samsung_panel_on_post`):
+  no change. The Samsung panel source (`ss_dsi_panel_NT36523_PPA957DB1.c` and its dtsi, copied
+  to `gts7l-stock/s6/`) does nothing else in on_pre/on_post besides the LCD bias buck.
+- With the quadrant pattern (`k29-dfps120-pattern.jpg`) the yellow 8 px border at x 0-7 and the
+  centre line at x ~799 are right on **every** line of the DSI0 half; past the first ~160 lines
+  only the middle of each line is not updated.
+
 Photos with a person in them were deleted at once; only screen photos without people are kept.
