@@ -875,3 +875,63 @@ USB: the gadget drops whenever Android suspends (screen off); `svc power stayon 
 `settings put system screen_off_timeout 2147483647` and `locksettings set-disabled true`
 keep it up (set on the tablet now). Long `adb shell` commands should run detached (`nohup`)
 and write a log.
+
+## 18. Panel: bootloader registers vs ours, kernels #19-#23 (2026-11-24 evening)
+
+Still open: the DSI0 half shows only the first ~160 portrait lines right and the DSI1 half
+stays dark. This round ruled out the DSI/PHY programming. The tablet is back on kernel #18
+(touch session) in `boot` and our `recovery.img`; `dtbo` stays zeroed.
+
+**The bootloader's registers, read while it drives the panel.** `recovery` held a bring-up
+image with kernel #20 (`CONFIG_DEVMEM=y` by hand) and `msm.modeset=0 clk_ignore_unused
+pd_ignore_unused` (`gts7l-stock/s6/recovery-k20-modeset0.img`), so msm never touches the
+display. `gts7l-stock/s6/pt/abldump.sh` first checks the MDSS GDSC and the dispcc AHB, byte,
+pclk and esc branches (all on), then reads only DSI registers: ctrl (0x400), PHY common
+(0x200), lanes (0x280) and PLL (0x280) of both links (`gts7l-stock/s6/abl-dsi-regs.txt`). No
+DPU register was read. The same script on Android with kernel #20 gives
+`k20-dsi-regs.txt`.
+
+Result: **every DSI controller, PHY common and lane register matches the bootloader's**,
+including the slave PHY's `CLK_CFG0` 0x11, `CLK_CFG1` 0x34 (BITCLK_SEL 1), `LANE_CTRL1` 0x60
+(continuous clock), the host `LANE_CTRL` bit 28, `CPHY_MODE_CTRL` 1 and the C-PHY timings
+(the bootloader uses the computed `27 2b 0a 1a 0b`, not the DT bytes). Only PLL status and
+calibration readbacks differ (`FRAC_DIV_START_LOW_1` 0x51 vs 0x50, `ICODE_ACCUM`, `FD_OUT`,
+`LOCKTIME0`) and `CLK_STATUS` (dynamic gating). The register dump in §12/§14
+(`regs-now.txt`) was taken during a non-continuous-clock test and is misleading.
+
+**Also checked:**
+- LineageOS recovery (4.19): no debugfs and no `/dev/mem`. It keeps the bootloader's
+  splash (`splash booting.. do not send ON_PRE_SEQ`), so it never initialises the link
+  itself. Its live DT has the same panel timings and the same supplies as ours: DSI
+  `vdda-1p2` = L9A 1.2 V, PHY `vdda-0p9` = L5A 0.88 V, panel `vddlcd` + `buck`.
+  (To reach root adb there, its ramdisk got our `adb_keys` and was re-signed with the AVB
+  test key it already uses. Odin refused even a zeroed `DTBO` with `FAIL! Auth`, and a
+  stock `dtbo` plus our boot drops the tablet into the Download screen. Never write the
+  stock `dtbo` again while `boot` holds our kernel.)
+- DSI1 HS link: `dcs_write` `51 00 00` / `51 01 ce` in HS to DSI1 only changes the
+  brightness (photo mean 31 vs 210), so DSI1 HS transmission and the panel's DSI1 port work.
+  Only video on DSI1 is not shown.
+- DPU snapshot (`cat /sys/kernel/debug/dri/1/kms`, the driver's own dump; `k20-dpu-snapshot.txt`):
+  INTF_1 and INTF_2 are programmed alike (h 916, v 2594, display hctl 32-831, prog fetch
+  on), both in CTL0 (`INTF_ACTIVE` 0x6), same frame count; SSPP 8/9 fetch x 0 and x 800;
+  LM1 is the right mixer. The vsync rate is 120 Hz while content changes. The MDP clock is
+  460 MHz.
+- `SPLIT_DISPLAY_EN` / `UPPER` / `LOWER_PIPE_CTRL` read back 0 right after the master
+  encoder writes 1 / 0x10 / 0x100; on DPU 6 both INTFs run from one CTL anyway.
+
+| Kernel (debug, `gts7l-stock/s6/k19-k23-debug.diff`) | Change | Result |
+|---|---|---|
+| #19 | slave PHY `CLK_CFG0` = master's pixel divider, bit divider 1 (as downstream) | no change |
+| #19 | `DSI_TIMING_DB_MODE` = 0 | already 0 |
+| #22 | `INTF_CONFIG2` without `DATA_HCTL_EN` (downstream writes 0 for DSI) | no change |
+| #22 | `INTF_PANEL_FORMAT` 0x213f | already written (reads back 0x2100) |
+| #23 | both bonded DSI controllers enabled back to back (46 µs apart instead of 24 ms) | no change |
+
+Open: with the DSI side identical, the difference must be in the DPU INTF timing (not read
+from the bootloader: `/dev/mem` on DPU registers once rebooted the tablet) or in how the
+link starts relative to the panel. Next candidates: a driver-mediated dump of the
+bootloader's INTF/CTL/TOP registers before `msm_mdss` resets MDSS (the reset runs at MDSS
+probe), and the DSI/INTF start order of the downstream driver on a cold boot.
+
+`input keyevent SLEEP` suspends Android and drops USB. Take a wake lock first
+(`echo gts7lpanel > /sys/power/wake_lock`).
