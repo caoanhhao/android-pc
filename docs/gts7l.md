@@ -640,3 +640,54 @@ the big images with one job (system.img ~17 min). Not yet run on the tablet.
 Risks for the first boot: `init.gts7l.rc` modprobes all 1114 modules of `modules.load` at
 `on fs` (slow, and one bad module can hang it; pstore shows where); first boot formats the
 107 GiB userdata; ABL's handling of the PON recovery bit (above).
+
+## 16. Android first boot (S7)
+
+Every attempt to boot `aosp_gts7l` on the tablet, flashed with `tools/gts7l-android-flash.sh`
+from the bring-up shell (§15). The screen is not used: everything below was read over USB.
+
+**Reading the tablet without adb.** Android's gadget keeps the bring-up shell's ACM function
+(`f8`), so a root shell is on the host's `/dev/ttyACM0` (group `uucp`; `sudo setfacl -m
+u:$USER:rw /dev/ttyACM0` if the user is not in it). The shell's `PATH` is the vendor one: call
+`/system/bin/logcat` by its full path. `dmesg` is useless with SELinux permissive: the avc
+denials overwrite the kernel ring buffer within seconds; `logcat -b kernel` keeps the early
+kernel messages.
+
+### Attempt 1 (2026-11-24, build `eng.caoanh.20261124.0735`)
+
+Flash: all checks and read-backs OK (super 10171187200 B streamed in 61 s). After the reboot
+the host saw `18d1:4ee7` ("android-pc Galaxy Tab S7 LTE") within the tool's wait, so first-stage
+mount, `mount_all`, the userdata/metadata formats (f2fs on `sda37`, ext4 on `sda28`) and the
+vendor init all worked. The gadget had only ACM + NCM (the `gts7l-usb.sh` fallback): adbd ran
+but never bound. Up 4 min, `sys.boot_completed` unset. Found:
+
+| Problem | Cause | Fix |
+|---|---|---|
+| No adb on USB | `init.gts7l.usb.rc` mounted FunctionFS before `mkdir functions/ffs.adb`; FunctionFS finds its device by the function's name, so the mount failed and `/dev/usb-ffs/adb` stayed empty | mount after the `mkdir` |
+| SurfaceFlinger aborts: `no suitable EGLConfig found` | Mesa: `get_param failed! -6`; kernel: `a650 SQE ucode is too old. Have version 93 need at least 95`. The only `a650_sqe.fw` the tablet has is Samsung's 0.93; mainline refuses anything older than 0.95 for a650 (CP security fixes), so the GPU never loads | kernel patch 0106: warn and use 0.93 (linux-firmware's newer SQE is the cleaner fix; not on this host) |
+| `vendor.graphics.allocator` never starts | `allocator-service.minigbm` labelled `vendor_file`: init refuses a service with no domain transition even in permissive mode | `hal_graphics_allocator_default_exec` in `file_contexts` |
+| drm_hwcomposer on the wrong node | the msm card is `/dev/dri/card1` (card0 does not exist), the product set `card0`; the `card%` pattern stops at the first missing card | `vendor.hwc.drm.device=/dev/dri/card1` |
+| audioserver: SIGSEGV in `AudioFlinger::onFirstRef` every few seconds | no audio HAL in the image | AOSP's default AIDL audio + effects HALs (`com.android.hardware.audio`), as on Cuttlefish |
+| zygote, netd restarting | zygote follows SurfaceFlinger's restarts | (from the fixes above) |
+
+About 6 min after boot the ACM shell and NCM stopped answering while the USB device stayed
+enumerated (no reboot, no re-enumeration): the tablet hung.
+The kernel was still alive (the NCM interface answered ARP) but nothing let us in: the ACM
+shell stopped reading and writing, adbd's TCP port 5555 and ICMP were dropped (netd, which was
+restarting, had left its firewall chains in place), and nothing reboots an Android that is
+merely stuck. pstore of this boot can be read only after a reset that keeps RAM.
+
+Attempt 2 is built and waits for the tablet (build `eng.caoanh.20261124.0823`, kernel with
+patch 0106, vendor with the fixes above; `vendor.img` checked: the audio APEX, the FunctionFS
+mount after `mkdir ffs.adb`, `vendor.hwc.drm.device=/dev/dri/card1`, the allocator label).
+
+**Recovery from this state (needs a person):**
+
+1. Hold **Power + Volume Down** for about 7 s until the screen goes off (forced restart).
+2. Immediately hold **Volume Up + Power** until the tablet boots: that starts the `recovery`
+   partition, which is now our bring-up shell (§15), and the host sees `1d6b:0104` and
+   `telnet 172.16.42.1` answers within ~15 s.
+   (If step 2 is missed, the tablet boots the attempt-1 Android again; that is also fine: its
+   ACM root shell answers for a few minutes, enough for `reboot recovery`.)
+3. From the worktree: `tools/gts7l-android-flash.sh --yes` (first read `/sys/fs/pstore` in the
+   bring-up shell for attempt 1's last console).

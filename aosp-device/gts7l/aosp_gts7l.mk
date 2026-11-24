@@ -38,7 +38,9 @@ include $(PC_DEVICE_DIR)/hypr/hypr.mk
 
 # Composer: drm_hwcomposer (HWC3) on the msm DRM driver's card.
 PRODUCT_PACKAGES += com.android.hardware.graphics.composer.drm_hwcomposer
-PRODUCT_VENDOR_PROPERTIES += vendor.hwc.drm.device=/dev/dri/card0
+# The msm card is card1 on the tablet (S7 first boot; minor 0 is taken during probe), and
+# drm_hwcomposer's card% pattern stops at the first missing card0, so name it.
+PRODUCT_VENDOR_PROPERTIES += vendor.hwc.drm.device=/dev/dri/card1
 
 # Gralloc: minigbm's AIDL allocator and stable-C mapper. They are built with minigbm's
 # generic backend (dma-buf system heap); the msm backend (msm_cflags) exists only for the
@@ -62,7 +64,7 @@ PRODUCT_VENDOR_PROPERTIES += ro.hardware.gralloc=minigbm
 # out/gts7l-mesa/prebuilt; tools/aosp-device-link.sh copies that to
 # device/android-pc/gts7l-mesa (outside the mirror, like the kernel). Without it the image
 # has no GLES driver and SurfaceFlinger cannot start, but the product still analyses and
-# builds. The kernel side: the msm DRM driver with the Adreno GPU (card0 + renderD128) and the
+# builds. The kernel side: the msm DRM driver with the Adreno GPU (card1 + renderD128) and the
 # GPU firmware (a650_sqe.fw, a650_gmu.bin and the device's signed zap shader), docs/gts7l.md
 # §13.
 GTS7L_MESA_DIR := device/android-pc/gts7l-mesa
@@ -93,6 +95,13 @@ PRODUCT_VENDOR_PROPERTIES += ro.opengles.version=196610
 PRODUCT_PACKAGES += \
     com.android.hardware.keymint.rust_nonsecure \
     com.android.hardware.gatekeeper.nonsecure
+
+# Audio: AOSP's default AIDL audio and effects HALs (as on Cuttlefish) until a CS35L41/WCD
+# HAL exists. Without any audio HAL audioserver crashes in AudioFlinger::onFirstRef and
+# keeps restarting (S7 first boot).
+PRODUCT_PACKAGES += com.android.hardware.audio
+$(call inherit-product, frameworks/av/services/audiopolicy/audio_policy_config_vendor_1.mk)
+$(call inherit-product, hardware/interfaces/audio/aidl/default/audio_effects.mk)
 
 # Kernel: mainline v7.3 with our patches, built by tools/gts7l-kernel.sh into out/gts7l/
 # (Image.gz, sm8250-samsung-gts7l.dtb, modules/), which tools/aosp-device-link.sh copies to

@@ -1,0 +1,43 @@
+From f73c2f6db29423138de6f1a576355dc2f497a35d Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 08:21:26 +0700
+Subject: [PATCH] drm/msm/a6xx: accept the Galaxy Tab S7's a650 SQE 0.93 with a
+ warning
+
+The only a650_sqe.fw on the Galaxy Tab S7 LTE (gts7l) is Samsung's 0.93 in
+the stock vendor image. a6xx_ucode_check_version() rejects anything older
+than 0.95 for a650, so the GPU never loads and Mesa gets -ENXIO from every
+MSM_GET_PARAM. 0.93 lacks only the CP security fixes of 0.95: warn and use
+it.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/adreno/a6xx_gpu.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
+index e3ad393d3..6d1778f82 100644
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
+@@ -1045,9 +1045,16 @@ static bool a6xx_ucode_check_version(struct a6xx_gpu *a6xx_gpu,
+ 			goto out;
+ 		}
+ 
+-		DRM_DEV_ERROR(&gpu->pdev->dev,
+-			"a650 SQE ucode is too old. Have version %x need at least %x\n",
++		/*
++		 * The Galaxy Tab S7 (gts7l/gts7xl) ships only Samsung's 0.93
++		 * microcode in its vendor image. It runs the a650 fine; what it
++		 * lacks are the CP security fixes of 0.95, so accept it with a
++		 * warning instead of leaving the device with no GPU.
++		 */
++		dev_warn(&gpu->pdev->dev,
++			"a650 SQE ucode %x is older than %x, which has CP security fixes; using it anyway\n",
+ 			buf[0] & 0xfff, 0x095);
++		ret = true;
+ 	} else if (!strcmp(sqe_name, "a660_sqe.fw")) {
+ 		ret = true;
+ 	} else {
+-- 
+2.56.1
+
