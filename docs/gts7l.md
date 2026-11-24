@@ -1013,3 +1013,49 @@ register through the DPU driver once it set the INTF up (IDX = enum: 2 = INTF_1,
   only the middle of each line is not updated.
 
 Photos with a person in them were deleted at once; only screen photos without people are kept.
+
+## 20. Panel fixed: bonded C-PHY slave dividers, PLL bias, no clock lane (2026-11-24 night)
+
+**The panel works:** full picture on both halves, from the bootloader's state and from a cold
+reset + stock init, in the bring-up shell and in Android (kernel #35, `boot`
+`gts7l-stock/s6/boot-k35.img`, SHA-256 `3f7d2535...`). Photos: `k33-clean-fix.jpg`,
+`k33-cold-init.jpg`.
+
+**How it was found.** A debug build of the LineageOS 4.19 kernel
+(`LineageOS/android_kernel_samsung_sm8250`, lineage-24.0, `kona-perf_defconfig` +
+`kona-sec-common.config` + `gts7l.config` + DEBUG_FS/DEVMEM, LTO/CFI and module signing off,
+`HOSTCFLAGS=-DOPENSSL_IS_BORINGSSL` because the host OpenSSL has no ENGINE API) went into the
+Lineage recovery image (`gts7l-stock/s6/lineage-rec/`). Its downstream driver drives the panel
+correctly. Its `sde_dbg` debugfs (`/sys/kernel/debug/dri/0/debug/<blk>_off|_reg`, one block
+range per read) gave the working DSI/PHY/DPU state (`gts7l-stock/s6/lineage-dump/`). The DPU
+matched ours; on the DSI side the slave PHY's `CLK_CFG0` (0x11 vs our 0xf1), the PLL bias
+(`PLL_SYSTEM_MUXES` 0xc0 vs our 0) and lane 3's `TX_DCTRL` (0x06) differed. Written live in
+that order the picture came up; the order matters (the link has to come up with the right
+dividers and bias, a later write does not repair it).
+
+**Fixes** (new patches, `aosp-device/gts7l/kernel/patches`):
+- 0105 `drm/msm/dsi: C-PHY: do not drive a clock lane`: `LANE_CTRL0` 0x07, `LANE_CFG1` 0x04,
+  lanes 3/4 not configured except lane 3 `TX_DCTRL` 0x06, no `CLK_EN`, no continuous clock.
+- 0106 `drm/msm/dsi/phy: 7nm: give the bonded slave PHY the master's dividers`: the slave's
+  `CLK_CFG0` is never set by any clock in the tree; copy the master's in `vco_prepare`, before
+  the bias, as downstream does.
+- 0107 `drm/msm/dsi/phy: 7nm: program the PLL bias on every enable`: the first `vco_prepare`
+  runs at probe before the PHY is powered, the write is lost and the refcount never writes it
+  again.
+
+**Series cleanup.** The DEBUG patches are gone: 0099 (`drm/panel: nt36523: gts7l: stock
+on-commands as a table, backlight on both links`) replaces the old 0097-0099, 0102-0104; the
+panel is always reset and initialised and gets display off/sleep in on disable. 0097/0098
+(C-PHY tuning from DT) and the reboot-reason, a650 and touchscreen patches keep their content
+(renumbered 0100-0104). The old branch is `gts7l-debug-backup` in `gts7l-kernel`;
+`gts7l-stock/s6/k24-k32-debug.diff` keeps the debug switches (ABL-match params, `intf_reg`,
+boot DPU snapshot, MDSS no-reset).
+
+**Image retention.** The DSI0 half shows faint horizontal stripes in the shape of the old
+garbage (`k34-android-ghost-*.jpg`, `k35-android-ghost-recents-t3min.jpg`). They stay put
+across a panel reset and power cycle while new content (card outlines, wallpaper) draws
+correctly through them, so they are LCD image retention from the hours the broken link held
+the same lines, not a signal fault. They should fade with normal use; recheck later.
+
+Next: rebuild the Android images with this kernel; retest touch (§17: the firmware reported a
+fixed palm, likely because the panel was not running).
