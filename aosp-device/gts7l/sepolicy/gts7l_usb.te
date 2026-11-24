@@ -1,0 +1,17 @@
+# usbroute and gts7l-usb.sh (init.gts7l.usb.rc): the MAX77705 USB data switch over i2c-dev,
+# the gadget's UDC in configfs, the NCM interface's address. SELinux is permissive on this
+# product for now; these rules cover what the script needs once it is not.
+type gts7l_usb, domain;
+type gts7l_usb_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(gts7l_usb)
+
+allow gts7l_usb vendor_shell_exec:file rx_file_perms;
+allow gts7l_usb vendor_toolbox_exec:file rx_file_perms;
+allow gts7l_usb kmsg_device:chr_file w_file_perms;
+allow gts7l_usb self:capability net_admin;
+allow gts7l_usb self:udp_socket create_socket_perms;
+allowxperm gts7l_usb self:udp_socket ioctl { SIOCGIFFLAGS SIOCSIFFLAGS SIOCGIFADDR SIOCSIFADDR SIOCSIFNETMASK SIOCGIFNETMASK };
+get_prop(gts7l_usb, usb_control_prop)
+allow gts7l_usb configfs:dir r_dir_perms;
+allow gts7l_usb configfs:file rw_file_perms;
+r_dir_file(gts7l_usb, sysfs_net)

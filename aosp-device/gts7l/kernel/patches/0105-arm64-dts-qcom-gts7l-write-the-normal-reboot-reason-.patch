@@ -1,0 +1,30 @@
+From 68078e9bf3170fd55627db478a8da60806323393 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Tue, 24 Nov 2026 07:08:16 +0700
+Subject: [PATCH] arm64: dts: qcom: gts7l: write the normal reboot reason to
+ IMEM
+
+A reboot into recovery leaves 0x77665502 in the IMEM restart reason. A
+plain reboot afterwards wrote nothing there, so the stale value could
+send the bootloader back to recovery. Stock writes 0x77665501 for a
+normal reboot; do the same through syscon-reboot-mode's "normal" mode
+(used when reboot has no command).
+---
+ arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index bc22fe526..27da6b52f 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -206,6 +206,7 @@ reboot-mode {
+ 			compatible = "syscon-reboot-mode";
+ 			offset = <0x65c>;
+ 			mask = <0xffffffff>;
++			mode-normal = <0x77665501>;
+ 			mode-recovery = <0x77665502>;
+ 			mode-bootloader = <0x77665500>;
+ 		};
+-- 
+2.56.1
+

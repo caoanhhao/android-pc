@@ -35,6 +35,8 @@ Ours start at `0094`:
 | Patch | What |
 |---|---|
 | 0094 | `sm8250-samsung-gts7l.dts`: stub derived from the gts7xlwifi DTS |
+| 0095-0104 | panel, S Pen supply, C-PHY tuning, backlight (DEBUG ones marked; docs/gts7l.md §12) |
+| 0105 | DTS: `mode-normal` in the IMEM reboot-mode, so a plain reboot clears a stale recovery reason (docs/gts7l.md §15) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with
 `git format-patch -1 --start-number N -o aosp-device/gts7l/kernel/patches`. The script

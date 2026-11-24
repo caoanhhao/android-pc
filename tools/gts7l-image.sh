@@ -15,11 +15,18 @@
 #                tools/gts7l-firmware.sh) when it exists; GTS7L_FIRMWARE=0 leaves it out.
 #                With gts7l_fw, super.img and the Odin tar carry Samsung/Qualcomm firmware of
 #                this tablet: keep them on this host, never publish them.
+#   recovery.img the bring-up image (tools/gts7l-bringup.sh --firmware with
+#                GTS7L_BRINGUP_OUT=out/gts7l/recovery): busybox shell over USB NCM, pstore. An
+#                Android init failure reboots there (androidboot.init_fatal_reboot_target).
+#                Copied when out/gts7l/recovery/boot.img exists (GTS7L_RECOVERY=FILE: another).
 #   vbmeta.img   empty, verification and hashtree disabled (flags 3)
 #   dtbo.img     zeroed: ABL finds no overlay table, so the stock board overlays (written for
 #                Samsung's 4.19 DT) are not applied onto our mainline DTB, as on gts7xl-mainline
-#   AP_gts7l-<build>.tar.md5   the four images lz4-compressed for Odin's AP slot. Odin writes
+#   AP_gts7l-<build>.tar.md5   the images lz4-compressed for Odin's AP slot. Odin writes
 #                only these partitions: userdata, efs and the firmware partitions stay as they are.
+#   SHA256SUMS, CHECK.txt   checksums; what the checks at the end found (boot ramdisk, command
+#                lines, DTB, super's partitions)
+# tools/gts7l-android-flash.sh writes them from the bring-up shell over the USB network.
 set -euo pipefail
 WT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT=$WT
@@ -60,6 +67,8 @@ group_size=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_SIZE)
 boot_size=$(board BOARD_BOOTIMAGE_PARTITION_SIZE)
 parts=$(board BOARD_GTS7L_DYNAMIC_PARTITIONS_PARTITION_LIST)
 FW_IMG=$K/firmware/gts7l_fw.img
+RECOVERY=${GTS7L_RECOVERY:-$K/recovery/boot.img}
+RECOVERY_SIZE=86888448   # sda24, 84852 KiB
 
 # The Soong-only build stages nothing under $P/system: read build.prop from the image.
 prop() { debugfs -R 'cat /system/build.prop' "$P/system.img" 2>/dev/null | sed -n "s/^$1=//p"; }
@@ -110,13 +119,93 @@ lpmake "${args[@]}" >/dev/null
 avbtool make_vbmeta_image --flags 3 --padding_size 4096 --output "$OUT/vbmeta.img"
 head -c 4096 /dev/zero > "$OUT/dtbo.img"
 
+# recovery.img: the bring-up image.
+images=(boot super vbmeta dtbo)
+rm -f "$OUT/recovery.img"
+if [[ -f $RECOVERY ]]; then
+    [[ $(head -c 8 "$RECOVERY") == ANDROID! ]] || { echo "gts7l-image: $RECOVERY is not a boot image" >&2; exit 1; }
+    (( $(stat -c %s "$RECOVERY") <= RECOVERY_SIZE )) || { echo "gts7l-image: $RECOVERY larger than recovery" >&2; exit 1; }
+    cp "$RECOVERY" "$OUT/recovery.img"
+    images+=(recovery)
+else
+    echo "gts7l-image: WARNING: no $RECOVERY (GTS7L_BRINGUP_OUT=$K/recovery tools/gts7l-bringup.sh --firmware BUSYBOX): no recovery.img" >&2
+fi
+
+# Checks: the boot ramdisk, the command lines, the DTB, super's partitions.
+check() {
+    local u=$tmp/unpack c=$OUT/CHECK.txt want f
+    rm -rf "$u"; mkdir -p "$u/rd"
+    unpack_bootimg --boot_img "$OUT/boot.img" --out "$u" > "$u/info.txt"
+    {
+        echo "boot.img: $(sed -n 's/^boot image header version: */header v/p' "$u/info.txt"), $(stat -c %s "$OUT/boot.img") bytes"
+        cmp -s "$u/dtb" "$K/sm8250-samsung-gts7l.dtb" && echo "dtb: = sm8250-samsung-gts7l.dtb" ||
+            { echo "FAIL dtb differs from $K/sm8250-samsung-gts7l.dtb"; }
+        cmp -s "$u/kernel" "$K/Image.gz" && echo "kernel: = Image.gz ($(cat "$K/kernelrelease" 2>/dev/null))" ||
+            echo "FAIL kernel differs from $K/Image.gz"
+        echo "cmdline (boot.img): $(sed -n 's/^command line args: //p' "$u/info.txt")"
+        # The kernel uses its own built-in command line (CONFIG_CMDLINE_FORCE): it must carry
+        # what Android needs here.
+        local kc; kc=$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$K/config")
+        echo "cmdline (kernel, forced: $(grep -c '^CONFIG_CMDLINE_FORCE=y' "$K/config")): $kc"
+        for want in androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc \
+            androidboot.usbcontroller=a600000.usb androidboot.selinux=permissive \
+            androidboot.init_fatal_reboot_target=recovery; do
+            [[ " $kc " == *" $want "* ]] && echo "  kernel cmdline has $want" || echo "FAIL kernel cmdline lacks $want"
+        done
+        for want in CONFIG_PSTORE_RAM=y CONFIG_PSTORE_CONSOLE=y CONFIG_PSTORE_PMSG=y \
+            CONFIG_USB_CONFIGFS_F_FS=y CONFIG_USB_CONFIGFS_NCM=y CONFIG_F2FS_FS=y CONFIG_BLK_DEV_DM=y; do
+            grep -qx "$want" "$K/config" && echo "  kernel $want" || echo "FAIL kernel config lacks $want"
+        done
+        # The ramdisk is two concatenated newc archives (cpio stops at the first trailer).
+        lz4 -dc "$u/ramdisk" | python3 -I -c '
+import os, sys
+d, out, i = sys.stdin.buffer.read(), sys.argv[1], 0
+while i + 110 <= len(d):
+    if d[i:i + 6] != b"070701": i += 1; continue
+    f = [int(d[i + 6 + 8 * k:i + 14 + 8 * k], 16) for k in range(13)]
+    mode, size, nlen = f[1], f[6], f[11]
+    name = d[i + 110:i + 110 + nlen - 1].decode()
+    i = (i + 110 + nlen + 3) & ~3
+    data = d[i:i + size]; i = (i + size + 3) & ~3
+    if name == "TRAILER!!!" or name == ".": continue
+    p = os.path.join(out, name)
+    if mode & 0o170000 == 0o040000: os.makedirs(p, exist_ok=True)
+    elif mode & 0o170000 == 0o120000:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        if not os.path.lexists(p): os.symlink(data.decode(), p)
+    else:
+        os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(data)
+' "$u/rd"
+        for f in init system/bin/init fstab.gts7l first_stage_ramdisk/fstab.gts7l; do
+            [[ -e $u/rd/$f || -L $u/rd/$f ]] && echo "  ramdisk has /$f" || echo "  ramdisk has no /$f"
+        done
+        [[ -e $u/rd/init && -e $u/rd/fstab.gts7l ]] || echo "FAIL ramdisk lacks init or fstab.gts7l"
+        cmp -s "$u/rd/fstab.gts7l" "$WT/aosp-device/gts7l/fstab.gts7l" || echo "FAIL ramdisk fstab.gts7l differs"
+        echo "super.img:"
+        simg2img "$OUT/super.img" "$tmp/super.raw"
+        lpdump "$tmp/super.raw" | sed -n 's/^  Name: /  partition /p'
+        for f in $parts gts7l_fw; do
+            lpdump "$tmp/super.raw" | grep -qx "  Name: $f" || echo "FAIL super has no $f"
+        done
+        rm -f "$tmp/super.raw"
+        [[ -f $OUT/recovery.img ]] && {
+            unpack_bootimg --boot_img "$OUT/recovery.img" --out "$u/r" > "$u/r.txt"
+            echo "recovery.img: $(sed -n 's/^boot image header version: */header v/p' "$u/r.txt"), $(stat -c %s "$OUT/recovery.img") bytes, ramdisk $(gzip -dc "$u/r/ramdisk" | cpio -t --quiet 2>/dev/null | grep -c '^lib/firmware/') firmware entries"
+        }
+    } | tee "$c"
+    ! grep -q '^FAIL' "$c"
+}
+check || { echo "gts7l-image: checks failed, see $OUT/CHECK.txt" >&2; exit 1; }
+
 # Odin AP tar
 build=$(prop ro.build.version.incremental)
-for f in boot super vbmeta dtbo; do lz4 -q -f -B6 --content-size "$OUT/$f.img" "$tmp/$f.img.lz4"; done
+for f in "${images[@]}"; do lz4 -q -f -B6 --content-size "$OUT/$f.img" "$tmp/$f.img.lz4"; done
+rm -f "$OUT"/AP_gts7l-*.tar.md5
 tar=$OUT/AP_gts7l-$build.tar
-tar -C "$tmp" -H ustar -cf "$tar" boot.img.lz4 super.img.lz4 vbmeta.img.lz4 dtbo.img.lz4
+tar -C "$tmp" -H ustar -cf "$tar" "${images[@]/%/.img.lz4}"
 md5sum -t "$tar" | sed "s|$OUT/||" >> "$tar"
 mv "$tar" "$tar.md5"
-(cd "$OUT" && sha256sum boot.img super.img vbmeta.img dtbo.img "${tar##*/}.md5" > SHA256SUMS)
+(cd "$OUT" && sha256sum "${images[@]/%/.img}" "${tar##*/}.md5" > SHA256SUMS)
+echo "$build" > "$OUT/BUILD"
 ls -la "$OUT"
 echo "gts7l-image: build $build"

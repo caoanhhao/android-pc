@@ -13,7 +13,10 @@ vendor      /vendor      ext4   ro,barrier=1  wait,logical,first_stage_mount
 /dev/block/by-name/metadata  /metadata  ext4  noatime,nosuid,nodev,discard  wait,check,formattable,first_stage_mount
 
 # userdata: no fileencryption flag, /data starts unencrypted (no TrustZone keymaster on
-# mainline, docs/gts7l.md §7). f2fs first (stock), ext4 if TWRP formatted it so.
+# mainline, docs/gts7l.md §7). Samsung's encrypted f2fs cannot be used: tools/gts7l-android-flash.sh
+# zeroes its header, and mount_all formats a partition without a superblock as f2fs (the first
+# formattable line, make_f2fs). ext4 is accepted if something else formatted it so.
+# metadata (also zeroed by the flash tool) is formatted the same way at mount_all --early.
 /dev/block/by-name/userdata  /data  f2fs  noatime,nosuid,nodev,discard,fsync_mode=nobarrier  latemount,wait,check,formattable,quota,reservedsize=128M
 /dev/block/by-name/userdata  /data  ext4  noatime,nosuid,nodev,discard                       latemount,wait,check,formattable,quota,reservedsize=128M
 

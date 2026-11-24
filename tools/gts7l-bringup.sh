@@ -10,8 +10,10 @@
 # search paths, so built-in drivers find it at probe and modules insmod-ed later too. That
 # image carries this tablet's signed firmware: keep it on this host.
 #
-# Output: out/gts7l/bringup/boot.img of the main checkout. Boot image layout as on
-# gts7xl-mainline: header v1, Image.gz with the DTB appended, base 0x10000000, page 2048.
+# Output: out/gts7l/bringup/boot.img of the main checkout (GTS7L_BRINGUP_OUT=DIR writes DIR/boot.img
+# instead; tools/gts7l-image.sh takes out/gts7l/recovery/boot.img as the Android image's
+# recovery.img). Boot image layout as on gts7xl-mainline: header v1, Image.gz with the DTB
+# appended, base 0x10000000, page 2048. The same image boots from boot and from recovery.
 set -euo pipefail
 WT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT=$WT
@@ -20,7 +22,7 @@ FIRMWARE=
 [[ ${1:-} == --firmware ]] && { FIRMWARE=1; shift; }
 BUSYBOX=${1:?usage: tools/gts7l-bringup.sh [--firmware] BUSYBOX}
 K=$ROOT/out/gts7l
-OUT=$K/bringup
+OUT=${GTS7L_BRINGUP_OUT:-$K/bringup}
 SRC=$WT/aosp-device/gts7l/bringup
 export PATH=$ROOT/aosp/out/host/linux-x86/bin:$PATH
 file "$BUSYBOX" | grep -q 'ARM aarch64.*statically linked' || { echo "gts7l-bringup: $BUSYBOX is not a static arm64 binary" >&2; exit 1; }

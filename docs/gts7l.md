@@ -551,3 +551,80 @@ Open:
 
 The tablet runs kernel #13 (`gts7l-stock/s6/boot-k13.img`, SHA-256 `993fdd5ec1545d0c...`,
 booted and tested). `boot-k10-good.img` stays the fallback.
+
+## 15. First Android image: reachable without the screen (S7)
+
+The panel shows only part of a picture, so the first `aosp_gts7l` boots are debugged over USB
+alone. What the image and the flash path provide:
+
+**Reachability in Android** (`init.gts7l.usb.rc`, `bringup/usbroute/`):
+
+- `usbroute` is also a Soong `rust_binary` (`/vendor/bin/usbroute`, same source as the
+  bring-up's cargo build). `gts7l-usb.sh` (vendor, domain `gts7l_usb`) runs it at `on init`,
+  retrying for 30 s while the MAX77705 probes; without it the host never sees the gadget.
+- configfs gadget `g1` on `a600000.usb` (`sys.usb.controller`, from `ro.boot.usbcontroller`),
+  `sys.usb.configfs=1`, FunctionFS for adbd at `/dev/usb-ffs/adb`; AOSP's
+  `init.usb.configfs.rc` binds it when adbd is ready. `persist.sys.usb.config=adb`,
+  `ro.adb.secure=0` (userdebug, `verifiedbootstate=orange`: no key confirmation on a screen
+  nobody sees), `service.adb.tcp.port=5555`.
+- Two more functions stay in the configuration as `f8`/`f9` (the stock triggers only touch
+  `f1`-`f3`), in the bring-up image's order so the host's interface is again
+  `enp0s20f0u1i2` and the NetworkManager connection `gts7l-bringup` comes up by itself:
+  `acm.gs8`, a root shell on the host's `/dev/ttyACM0` even without adbd
+  (`vendor.gts7l-console`), and `ncm.gs9` with `172.16.42.1/24` (`adb connect
+  172.16.42.1:5555`). If adbd has not bound the gadget after 90 s, `gts7l-usb.sh` binds it
+  with ACM + NCM alone.
+- USB IDs: Android `18d1:4ee7` (serial = the bootloader's `androidboot.serialno`), the
+  bring-up shell `1d6b:0104`.
+
+**Debugging** (`tools/gts7l-bringup.sh`, kernel 0105):
+
+- The kernel forces its built-in command line (`CONFIG_CMDLINE_FORCE`), which carries
+  `androidboot.init_fatal_reboot_target=recovery`, `androidboot.selinux=permissive`,
+  `printk.devkmsg=on`; `BOARD_KERNEL_CMDLINE` lists the same values and
+  `tools/gts7l-image.sh` checks the built-in one.
+- `recovery.img` is the bring-up image with the firmware tree (`GTS7L_BRINGUP_OUT=
+  out/gts7l/recovery tools/gts7l-bringup.sh --firmware BUSYBOX`). An init failure reboots
+  there (IMEM reason `0x77665502`): telnet `172.16.42.1`, and `/sys/fs/pstore` holds the
+  previous boot. The shell logs the list of records to the kernel log at start.
+- pstore: ramoops at `0x9fa00000` (`sm8250-samsung-common.dtsi`): `console-ramoops-0`
+  (256 KiB of kernel console, enabled whatever `console=` says), `pmsg-ramoops-0` (256 KiB:
+  liblog writes every log buffer to `/dev/pmsg0` on a debuggable build; read with
+  `logcat -L` on Android, or `strings` in the bring-up shell), `dmesg-ramoops-N` on a panic.
+- Patch 0105 adds `mode-normal = <0x77665501>` (stock's value) to the IMEM reboot-mode, so a
+  plain `reboot` after a recovery boot does not leave the stale recovery reason behind. Only
+  `reboot`/`reboot -f` run the notifier, sysrq `b` does not. Unverified: whether ABL also
+  keeps the PON spare register's recovery bit (`&pon mode-recovery = 1`, never cleared by a
+  normal reboot); if a reboot from the recovery shell goes back to recovery, that is why.
+- SELinux stays permissive (`GTS7L_SELINUX_PERMISSIVE`); `sepolicy/gts7l_usb.te` covers the
+  USB script for later.
+
+**Data**: Samsung's `userdata` is f2fs with Samsung's file-based encryption, unusable
+without its TrustZone keys. `tools/gts7l-android-flash.sh` zeroes its first 16 MiB and all of
+`metadata` (Samsung's encryption metadata for it); `mount_all` finds no superblock
+(`partition_wiped`) on the `formattable` entries and formats them: userdata as f2fs with
+`/system/bin/make_f2fs` (first matching line of `fstab.gts7l`), metadata as ext4 with
+`/system/bin/mke2fs`; first-stage mount skips the unformatted metadata (`formattable`).
+**Flashing therefore wipes `/data`.** That is fine now: it holds nothing since the unlock wipe
+(S5). Later updates must not run this tool; they will need a path that keeps `userdata`.
+
+**Flashing** from the host while the tablet runs the bring-up shell (from boot or recovery):
+
+```
+tools/gts7l-kernel.sh                                   # out/gts7l/
+GTS7L_BRINGUP_OUT=out/gts7l/recovery tools/gts7l-bringup.sh --firmware BUSYBOX
+tools/gts7l-image.sh                                    # out/gts7l/images/, CHECK.txt
+tools/gts7l-android-flash.sh                            # asks for 'flash'; --yes skips
+```
+
+`tools/gts7l-android-flash.sh` first checks `SHA256SUMS`, the bring-up kernel, and every
+partition's name (`PARTNAME` in sysfs) and size against its table (`boot` sda23, `recovery`
+sda24, `super` sda29, `userdata` sda37, `metadata` sda28, `dtbo` sda22, `param` sda10; `vbmeta`
+sdd25 only read: flags must be 3) and writes nothing if one differs. Then: `super` expanded
+from the sparse image on the host while it streams (simg2img cannot write to a pipe; about
+830 MB after `gzip -1`), `nc` + `gunzip` + `dd` on the tablet, SHA-256 of all 10171187200
+bytes read back; `boot` and `recovery` like `tools/gts7l-netflash.sh` (pushed to `/tmp`,
+partition zeroed, written, range read back); `userdata`/`metadata`/`dtbo` headers and `param`
+byte 0 zeroed and read back; `reboot -f`. It then waits up to 10 min for Android's gadget
+(`18d1:4ee7`) or the bring-up shell coming back (Android failed, see pstore). efs, sec_efs,
+persist, modem*, apnhlos, dsp and the bootloader/firmware partitions are never written.

@@ -1,0 +1,17 @@
+// usbroute in the Android image (/vendor/bin/usbroute), started by init.gts7l.usb.rc. The
+// bring-up initramfs builds the same source with cargo (tools/gts7l-bringup.sh).
+rust_binary {
+    name: "usbroute",
+    crate_name: "usbroute",
+    srcs: ["src/main.rs"],
+    edition: "2021",
+    vendor: true,
+}
+
+// Keeps the USB link usable without the screen: runs usbroute, gives the NCM function its
+// address, binds the gadget for adb over TCP when USB adb never comes up.
+sh_binary {
+    name: "gts7l-usb.sh",
+    src: "gts7l-usb.sh",
+    vendor: true,
+}

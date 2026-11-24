@@ -113,7 +113,19 @@ PRODUCT_COPY_FILES += \
     $(GTS7L_DEVICE_DIR)/fstab.gts7l:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.gts7l \
     $(GTS7L_DEVICE_DIR)/init.gts7l.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.gts7l.rc \
     $(GTS7L_DEVICE_DIR)/ueventd.gts7l.rc:$(TARGET_COPY_OUT_VENDOR)/etc/ueventd.rc \
-    $(GTS7L_DEVICE_DIR)/firmware/init.gts7l.firmware.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.gts7l.firmware.rc
+    $(GTS7L_DEVICE_DIR)/firmware/init.gts7l.firmware.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.gts7l.firmware.rc \
+    $(GTS7L_DEVICE_DIR)/init.gts7l.usb.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.gts7l.usb.rc
+
+# Reachable without the screen (docs/gts7l.md §15): usbroute switches the MAX77705's USB data
+# lines to the SoC, init.gts7l.usb.rc sets up the adb gadget (FunctionFS + an NCM function on
+# 172.16.42.1), adbd needs no key confirmation and also listens on TCP 5555.
+PRODUCT_PACKAGES += \
+    usbroute \
+    gts7l-usb.sh
+PRODUCT_PRODUCT_PROPERTIES += \
+    persist.sys.usb.config=adb \
+    ro.adb.secure=0 \
+    service.adb.tcp.port=5555
 
 # Hardware the framework may rely on. TODO(T4): camera, sensors, telephony, Wi-Fi and
 # Bluetooth features once their HALs exist.
@@ -132,8 +144,9 @@ PRODUCT_AAPT_PREF_CONFIG := xhdpi
 PRODUCT_CHARACTERISTICS := tablet
 PRODUCT_VENDOR_PROPERTIES += ro.sf.lcd_density=320
 
-# Non-A/B, dynamic partitions in super (stock layout, BoardConfig.mk), no recovery image of
-# ours: TWRP stays in the recovery partition (docs/gts7l.md §6/T6).
+# Non-A/B, dynamic partitions in super (stock layout, BoardConfig.mk). No Android recovery: the
+# recovery partition holds the bring-up image (tools/gts7l-bringup.sh --firmware), where
+# androidboot.init_fatal_reboot_target=recovery lands with pstore (docs/gts7l.md §15).
 AB_OTA_UPDATER := false
 PRODUCT_USE_DYNAMIC_PARTITIONS := true
 PRODUCT_BUILD_SUPER_PARTITION := true

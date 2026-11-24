@@ -22,3 +22,7 @@
 /vendor/lib(64)?/hw/gralloc\.minigbm\.so       u:object_r:same_process_hal_file:s0
 /vendor/lib(64)?/hw/mapper\.minigbm\.so        u:object_r:same_process_hal_file:s0
 /vendor/lib(64)?/libminigbm_gralloc\.so        u:object_r:same_process_hal_file:s0
+
+# USB without the screen (init.gts7l.usb.rc).
+/vendor/bin/usbroute           u:object_r:gts7l_usb_exec:s0
+/vendor/bin/gts7l-usb\.sh      u:object_r:gts7l_usb_exec:s0

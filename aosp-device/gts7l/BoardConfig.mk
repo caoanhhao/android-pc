@@ -18,7 +18,7 @@ AUDIOSERVER_MULTILIB := first
 TARGET_BOARD_PLATFORM := kona
 TARGET_BOOTLOADER_BOARD_NAME := kona
 TARGET_NO_BOOTLOADER := true
-# TWRP keeps the recovery partition; we build no recovery image (docs/gts7l.md §6/T6).
+# No Android recovery: tools/gts7l-image.sh puts the bring-up image there (docs/gts7l.md §15).
 TARGET_NO_RECOVERY := true
 
 # Kernel modules and DTB from tools/gts7l-kernel.sh (out/gts7l/, copied to
@@ -51,11 +51,16 @@ endif
 # also sets it at early-init in case the kernel's forced built-in command line differs).
 # usbcontroller: the DWC3 core for the USB gadget (sys.usb.controller); stock passes
 # a600000.dwc3, mainline names the device a600000.usb.
-# TODO(S6): check the UFS and DWC3 device names and the console UART on the running kernel.
+# init_fatal_reboot_target: an init failure reboots into recovery, which holds the bring-up
+# shell (docs/gts7l.md §15). UFS and DWC3 names checked on the running kernel (S6).
+# The kernel forces its built-in command line (CONFIG_CMDLINE_FORCE, gts7l.fragment), which
+# carries the same androidboot values; this one documents them and is checked by
+# tools/gts7l-image.sh against the built-in one.
 BOARD_KERNEL_CMDLINE := \
     androidboot.boot_devices=soc@0/1d84000.ufshc \
     androidboot.fstab_suffix=gts7l \
     androidboot.hardware=gts7l \
+    androidboot.init_fatal_reboot_target=recovery \
     androidboot.usbcontroller=a600000.usb \
     firmware_class.path=/mnt/vendor/firmware
 # Bring-up: our vendor policy is new and untested on hardware, so SELinux starts permissive
@@ -81,7 +86,8 @@ BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
 TARGET_COPY_OUT_SYSTEM_EXT := system_ext
 TARGET_COPY_OUT_PRODUCT := product
 TARGET_COPY_OUT_VENDOR := vendor
-# userdata is formatted on the tablet (TWRP, first boot), never written by an update.
+# userdata is formatted on the tablet at first boot (fstab.gts7l formattable), never written by
+# an update.
 BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := f2fs
 
 # super (sda29): 10171187200 bytes, two metadata slots (non-A/B), one group of at most
