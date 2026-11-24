@@ -882,6 +882,9 @@ Still open: the DSI0 half shows only the first ~160 portrait lines right and the
 stays dark. This round ruled out the DSI/PHY programming. The tablet is back on kernel #18
 (touch session) in `boot` and our `recovery.img`; `dtbo` stays zeroed.
 
+**Correction (§19): this dump is not the bootloader's.** The kernel has `CONFIG_CMDLINE_FORCE`, so
+`msm.modeset=0` from the image header was ignored and msm had already reprogrammed the link.
+
 **The bootloader's registers, read while it drives the panel.** `recovery` held a bring-up
 image with kernel #20 (`CONFIG_DEVMEM=y` by hand) and `msm.modeset=0 clk_ignore_unused
 pd_ignore_unused` (`gts7l-stock/s6/recovery-k20-modeset0.img`), so msm never touches the
@@ -935,3 +938,61 @@ probe), and the DSI/INTF start order of the downstream driver on a cold boot.
 
 `input keyevent SLEEP` suspends Android and drops USB. Take a wake lock first
 (`echo gts7lpanel > /sys/power/wake_lock`).
+
+## 19. Panel: the real bootloader state, kernels #24-#28 (2026-11-24 night)
+
+Still open: same picture (DSI0 half right for the first ~80-160 portrait lines, DSI1 half
+dark). The tablet is back on kernel #18 in `boot` and our `recovery.img` (`2f71f318...`).
+
+**§18's "bootloader" dump was ours.** `CONFIG_CMDLINE_FORCE=y` drops the boot image cmdline, so
+`recovery-k20-modeset0.img` ran msm normally (`/sys/module/msm/parameters/modeset` = Y, fbdev
+console on screen). Debug kernels must put such arguments into `CONFIG_CMDLINE` (the fragment).
+
+**Real bootloader dumps** (`gts7l-stock/s6/`, all read with the display clocks on):
+- `abl-dsi-regs.txt`: kernel #24/#25, `msm.modeset=0 clk_ignore_unused pd_ignore_unused` in
+  `CONFIG_CMDLINE`, `abldump.sh` (DSI ctrl/PHY/lanes/PLL only). The old file is
+  `k20-recovery-dsi-regs-NOT-abl.txt`.
+- `abl-dispcc-regs.txt`: dispcc through `/sys/kernel/debug/regmap/af00000.clock-controller/registers`
+  (ours: `k18-dispcc-regmap.txt`). pclk/byte RCGs, dividers and branches match.
+- `abl-dpu-snapshot.txt`: kernel #27 with two DEBUG params, `msm.mdss_noreset=1` (skip the MDSS
+  reset at probe) and `msm.boot_snapshot=1` (the DPU driver's own snapshot at the start of
+  `dpu_kms_hw_init`, before any DPU write, to devcoredump). No `devmem` on DPU registers.
+
+**What the bootloader does differently (C-PHY):**
+- PHY: `LANE_CTRL0` 0x07 (three trios, no clock lane; mainline 0x17), `LANE_CFG1` 0x04 (0x84),
+  `LANE_CTRL1` 0 (no continuous clock), lanes 3 and 4 not configured, timings = the stock DT
+  bytes (`TIMING_CTRL_4..8` 11 3e 0d 1e 0a), PLL `SYSTEM_MUXES` 0xc0 on both PHYs (ours reads 0:
+  the PLL bias refcount drops to zero while the PLL runs), VCO 998.0 MHz (`FRAC_DIV` 0x3f506;
+  ours 997.96).
+- DSI host: `DSI_CTRL` 0x77 (no `CLK_EN`, `CMD_MODE_EN` set), `LANE_CTRL` 0 (no
+  `HS_REQ_SEL_PHY`/`CLKLN_HS_FORCE_REQUEST`), `TRIG_CTRL` 0x4 (no TE), `CLKOUT_TIMING_CTRL` 0,
+  `HS_TIMER_CTRL` 0x4ea60.
+- DPU: INTF_1/INTF_2 timing, prog fetch, panel format, pingpong, LM and DSC blocks **match ours**.
+  Only `INTF_CONFIG2` 0x100 (ours 0x10), `INTF_DISPLAY_DATA_HCTL` 0 and `INTF_MUX` bits 16-19 = 0
+  (ours 0xf) differ.
+
+| Kernel (in `recovery`, bring-up shell) | Change | Result |
+|---|---|---|
+| #26 | C-PHY: no clock lane (`LANE_CTRL0` 0x07, `LANE_CFG1` 0x04, lanes 0-2 only, no `CLK_EN`, no continuous clock) | same picture at boot; after a reset + full init DCS commands time out and DSI1 stays busy |
+| #28 | #26 + every DSI host value above + stock C-PHY timings + the bootloader's `INTF_CONFIG2`/`DATA_HCTL`/`INTF_MUX` (`msm.abl_dsi`, `msm.abl_intf`, `msm.cphy_timing`) | same picture |
+| #28 live | PLL `SYSTEM_MUXES` 0xc0 on both PHYs (`devmem`, DSI PHY) | same |
+
+Debug code: `gts7l-stock/s6/k24-k28-debug.diff` (snapshot/no-reset params, ABL-match params, the
+C-PHY lane change). The kernel tree is clean again.
+
+**New observations (webcam):**
+- The bootloader's unlock warning and the "SAMSUNG Galaxy Tab S7" logo fill **both halves**,
+  including text far below line 160, so its link setup works on this panel.
+- With our kernel, a new frame updates only the first ~80-160 lines of the DSI0 half; the rest
+  of the panel **keeps the previous image** (a sparse white-on-black frame leaves the old
+  console stripes in place). The fault does not depend on the content: the panel stops
+  writing lines a fixed time or amount of data into each frame.
+
+Open: with the static DSI, PHY, dispcc and DPU state now matching the bootloader, the remaining
+differences are dynamic: the start order of PLL/PHY/controllers/INTFs, the panel's state after
+our link restart, and the SSPP fetch path (the bootloader uses other pipes on LM0/LM1). Next
+candidates: start the link in the bootloader's order (PHY + both controllers, then both INTFs
+in one flush, display-on after video starts), and read the panel's error report (`0x05`,
+`0x0a`, `0x0e`) over DSI1 right after one frame.
+
+Photos with a person in them were deleted at once; only screen photos without people are kept.
