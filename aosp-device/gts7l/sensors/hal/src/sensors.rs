@@ -43,6 +43,9 @@ fn to_device_frame(v: [f32; 3]) -> [f32; 3] {
     v
 }
 
+// The NDK's sizeof(Event) (its generated Event.h asserts it), the queue's quantum.
+const _: () = assert!(std::mem::size_of::<Event>() == 96);
+
 /// The framework's event FMQ.
 struct EventQueue(MessageQueue<Event>);
 
@@ -53,8 +56,15 @@ impl EventQueue {
             warn!("event queue full, sample dropped");
             return;
         };
-        if write.write(event).is_err() {
-            return;
+        // Not write(): the Rust AIDL backend's WriteTo for a @FixedSize union takes the payload's
+        // offset from the addresses of two local references instead of the value, and puts the
+        // payload at the wrong place (the framework read zeros). Event's Rust layout is the
+        // NDK's (repr(C)/repr(u64), 96 bytes), so the value is copied whole.
+        // SAFETY: ptr(0) is aligned for Event and valid for one element until `write` is
+        // dropped; exactly that one element is written before assume_written(1).
+        unsafe {
+            std::ptr::write_volatile(write.ptr(0), event);
+            write.assume_written(1);
         }
         drop(write);
         let Some(word) = self.0.event_flag_word() else { return };
@@ -147,9 +157,9 @@ fn accel_info() -> SensorInfoParcel {
     }
 }
 
-/// The DSP rate for a sampling period: the nearest one it offers at or above the request.
+/// The DSP rate for a sampling period: the nearest whole rate, within what the DSP offers.
 fn rate_for_period(period_ns: i64) -> u32 {
-    let hz = if period_ns <= 0 { MAX_RATE_HZ as i64 } else { (1_000_000_000 + period_ns - 1) / period_ns };
+    let hz = if period_ns <= 0 { MAX_RATE_HZ as i64 } else { (1_000_000_000 + period_ns / 2) / period_ns };
     (hz.clamp(MIN_RATE_HZ as i64, MAX_RATE_HZ as i64)) as u32
 }
 
@@ -255,7 +265,7 @@ impl ISensorsTrait for Sensors {
         }
         *self.queue.lock().unwrap() = Some(EventQueue(MessageQueue::from_desc(event_queue, true)));
         *self._callback.lock().unwrap() = Some(callback.clone());
-        info!("initialized");
+        info!("initialized, event queue quantum {}", event_queue.quantum);
         Ok(())
     }
 
