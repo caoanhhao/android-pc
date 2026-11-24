@@ -1057,5 +1057,11 @@ across a panel reset and power cycle while new content (card outlines, wallpaper
 correctly through them, so they are LCD image retention from the hours the broken link held
 the same lines, not a signal fault. They should fade with normal use; recheck later.
 
+Checked again on 2026-11-25 00:06: the debug LineageOS recovery (downstream driver, none of our
+code, panel reset and initialised by the bootloader) shows the same stripes in the same place
+on its black background (`lineage-downstream-stripes-0006.jpg`), so they live in the panel.
+Android at 00:04 (`k35-android-stripes-0004.jpg`) had not visibly faded yet. Bright, changing
+content or the panel switched off for a few hours usually clears this kind of retention.
+
 Next: rebuild the Android images with this kernel; retest touch (§17: the firmware reported a
 fixed palm, likely because the panel was not running).
