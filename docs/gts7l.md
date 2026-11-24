@@ -982,3 +982,48 @@ Open:
   `gts7l-sensord --serve` started by hand, once with no sensord running), once into
   recovery from Android (misc `boot-recovery` with no reason, pstore empty). The cause is not
   known yet; continuous logcat/dmesg captures on the host are the next step.
+
+## 20. Bluetooth: QCA6390 over uart6 (2026-11-25)
+
+**The kernel side was there already.** The DT (`0094`, from gts7xlwifi's `0021`) has the
+`qcom,qca6390-pmu` power sequencer (BT_EN GPIO 76, WLAN_EN GPIO 90) and a `qcom,qca6390-bt`
+serdev child of `uart6` (`998000.serial`, alias `serial1`); the defconfig has `hci_uart` with
+`CONFIG_BT_HCIUART_QCA`, `btqca` and `pwrseq-qcom-wcn` as modules. Nothing loaded them:
+`modules.load` (§19) listed only the remoteprocs. Loaded by hand, `hci_qca` brings the chip up
+at once: `QCA SOC Version 0x400a0200`, ROM 0x200, `qca/htbtfw20.tlv` and `qca/htnv20.bin`
+from `gts7l_fw` (firmware_class.path, §13), `QCA setup on UART is completed`. A raw HCI test
+over the user channel (reset, LE scan, inquiry) found six LE advertisers within 8 s.
+
+**Unconfigured controller.** The NVM file carries Qualcomm's default address
+`00:00:00:00:5a:ad`, so `btqca` sets `HCI_QUIRK_USE_BDADDR_PROPERTY` and, with no
+`local-bd-address` in the DT, the kernel keeps hci0 *unconfigured*: it shows up in the mgmt
+`Read Unconfigured Controller Index List`, not in `Read Controller Index List`, which was all
+the HAL looked at. Samsung's address is in `efs`: `/mnt/vendor/efs/bluetooth/bt_addr`
+(text `xx:xx:xx:xx:xx:xx`, group `bluetooth`). mgmt `Set Public Address` (0x0039) gives it to
+the kernel, which writes it with `qca_set_bdaddr` (vendor command 0xfc14) after every setup,
+user-channel opens included; the controller becomes configured and `Read BD_ADDR` returns it.
+
+| Piece | What |
+|---|---|
+| `aosp-device/gts7l/kernel/modules.bp` | loads `pwrseq-qcom-wcn` (shared with ath11k's PCIe power control), `rfkill`, `ecc`, `ecdh_generic`, `bluetooth`, `btbcm`, `btqca`, `hci_uart` |
+| `hals/bluetooth` | android-pc's Rust IBluetoothHci over the HCI user channel, reused. New: it also accepts an unconfigured controller, and `--bdaddr-file FILE --bdaddr-seed SERIAL` sets the public address at startup (the file's, else a stable one derived from the serial number with FNV-1a) when the kernel holds the controller unconfigured |
+| `init.gts7l.rc` | `vendor.bluetooth-gts7l`: the HAL with `--bdaddr-file /mnt/vendor/efs/bluetooth/bt_addr --bdaddr-seed ${ro.serialno}`, class hal (the PC's `vendor.bluetooth-pc` stays disabled) |
+| `manifest.xml` | declares `IBluetoothHci/default` (on the PC Cuttlefish's APEX does, so the HAL has no fragment of its own) |
+| `hals.list`, `sepolicy/hal_pc_bluetooth.te` | the HAL's sepolicy, plus reading `vendor_efs_file` |
+| `aosp_gts7l.mk` | `android.hardware.bluetooth.xml`, `android.hardware.bluetooth_le.xml` |
+
+Verified 2026-11-25 (build `eng.caoanh.20261124.1208` repacked with these changes, flashed with
+`--keep-data`): at boot `modprobe` loads the Bluetooth set, hci_qca downloads the firmware, the
+HAL gives hci0 the efs address and the stack opens it (`hci0: user channel open`,
+`initialization complete: SUCCESS`). The stack turns Bluetooth on by itself (persisted state):
+`dumpsys bluetooth_manager` shows `State: ON`, address `..:D5:DF` (efs), `Bluetooth crashed 0
+times`. Settings → Pair new device found six nearby devices (LE and dual-mode), and a Logitech
+M196 mouse paired over LE from the Settings UI (`Bonded devices: 1`).
+
+Open:
+- `Received HCI_IBS_WAKE_ACK in tx state 0` at every setup is harmless (hci_qca's in-band sleep
+  starting up).
+- Setup (firmware download, about 1.5 s) reruns at every user-channel open; Bluetooth off/on
+  in Settings pays it again.
+- Bluetooth audio: the audio HAL's `IModule/bluetooth` exists (§16, attempt 6), A2DP/LE audio
+  untested.

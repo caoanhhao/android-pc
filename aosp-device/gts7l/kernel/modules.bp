@@ -25,5 +25,16 @@ prebuilt_kernel_modules {
         "qcom_pil_info.ko",
         "qcom_q6v5_pas.ko",
         "fastrpc.ko",
+        // Bluetooth (docs/gts7l.md §20): the QCA6390's power sequencer, which also powers
+        // its Wi-Fi part, and hci_uart with btqca on uart6. Firmware qca/htbtfw20.tlv and
+        // qca/htnv20.bin from gts7l_fw.
+        "pwrseq-qcom-wcn.ko",
+        "rfkill.ko",
+        "ecc.ko",
+        "ecdh_generic.ko",
+        "bluetooth.ko",
+        "btbcm.ko",
+        "btqca.ko",
+        "hci_uart.ko",
     ],
 }

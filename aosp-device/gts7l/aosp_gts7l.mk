@@ -157,9 +157,11 @@ PRODUCT_PACKAGES += \
     android.hardware.sensors-service.gts7l \
     gts7l-sensors-setup
 
-# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony,
-# Wi-Fi and Bluetooth features once their HALs exist.
+# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony
+# and Wi-Fi features once their HALs exist.
 PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.bluetooth.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.bluetooth.xml \
+    frameworks/native/data/etc/android.hardware.bluetooth_le.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.bluetooth_le.xml \
     frameworks/native/data/etc/android.hardware.sensor.accelerometer.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.sensor.accelerometer.xml \
     frameworks/native/data/etc/tablet_core_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/tablet_core_hardware.xml \
     frameworks/native/data/etc/android.hardware.touchscreen.multitouch.jazzhand.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.touchscreen.multitouch.jazzhand.xml \

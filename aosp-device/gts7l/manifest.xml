@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Device manifest of gts7l: the target FCM level; every HAL adds its own VINTF fragment. -->
 <manifest version="1.0" type="device" target-level="202604">
+    <!-- android.hardware.bluetooth-service.pc (hals/bluetooth), started by init.gts7l.rc.
+         Its own package has no VINTF fragment: on the PC, Cuttlefish's APEX declares it. -->
+    <hal format="aidl">
+        <name>android.hardware.bluetooth</name>
+        <fqname>IBluetoothHci/default</fqname>
+    </hal>
 </manifest>
