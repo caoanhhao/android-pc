@@ -1,0 +1,5 @@
+/vendor/bin/hw/android\.hardware\.sensors-service\.gts7l    u:object_r:hal_gts7l_sensors_exec:s0
+/vendor/bin/gts7l-sensord                                    u:object_r:gts7l_sensord_exec:s0
+/vendor/bin/gts7l-sensors-setup                              u:object_r:gts7l_sensors_setup_exec:s0
+/dev/fastrpc-sdsp                                            u:object_r:gts7l_fastrpc_device:s0
+/data/vendor/sensors(/.*)?                                   u:object_r:gts7l_sensors_data_file:s0

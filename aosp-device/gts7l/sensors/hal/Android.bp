@@ -1,0 +1,37 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+rust_defaults {
+    name: "android.hardware.sensors-service.gts7l_defaults",
+    defaults: ["pc_hal_defaults"],
+    srcs: ["src/main.rs"],
+    rustlibs: [
+        "android.hardware.sensors-V3-rust",
+        "liblibc",
+        "libpcfmq",
+    ],
+}
+
+rust_binary {
+    name: "android.hardware.sensors-service.gts7l",
+    defaults: ["android.hardware.sensors-service.gts7l_defaults"],
+    init_rc: ["android.hardware.sensors-service.gts7l.rc"],
+    vintf_fragment_modules: ["android.hardware.sensors-service.gts7l.xml"],
+    required: ["gts7l-sensord"],
+    visibility: ["//visibility:public"],
+}
+
+vintf_fragment {
+    name: "android.hardware.sensors-service.gts7l.xml",
+    src: "android.hardware.sensors-service.gts7l.xml",
+    vendor: true,
+}
+
+rust_test {
+    name: "android.hardware.sensors-service.gts7l_test",
+    defaults: ["android.hardware.sensors-service.gts7l_defaults"],
+    test_options: {
+        unit_test: true,
+    },
+}

@@ -11,7 +11,8 @@
 #                               DSP/Venus/GPU-zap/IPA), sec_efs.img (amp calibration); modem.img
 #                               and dsp.img are only listed (no kernel consumer yet)
 #   gts7l-stock/ap/super/vendor.img   [GTS7L_STOCK_VENDOR] stock vendor (ext4) from the Odin
-#                               package: GPU microcode, QCA6390 Wi-Fi/BT, CS35L41 protection
+#                               package: GPU microcode, QCA6390 Wi-Fi/BT, CS35L41 protection,
+#                               the sensor DSP's configuration (/etc/sensors)
 #   out/gts7l/sm8250-samsung-gts7l.dtb [GTS7L_DTB] the DTB of tools/gts7l-kernel.sh: its
 #                               firmware-name properties decide the remoteproc/Venus/zap names
 #
@@ -64,21 +65,25 @@ trap 'rm -rf "$work"' EXIT
 
 mcopy -s -n -i "$BACKUP/apnhlos.img" ::/image "$work/apnhlos"
 debugfs -R "rdump /firmware $work" "$VENDOR" 2>/dev/null
+debugfs -R "rdump /etc/sensors $work" "$VENDOR" 2>/dev/null
 V=$work/firmware
+S=$work/sensors
 A=$work/apnhlos
 [[ -f $V/a650_sqe.fw && -d $V/qca6390 ]] || die "$VENDOR has no /firmware with the GPU and QCA6390 files"
+[[ -f $S/sns_reg_config && -d $S/config ]] || die "$VENDOR has no /etc/sensors with the sensor registry config"
 [[ -f $A/adsp.mdt ]] || die "apnhlos.img has no image/adsp.mdt"
 
 manifest=$work/manifest
 : > "$manifest"
 # put DEST KIND SRC DRIVER: KIND is apnhlos (SRC in apnhlos image/, a symlink in gts7l_fw.img),
-# vendor (SRC under the stock /vendor/firmware) or file (SRC a file generated here); the last
-# two are real files in gts7l_fw.img.
+# vendor (SRC under the stock /vendor/firmware), sensors (SRC under the stock /vendor/etc/sensors)
+# or file (SRC a file generated here); the last three are real files in gts7l_fw.img.
 put() {
     local dest=$1 kind=$2 src=$3 driver=$4 from form
     case $kind in
         apnhlos) from=$A/$src; form=link ;;
         vendor) from=$V/$src; form=file ;;
+        sensors) from=$S/$src; form=file ;;
         file) from=$src; form=file ;;
     esac
     [[ -f $from ]] || die "missing $kind file $src"
@@ -92,6 +97,7 @@ put() {
     case $kind in
         apnhlos) src="apnhlos:image/$src" ;;
         vendor) src="vendor:/firmware/$src" ;;
+        sensors) src="vendor:/etc/sensors/$src" ;;
         file) src=$5 ;;
     esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$dest" "$(stat -c %s "$from")" \
@@ -168,6 +174,12 @@ for amp in 0040:_r 0041: 0042:_br 0043:_b; do
     put "cirrus/cs35l41-cal-$AMP_BUS-$addr.bin" file "$f" "snd-soc-cs35l41 (factory calibration)" \
         "sec_efs:/cirrus/{rdc,vsc,isc}_cal$s,temp_cal"
 done
+
+# 5. The sensor DSP's registry configuration (stock /vendor/etc/sensors: sns_reg_config and
+# the per-board JSON), which the SLPI reads over FastRPC from gts7l-sensord's file service.
+while IFS= read -r f; do
+    put "sensors/$f" sensors "$f" "gts7l-sensord (SLPI sensor registry config)"
+done < <(cd "$S" && find . -type f | sed 's|^\./||' | sort)
 
 # Partitions read in place, not laid out here.
 mdir -/ -b -i "$BACKUP/modem.img" ::/image | sed 's|^::/image/||' | sort > "$OUT/partitions/modem.txt"

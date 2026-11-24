@@ -21,11 +21,12 @@ TARGET_NO_BOOTLOADER := true
 # No Android recovery: tools/gts7l-image.sh puts the bring-up image there (docs/gts7l.md §15).
 TARGET_NO_RECOVERY := true
 
-# Kernel modules and DTB from tools/gts7l-kernel.sh (out/gts7l/, copied to
-# device/android-pc/gts7l-kernel by tools/aosp-device-link.sh); the kernel itself is a
-# PRODUCT_COPY_FILES entry in aosp_gts7l.mk.
+# DTB from tools/gts7l-kernel.sh (out/gts7l/, copied to device/android-pc/gts7l-kernel by
+# tools/aosp-device-link.sh); the kernel itself is a PRODUCT_COPY_FILES entry in aosp_gts7l.mk,
+# the modules the gts7l_kernel_modules package there (kernel/modules.bp). Not
+# BOARD_VENDOR_KERNEL_MODULES: the Soong-only build installs those only in a vendor_dlkm
+# partition, which gts7l does not have, and dropped them from /vendor.
 GTS7L_KERNEL_DIR := device/android-pc/gts7l-kernel
-BOARD_VENDOR_KERNEL_MODULES := $(sort $(wildcard $(GTS7L_KERNEL_DIR)/modules/*.ko))
 
 # Boot image: header v2 like the stock boot.img (docs/gts7l-inventory.md): kernel, the generic
 # ramdisk with first-stage init and fstab.gts7l, and the DTB in its own section; stock base,
@@ -109,6 +110,7 @@ include $(GTS7L_DEVICE_DIR)/hals.mk
 BOARD_VENDOR_SEPOLICY_DIRS += \
     $(PC_DEVICE_DIR)/sepolicy/vendor \
     $(GTS7L_DEVICE_DIR)/sepolicy \
+    $(GTS7L_DEVICE_DIR)/sensors/sepolicy \
     $(foreach hal,$(GTS7L_HALS),$(wildcard $(PC_DEVICE_DIR)/hals/$(hal)/sepolicy))
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
     $(PC_DEVICE_DIR)/hypr/sepolicy \

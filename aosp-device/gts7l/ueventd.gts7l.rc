@@ -7,6 +7,9 @@ firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
 # Backlight for the lights HAL (user system).
 /sys/class/backlight/*  brightness  0664  system  system
 
+# FastRPC to the sensor DSP (sdsp) for gts7l-sensord (user system), docs/gts7l.md §19.
+/dev/fastrpc-sdsp  0660  system  system
+
 # Input devices: touchscreen, S Pen, Book Cover keyboard and touchpad (core ueventd.rc covers
-# /dev/input). DRM card and render node: core ueventd.rc. TODO(T4): sensors (SLPI/QRTR),
-# vibrator (input force feedback), audio.
+# /dev/input). DRM card and render node: core ueventd.rc. TODO(T4): vibrator (input force
+# feedback), audio.

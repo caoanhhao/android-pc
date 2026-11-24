@@ -1,0 +1,15 @@
+# Sensor DSP (SLPI) userspace, docs/gts7l.md §19. init.gts7l.rc loads the remoteproc and
+# FastRPC modules at "on fs"; the SLPI then boots and /dev/fastrpc-sdsp appears.
+
+on post-fs-data
+    mkdir /data/vendor/sensors 0770 system system
+    exec u:r:gts7l_sensors_setup:s0 system system -- /vendor/bin/gts7l-sensors-setup
+    start vendor.gts7l-sensord
+
+# The file service the DSP reads its configuration and registry through. It exits when
+# /dev/fastrpc-sdsp is not there yet; init starts it again.
+service vendor.gts7l-sensord /vendor/bin/gts7l-sensord --serve /data/vendor/sensors/root
+    class core
+    user system
+    group system
+    disabled

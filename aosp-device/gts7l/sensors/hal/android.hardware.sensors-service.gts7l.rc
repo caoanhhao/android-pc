@@ -1,0 +1,4 @@
+service vendor.sensors-gts7l /vendor/bin/hw/android.hardware.sensors-service.gts7l
+    class hal
+    user system
+    group system

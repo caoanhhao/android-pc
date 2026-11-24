@@ -125,6 +125,10 @@ $(warning aosp_gts7l: no kernel at $(GTS7L_KERNEL), run tools/gts7l-kernel.sh; u
 GTS7L_KERNEL := $(GTS7L_DEVICE_DIR)/prebuilt/kernel-placeholder
 endif
 PRODUCT_COPY_FILES += $(GTS7L_KERNEL):kernel
+# Its modules in /vendor/lib/modules (kernel/modules.bp, there as Android.bp).
+ifneq (,$(wildcard device/android-pc/gts7l-kernel/Android.bp))
+PRODUCT_PACKAGES += gts7l_kernel_modules
+endif
 
 # Board files: fstab (also in the boot ramdisk, for first-stage mount), init, ueventd, the
 # firmware tree of the gts7l_fw partition.
@@ -147,9 +151,16 @@ PRODUCT_PRODUCT_PROPERTIES += \
     ro.adb.secure=0 \
     service.adb.tcp.port=5555
 
-# Hardware the framework may rely on. TODO(T4): camera, sensors, telephony, Wi-Fi and
-# Bluetooth features once their HALs exist.
+# Sensors (docs/gts7l.md §19): the SLPI's accelerometer through gts7l-sensord, which also
+# serves the DSP its configuration (sensors/).
+PRODUCT_PACKAGES += \
+    android.hardware.sensors-service.gts7l \
+    gts7l-sensors-setup
+
+# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony,
+# Wi-Fi and Bluetooth features once their HALs exist.
 PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.sensor.accelerometer.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.sensor.accelerometer.xml \
     frameworks/native/data/etc/tablet_core_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/tablet_core_hardware.xml \
     frameworks/native/data/etc/android.hardware.touchscreen.multitouch.jazzhand.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.touchscreen.multitouch.jazzhand.xml \
     frameworks/native/data/etc/android.hardware.faketouch.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.faketouch.xml \

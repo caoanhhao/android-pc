@@ -1,0 +1,32 @@
+# Sensor DSP (SLPI) userspace, docs/gts7l.md §19.
+type gts7l_fastrpc_device, dev_type;
+type gts7l_sensors_data_file, file_type, data_file_type;
+
+# gts7l-sensors-setup: copies the DSP's configuration and registry into /data/vendor/sensors.
+type gts7l_sensors_setup, domain;
+type gts7l_sensors_setup_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(gts7l_sensors_setup)
+allow gts7l_sensors_setup vendor_shell_exec:file rx_file_perms;
+allow gts7l_sensors_setup vendor_toolbox_exec:file rx_file_perms;
+r_dir_file(gts7l_sensors_setup, firmware_file)
+r_dir_file(gts7l_sensors_setup, vendor_efs_file)
+r_dir_file(gts7l_sensors_setup, sysfs)
+allow gts7l_sensors_setup gts7l_sensors_data_file:dir create_dir_perms;
+allow gts7l_sensors_setup gts7l_sensors_data_file:file create_file_perms;
+
+# gts7l-sensord --serve: the DSP's file service over FastRPC; it rewrites the registry.
+type gts7l_sensord, domain;
+type gts7l_sensord_exec, exec_type, vendor_file_type, file_type;
+init_daemon_domain(gts7l_sensord)
+allow gts7l_sensord gts7l_fastrpc_device:chr_file rw_file_perms;
+allow gts7l_sensord gts7l_sensors_data_file:dir create_dir_perms;
+allow gts7l_sensord gts7l_sensors_data_file:file create_file_perms;
+allow gts7l_sensord self:qipcrtr_socket create_socket_perms_no_ioctl;
+
+# Sensors HAL: runs gts7l-sensord --stream, which moves to gts7l_sensord (HALs may not
+# execute other binaries in their own domain), and reads its samples from a pipe.
+pc_hal_service(hal_gts7l_sensors, hal_sensors)
+domain_auto_trans(hal_gts7l_sensors, gts7l_sensord_exec, gts7l_sensord)
+allow gts7l_sensord hal_gts7l_sensors:fd use;
+allow gts7l_sensord hal_gts7l_sensors:fifo_file write;
+allow hal_gts7l_sensors gts7l_sensord:process signal;

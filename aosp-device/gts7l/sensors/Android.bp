@@ -1,0 +1,13 @@
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+// gts7l-sensors.rc and the setup script it runs: the tree gts7l-sensord serves the SLPI.
+sh_binary {
+    name: "gts7l-sensors-setup",
+    src: "gts7l-sensors-setup.sh",
+    vendor: true,
+    init_rc: ["gts7l-sensors.rc"],
+    required: ["gts7l-sensord"],
+    visibility: ["//visibility:public"],
+}

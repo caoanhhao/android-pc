@@ -2,7 +2,7 @@
 # Flash the aosp_gts7l Android images (tools/gts7l-image.sh) from the running bring-up shell
 # (docs/gts7l.md §12, §15) over the USB NCM link, check every write, and reboot into Android.
 #
-#   tools/gts7l-android-flash.sh [--yes] [--no-reboot] [IMAGES_DIR]
+#   tools/gts7l-android-flash.sh [--yes] [--no-reboot] [--keep-data] [IMAGES_DIR]
 #
 # IMAGES_DIR defaults to out/gts7l/images/ of the main checkout (boot.img, recovery.img,
 # super.img, SHA256SUMS). The tablet must run the bring-up image (telnet on 172.16.42.1),
@@ -18,6 +18,8 @@
 #                    for us, and it holds nothing since the unlock wipe.
 #   metadata  sda28  zeroed (32 MiB): Samsung's encryption metadata of that userdata; formatted
 #                    at first boot the same way
+#                    --keep-data leaves userdata and metadata alone: an update of a build that
+#                    already booted (Android's data stays, as after an OTA)
 #   dtbo      sda22  first 4 KiB zeroed (ABL then applies no stock overlay)
 #   param     sda10  byte 0 cleared (Samsung's boot flag, as in docs/gts7l.md §12)
 #   misc      sda13  the bootloader message's command (32 bytes) cleared: Android's `reboot
@@ -31,9 +33,12 @@ WT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT=$WT
 [[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 export PATH=$ROOT/aosp/out/host/linux-x86/bin:$PATH
-YES= REBOOT=1
+YES= REBOOT=1 KEEP_DATA=
 while [[ ${1:-} == --* ]]; do
-    case $1 in --yes) YES=1 ;; --no-reboot) REBOOT= ;; *) echo "usage: $0 [--yes] [--no-reboot] [IMAGES_DIR]" >&2; exit 2 ;; esac
+    case $1 in
+        --yes) YES=1 ;; --no-reboot) REBOOT= ;; --keep-data) KEEP_DATA=1 ;;
+        *) echo "usage: $0 [--yes] [--no-reboot] [--keep-data] [IMAGES_DIR]" >&2; exit 2 ;;
+    esac
     shift
 done
 DIR=${1:-$ROOT/out/gts7l/images}
@@ -137,8 +142,13 @@ vb=$(tsh "dd if=$(dev vbmeta) bs=4 skip=30 count=1 2>/dev/null | od -An -tx1 | t
 guard() { [[ $WRITABLE == *" $1 "* ]] || die "refusing to write $1"; }
 
 if [[ -z $YES ]]; then
-    echo "About to write build $BUILD to the tablet: super, boot, recovery; and to WIPE userdata and"
-    echo "metadata (Android formats them at first boot), clear the dtbo header, param byte 0 and misc's command."
+    if [[ -n $KEEP_DATA ]]; then
+        echo "About to write build $BUILD to the tablet: super, boot, recovery; keep userdata and"
+        echo "metadata, clear the dtbo header, param byte 0 and misc's command."
+    else
+        echo "About to write build $BUILD to the tablet: super, boot, recovery; and to WIPE userdata and"
+        echo "metadata (Android formats them at first boot), clear the dtbo header, param byte 0 and misc's command."
+    fi
     read -r -p "Type 'flash' to go on: " a; [[ $a == flash ]] || die "aborted"
 fi
 
@@ -219,8 +229,10 @@ echo 3 > /proc/sys/vm/drop_caches; head -c $n $d | sha256sum" 60)
     [[ $out == *"$(zeros_sha "$n")"* ]] || die "$p: first $n bytes not zero after the write: $out"
     log "$p: first $n bytes zeroed"
 }
-zero userdata $((16 << 20))
-zero metadata "${SIZE[metadata]}"
+if [[ -z $KEEP_DATA ]]; then
+    zero userdata $((16 << 20))
+    zero metadata "${SIZE[metadata]}"
+fi
 zero dtbo 4096
 zero param 1
 zero misc 32
@@ -229,7 +241,8 @@ log "build $BUILD written"
 [[ -n $REBOOT ]] || exit 0
 tsh 'sync; reboot -f' 4 >/dev/null 2>&1 || true
 for _ in $(seq 30); do ping -c1 -W1 "$IP" >/dev/null 2>&1 || break; done
-log "rebooting into Android; the first boot formats userdata. Waiting up to 10 min for adb"
+[[ -n $KEEP_DATA ]] && first= || first="; the first boot formats userdata"
+log "rebooting into Android$first. Waiting up to 10 min for adb"
 for (( i = 0; i < 600; i += 5 )); do
     if lsusb -d 18d1:4ee7 >/dev/null 2>&1; then
         log "Android's gadget is up (18d1:4ee7): adb devices: $(adb devices | sed -n '2,$p' | tr '\n' ' ')"

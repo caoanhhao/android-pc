@@ -1,0 +1,29 @@
+// Kernel modules of tools/gts7l-kernel.sh in /vendor/lib/modules. tools/aosp-device-link.sh
+// installs this file as device/android-pc/gts7l-kernel/Android.bp next to the modules/ it
+// copies from out/gts7l. The Soong-only build drops BOARD_VENDOR_KERNEL_MODULES when there is
+// no vendor_dlkm partition, so the modules are a vendor module of their own (aosp_gts7l.mk).
+//
+// Every module is installed (with modules.dep from depmod); init.gts7l.rc loads only the ones
+// in modules.load, listed here. Add a driver here once it is known to work on the tablet.
+prebuilt_kernel_modules {
+    name: "gts7l_kernel_modules",
+    vendor: true,
+    srcs: ["modules/*.ko"],
+    // gts7l-kernel.sh strips them already.
+    strip_debug_symbols: false,
+    src_filenames_to_load: [
+        // Remoteprocs (ADSP, SLPI; the CDSP fails authentication) and FastRPC, for the
+        // sensor DSP (docs/gts7l.md §19). Firmware from gts7l_fw, mounted before modprobe.
+        "qmi_helpers.ko",
+        "qcom_pdr_msg.ko",
+        "pdr_interface.ko",
+        "qcom_pd_mapper.ko",
+        "qcom_glink_smem.ko",
+        "qcom_sysmon.ko",
+        "qcom_q6v5.ko",
+        "qcom_common.ko",
+        "qcom_pil_info.ko",
+        "qcom_q6v5_pas.ko",
+        "fastrpc.ko",
+    ],
+}

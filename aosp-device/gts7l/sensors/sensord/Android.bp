@@ -1,0 +1,28 @@
+// gts7xl-sensord: the file service the sensor DSP (SLPI) reads its configuration through,
+// and a client of its sensor service (SSC) over QRTR. src/ is gts7xl-mainline's sensord/src
+// unchanged, at commit 96eb692fd477a341e5180fba4defb1003adac5e2 (MIT, LICENSE here).
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+cc_binary {
+    name: "gts7l-sensord",
+    vendor: true,
+    srcs: [
+        "src/client.c",
+        "src/fsrv.c",
+        "src/listener.c",
+        "src/main.c",
+        "src/pb.c",
+        "src/ssc.c",
+        "src/wire.c",
+    ],
+    cflags: [
+        "-std=gnu11",
+        "-Wall",
+        "-Wextra",
+        "-Wshadow",
+        "-Wformat=2",
+    ],
+    visibility: ["//visibility:public"],
+}

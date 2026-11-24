@@ -57,6 +57,8 @@ if [[ -f $ROOT/out/gts7l/Image.gz && -f $ROOT/out/gts7l/sm8250-samsung-gts7l.dtb
     rsync -a --delete --include=/Image.gz --include=/dtb/ --include='/modules/***' --exclude='*' \
         "$ROOT/out/gts7l/" "$K/"
     rsync -a --delete "$ROOT/out/gts7l/sm8250-samsung-gts7l.dtb" "$K/dtb/"
+    # The modules' vendor package (gts7l_kernel_modules).
+    install -m 0644 "$SRC/aosp-device/gts7l/kernel/modules.bp" "$K/Android.bp"
 fi
 # Mesa freedreno/Turnip for gts7l (tools/gts7l-mesa.sh writes out/gts7l-mesa/prebuilt/: the
 # libraries and their Android.bp), which aosp_gts7l.mk picks up when the Android.bp is there.
