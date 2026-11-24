@@ -16,6 +16,14 @@ on fs
 on late-fs
     mount_all /vendor/etc/fstab.gts7l --late
 
+on post-fs-data
+    # wpa_supplicant (-O) and hostapd sockets; the APEX's hostapd.rc makes only its own dirs.
+    mkdir /data/vendor/wifi 0771 wifi wifi
+    mkdir /data/vendor/wifi/wpa 0770 wifi wifi
+    mkdir /data/vendor/wifi/wpa/sockets 0770 wifi wifi
+    mkdir /data/vendor/wifi/hostapd 0770 wifi wifi
+    mkdir /data/vendor/wifi/hostapd/sockets 0770 wifi wifi
+
 on boot
     # schedutil on every cpufreq policy (Kryo 585: cpu0-3 A55, cpu4-6 A77, cpu7 A77 prime).
     write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor schedutil

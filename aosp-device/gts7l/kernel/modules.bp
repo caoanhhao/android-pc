@@ -25,5 +25,17 @@ prebuilt_kernel_modules {
         "qcom_pil_info.ko",
         "qcom_q6v5_pas.ko",
         "fastrpc.ko",
+        // Wi-Fi (docs/gts7l.md §21): the QCA6390's power sequencer, then the PCIe power
+        // control driver for the wifi@0 node. qcom-pcie (built in) brings the link up only
+        // once pci-pwrctrl-pwrseq has powered the chip; without it the host never binds.
+        // ath11k_pci's firmware (ath11k/QCA6390/hw2.0) comes from gts7l_fw.
+        "pwrseq-qcom-wcn.ko",
+        "pci-pwrctrl-pwrseq.ko",
+        "rfkill.ko",
+        "cfg80211.ko",
+        "libarc4.ko",
+        "mac80211.ko",
+        "ath11k.ko",
+        "ath11k_pci.ko",
     ],
 }

@@ -157,8 +157,18 @@ PRODUCT_PACKAGES += \
     android.hardware.sensors-service.gts7l \
     gts7l-sensors-setup
 
-# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony,
-# Wi-Fi and Bluetooth features once their HALs exist.
+# Wi-Fi (docs/gts7l.md §21): the QCA6390 on ath11k_pci as wlan0, our Rust HAL
+# (hals/wifi, from hals.list) and wpa_supplicant/hostapd from AOSP's generic APEX
+# (BoardConfig.mk). P2P stays off until it is tested: no wifi.direct feature.
+PRODUCT_PACKAGES += com.android.hardware.wpa_supplicant
+PRODUCT_VENDOR_PROPERTIES += \
+    wifi.interface=wlan0 \
+    wifi.direct.interface=p2p-dev-wlan0
+PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.wifi.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.wifi.xml
+
+# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony
+# and Bluetooth features once their HALs exist.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.sensor.accelerometer.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.sensor.accelerometer.xml \
     frameworks/native/data/etc/tablet_core_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/tablet_core_hardware.xml \

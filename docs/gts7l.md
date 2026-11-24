@@ -982,3 +982,41 @@ Open:
   `gts7l-sensord --serve` started by hand, once with no sensord running), once into
   recovery from Android (misc `boot-recovery` with no reason, pstore empty). The cause is not
   known yet; continuous logcat/dmesg captures on the host are the next step.
+
+## 21. Wi-Fi: QCA6390 on ath11k (2026-11-25)
+
+No DT change was needed. The `qcom,qca6390-pmu` node (pwrseq-qcom-wcn) and the `wifi@0`
+node under `pcieport0` from the S7+ series are right for this board: the stock dtbo (entry
+04, fragment 167 on the `cnss` node) has the same WLAN_EN GPIO 90, BT_EN GPIO 76 and S6A as
+the digital supply.
+`qcom-pcie: cannot initialize host` and the host that never bound were only the missing
+power control driver: on v7.3 the controller creates a platform device for each child node
+with supplies (`1c00000.pcie:pcie@0:wifi@0`) and brings the link up only once a pwrctrl
+driver has powered that device. Its driver, `pci-pwrctrl-pwrseq`, is a module
+(`CONFIG_PCI_PWRCTRL_PWRSEQ=m`) and was never loaded. Loading it on the running Android:
+the link trains at 5 GT/s x1, `17cb:1101` enumerates, `ath11k_pci` loads `amss.bin` and
+`m3.bin` from `gts7l_fw` (MSI, 32 vectors), and `wlan0` scans.
+
+```
+qca6390 hw2.0, chip_id 0x0 chip_family 0xb board_id 0xff soc_id 0xffffffff
+fw_version 0x10178624 fw_build_timestamp 2024-01-15 22:34
+fw_build_id WLAN.HST.1.0.1.r1-01571-QCAHSTSWPL_SILICONZ-1.615178.11.632599.7
+```
+
+`board.bin` is the tablet's own `bdwlan.elf`; with OTP `board_id 0xff` ath11k takes
+`board.bin` directly (no `board-2.bin` lookup). The chip
+offers managed, AP, P2P-client/GO and P2P-device (`iw list`).
+
+Image side:
+
+- `kernel/modules.bp`: `pwrseq-qcom-wcn`, `pci-pwrctrl-pwrseq`, `rfkill`, `cfg80211`,
+  `libarc4`, `mac80211`, `ath11k`, `ath11k_pci` in `modules.load` (loaded after
+  `mount_all --early`, so the firmware is there at probe).
+- `hals.list`: `wifi`, the Rust nl80211 HAL of the PC product (`hals/wifi`).
+- `BoardConfig.mk`: `BOARD_WPA_SUPPLICANT_DRIVER`/`BOARD_HOSTAPD_DRIVER := NL80211`, which
+  enables AOSP's generic `com.android.hardware.wpa_supplicant` APEX (wpa_supplicant and
+  hostapd, their rc files and VINTF fragments); no private driver library (the stub), 11ax on.
+- `aosp_gts7l.mk`: the APEX, `wifi.interface=wlan0`, `android.hardware.wifi.xml`. No
+  `wifi.direct` feature until P2P is tested.
+- `init.gts7l.rc`: `/data/vendor/wifi/{wpa,hostapd}/sockets`.
+- `sepolicy/kernel.te`: `firmware_load` on `firmware_file` (the denial `ath11k_pci` hit).
