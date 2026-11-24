@@ -935,3 +935,50 @@ probe), and the DSI/INTF start order of the downstream driver on a cold boot.
 
 `input keyevent SLEEP` suspends Android and drops USB. Take a wake lock first
 (`echo gts7lpanel > /sys/power/wake_lock`).
+
+## 19. Sensors: accelerometer through the sensor DSP (2026-11-25)
+
+Auto-rotate works: `dumpsys sensorservice` lists `LSM6DSO Accelerometer` (STMicro, the
+SLPI's own driver), samples near 9.8 m/s² that follow the tablet, and with auto-rotate on the
+window manager's `mProposedRotation` follows them.
+
+**No kernel modules were in the image.** `BOARD_VENDOR_KERNEL_MODULES` is dropped by the
+Soong-only build unless the product has a `vendor_dlkm` partition, so `/vendor/lib/modules`
+did not exist and init's `modprobe` did nothing: every `=m` driver was missing (remoteprocs,
+FastRPC, and everything else built as a module). `aosp-device/gts7l/kernel/modules.bp`, which
+`tools/aosp-device-link.sh` installs as `device/android-pc/gts7l-kernel/Android.bp`, makes
+them a `prebuilt_kernel_modules` vendor package (`gts7l_kernel_modules`): all 1114 modules
+plus `modules.dep`, but `modules.load` lists only what is known to work. It holds the
+remoteproc and FastRPC set (`qmi_helpers` ... `qcom_q6v5_pas`, `fastrpc`). Add a driver there
+once it has been tried on the tablet.
+
+The chain, as on gts7xl-mainline (`docs/sensors.md` there):
+
+| Piece | What |
+|---|---|
+| `qcom_q6v5_pas` | boots the SLPI (and the ADSP; the CDSP fails authentication, harmless) from `gts7l_fw` |
+| `fastrpc` | `/dev/fastrpc-sdsp` (ueventd: 0660 system) |
+| `gts7l-sensors-setup` (post-fs-data) | lays out `/data/vendor/sensors/root`: the stock `/vendor/etc/sensors` from `gts7l_fw` (`tools/gts7l-firmware.sh` now copies it, 57 files), the registry seeded once from `persist`, soc/revision files (`androidboot.revision=7` from the DT's bootargs) |
+| `gts7l-sensord --serve` | gts7xl-mainline's sensord (MIT, `sensors/sensord/`, unchanged): the files the DSP asks for over FastRPC; the DSP rewrites its registry there |
+| `android.hardware.sensors-service.gts7l` | Rust AIDL ISensors (V3): one non-wake-up accelerometer, 26-208 Hz; runs `gts7l-sensord --stream accel --rate N` (domain `gts7l_sensord`) and writes each line as an event into the framework's FMQ |
+
+The SSC reports in Android's device frame already (its registry holds the board's axis
+mapping), so the HAL passes the values through: standing in landscape with `ROTATION_90`,
+x reads +9.5.
+
+Rust AIDL pitfall: the generated `WriteTo` of a `@FixedSize` union
+(`Event.EventPayload`) takes the payload's offset from the addresses of two local
+references, so `WriteCompletion::write` put x/y/z in the wrong place and the framework saw
+only zeros. The HAL copies the whole `Event` into the FMQ slot instead (`ptr()` +
+`assume_written`); the Rust and NDK layouts are both 96 bytes, checked at compile time.
+
+`tools/gts7l-android-flash.sh --keep-data` updates a build that already booted without
+wiping `userdata`/`metadata`.
+
+Open:
+- Gyroscope, magnetometer, light and the other SSC sensors (the DSP lists them): more
+  sensor types in the HAL, each a `--stream TYPE`.
+- The tablet rebooted on its own three times today: twice to Android (once with
+  `gts7l-sensord --serve` started by hand, once with no sensord running), once into
+  recovery from Android (misc `boot-recovery` with no reason, pstore empty). The cause is not
+  known yet; continuous logcat/dmesg captures on the host are the next step.
