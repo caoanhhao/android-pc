@@ -1073,3 +1073,11 @@ bring-up image with kernel #35 (`4b26de41...`), which drives the panel correctly
 
 Next: rebuild the Android images with this kernel; retest touch (§17: the firmware reported a
 fixed palm, likely because the panel was not running).
+
+2026-11-25: the tablet was reflashed with build eng.caoanh.20261124.1208 (`--keep-data`) after
+another session's flash was cut off; `boot` has kernel #35, but that build's `recovery.img`
+still has kernel #15 (broken panel), so `recovery` was rewritten with the bring-up image on
+kernel #35 again (`4b26de41...`). In Android the stripes were fainter, and on a black console
+they were no longer visible. A white frame then ran for 60 minutes (01:40-02:39); the webcam had
+moved and the grey check photo is out of focus (`k35-gray-after-white60.jpg`), so the result
+is not measured. The tablet was then powered off.
