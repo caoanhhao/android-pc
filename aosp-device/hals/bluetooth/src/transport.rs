@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use pchal::devfs::{self, Access};
 
+use crate::address::BdAddr;
 use crate::mgmt;
 use crate::packet::{H4Decoder, Packet, PacketType};
 
@@ -158,33 +159,92 @@ fn hci_socket(dev: u16, channel: Channel) -> io::Result<File> {
     Ok(File::from(fd))
 }
 
+/// Sends both index lists on `control` and reads its answers for up to `round`, returning
+/// the first controller announced for `wanted`.
+fn find_controller(
+    control: &mut File,
+    wanted: u16,
+    round: Duration,
+) -> io::Result<Option<mgmt::Controller>> {
+    control.write_all(&mgmt::READ_INDEX_LIST)?;
+    control.write_all(&mgmt::READ_UNCONF_INDEX_LIST)?;
+    let round_end = Instant::now() + round;
+    let mut buf = [0; 1024];
+    while let Some(left) = round_end.checked_duration_since(Instant::now()) {
+        if !pchal::poll::readable(control.as_fd(), left)? {
+            break;
+        }
+        let len = control.read(&mut buf)?;
+        if let Some(controller) = mgmt::controller_from_event(&buf[..len], wanted) {
+            return Ok(Some(controller));
+        }
+    }
+    Ok(None)
+}
+
+fn no_controller() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "no Bluetooth controller")
+}
+
 /// Waits for controller `wanted` (or the next one above it) through the management
-/// channel and returns its index.
-fn wait_for_controller(wanted: u16, timeout: Duration) -> io::Result<u16> {
+/// channel and returns it. An unconfigured controller is fine for a user channel.
+fn wait_for_controller(wanted: u16, timeout: Duration) -> io::Result<mgmt::Controller> {
     let mut control = hci_socket(HCI_DEV_NONE, Channel::Control)?;
     let deadline = Instant::now() + timeout;
-    let mut buf = [0; 1024];
     loop {
-        control.write_all(&mgmt::READ_INDEX_LIST)?;
-        let round_end = deadline.min(Instant::now() + MGMT_ROUND);
-        while let Some(left) = round_end.checked_duration_since(Instant::now()) {
-            if !pchal::poll::readable(control.as_fd(), left)? {
-                break;
-            }
-            let len = control.read(&mut buf)?;
-            if let Some(index) = mgmt::controller_from_event(&buf[..len], wanted) {
-                return Ok(index);
-            }
+        let round = deadline.saturating_duration_since(Instant::now()).min(MGMT_ROUND);
+        if let Some(controller) = find_controller(&mut control, wanted, round)? {
+            return Ok(controller);
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "no Bluetooth controller"));
+            return Err(no_controller());
         }
     }
 }
 
+/// Gives controller `wanted` the public `address` if the kernel holds it unconfigured
+/// (no valid address of its own). The kernel then programs it at every power-on, user
+/// channel opens included.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::NotFound`] when no controller appeared within `timeout`, or
+/// an error when the kernel refused the address.
+pub fn set_public_address(wanted: u16, address: BdAddr, timeout: Duration) -> io::Result<()> {
+    let controller = wait_for_controller(wanted, timeout)?;
+    let index = controller.index;
+    if controller.configured {
+        info!("hci{index} has a public address already");
+        return Ok(());
+    }
+    let mut control = hci_socket(HCI_DEV_NONE, Channel::Control)?;
+    control.write_all(&mgmt::set_public_address(index, address))?;
+    let deadline = Instant::now() + MGMT_ROUND;
+    let mut buf = [0; 1024];
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if !pchal::poll::readable(control.as_fd(), left)? {
+            break;
+        }
+        let len = control.read(&mut buf)?;
+        match mgmt::set_public_address_status(&buf[..len]) {
+            Some(0) => {
+                info!("hci{index}: public address set");
+                return Ok(());
+            }
+            Some(status) => {
+                return Err(io::Error::other(format!(
+                    "hci{index}: Set Public Address failed with status {status:#04x}"
+                )));
+            }
+            None => {}
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::TimedOut, "no answer to Set Public Address"))
+}
+
 fn open_user_channel(wanted: u16, timeout: Duration) -> io::Result<File> {
     let deadline = Instant::now() + timeout;
-    let index = wait_for_controller(wanted, timeout)?;
+    let index = wait_for_controller(wanted, timeout)?.index;
     loop {
         match hci_socket(index, Channel::User) {
             Ok(socket) => {

@@ -31,3 +31,14 @@ on boot
     write /sys/devices/system/cpu/cpufreq/policy7/scaling_governor schedutil
     # TODO(T4): the power HAL drives cpufreq/devfreq here (it only knows intel_pstate today
     # and ignores hints without it).
+
+# Bluetooth HAL (hals/bluetooth) on the QCA6390 (hci_uart, docs/gts7l.md §20). The kernel holds
+# the controller unconfigured (its NVM has the default address), so the HAL gives it Samsung's
+# address from efs, else one derived from the serial number. Not hals/bluetooth's own
+# vendor.bluetooth-pc service, which init.pc.rc starts on the PC without these arguments.
+service vendor.bluetooth-gts7l /vendor/bin/hw/android.hardware.bluetooth-service.pc --bdaddr-file /mnt/vendor/efs/bluetooth/bt_addr --bdaddr-seed ${ro.serialno}
+    class hal
+    capabilities BLOCK_SUSPEND NET_ADMIN SYS_NICE
+    user bluetooth
+    group bluetooth net_admin net_bt_admin
+    task_profiles HighPerformance
