@@ -1,0 +1,111 @@
+From d837a18fa6622fd036c1f17579af20a7a00fb805 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 20:03:41 +0700
+Subject: [PATCH 108/109] Input: novatek-nvt-ts: add the NT36523
+
+The NT36523 TDDI on the Galaxy Tab S7 LTE uses the same register map as the
+NT36672A (parameters at 0x78, chip ID byte 0x08, firmware at I2C address
+0x01), read from the chip. Being a TDDI, its reset line belongs to the
+panel, so make the reset GPIO optional.
+
+Samsung's firmware also reports palm (5) and glove (6) touches; report
+them as MT_TOOL_PALM and as fingers instead of warning on every frame.
+
+caoanhhao used AI to code
+---
+ drivers/input/touchscreen/novatek-nvt-ts.c | 23 +++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/input/touchscreen/novatek-nvt-ts.c b/drivers/input/touchscreen/novatek-nvt-ts.c
+index 0f771f681..88cb8cedf 100644
+--- a/drivers/input/touchscreen/novatek-nvt-ts.c
++++ b/drivers/input/touchscreen/novatek-nvt-ts.c
+@@ -39,6 +39,9 @@
+ #define NVT_TS_TOUCH_NEW		1
+ #define NVT_TS_TOUCH_UPDATE		2
+ #define NVT_TS_TOUCH_RELEASE		3
++/* Reported by Samsung's NT36523 firmware */
++#define NVT_TS_TOUCH_PALM		5
++#define NVT_TS_TOUCH_GLOVE		6
+ 
+ static const int nvt_ts_irq_type[4] = {
+ 	IRQF_TRIGGER_RISING,
+@@ -91,7 +94,7 @@ static irqreturn_t nvt_ts_irq(int irq, void *dev_id)
+ {
+ 	struct nvt_ts_data *data = dev_id;
+ 	struct device *dev = &data->client->dev;
+-	int i, error, slot, x, y;
++	int i, error, slot, tool, x, y;
+ 	bool active;
+ 	u8 *touch;
+ 
+@@ -112,11 +115,17 @@ static irqreturn_t nvt_ts_irq(int irq, void *dev_id)
+ 			continue;
+ 		}
+ 
++		tool = MT_TOOL_FINGER;
+ 		switch (touch[0] & NVT_TS_TOUCH_TYPE_MASK) {
+ 		case NVT_TS_TOUCH_NEW:
+ 		case NVT_TS_TOUCH_UPDATE:
++		case NVT_TS_TOUCH_GLOVE:
+ 			active = true;
+ 			break;
++		case NVT_TS_TOUCH_PALM:
++			active = true;
++			tool = MT_TOOL_PALM;
++			break;
+ 		case NVT_TS_TOUCH_RELEASE:
+ 			active = false;
+ 			break;
+@@ -130,7 +139,7 @@ static irqreturn_t nvt_ts_irq(int irq, void *dev_id)
+ 		y = (touch[2] << 4) | (touch[3] & 0x0f);
+ 
+ 		input_mt_slot(data->input, slot);
+-		input_mt_report_slot_state(data->input, MT_TOOL_FINGER, active);
++		input_mt_report_slot_state(data->input, tool, active);
+ 		touchscreen_report_pos(data->input, &data->prop, x, y, true);
+ 	}
+ 
+@@ -234,7 +243,8 @@ static int nvt_ts_probe(struct i2c_client *client)
+ 		return error;
+ 	}
+ 
+-	data->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
++	/* TDDI chips such as the NT36523 share the reset line with the panel */
++	data->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+ 	error = PTR_ERR_OR_ZERO(data->reset_gpio);
+ 	if (error) {
+ 		regulator_bulk_disable(ARRAY_SIZE(data->regulators), data->regulators);
+@@ -282,6 +292,7 @@ static int nvt_ts_probe(struct i2c_client *client)
+ 
+ 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, width - 1, 0, 0);
+ 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, height - 1, 0, 0);
++	input_set_abs_params(input, ABS_MT_TOOL_TYPE, 0, MT_TOOL_PALM, 0, 0);
+ 	touchscreen_parse_properties(input, true, &data->prop);
+ 
+ 	error = input_mt_init_slots(input, data->max_touches,
+@@ -318,8 +329,13 @@ static const struct nvt_ts_i2c_chip_data nvt_nt36672a_ts_data = {
+ 	.chip_id = 0x08,
+ };
+ 
++static const struct nvt_ts_i2c_chip_data nvt_nt36523_ts_data = {
++	.chip_id = 0x08,
++};
++
+ static const struct of_device_id nvt_ts_of_match[] = {
+ 	{ .compatible = "novatek,nt11205-ts", .data = &nvt_nt11205_ts_data },
++	{ .compatible = "novatek,nt36523-ts", .data = &nvt_nt36523_ts_data },
+ 	{ .compatible = "novatek,nt36672a-ts", .data = &nvt_nt36672a_ts_data },
+ 	{ }
+ };
+@@ -327,6 +343,7 @@ MODULE_DEVICE_TABLE(of, nvt_ts_of_match);
+ 
+ static const struct i2c_device_id nvt_ts_i2c_id[] = {
+ 	{ .name = "nt11205-ts", .driver_data = (unsigned long)&nvt_nt11205_ts_data },
++	{ .name = "nt36523-ts", .driver_data = (unsigned long)&nvt_nt36523_ts_data },
+ 	{ .name = "nt36672a-ts", .driver_data = (unsigned long)&nvt_nt36672a_ts_data },
+ 	{ }
+ };
+-- 
+2.56.1
+

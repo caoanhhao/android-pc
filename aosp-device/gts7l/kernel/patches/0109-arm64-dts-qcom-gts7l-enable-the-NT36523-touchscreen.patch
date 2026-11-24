@@ -1,0 +1,64 @@
+From 7df8b217e596f16d271b16f69fb19b634e6eef14 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 20:03:41 +0700
+Subject: [PATCH 109/109] arm64: dts: qcom: gts7l: enable the NT36523
+ touchscreen
+
+Stock describes the touch half of the NT36523 TDDI at 0x62 on i2c-5, which
+is the chip's HW (bootloader) address; its firmware answers at 0x01, where
+novatek-nvt-ts reads. IRQ on gpio15, falling edge like stock. No supplies
+or reset: the panel powers and resets the chip.
+
+caoanhhao used AI to code
+---
+ .../boot/dts/qcom/sm8250-samsung-gts7l.dts    | 23 +++++++++++--------
+ 1 file changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index 27da6b52f..2b001e897 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -918,19 +918,18 @@ &i2c5 {
+ 	status = "okay";
+ 
+ 	/*
+-	 * Novatek NT36523 touch (stock novatek,nt-ts, firmware
+-	 * tsp_novatek/nt36523_gts7l.bin), 1600x2560, IRQ on gpio15 like the S7+'s.
+-	 * TODO(S6): mainline's novatek-nvt-ts knows only NT11205/NT36672A; add NT36523
+-	 * (or port the stock driver), then the supplies and enable it.
++	 * Touch half of the NT36523 TDDI (stock novatek,nvt-ts at 0x62, which is the
++	 * chip's HW address; the firmware answers at 0x01). It boots from its own
++	 * flash and runs off the panel's supplies and reset, so no supplies here.
+ 	 */
+-	touchscreen@62 {
++	touchscreen@1 {
+ 		compatible = "novatek,nt36523-ts";
+-		reg = <0x62>;
+-		interrupt-parent = <&tlmm>;
+-		interrupts = <15 IRQ_TYPE_EDGE_RISING>;
++		reg = <0x01>;
++		interrupts-extended = <&tlmm 15 IRQ_TYPE_EDGE_FALLING>;
++		pinctrl-0 = <&ts_int_default>;
++		pinctrl-names = "default";
+ 		touchscreen-size-x = <1600>;
+ 		touchscreen-size-y = <2560>;
+-		status = "disabled";
+ 	};
+ };
+ 
+@@ -1511,6 +1510,12 @@ bt_en_state: bt-en-state {
+ 		bias-disable;
+ 	};
+ 
++	ts_int_default: ts-int-default-state {
++		pins = "gpio15";
++		function = "gpio";
++		bias-disable;
++	};
++
+ 	pen_default: pen-default-state {
+ 		pins = "gpio136";
+ 		function = "gpio";
+-- 
+2.56.1
+

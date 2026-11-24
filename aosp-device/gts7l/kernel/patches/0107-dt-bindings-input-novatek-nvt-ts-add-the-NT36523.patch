@@ -1,0 +1,29 @@
+From 8cb1ec038caf2e09dc3da8d347470efd0139eafb Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 20:03:41 +0700
+Subject: [PATCH 107/109] dt-bindings: input: novatek,nvt-ts: add the NT36523
+
+The NT36523 is a TDDI controller (display and touch in one chip), found on
+the Samsung Galaxy Tab S7 LTE. Its touch firmware answers on I2C like the
+NT36672A's.
+
+caoanhhao used AI to code
+---
+ .../devicetree/bindings/input/touchscreen/novatek,nvt-ts.yaml    | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/input/touchscreen/novatek,nvt-ts.yaml b/Documentation/devicetree/bindings/input/touchscreen/novatek,nvt-ts.yaml
+index bd6a60486..6976fa866 100644
+--- a/Documentation/devicetree/bindings/input/touchscreen/novatek,nvt-ts.yaml
++++ b/Documentation/devicetree/bindings/input/touchscreen/novatek,nvt-ts.yaml
+@@ -16,6 +16,7 @@ properties:
+   compatible:
+     enum:
+       - novatek,nt11205-ts
++      - novatek,nt36523-ts
+       - novatek,nt36672a-ts
+ 
+   reg:
+-- 
+2.56.1
+

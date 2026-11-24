@@ -269,7 +269,7 @@ group). Stable, no pstore records. Seen:
 | 8 CPUs with cpufreq, 5.5 GiB RAM, 25 thermal zones | remoteprocs (ADSP/CDSP/SLPI): none registered, no firmware in the initramfs |
 | UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` |
 | USB gadget (DWC3 peripheral) after `usbroute` | display: `msm_dpu` binds (DP only), DSI and the NT36523 panel are off, no simpledrm/fbdev |
-| Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS |
+| Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS (driver since §17) |
 | power key, volume down (resin), gpio-keys, regulator haptics | S Pen (i2c-17 0x56): deferred on `spen-3v3-regulator`, GPIO from the S7+ wiring |
 | MAX77705 charger and Type-C, CS35L41 x4 (i2c-11), PS5169 (i2c-14) probed | `lcd-buck-regulator`: GPIO from the S7+ wiring; fuel gauge deferred (`max17042: temp channel`) |
 
@@ -824,3 +824,54 @@ on SystemUI's NotificationShade over the desktop-mode wallpaper. The host lost t
 about 3 min uptime (`USB disconnect`, then `device descriptor read/64, error -110`) and saw it
 again 2 h 25 min later. Android kept running across the gap, so it was a USB link or cable
 drop, not a hang; the cause is not known yet.
+
+## 17. Touchscreen: NT36523 TDDI (2026-11-24)
+
+**Chip.** The touch half of the NT36523 TDDI (display and touch in one chip). Stock DT
+(dtbo fragment@131 on `qupv3_se5_i2c`): `novatek,nvt-ts` at `0x62`, IRQ gpio15 (falling edge,
+`attn_irq`: gpio, no pull), 1600x2560, 10 touches, firmware `tsp_novatek/nt36523_gts7l.bin`,
+**no supplies and no reset GPIO**: the panel powers and resets the chip. Stock driver:
+`drivers/input/touchscreen/novatek/nt36523/` in LineageOS `android_kernel_samsung_sm8250`
+(I2C, the firmware runs from the chip's own flash; the .bin is only for flash updates).
+`0x62` is the chip's HW/bootloader address; the firmware answers at **`0x01`**, with the
+NT36672A's register map. Read from the running chip with `i2ctransfer` (`/dev/i2c-5`):
+
+```
+0x78: 24 db 20 32 06 40 0a 00 0e 0a 00 01 02 01 08 10
+      fw 0x24, 32x50 channels, 1600x2560, 10 touches, no buttons, IRQ type 1 (falling), chip ID 0x08
+```
+
+**Kernel** (patches 0107-0109): mainline `novatek-nvt-ts` with compatible
+`novatek,nt36523-ts` (chip ID 0x08), the reset GPIO made optional, and palm (5) / glove (6)
+touch states, which Samsung's firmware reports, mapped to `MT_TOOL_PALM` / finger. DTS:
+`touchscreen@1` on i2c5, `CONFIG_TOUCHSCREEN_NOVATEK_NVT_TS=y` in the fragment.
+
+**Tested** (kernel #18 in the boot image of build `1208`, only `boot` rewritten from Android's
+root adb, userdata kept): the driver probes at 0.8 s and registers `nt36523-ts` (input4,
+`ABS_MT_*`, `ABS_MT_TOOL_TYPE`), and `getevent` shows its events. **But touch does not
+work yet**: the firmware sensing data is wrong.
+
+- After boot the firmware stays in its init state (`0x60` = `0xA0`, or the page index
+  flipping between the event buffer and the trim area), INT held low, one IRQ. It reaches
+  normal run (`0xA3`, IRQ ~60 Hz) only after the screen is turned off and on once (a
+  bootloader reset, `00 69` to `0x62`, sends it back to init). Stock resets it from the panel
+  power path, so TDDI touch waits for a display event.
+- In normal run every frame holds the same report: one palm (state 5) at (751, 487),
+  unchanged by fingers anywhere (400 reads over 40 s while the user touched), by resets and
+  by screen cycles. Android sees one held palm.
+- The sensor does scan: raw data (`RAW_PIPE0` 0x30FA0) ~4600 per node, with noise. But the
+  baseline (`0x36510`) is ~787, so diff (`DIFF_PIPE0` 0x373E8) ≈ raw − baseline ≈ 3800 on
+  every node: the firmware sees the whole screen as covered and reports a palm.
+
+Most likely cause: the panel. TDDI touch scans in the display's blanking periods, and the
+panel is not driven correctly yet (only ~160 lines from DSI0, no video on DSI1, §12
+"kernels #10-#13"). Retest touch once the panel shows a full picture; if the raw values are
+still far from the baseline then, compare the panel init table's touch-related registers
+with stock. Read pages with `i2ctransfer -f -y 5 w3@0x01 0xff <addr[23:16]> <addr[15:8]>`, then
+`w1@0x01 <addr[7:0]> rN@0x01`, and set the page back to the event buffer (`0xff 0x02 0xfe`)
+afterwards: the driver reads 0x00 of whatever page is set.
+
+USB: the gadget drops whenever Android suspends (screen off); `svc power stayon true`,
+`settings put system screen_off_timeout 2147483647` and `locksettings set-disabled true`
+keep it up (set on the tablet now). Long `adb shell` commands should run detached (`nohup`)
+and write a log.
