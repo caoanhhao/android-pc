@@ -677,10 +677,6 @@ shell stopped reading and writing, adbd's TCP port 5555 and ICMP were dropped (n
 restarting, had left its firewall chains in place), and nothing reboots an Android that is
 merely stuck. pstore of this boot can be read only after a reset that keeps RAM.
 
-Attempt 2 is built and waits for the tablet (build `eng.caoanh.20261124.0823`, kernel with
-patch 0106, vendor with the fixes above; `vendor.img` checked: the audio APEX, the FunctionFS
-mount after `mkdir ffs.adb`, `vendor.hwc.drm.device=/dev/dri/card1`, the allocator label).
-
 **Recovery from this state (needs a person):**
 
 1. Hold **Power + Volume Down** for about 7 s until the screen goes off (forced restart).
@@ -691,3 +687,140 @@ mount after `mkdir ffs.adb`, `vendor.hwc.drm.device=/dev/dri/card1`, the allocat
    ACM root shell answers for a few minutes, enough for `reboot recovery`.)
 3. From the worktree: `tools/gts7l-android-flash.sh --yes` (first read `/sys/fs/pstore` in the
    bring-up shell for attempt 1's last console).
+
+### Attempt 2 (2026-11-24, build `eng.caoanh.20261124.0823`)
+
+Kernel with patch 0106; vendor with attempt 1's fixes. After the person's reset (10:24) the
+tablet came up in the bring-up shell twice (a second reset a minute later). Both boots had an
+empty `/sys/fs/pstore`, so attempt 1's hang left no record.
+
+Flash: all checks and read-backs OK. **adb came up over USB** (`R52R504WFTK device`) about 40 s
+after the reboot, so the FunctionFS fix works. `sys.boot_completed` was still unset:
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `vendor.graphics.allocator` exits with status 1 at every start: `Failed to initialize driver` | minigbm was built with its generic backend, whose list has no `msm` entry, so `drv_create` found no backend for the card's driver name. The service now starts (the label fix works) | `$(call soong_config_set,minigbm,platform,msm)`: every minigbm module of this product (allocator, mapper, gralloc0) gets `DRV_MSM` |
+| SurfaceFlinger, zygote and system_server restart every ~5 s (`boot_progress_start` loops) | SurfaceFlinger: `Failed to initialize driver` from gralloc.minigbm (same generic backend), and the allocator it waits for never registers | (same fix) |
+
+Everything else came up. The GPU loaded Samsung's SQE with patch 0106's warning (`a650 SQE
+ucode 93 is older than 95 ... using it anyway`), then the GMU 2.1.8 and the zap shader.
+drm_hwcomposer runs on `card1`. The audio HALs run, and audioserver no longer crashes: init
+only kills it along with SurfaceFlinger's restarts. netd and vold came up too.
+
+### Attempt 3 (2026-11-24, build `eng.caoanh.20261124.1032`)
+
+minigbm built with `DRV_MSM`. The tablet was still running attempt 2. `adb reboot recovery` did
+nothing: adbd's shell is uid 2000, and `sys.powerctl` needs root. It went to the bring-up shell
+through the ACM root shell (`setprop sys.powerctl reboot,recovery`).
+
+The first flash reached super's read-back (super written in 56 s) when the tablet dropped off
+USB and showed Samsung's "Downloading" screen. The person brought it back with Power + Volume
+Down, then Volume Up + Power, and pstore was empty again. The second flash was all OK.
+
+What came up: adb about 40 s after the reboot, the minigbm allocator, drm_hwcomposer and
+SurfaceFlinger. All three stayed up with no restarts. system_server got to `pms_ready`, but
+`sys.boot_completed` stayed unset:
+
+| Problem | Cause | Fix |
+|---|---|---|
+| system_server killed by its watchdog every ~90 s: `Blocked in handler on main thread (main) for 66s` in `AudioSystem.isMicrophoneMuted` from `AudioService.<init>` | `/vendor/etc/audio_policy_configuration.xml` is missing. `audio_policy_config_vendor_1.mk` installs only the files it includes (r_submix, volumes, surround). The default AIDL HAL builds its modules from that file, so it registered only `IConfig`, with no `IModule/default`. audioserver waited for the module forever (`Waited one second for android.hardware.audio.core.IModule/default`). | install AOSP's generic `audio_policy_configuration.xml` (primary + r_submix) and `primary_audio_policy_configuration.xml` |
+
+### Attempt 4 (build `eng.caoanh.20261124.1108`, not flashed)
+
+The two files were added as `PRODUCT_PACKAGES`, and the build ended without them in
+`vendor.img`. The names are ambiguous: Cuttlefish's auto targets define prebuilt modules with
+the same names (`audio_policy_configuration.xml`), so the generated vendor image left
+frameworks/av's out without an error. Fix: `PRODUCT_COPY_FILES`.
+
+### Attempt 5 (2026-11-24, build `eng.caoanh.20261124.1117`)
+
+**Getting to the bring-up shell.** `setprop sys.powerctl reboot,recovery` (from the ACM root
+shell) did nothing. init logged `Failed to set bootloader message: failed to find /misc
+partition` and dropped the reboot, because `fstab.gts7l` had no `/misc` line. A forced restart
+with the keys came back into Android, since the recovery key combination was missed. What worked:
+
+1. From the ACM root shell, write the bootloader message by hand:
+   `printf boot-recovery | dd of=/dev/block/sda13 conv=notrunc` (misc).
+2. Reboot with `setprop sys.powerctl reboot`. ABL honours the message and started recovery.
+3. In the bring-up shell, zero misc's first 32 bytes again before going back to Android.
+
+Fixes: a `/misc` line in `fstab.gts7l`, and `tools/gts7l-android-flash.sh` now clears misc's
+command before its reboot.
+
+Flash: all OK. The audio HAL now registered `IModule/default` and `IModule/r_submix`.
+audioserver then waited for `IModule/bluetooth` forever. The HAL's VINTF fragment declares
+default, r_submix and bluetooth, and audioserver waits for every declared instance, but the
+generic configuration has no bluetooth module. `sys.boot_completed` stayed unset (system_server
+was again in its watchdog loop).
+
+| Problem | Cause | Fix |
+|---|---|---|
+| audioserver: `Waited one second for android.hardware.audio.core.IModule/bluetooth` | frameworks/av's generic configuration has no bluetooth module | Cuttlefish's audio policy set: its top file and primary file, plus frameworks/av's `bluetooth_with_le_audio_policy_configuration_7_0.xml` |
+
+### Attempt 6 (2026-11-24, build `eng.caoanh.20261124.1147`)
+
+Getting to the bring-up shell: the bootloader message was written by hand again (attempt 5's
+image has no `/misc`). The flash tool cleared it, and the tablet booted Android.
+
+Flash: all OK. The audio HAL registered `IModule/default`, `r_submix` and `bluetooth`, and
+audioserver started. SystemUI, Phone and Settings were launched, but `sys.boot_completed`
+stayed unset: system_server aborted every 5–8 s (11 `boot_progress_start` in 4 min).
+
+| Problem | Cause | Fix |
+|---|---|---|
+| system_server: SIGABRT in `BpfMapRO<…>::abortOnMismatch` from `meminfo::ReadProcessGpuUsageKb` (ActivityManager's `MemInfoReader.getGpuKernelUsedSizeKb`) | `/sys/fs/bpf/map_gpuMem_gpu_mem_total_map` does not exist. Mainline msm selects no `TRACE_GPU_MEM`, so the kernel has no `gpu_mem/gpu_mem_total` tracepoint, and bpfloader does not load `gpuMem.o`. android-pc's libmeminfo patch skipped the missing map only in Waydroid. | libmeminfo: skip a missing map everywhere (`tools/waydroid/aosp17-patches/system+memory+libmeminfo.patch`) |
+| com.android.bluetooth: `HidlHci: assert failed: hci_ != nullptr` | no Bluetooth HAL | none yet: the app crash does not block boot |
+
+### Attempt 7: booted (2026-11-24, build `eng.caoanh.20261124.1208`)
+
+The running attempt 6 has `/misc`, so a plain `setprop sys.powerctl reboot,recovery` from the
+ACM root shell brought up the bring-up shell, with no keys and no hand-written bootloader
+message. Flash: all OK, misc's command cleared, and the tablet rebooted into Android.
+
+**`sys.boot_completed=1` at about 43 s** (`boot_progress_enable_screen` 43.2 s,
+`sf_stop_bootanim` 43.5 s), with a single `boot_progress_start` (no system_server restarts).
+About 50 s after boot_completed, the host saw the gadget leave and come back. That is
+UsbDeviceManager applying `sys.usb.config=adb`: the gadget keeps adb, ACM (`/dev/ttyACM0`) and
+NCM, and the tablet did not reboot (uptime continuous). The boot reason reads
+`reboot,factory_reset` because the flash tool wipes userdata.
+
+Properties (`getprop`):
+
+```
+ro.build.fingerprint     Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys
+ro.build.version         17 (SDK 37), security patch 2026-06-05, userdebug
+ro.product.model         android-pc Galaxy Tab S7 LTE (device gts7l, serial R52R504WFTK)
+ro.kernel.version        7.3 (Linux 7.3.0-gts7l, clang 22.0.2)
+ro.boot.selinux          permissive; verifiedbootstate orange
+ro.hardware.egl/vulkan   mesa / freedreno; ro.hardware.gralloc minigbm
+vendor.hwc.drm.device    /dev/dri/card1
+init.svc.*               surfaceflinger, audioserver, vendor.graphics.allocator running; none restarting
+```
+
+`dumpsys SurfaceFlinger --display-id`: `Display 0 (HWC display 0): no display identification
+data` (the DSI panel has no EDID).
+
+`dumpsys SurfaceFlinger` (summary):
+- GLES: `freedreno, FD650, OpenGL ES 3.2 Mesa 26.1.0-devel (git-875160ed32)`, EGL 1.5.
+- Sync: `EGL_ANDROID_native_fence_sync EGL_KHR_wait_sync`.
+- Active mode: `hwcId=2, resolution=1600x2560, vsyncRate=120.00 Hz, dpi=274.59x274.59`.
+- The composition list has the status bar and launcher layers. HWC missed 16 frames by then.
+
+`dumpsys display` (summary):
+- `"Built-in Screen": uniqueId="local:0", 1600 x 2560`, `mState=ON`.
+- Supported refresh rates: 119.9998, 59.9999, 40, 30, 24 and 20 Hz. The render frame rate is
+  60 by default, and the active SF mode runs at 120 Hz.
+- 274.59 dpi, density 320, internal viewport 1600x2560.
+
+dmesg (kernel log buffer, `logcat -b kernel`):
+- simpledrm on the bootloader's framebuffer is minor 0.
+- msm_dpu binds both DSI links and the DP controller, and is minor 1 (card1, renderD128).
+- The GPU loads Samsung's SQE 0.93 with patch 0106's warning, then GMU 2.1.8 and the zap shader.
+- One `dsi_get_phy: phy driver is not ready` deferral on `ae96000.dsi` before the bind.
+
+Stability: still up at 8966 s (2 h 29 min) uptime, `sys.boot_completed=1`, one
+`boot_progress_start` in the event log (no runtime restart), nothing in `restarting`, focus
+on SystemUI's NotificationShade over the desktop-mode wallpaper. The host lost the gadget at
+about 3 min uptime (`USB disconnect`, then `device descriptor read/64, error -110`) and saw it
+again 2 h 25 min later. Android kept running across the gap, so it was a USB link or cable
+drop, not a hang; the cause is not known yet.

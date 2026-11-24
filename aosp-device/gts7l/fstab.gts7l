@@ -10,6 +10,10 @@ system_ext  /system_ext  ext4   ro,barrier=1  wait,logical,first_stage_mount
 product     /product     ext4   ro,barrier=1  wait,logical,first_stage_mount
 vendor      /vendor      ext4   ro,barrier=1  wait,logical,first_stage_mount
 
+# misc: init writes the bootloader message there for `reboot recovery` and refuses that reboot
+# when no /misc line exists (S7 attempt 3). ABL honours "boot-recovery" in it; the bring-up
+# shell does not clear it, tools/gts7l-android-flash.sh does before rebooting into Android.
+/dev/block/by-name/misc      /misc      emmc  defaults  defaults
 /dev/block/by-name/metadata  /metadata  ext4  noatime,nosuid,nodev,discard  wait,check,formattable,first_stage_mount
 
 # userdata: no fileencryption flag, /data starts unencrypted (no TrustZone keymaster on

@@ -42,15 +42,14 @@ PRODUCT_PACKAGES += com.android.hardware.graphics.composer.drm_hwcomposer
 # drm_hwcomposer's card% pattern stops at the first missing card0, so name it.
 PRODUCT_VENDOR_PROPERTIES += vendor.hwc.drm.device=/dev/dri/card1
 
-# Gralloc: minigbm's AIDL allocator and stable-C mapper. They are built with minigbm's
-# generic backend (dma-buf system heap); the msm backend (msm_cflags) exists only for the
-# HIDL gralloc4 and gralloc0 modules. gralloc.minigbm (gralloc0, same generic backend) is
-# not a HAL here: Mesa's u_gralloc loads it through libhardware (ro.hardware.gralloc) for
-# the CrOS perform() that reads a buffer's planes, strides and modifier. Mesa built with the
-# NDK has no IMapper path, so without it EGL/Vulkan fall back to guessing a single plane.
-# TODO(T3): an msm build of allocator-service.minigbm/mapper.minigbm/gralloc.minigbm (patch
-# to external/minigbm in tools/patches/) for UBWC and the GPU's tiling; Mesa reads the
-# modifier from the handle, so it needs no change for that.
+# Gralloc: minigbm's AIDL allocator and stable-C mapper, built with minigbm's msm backend
+# (soong config minigbm.platform=msm, which applies to every minigbm module of this product).
+# The generic backend has no "msm" entry, so the allocator found no driver for card1 and
+# exited at start (S7 attempt 2). gralloc.minigbm (gralloc0) is not a HAL here: Mesa's
+# u_gralloc loads it through libhardware (ro.hardware.gralloc) for the CrOS perform() that
+# reads a buffer's planes, strides and modifier. Mesa built with the NDK has no IMapper
+# path, so without it EGL/Vulkan fall back to guessing a single plane.
+$(call soong_config_set,minigbm,platform,msm)
 PRODUCT_PACKAGES += \
     android.hardware.graphics.allocator-service.minigbm \
     mapper.minigbm \
@@ -99,7 +98,19 @@ PRODUCT_PACKAGES += \
 # Audio: AOSP's default AIDL audio and effects HALs (as on Cuttlefish) until a CS35L41/WCD
 # HAL exists. Without any audio HAL audioserver crashes in AudioFlinger::onFirstRef and
 # keeps restarting (S7 first boot).
+# The HAL creates its modules from /vendor/etc/audio_policy_configuration.xml, and audioserver
+# waits for every IModule its VINTF fragment declares (default, r_submix, bluetooth). The
+# vendor_1 makefile installs only the files the top file includes. Without the top file the
+# HAL registered no IModule and system_server's watchdog killed AudioService's start after
+# 66 s (S7 attempt 3); with frameworks/av's generic one (primary + r_submix) audioserver waited
+# for IModule/bluetooth (attempt 5). Cuttlefish's set has all three. Copied, not
+# PRODUCT_PACKAGES: Cuttlefish's auto targets define modules with the same names, and the
+# generated vendor image left them out (attempt 4).
 PRODUCT_PACKAGES += com.android.hardware.audio
+PRODUCT_COPY_FILES += \
+    device/google/cuttlefish/shared/config/audio/policy/audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy_configuration.xml \
+    device/google/cuttlefish/shared/config/audio/policy/primary_audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/primary_audio_policy_configuration.xml \
+    frameworks/av/services/audiopolicy/config/bluetooth_with_le_audio_policy_configuration_7_0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/bluetooth_with_le_audio_policy_configuration_7_0.xml
 $(call inherit-product, frameworks/av/services/audiopolicy/audio_policy_config_vendor_1.mk)
 $(call inherit-product, hardware/interfaces/audio/aidl/default/audio_effects.mk)
 

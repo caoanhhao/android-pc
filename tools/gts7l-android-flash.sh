@@ -20,6 +20,9 @@
 #                    at first boot the same way
 #   dtbo      sda22  first 4 KiB zeroed (ABL then applies no stock overlay)
 #   param     sda10  byte 0 cleared (Samsung's boot flag, as in docs/gts7l.md §12)
+#   misc      sda13  the bootloader message's command (32 bytes) cleared: Android's `reboot
+#                    recovery` writes "boot-recovery" there, ABL honours it and the bring-up
+#                    shell does not clear it, so the reboot below would land in recovery again
 # Then `reboot -f` (not sysrq: the kernel's reboot notifiers write the normal reboot reason).
 # Never written: efs, sec_efs, persist, modem*, apnhlos, dsp, firmware and bootloader
 # partitions, vbmeta (ours since S5; only read and checked).
@@ -40,10 +43,11 @@ log() { echo "gts7l-android-flash: $*"; }
 
 # Partition, block device, size in bytes (docs/gts7l-inventory.md, gts7l-backup/*/partitions.txt).
 declare -A DEV=([boot]=sda23 [recovery]=sda24 [super]=sda29 [userdata]=sda37 [metadata]=sda28
-                [dtbo]=sda22 [param]=sda10 [vbmeta]=sdd25)
+                [dtbo]=sda22 [param]=sda10 [misc]=sda13 [vbmeta]=sdd25)
 declare -A SIZE=([boot]=71303168 [recovery]=86888448 [super]=10171187200 [userdata]=114864140288
-                 [metadata]=33554432 [dtbo]=10485760 [param]=10485760 [vbmeta]=65536)
-WRITABLE=" boot recovery super userdata metadata dtbo param "
+                 [metadata]=33554432 [dtbo]=10485760 [param]=10485760 [misc]=1048576
+                 [vbmeta]=65536)
+WRITABLE=" boot recovery super userdata metadata dtbo param misc "
 
 # One shell command over telnet; prints its output (busybox telnetd, no options negotiated).
 # Same as tools/gts7l-netflash.sh.
@@ -125,7 +129,7 @@ for p in "${!DEV[@]}"; do
     [[ $got == "$((SIZE[$p] / 512)) $p" ]] ||
         die "/dev/$d on the tablet is '$got', expected '$((SIZE[$p] / 512)) $p': partition table differs, nothing written"
 done
-log "partitions checked: $(for p in boot recovery super userdata metadata dtbo param vbmeta; do printf '%s=%s ' $p ${DEV[$p]}; done)"
+log "partitions checked: $(for p in boot recovery super userdata metadata dtbo param misc vbmeta; do printf '%s=%s ' $p ${DEV[$p]}; done)"
 vb=$(tsh "dd if=$(dev vbmeta) bs=4 skip=30 count=1 2>/dev/null | od -An -tx1 | tr -d ' '; dd if=$(dev vbmeta) bs=4 count=1 2>/dev/null")
 [[ $vb == $'00000003\nAVB0' ]] && log "vbmeta: ours (AVB0, flags 3)" ||
     log "WARNING: vbmeta does not look like ours (flags 3): '$vb'; Android may not boot (docs/gts7l.md §11)"
@@ -134,7 +138,7 @@ guard() { [[ $WRITABLE == *" $1 "* ]] || die "refusing to write $1"; }
 
 if [[ -z $YES ]]; then
     echo "About to write build $BUILD to the tablet: super, boot, recovery; and to WIPE userdata and"
-    echo "metadata (Android formats them at first boot), clear the dtbo header and param byte 0."
+    echo "metadata (Android formats them at first boot), clear the dtbo header, param byte 0 and misc's command."
     read -r -p "Type 'flash' to go on: " a; [[ $a == flash ]] || die "aborted"
 fi
 
@@ -206,7 +210,7 @@ echo 3 > /proc/sys/vm/drop_caches
 flash_img boot
 flash_img recovery
 
-# --- Zeroed ranges: userdata and metadata headers, dtbo header, param byte 0.
+# --- Zeroed ranges: userdata and metadata headers, dtbo header, param byte 0, misc's command.
 zero() {
     local p=$1 n=$2 d out
     guard "$p"; d=$(dev "$p")
@@ -219,6 +223,7 @@ zero userdata $((16 << 20))
 zero metadata "${SIZE[metadata]}"
 zero dtbo 4096
 zero param 1
+zero misc 32
 
 log "build $BUILD written"
 [[ -n $REBOOT ]] || exit 0
