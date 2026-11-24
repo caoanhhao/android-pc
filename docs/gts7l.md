@@ -628,3 +628,15 @@ partition zeroed, written, range read back); `userdata`/`metadata`/`dtbo` header
 byte 0 zeroed and read back; `reboot -f`. It then waits up to 10 min for Android's gadget
 (`18d1:4ee7`) or the bring-up shell coming back (Android failed, see pstore). efs, sec_efs,
 persist, modem*, apnhlos, dsp and the bootloader/firmware partitions are never written.
+
+First build 2026-11-24 (`eng.caoanh.20261124.0735`, commit of this section): kernel 7.3.0-gts7l
+from the series with 0105 (committed fragment: no `CONFIG_DEVMEM`), `boot.img` 16924672 B
+(header v2), `recovery.img` 39430144 B (header v1, 111 firmware files), `super.img` 1.5 GB
+sparse with system, system_ext, product, vendor, gts7l_fw; all checks of
+`tools/gts7l-image.sh` pass (`out/gts7l/images/CHECK.txt`). With `J_BIG=3` the system.img step
+was OOM-killed under the 20 GB cap (parallel R8/metalava), so `tools/gts7l-image.sh` now builds
+the big images with one job (system.img ~17 min). Not yet run on the tablet.
+
+Risks for the first boot: `init.gts7l.rc` modprobes all 1114 modules of `modules.load` at
+`on fs` (slow, and one bad module can hang it; pstore shows where); first boot formats the
+107 GiB userdata; ABL's handling of the PON recovery bit (above).

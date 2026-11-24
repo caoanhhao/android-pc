@@ -46,7 +46,9 @@ done
 if [[ ${1:-} != pack ]]; then
     # boot.img gives the generic ramdisk; the flashable boot.img is packed below.
     LOCK=$ROOT/out/.phase-e.lock
-    flock "$LOCK" env PRODUCT=aosp_gts7l \
+    # One job for the big images: with -j3 the parallel R8/metalava runs of system.img
+    # exceed the 20 GB cap (OOM-killed, 2026-11-24).
+    flock "$LOCK" env PRODUCT=aosp_gts7l J_BIG="${J_BIG:-1}" \
         STEPS="${STEPS:-system.img system_ext.img product.img vendor.img}" \
         "$WT/tools/aosp17-build.sh"
     # The Soong-only build's boot.img is GKI-style and carries no ramdisk (that goes to
@@ -183,14 +185,16 @@ while i + 110 <= len(d):
         cmp -s "$u/rd/fstab.gts7l" "$WT/aosp-device/gts7l/fstab.gts7l" || echo "FAIL ramdisk fstab.gts7l differs"
         echo "super.img:"
         simg2img "$OUT/super.img" "$tmp/super.raw"
-        lpdump "$tmp/super.raw" | sed -n 's/^  Name: /  partition /p'
+        # Only the partition table (the group table also has "Name:" lines).
+        lpdump "$tmp/super.raw" 2>/dev/null | sed -n '/^Partition table:/,/^Super partition layout:/s/^  Name: //p' > "$tmp/lp.txt"
+        sed 's/^/  partition /' "$tmp/lp.txt"
         for f in $parts gts7l_fw; do
-            lpdump "$tmp/super.raw" | grep -qx "  Name: $f" || echo "FAIL super has no $f"
+            grep -qx "$f" "$tmp/lp.txt" || echo "FAIL super has no $f"
         done
         rm -f "$tmp/super.raw"
         [[ -f $OUT/recovery.img ]] && {
             unpack_bootimg --boot_img "$OUT/recovery.img" --out "$u/r" > "$u/r.txt"
-            echo "recovery.img: $(sed -n 's/^boot image header version: */header v/p' "$u/r.txt"), $(stat -c %s "$OUT/recovery.img") bytes, ramdisk $(gzip -dc "$u/r/ramdisk" | cpio -t --quiet 2>/dev/null | grep -c '^lib/firmware/') firmware entries"
+            echo "recovery.img: $(sed -n 's/^boot image header version: */header v/p' "$u/r.txt"), $(stat -c %s "$OUT/recovery.img") bytes, ramdisk $(gzip -dc "$u/r/ramdisk" | cpio -t --quiet 2>/dev/null | grep -c 'lib/firmware/') firmware entries"
         }
     } | tee "$c"
     ! grep -q '^FAIL' "$c"
