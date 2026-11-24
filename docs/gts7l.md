@@ -1027,6 +1027,7 @@ Open:
   in Settings pays it again.
 - Bluetooth audio: the audio HAL's `IModule/bluetooth` exists (§16, attempt 6), A2DP/LE audio
   untested.
+
 ## 21. Wi-Fi: QCA6390 on ath11k (2026-11-25)
 
 No DT change was needed. The `qcom,qca6390-pmu` node (pwrseq-qcom-wcn) and the `wifi@0`
