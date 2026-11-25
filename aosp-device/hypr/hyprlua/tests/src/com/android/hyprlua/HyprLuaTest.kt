@@ -87,12 +87,19 @@ class HyprLuaTest {
 
     @Test
     fun theDefaultInitLuaLoadsWithoutWarnings() {
-        val c = load(HyprLua.DEFAULT_INIT)
+        val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in keys })
         assertEquals(emptyList<String>(), c.warnings)
-        val empty = HyprLua(FakeHost()) { it in keys }
-        val d = load("", empty)
-        assertEquals(d.wire.values, c.wire.values)
-        assertEquals(d.wire.lists.getValue("binds"), c.wire.lists.getValue("binds"))
+        val v = c.wire.values
+        assertEquals("ALT", v["mod"])
+        assertEquals("20", v["workspaces"])
+        assertEquals("switcher", v["alt_tab"])
+        assertTrue(Bind(setOf(Mod.ALT), "Q", "killactive") in binds(c))
+        assertTrue(Bind(setOf(Mod.ALT, Mod.CTRL), "5", "movetoworkspace", "5") in binds(c))
+    }
+
+    @Test
+    fun theDefaultInitLuaNeedsItsModules() {
+        assertTrue(error(HyprLua.DEFAULT_INIT).contains("module 'binds' not found"))
     }
 
     @Test
