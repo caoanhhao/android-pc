@@ -36,6 +36,10 @@ for i in 1 2 3 4 5; do ip link show usb0 >/dev/null 2>&1 && break; sleep 1; done
 ip addr add 172.16.42.1/24 dev usb0 2>/dev/null; ip link set usb0 up 2>/dev/null
 telnetd -l /bin/sh -b 172.16.42.1 2>/dev/null
 
+# The screen: white text on black, nothing else (the kernel prints no Tux, logo.nologo).
+printf '\033[0;37;40m\033[2J\033[H' > /dev/tty1
+echo "gts7l-bringup: shell on ttyACM0 and telnet 172.16.42.1" > /dev/tty1
+
 # Shells: USB serial (/dev/ttyACM0 on the host) and the bootloader framebuffer console.
 (while :; do setsid -c sh -c 'stty -F /dev/ttyGS0 sane -echo 2>/dev/null; exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'; sleep 1; done) &
 (while :; do setsid -c sh -c 'exec sh </dev/tty1 >/dev/tty1 2>&1'; sleep 1; done) &
