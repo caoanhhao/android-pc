@@ -264,6 +264,7 @@ fn temperature_type(kind: SensorKind) -> TemperatureType {
         SensorKind::Cpu => TemperatureType::CPU,
         SensorKind::Gpu => TemperatureType::GPU,
         SensorKind::Skin => TemperatureType::SKIN,
+        SensorKind::Battery => TemperatureType::BATTERY,
         SensorKind::Wifi => TemperatureType::WIFI,
         SensorKind::Unknown => TemperatureType::UNKNOWN,
     }
@@ -273,6 +274,7 @@ fn cooling_type(kind: CoolingKind) -> CoolingType {
     match kind {
         CoolingKind::Fan => CoolingType::FAN,
         CoolingKind::Cpu => CoolingType::CPU,
+        CoolingKind::Gpu => CoolingType::GPU,
         CoolingKind::Wifi => CoolingType::WIFI,
         CoolingKind::Component => CoolingType::COMPONENT,
     }

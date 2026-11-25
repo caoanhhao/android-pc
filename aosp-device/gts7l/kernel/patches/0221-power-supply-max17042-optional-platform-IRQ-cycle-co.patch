@@ -1,0 +1,57 @@
+From 20b595f384b7d6934c065bbd53e02ca023e82b08 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Wed, 25 Nov 2026 07:58:51 +0700
+Subject: [PATCH 221/221] power: supply: max17042: optional platform IRQ, cycle
+ count in cycles
+
+The max77705-battery cell of simple-mfd-i2c has no IRQ resource of its
+own; platform_get_irq() then logs an error and its negative return was
+passed on as an IRQ number (and an -EPROBE_DEFER from the DT interrupt
+was not honoured). Use platform_get_irq_optional(), defer on
+-EPROBE_DEFER and poll otherwise.
+
+The Cycles register of the ModelGauge m3 parts (MAX17042/7/50) counts
+in 1 % of a cycle, so a battery with 276 cycles reported 27607. Report
+whole cycles for them.
+
+caoanhhao used AI to code
+---
+ drivers/power/supply/max17042_battery.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/max17042_battery.c b/drivers/power/supply/max17042_battery.c
+index 4da5f0531..b3255e80f 100644
+--- a/drivers/power/supply/max17042_battery.c
++++ b/drivers/power/supply/max17042_battery.c
+@@ -308,6 +308,14 @@ static int max17042_get_property(struct power_supply *psy,
+ 		if (ret < 0)
+ 			return ret;
+ 
++		/*
++		 * The ModelGauge m3 parts count in 1 % of a full cycle
++		 * (0-655.35 cycles); report whole cycles.
++		 */
++		if (chip->chip_type == MAXIM_DEVICE_TYPE_MAX17042 ||
++		    chip->chip_type == MAXIM_DEVICE_TYPE_MAX17047 ||
++		    chip->chip_type == MAXIM_DEVICE_TYPE_MAX17050)
++			data /= 100;
+ 		val->intval = data;
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+@@ -1619,7 +1627,12 @@ static int max17042_platform_probe(struct platform_device *pdev)
+ 	device_set_of_node_from_dev(dev, dev->parent);
+ 
+ 	id = platform_get_device_id(pdev);
+-	irq = platform_get_irq(pdev, 0);
++	/* The ALRT line is optional: without it the gauge is only polled */
++	irq = platform_get_irq_optional(pdev, 0);
++	if (irq == -EPROBE_DEFER)
++		return irq;
++	if (irq < 0)
++		irq = 0;
+ 
+ 	return max17042_probe(i2c, dev, irq, id->driver_data);
+ }
+-- 
+2.56.1
+

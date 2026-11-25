@@ -37,6 +37,7 @@ Ours start at `0094`:
 | 0094 | `sm8250-samsung-gts7l.dts`: stub derived from the gts7xlwifi DTS |
 | 0095-0104 | panel, S Pen supply, C-PHY tuning, backlight (DEBUG ones marked; docs/gts7l.md §12) |
 | 0105 | DTS: `mode-normal` in the IMEM reboot-mode, so a plain reboot clears a stale recovery reason (docs/gts7l.md §15) |
+| 0220-0221 | Fuel gauge: DTS wires the MAX77705 FG alert interrupt; max17042 takes an optional platform IRQ (defers on `-EPROBE_DEFER`) and reports `cycle_count` in whole cycles (docs/gts7l-hal/power.md) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with
 `git format-patch -1 --start-number N -o aosp-device/gts7l/kernel/patches`. The script
