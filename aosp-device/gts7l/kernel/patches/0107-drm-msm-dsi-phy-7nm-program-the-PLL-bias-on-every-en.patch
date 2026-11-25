@@ -1,0 +1,48 @@
+From a0e999203d55adae8de74e5fe73250220d0ced21 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 23:47:51 +0700
+Subject: [PATCH 107/107] drm/msm/dsi/phy: 7nm: program the PLL bias on every
+ enable
+
+dsi_pll_enable_pll_bias() writes PLL_SYSTEM_MUXES and PLL_SHUTDOWNB only
+when its count goes from 0 to 1. On the Galaxy Tab S7 LTE (SM8250) the first
+vco_prepare runs during probe, before the PHY is powered up; the write does
+not stick, the count stays at 1 and later enables never write it again, so
+the PLL runs with SYSTEM_MUXES 0 instead of 0xc0. With bonded C-PHY links
+the panel then does not take the second link's video.
+
+Program the bias on every enable, as the downstream driver does; the count
+still decides when the bias is turned off.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 4a7c6f60e..83bc0d156 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -446,12 +446,14 @@ static void dsi_pll_enable_pll_bias(struct dsi_pll_7nm *pll)
+ 	u32 data;
+ 
+ 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+-	if (pll->pll_enable_cnt++) {
+-		spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+-		WARN_ON(pll->pll_enable_cnt == INT_MAX);
+-		return;
+-	}
++	pll->pll_enable_cnt++;
++	WARN_ON(pll->pll_enable_cnt == INT_MAX);
+ 
++	/*
++	 * Program the bias on every enable, not only on the first one: the
++	 * first enable can come before the PHY is powered up and then does
++	 * not stick.
++	 */
+ 	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+ 	data |= DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
+ 	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+-- 
+2.56.1
+
