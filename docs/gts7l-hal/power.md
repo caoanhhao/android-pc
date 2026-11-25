@@ -470,11 +470,16 @@ performance mode is off, battery saver never turned on, the `strace` output file
 which `service call` reads as 0, so the backlight was off for about 3 s before the
 restore.
 
-Fixes test: the kernel with patches 0220-0221 stays in `boot` (the rest of the boot image,
-ramdisk and command line, is the one that was there). The HAL binaries were bind-mounted from
-`/data/local/tmp` and the `scaling_*_freq` permissions changed by hand; both go away at the
-next reboot, which brings back the old HALs and leaves the ADC modules unloaded until an image
-with this branch is flashed. Fixed performance mode was turned off again.
+Fixes test: the test kernel was built before the panel fix (0105-0107) reached `gts7l`, so it
+striped the panel; `boot` was written back with the saved original image (kernel `#35`, the
+panel fix, without 0220-0221). The bind-mounted HAL binaries and the `scaling_*_freq`
+permissions went away with that reboot. Fixed performance mode was turned off before.
+
+Not yet tested on the tablet, for the merged full image:
+- patches 0220-0221 together with the panel fix (they touch different files, and the series
+  applies cleanly on v7.3);
+- the ADC modules loading at boot from `modules.load`, and the `init.gts7l.rc` permissions;
+- unplugged operation (discharging, current sign, level going down).
 
 ## Cần bạn tự kiểm tra
 
