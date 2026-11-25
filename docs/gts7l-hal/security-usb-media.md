@@ -15,8 +15,8 @@ end (test keys deleted, the PIN cleared). SELinux is **Permissive** on this buil
 | USB gadget: ACM | **Works** |
 | USB gadget: NCM | **Partial**: link and ARP up, no IP traffic under Android |
 | IUsb / IUsbGadget HAL | **Absent**; framework USB device manager missing |
-| Codec2 `IComponentStore/software` | **Fails**: store registered empty, no codec at all |
-| Hardware Venus codecs | **Absent** (driver not loaded) |
+| Codec2 `IComponentStore/software` | **Fixed** on branch `claude/gts7l-fix-codecs-991283` (two vendor properties); proven at runtime, see §5 |
+| Hardware video codec (SM8250, qcom-iris) | **Kernel works** (H.264/HEVC/VP9 decode bit-exact); Codec2 HAL built, not yet run on the tablet (§5) |
 | Camera | **Absent** (no provider, 0 cameras) |
 | CAS | Present: AOSP example service with the ClearKey plugin only |
 
@@ -252,67 +252,146 @@ HAL (AOSP's `android.hardware.usb.gadget-service.example`-style, configfs) and a
 
 ## 5. Media
 
-### Codec2 `android.hardware.media.c2.IComponentStore/software` — Fails
-The service is registered and `media.swcodec` runs, but the store is the empty placeholder:
+Status after the media fix (branch `claude/gts7l-fix-codecs-991283`, 2026-11-25). The checks
+below ran on the old build (`eng.caoanh.20261124.1208`) with the fix applied at runtime
+(`setprop`, `modprobe`); nothing was flashed. The image with the fix built
+(`eng.caoanh.20261125.0926`, every step passed) but is not on the tablet: the main session
+flashes once after merging every branch.
+
+### Software codecs (Codec2 `IComponentStore/software`) — Fixed
+
+Before: the store was registered but empty (`dumpsys ... IComponentStore/software` →
+`Supported components: NONE`, `CodecServiceRegistrant: listComponents -- not supported`), only
+the in-process AAC decoder existed, and `screenrecord` failed with `unable to create video/avc
+codec instance`.
+
+Cause, from `frameworks/av/media/module/codecserviceregistrant/CodecServiceRegistrant.cpp` and
+`media/codec2/hal/common/HalSelection.cpp`: the AIDL software store gets the real platform store
+only when `media.c2.hal.selection=aidl`. Unset it defaults to HIDL, the AIDL `/software`
+instance is an empty `H2C2ComponentStore(nullptr)`, and the HIDL store is not in VINTF.
+
+With the selection set, `screenrecord` got a codec but crashed with a null dereference in
+`CCodec::createInputSurface()` (`libsfplugin_ccodec.so`): there is no `IOmx` service to make an
+input surface, and Codec2's own input surface is off. `debug.stagefright.c2inputsurface=-1` makes
+the client use its in-process `AidlGraphicBufferSource`.
+
+Fix, in `aosp-device/gts7l/aosp_gts7l.mk` (both as on Cuttlefish,
+`device/google/cuttlefish/shared/device.mk`):
 
 ```
-$ adb shell dumpsys android.hardware.media.c2.IComponentStore/software
-Beginning of dump -- C2ComponentStore: (unknown)
-  Supported components:
-    NONE
-$ logcat --pid=$(pidof media.swcodec)
-E CodecServiceRegistrant: listComponents -- not supported.
-$ grep -c codec2_soft /proc/$(pidof media.swcodec)/maps
-0                                  (the libcodec2_soft_*.so in the APEX are never loaded)
-$ dumpsys media.player
-Decoder infos by media types:
-Media type 'audio/mp4a-latm':
-  Decoder "c2.android.inproc.aac.decoder"
-Encoder infos by media types:
-                                   (nothing else: no AVC/HEVC/VP8/VP9/AV1, no encoders)
-$ screenrecord --verbose --time-limit 5 /data/local/tmp/hal_rec.mp4
-Display is 2560x1600 @120.00fps (orientation=ROTATION_90), layerStack=0
+PRODUCT_VENDOR_PROPERTIES += media.c2.hal.selection?=aidl debug.stagefright.c2inputsurface=-1
+```
+
+Proof (runtime `setprop` of both, then `stop/start media.swcodec`, `setprop ctl.restart media`):
+
+```
+$ dumpsys android.hardware.media.c2.IComponentStore/software | grep name:
+c2.android.aac.decoder  c2.android.aac.encoder  c2.android.amrnb.decoder  c2.android.amrnb.encoder
+c2.android.amrwb.decoder  c2.android.amrwb.encoder  c2.android.apv.decoder  c2.android.apv.encoder
+c2.android.av1-dav1d.decoder  c2.android.av1.decoder  c2.android.av1.encoder  c2.android.avc.decoder
+c2.android.avc.encoder  c2.android.flac.decoder  c2.android.flac.encoder  c2.android.g711.alaw.decoder
+c2.android.g711.mlaw.decoder  c2.android.gsm.decoder  c2.android.h263.decoder  c2.android.h263.encoder
+c2.android.hevc.decoder  c2.android.hevc.encoder  c2.android.iamf.decoder  c2.android.mp3.decoder
+c2.android.mpeg2.decoder  c2.android.mpeg4.decoder  c2.android.mpeg4.encoder  c2.android.opus.decoder
+c2.android.opus.encoder  c2.android.raw.decoder  c2.android.vorbis.decoder  c2.android.vp8.decoder
+c2.android.vp8.encoder  c2.android.vp9.decoder  c2.android.vp9.encoder  c2.android.xheaac.encoder
+
+$ screenrecord --verbose --time-limit 5 /data/local/tmp/rec.mp4
 Configuring recorder for 2560x1600 video/avc at 20.00Mbps
-ERROR: unable to create video/avc codec instance
-WARNING: failed at 2560x1600, retrying at 1280x720
-ERROR: unable to create video/avc codec instance
--rw-r--r-- 1 root root 0 ... hal_rec.mp4
+Content area is 2560x1600 at offset x=0 y=0
+Encoder stopping; recorded 5 frames in 5 seconds        (static screen: frames only on change)
+-rw------- 1 root root 355908 ... rec.mp4
+host$ ffprobe rec.mp4  ->  h264 Constrained Baseline 2560x1600, 5 frames
 ```
 
-No encode, so no clip to decode either; with an empty codec list every decode fails too
-(only the in-process AAC decoder exists). No `stagefright` binary on the image.
-
-Root cause, from `frameworks/av/media/module/codecserviceregistrant/CodecServiceRegistrant.cpp`
-and `media/codec2/hal/common/HalSelection.cpp`: the AIDL software store gets the real
-platform store only when `IsCodec2AidlHalSelected()` is true, which needs
-`media.c2.hal.selection=aidl`. Unset, it defaults to `hidl`, so the registrant registers the
-AIDL `/software` instance as `H2C2ComponentStore(nullptr)` (empty), and the HIDL store is
-not declared in VINTF, so it is not registered either.
+MediaCodec through the framework (`MediaCodecList`, `MediaExtractor`, the media.extractor
+service), with `docs/gts7l-hal/codec-check/` (`CodecCheck.java`, run by `build.sh` with
+`app_process`; clips from `make-clips.sh` on the host, 1280x720 30 fps 3 s, 48 kHz audio):
 
 ```
-$ getprop media.c2.hal.selection
-                                   (empty)
-$ getprop ro.vendor.api_level      -> 202604;  aflags: com.android.media.codec.flags.aidl_hal enabled
+$ build.sh list            -> 60 codecs: every c2.android.* above plus their OMX.google.* aliases
+decode avc_aac.mp4   video/avc   c2.android.avc.decoder       in=90  out=90  1280x720 931ms EOS
+decode avc_aac.mp4   audio/aac   c2.android.aac.decoder       in=142 out=141 48000Hz/1ch 332ms EOS
+decode hevc.mp4      video/hevc  c2.android.hevc.decoder      in=90  out=90  1280x720 690ms EOS
+decode vp8_opus.webm video/vp8   c2.android.vp8.decoder       in=90  out=90  1280x720 926ms EOS
+decode vp8_opus.webm audio/opus  c2.android.opus.decoder      in=151 out=151 48000Hz/1ch 424ms EOS
+decode vp9.webm      video/vp9   c2.android.vp9.decoder       in=90  out=90  1280x720 593ms EOS
+decode av1.mp4       video/av01  c2.android.av1-dav1d.decoder in=90  out=90  1280x720 795ms EOS
+decode mp3.mp3       audio/mpeg  c2.android.mp3.decoder       in=126 out=126 48000Hz/1ch 73ms EOS
+decode flac.flac     audio/raw   c2.android.raw.decoder       in=141 out=141 48000Hz/1ch 110ms EOS
+                     (the FLAC extractor hands out PCM, so the raw decoder runs)
+decode opus.ogg      audio/opus  c2.android.opus.decoder      in=151 out=151 48000Hz/1ch 115ms EOS
+encode video/avc  1280x720 c2.android.avc.encoder  frames=60 packets=61 bytes=246530  857ms EOS
+encode video/hevc 1280x720 c2.android.hevc.encoder frames=60 packets=61 bytes=227635 5879ms EOS
+encode video/vp8  1280x720 c2.android.vp8.encoder  frames=60 packets=60 bytes=496326 1124ms EOS
+encode video/vp9  1280x720 c2.android.vp9.encoder  frames=60 packets=61 bytes=299888 1023ms EOS
 ```
 
-Cuttlefish sets it in `device/google/cuttlefish/shared/device.mk:97`:
-`PRODUCT_VENDOR_PROPERTIES += media.c2.hal.selection?=aidl`. The same line in
-`aosp-device/gts7l/aosp_gts7l.mk` should give the full software codec set (needs a rebuild
-and a flash; not done here).
+`dumpsys media.player` lists the same set once system_server and mediaserver have restarted
+with the property (after a boot of the fixed image). Still no `stagefright` binary on the image;
+`CodecCheck` replaces it.
 
-### Hardware Venus codecs — Absent
-The DT node exists, the modules and the firmware are on the image, but nothing loads them:
+### Hardware video codec (SM8250 Venus/Iris2) — Kernel works, Codec2 HAL built
+
+**Kernel.** On 7.3 both `venus` and `qcom-iris` know `qcom,sm8250-venus`, but `venus` drops
+that compatible when `CONFIG_VIDEO_QCOM_IRIS` is set (`venus/core.c`, `#if
+!IS_ENABLED(CONFIG_VIDEO_QCOM_IRIS)`), so `qcom-iris` is the driver. Our config already builds
+it (`=m`), with the DT's `firmware-name = "qcom/sm8250/gts7xl/venus.mbn"` from `gts7l_fw`. It was
+only missing from the modules that init loads; `qcom-iris.ko` is now in
+`aosp-device/gts7l/kernel/modules.bp` (`src_filenames_to_load`, modprobe pulls videodev,
+v4l2-mem2mem and videobuf2). No kernel patch needed.
 
 ```
-/sys/bus/platform/devices/aa00000.video-codec   OF_COMPATIBLE_0=qcom,sm8250-venus, no driver bound
-/vendor/lib/modules/venus-core.ko venus-dec.ko venus-enc.ko qcom-iris.ko   (not in modules.load)
-/mnt/vendor/firmware/qcom/sm8250/gts7xl/venus.mbn (+ .bNN)
-/proc/modules: no venus/iris;  /dev/video*: none
-service list: no android.hardware.media.c2.IComponentStore/default (no vendor Codec2 store)
+$ modprobe -d /vendor/lib/modules qcom-iris     (mc, videobuf2-*, videodev, v4l2-mem2mem, qcom-iris)
+/sys/class/video4linux/video14  qcom-iris-decoder
+/sys/class/video4linux/video15  qcom-iris-encoder     (video0-13 are the camera's camss nodes)
+decoder  OUTPUT: H264 HEVC VP90 (dyn-resolution)   CAPTURE: NV12 Q08C P010 Q10C
 ```
 
-So: no hardware video decode/encode. That needs the V4L2 driver loaded with the signed
-firmware, plus a V4L2 Codec2 HAL (none in this tree).
+Hardware decode with `docs/gts7l-hal/codec-check/v4l2dec.c` (the kernel's stateful decoder
+flow, NDK `aarch64-linux-android30-clang -static`) on streams split one access unit per buffer by
+`v4l2-hdr.py`. `v4l2-ctl --stream-from-hdr` cannot drive it: it counts the compressed Q08C/Q10C
+capture formats and decides the device is no codec, so it never waits for the source change.
+
+```
+$ v4l2dec /dev/video14 H264 avc.hdr avc.y
+capture NV12 1280x736 stride 1280 size 1413120, min buffers 5, 9 buffers
+avc.hdr: 90 units in, 90 frames out in 207 ms (434 fps)
+$ v4l2dec /dev/video14 HEVC hevc.hdr hevc.y
+capture NV12 1280x736 stride 1280 size 1413120, min buffers 7, 11 buffers
+hevc.hdr: 90 units in, 90 frames out in 227 ms (396 fps)
+$ v4l2dec /dev/video14 VP90 vp9.hdr vp9.y
+capture NV12 1280x736 stride 1280 size 1413120, min buffers 4, 8 buffers
+vp9.hdr: 90 units in, 90 frames out in 224 ms (402 fps)
+host: luma of every frame vs ffmpeg's software decode of the same stream (first 720 of 736 rows)
+avc: bit-exact 90/90   hevc: bit-exact 90/90   vp9: bit-exact 90/90
+```
+
+No dmesg errors from iris. The encoder node exists but was not tried.
+
+**Codec2 HAL** (`aosp-device/gts7l/media/`): `android.hardware.media.c2-service.gts7l` serves
+AOSP's `external/v4l2_codec2` components (`c2.v4l2.avc/hevc/vp9.decoder`) as the AIDL
+`IComponentStore/default`. v4l2_codec2's own service is HIDL only, which the AIDL HAL selection
+above never asks, so `service.cpp` wraps `V4L2ComponentStore::Create()` in libcodec2_aidl's
+`utils::ComponentStore`. C++, not Rust: it is a thin wrapper around a C++ library and the Codec2
+C++ API. With it: `media_codecs_c2.xml` (the three decoders, up to 4096x2304), the extra
+seccomp syscalls v4l2_codec2 needs on arm64 (`codec2.vendor.ext-arm64.policy`), the VINTF
+fragment, an init service (user `mediacodec`, group `camera`), `/dev/video*` and `/dev/media*`
+as `system:camera 0660` in `ueventd.gts7l.rc`, and the binary labelled `mediacodec_exec` (the
+core policy already lets `mediacodec` use `video_device`). The module builds and the image
+build passed; **it has not run on the tablet**. Encoders are not exposed (v4l2_codec2's encoders
+are AVC/VP8/VP9 and none was tested on iris).
+
+Untested, for the first flash of the merged build:
+- `service list | grep IComponentStore/default`, `dumpsys android.hardware.media.c2.IComponentStore/default`
+  should list the three `c2.v4l2.*` decoders, `logcat -s android.hardware.media.c2-service.gts7l`.
+- `build.sh decode /data/local/tmp/clips/avc_aac.mp4` should pick `c2.v4l2.avc.decoder`
+  (hardware codecs rank first); `build.sh decode FILE c2.android.avc.decoder` forces software.
+- The decoders' graphic output buffers come from minigbm's msm backend and are imported into
+  iris as dmabufs; the NV12 layout iris wants is 128-byte stride, 32-line aligned height (see
+  the 1280x736 above). If playback through the HAL fails or shows garbage, that layout is the
+  first suspect. Fallback: drop `android.hardware.media.c2-service.gts7l` from
+  `aosp_gts7l.mk`; the software codecs keep working without it.
 
 ## 6. Camera — Absent
 
@@ -367,8 +446,12 @@ system; nothing on the tablet needs one. State only, not tested.
 4. **Cài đặt USB (cần IUsb HAL).** Kéo thanh thông báo xuống khi cắm cáp vào PC: có thông báo
    "USB" / "Charging this device via USB" không? Vào Settings → Connected devices → USB: có mở
    được không, có lựa chọn File transfer không? (Dự đoán: không có, vì thiếu USB HAL.)
-5. **Phát video / nhạc (sau khi sửa `media.c2.hal.selection=aidl` và flash lại).** Chép một
-   file MP4 (H.264 + AAC) vào máy (`adb push clip.mp4 /sdcard/Movies/`), mở bằng app Files
-   hoặc Photos, xem có hình và tiếng không. Với bản hiện tại dự đoán: không phát được video.
+5. **Phát video có tiếng (sau khi bản gộp có sửa media được flash).** Chép file thử 1080p
+   H.264 + AAC (20 s, hình test có đồng hồ, tiếng bíp) vào máy:
+   `adb -s R52R504WFTK push gts7l-test-1080p.mp4 /sdcard/Movies/` (tạo bằng
+   `docs/gts7l-hal/codec-check/make-clips.sh`, hoặc bất kỳ MP4 nào của bạn). Mở bằng app Files hoặc Photos/Gallery. Báo lại: có hình
+   không, hình có mượt không, có méo/sọc xanh lá không (nếu có là lỗi bộ giải mã phần cứng),
+   có tiếng không (tiếng phụ thuộc vào việc sửa âm thanh của phiên audio). Thử thêm một video
+   YouTube/MP4 thật nếu có.
 6. **Camera.** Mở app Camera: dự đoán báo lỗi "Can't connect to camera" hoặc đóng ngay (không
    có camera HAL). Chỉ cần xác nhận.
