@@ -173,7 +173,7 @@ mod tests {
         ] {
             let settings = sensor.default_request(template);
             assert_valid("template", &settings);
-            assert_valid("result", &sensor.result(&settings, 1, false));
+            assert_valid("result", &sensor.result(&settings, 1, 0));
         }
         assert_valid("session characteristics", &Sensor::session_characteristics());
     }

@@ -1,0 +1,75 @@
+From e542b88cfe6f9330bad014d2c4c6fef9f1749fb6 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Wed, 25 Nov 2026 09:53:11 +0700
+Subject: [PATCH] media: qcom: camss: stop the started subdevs when a
+ start fails
+
+When a subdev fails s_stream(1) (a CSID without an enabled sink link, a
+sensor that does not answer), video_start_streaming() returns without
+stopping the subdevs it had already started. They keep s_stream_enabled
+set, so the next start skips them with a WARN in call_s_stream() and the
+capture times out without a frame; only the stop after that clears them.
+Seen as every second stream failing on the Tab S7 (gts7l).
+
+Stop them, from the video node up to the one that failed.
+
+caoanhhao used AI to code
+---
+ .../media/platform/qcom/camss/camss-video.c   | 30 ++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
+index 0852eb6f1..74e3e6699 100644
+--- a/drivers/media/platform/qcom/camss/camss-video.c
++++ b/drivers/media/platform/qcom/camss/camss-video.c
+@@ -249,6 +249,27 @@ static int video_prepare_streaming(struct vb2_queue *q)
+ 	return ret;
+ }
+ 
++/* Stops the subdevs from the video node up to, not including, @failed */
++static void video_stop_subdevs(struct camss_video *video, struct media_entity *failed)
++{
++	struct media_entity *entity = &video->vdev.entity;
++	struct media_pad *pad;
++
++	while (1) {
++		pad = &entity->pads[0];
++		if (!(pad->flags & MEDIA_PAD_FL_SINK))
++			break;
++
++		pad = media_pad_remote_pad_first(pad);
++		if (!pad || !is_media_entity_v4l2_subdev(pad->entity) ||
++		    pad->entity == failed)
++			break;
++
++		entity = pad->entity;
++		v4l2_subdev_call(media_entity_to_v4l2_subdev(entity), video, s_stream, 0);
++	}
++}
++
+ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+ {
+ 	struct camss_video *video = vb2_get_drv_priv(q);
+@@ -283,11 +304,18 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+ 
+ 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
+ 		if (ret < 0 && ret != -ENOIOCTLCMD)
+-			goto error;
++			goto error_stop;
+ 	}
+ 
+ 	return 0;
+ 
++error_stop:
++	/*
++	 * Stop the subdevs started before the one that failed, from the video
++	 * node up to it. Left running, they would skip s_stream(1) on the next
++	 * start (WARN in call_s_stream) and never deliver a frame.
++	 */
++	video_stop_subdevs(video, entity);
+ error:
+ 	video_device_pipeline_stop(vdev);
+ 
+-- 
+2.56.1
+

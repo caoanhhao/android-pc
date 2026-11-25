@@ -21,7 +21,7 @@ use std::time::Duration;
 use pccamera::image::Size;
 use pccamera::media::{
     BayerOrder, BusFormat, MediaDevice, Subdev, CID_ANALOGUE_GAIN, CID_EXPOSURE, CID_HBLANK,
-    CID_PIXEL_RATE, CID_VBLANK, FUNCTION_CAMERA_SENSOR,
+    CID_FOCUS_ABSOLUTE, CID_PIXEL_RATE, CID_VBLANK, FUNCTION_CAMERA_SENSOR, FUNCTION_LENS,
 };
 use pccamera::raw::RawSensor;
 use pccamera::v4l2::{Device, FourCc, Interval, Mode, Stream};
@@ -128,6 +128,21 @@ fn capture(args: &[String]) -> Result<()> {
 
     media.reset_links().map_err(|err| format!("reset links: {err}"))?;
     media.configure(&route, format).map_err(|err| err.to_string())?;
+    // Held open for the whole capture: the lens powers down when its node is closed.
+    let mut _lens = None;
+    if let Some(position) = number(args, "--focus")? {
+        let lens = media
+            .entities
+            .iter()
+            .find(|e| e.function == FUNCTION_LENS)
+            .and_then(|e| e.node.clone())
+            .ok_or("no lens")?;
+        let lens = Subdev::open(lens).map_err(|err| err.to_string())?;
+        let range = lens.control_range(CID_FOCUS_ABSOLUTE).map_err(|err| err.to_string())?;
+        eprintln!("focus {range:?}");
+        lens.set_control(CID_FOCUS_ABSOLUTE, position).map_err(|err| format!("focus: {err}"))?;
+        _lens = Some(lens);
+    }
     if let Some(gain) = number(args, "--gain")? {
         subdev.set_control(CID_ANALOGUE_GAIN, gain).map_err(|err| format!("gain: {err}"))?;
     }
@@ -226,8 +241,15 @@ fn still(args: &[String]) -> Result<()> {
         let exposure = pipeline.exposure();
         let stats = pipeline.stats();
         eprintln!(
-            "frame {index}: {} lines gain {} digital {:.2} median {:.3} p99 {:.3} mean {:.3?}",
-            exposure.lines, exposure.gain, exposure.digital, stats.median, stats.highlight, stats.mean
+            "frame {index}: {} lines gain {} digital {:.2} median {:.3} p99 {:.3} mean {:.3?} sharp {:.4}{}",
+            exposure.lines,
+            exposure.gain,
+            exposure.digital,
+            stats.median,
+            stats.highlight,
+            stats.mean,
+            stats.sharpness,
+            if pipeline.focusing() { " (focusing)" } else { "" }
         );
         last = Some(image);
     }

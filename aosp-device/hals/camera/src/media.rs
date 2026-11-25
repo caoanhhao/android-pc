@@ -121,6 +121,7 @@ const LNK_FL_IMMUTABLE: u32 = 2;
 const LNK_FL_LINK_TYPE: u32 = 0xf << 28;
 const LNK_FL_DATA_LINK: u32 = 0;
 const LNK_FL_INTERFACE_LINK: u32 = 1 << 28;
+const LNK_FL_ANCILLARY_LINK: u32 = 2 << 28;
 
 /// `MEDIA_ENT_F_CAM_SENSOR`.
 pub const FUNCTION_CAMERA_SENSOR: u32 = 0x0002_0001;
@@ -176,6 +177,8 @@ pub struct MediaDevice {
     pub pads: Vec<Pad>,
     /// Every data link (interface links are folded into [`Entity::node`]).
     pub links: Vec<Link>,
+    /// Ancillary links (sensor entity, lens or flash entity).
+    pub ancillary: Vec<(u32, u32)>,
 }
 
 fn open_rw(path: &Path) -> io::Result<File> {
@@ -270,8 +273,10 @@ impl MediaDevice {
             })
             .collect();
         let mut data_links = Vec::new();
+        let mut ancillary = Vec::new();
         for raw in links {
             match raw.flags & LNK_FL_LINK_TYPE {
+                LNK_FL_ANCILLARY_LINK => ancillary.push((raw.source_id, raw.sink_id)),
                 LNK_FL_INTERFACE_LINK => {
                     let Some(interface) = interfaces.iter().find(|i| i.id == raw.source_id) else {
                         continue;
@@ -294,7 +299,16 @@ impl MediaDevice {
                 _ => {}
             }
         }
-        Self { file, entities, pads, links: data_links }
+        Self { file, entities, pads, links: data_links, ancillary }
+    }
+
+    /// The lens (focus motor) entity linked to `sensor`.
+    pub fn lens_of(&self, sensor: u32) -> Option<&Entity> {
+        self.ancillary
+            .iter()
+            .filter(|(source, _)| *source == sensor)
+            .filter_map(|(_, sink)| self.entity(*sink))
+            .find(|entity| entity.function == FUNCTION_LENS)
     }
 
     /// The entity with id `id`.
@@ -482,10 +496,9 @@ impl MediaDevice {
     ///
     /// Returns the first link or format error, naming the entity.
     pub fn configure(&mut self, route: &Route, format: BusFormat) -> io::Result<()> {
+        // Always enable: `route` may be older than the last reset_links().
         for link in &route.links {
-            if !link.enabled {
-                self.set_link(link, true)?;
-            }
+            self.set_link(link, true)?;
         }
         for hop in &route.hops[1..] {
             let Some(node) = &hop.entity.node else { continue };

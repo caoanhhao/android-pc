@@ -1,0 +1,26 @@
+From 5e92560d6ae473a83b8720fce5dfa15ae6dddd45 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Wed, 25 Nov 2026 09:53:01 +0700
+Subject: [PATCH] arm64: dts: qcom: gts7l: the ultrawide camera is GRBG
+
+caoanhhao used AI to code
+---
+ arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index 2b001e897..8642541d3 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -497,6 +497,8 @@ &cci1_i2c0 {
+ 	camera@10 {
+ 		compatible = "samsung,s5k5e9";
+ 		reg = <0x10>;
++		/* This module reads out GRBG, the Tab S7+'s GBRG */
++		samsung,bayer-order = "grbg";
+ 
+ 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+ 		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+-- 
+2.56.1
+

@@ -41,6 +41,9 @@ use pccamera::sensor::{
     MAX_STALL_STREAMS, PIPELINE_DEPTH,
 };
 use pccamera::raw::RawPipeline;
+use pccamera::tags::{
+    CONTROL_AF_STATE_ACTIVE_SCAN, CONTROL_AF_STATE_FOCUSED_LOCKED, CONTROL_AF_STATE_INACTIVE,
+};
 use pccamera::v4l2::{self, FourCc, Interval, Mode};
 
 use crate::camera::Camera;
@@ -579,7 +582,7 @@ impl Worker {
         self.stream = None;
         if let Some(sensor) = self.shared.camera.raw() {
             let pipeline = sensor
-                .start(capture.mode.size, self.raw.as_ref())
+                .start(capture.mode.size, self.raw.take())
                 .map_err(|err| format!("{}: cannot set up the pipeline: {err}", sensor.name))?;
             self.raw = Some(pipeline);
         }
@@ -643,9 +646,21 @@ impl Worker {
             buffers.push(returned(output, status, None));
         }
 
+        if sensor::af_triggered(&request.settings) {
+            if let Some(pipeline) = self.raw.as_mut() {
+                pipeline.trigger_focus();
+            }
+        }
         self.af_locked = sensor::af_locked_after(&request.settings, self.af_locked);
-        let result =
-            self.shared.camera.sensor().result(&request.settings, timestamp, self.af_locked);
+        // A focus motor reports its sweep; a webcam focuses on its own and "locks" at once.
+        let af_state = if self.raw.as_ref().is_some_and(RawPipeline::focusing) {
+            CONTROL_AF_STATE_ACTIVE_SCAN
+        } else if self.af_locked {
+            CONTROL_AF_STATE_FOCUSED_LOCKED
+        } else {
+            CONTROL_AF_STATE_INACTIVE
+        };
+        let result = self.shared.camera.sensor().result(&request.settings, timestamp, af_state);
         self.send(CaptureResult {
             frameNumber: request.frame_number,
             result: CameraMetadata { metadata: result.to_bytes() },

@@ -78,6 +78,10 @@ pub struct Stats {
     pub highlight: f32,
     /// Share of sampled blocks with a clipped channel.
     pub clipped: f32,
+    /// Focus measure of the centre: mean squared green difference between neighbouring
+    /// blocks relative to the squared mean green there (steep edges count most, so
+    /// in-focus point lights win over large blurred ones). Higher is sharper.
+    pub sharpness: f32,
 }
 
 /// Histogram bins over the 10-bit range.
@@ -90,11 +94,30 @@ struct Accumulator {
     samples: u32,
     clipped: u32,
     histogram: Vec<u32>,
+    /// Sum of green differences and of green, and the count, in the centre.
+    edge_sum: u64,
+    centre_sum: u64,
+    centre_count: u32,
 }
 
 impl Accumulator {
     fn new() -> Self {
-        Self { sums: [0; 3], mid_tones: 0, samples: 0, clipped: 0, histogram: vec![0; BINS] }
+        Self {
+            sums: [0; 3],
+            mid_tones: 0,
+            samples: 0,
+            clipped: 0,
+            histogram: vec![0; BINS],
+            edge_sum: 0,
+            centre_sum: 0,
+            centre_count: 0,
+        }
+    }
+
+    fn add_edge(&mut self, g: u16, previous: u16) {
+        self.edge_sum += u64::from(g.abs_diff(previous)).pow(2);
+        self.centre_sum += u64::from(g.saturating_sub(BLACK_LEVEL));
+        self.centre_count += 1;
     }
 
     fn add(&mut self, r: u16, g: u16, b: u16, clipped: bool) {
@@ -123,6 +146,9 @@ impl Accumulator {
         for (bin, add) in self.histogram.iter_mut().zip(&other.histogram) {
             *bin += add;
         }
+        self.edge_sum += other.edge_sum;
+        self.centre_sum += other.centre_sum;
+        self.centre_count += other.centre_count;
     }
 
     fn stats(&self) -> Stats {
@@ -150,6 +176,12 @@ impl Accumulator {
             median: percentile(0.5),
             highlight: percentile(0.99),
             clipped: if self.samples == 0 { 0.0 } else { self.clipped as f32 / self.samples as f32 },
+            sharpness: if self.centre_sum == 0 {
+                0.0
+            } else {
+                let mean = self.centre_sum as f64 / f64::from(self.centre_count);
+                (self.edge_sum as f64 / f64::from(self.centre_count) / (mean * mean)) as f32
+            },
         }
     }
 }
@@ -262,6 +294,11 @@ impl Isp {
                             let bottom = &data[(2 * block_row + 1) * layout.stride..];
                             let rows = [top, bottom];
                             let sample_row = block_row % STATS_STEP == 0;
+                            // Focus is measured on every second row of the centre half.
+                            let focus_row = block_row % 2 == 0
+                                && (out_height / 4..out_height * 3 / 4).contains(&block_row);
+                            let focus_columns = out_width / 4..out_width * 3 / 4;
+                            let mut previous_g = 0;
                             for x in 0..out_width {
                                 let column = |dx: usize| 2 * x + dx;
                                 let r = raw10(rows[red_row], column(red_col));
@@ -269,6 +306,12 @@ impl Isp {
                                 let g1 = raw10(rows[red_row], column(1 - red_col));
                                 let g2 = raw10(rows[1 - red_row], column(red_col));
                                 let g = (g1 + g2) / 2;
+                                if focus_row && focus_columns.contains(&x) {
+                                    if x > focus_columns.start {
+                                        acc.add_edge(g, previous_g);
+                                    }
+                                    previous_g = g;
+                                }
                                 if sample_row && x % STATS_STEP == 0 {
                                     let clip = WHITE_LEVEL - 8;
                                     acc.add(r, g, b, r >= clip || g1 >= clip || g2 >= clip || b >= clip);
@@ -541,14 +584,14 @@ mod tests {
     #[test]
     fn grey_stays_grey_and_balanced() {
         // A grey card seen through a sensor with strong green: AWB must undo it.
-        let (data, layout) = flat(64, 32, [200, 400, 250]);
+        let (data, layout) = flat(128, 64, [200, 400, 250]);
         let isp = Isp::new();
         let (_, stats) = isp.process(&data, layout, &Settings::default()).unwrap();
         let mut awb = AutoWhiteBalance::default();
         awb.update(&stats, 1.0);
         let settings = Settings { wb: awb.gains(), digital_gain: 1.0 };
         let (image, _) = isp.process(&data, layout, &settings).unwrap();
-        assert_eq!(image.size(), Size { width: 32, height: 16 });
+        assert_eq!(image.size(), Size { width: 64, height: 32 });
         let [y, cb, cr] = image.planes();
         assert!(y.iter().all(|v| *v == y[0]) && y[0] > 100, "luma {}", y[0]);
         assert!(cb.iter().all(|v| v.abs_diff(128) <= 1), "cb {}", cb[0]);

@@ -388,11 +388,9 @@ impl Sensor {
     }
 
     /// The result metadata of a capture: the settings it was taken with plus the dynamic
-    /// state a webcam always has. `af_locked` reports a focus lock after an AF trigger.
-    pub fn result(&self, settings: &Metadata, timestamp: i64, af_locked: bool) -> Metadata {
+    /// state a webcam always has, and `af_state` (`CONTROL_AF_STATE_*`).
+    pub fn result(&self, settings: &Metadata, timestamp: i64, af_state: u8) -> Metadata {
         let mut md = settings.clone();
-        let af_state =
-            if af_locked { CONTROL_AF_STATE_FOCUSED_LOCKED } else { CONTROL_AF_STATE_INACTIVE };
         md.set(CONTROL_AF_STATE, &[af_state]);
         md.set(CONTROL_AE_STATE, &[CONTROL_AE_STATE_CONVERGED]);
         md.set(CONTROL_AE_LOCK, &[OFF]);
@@ -422,6 +420,11 @@ pub const MAX_PROCESSED_STREAMS: i32 = 2;
 pub const MAX_STALL_STREAMS: i32 = 1;
 /// JPEG quality of the templates.
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
+
+/// Whether `settings` start an AF sweep.
+pub fn af_triggered(settings: &Metadata) -> bool {
+    settings.first(CONTROL_AF_TRIGGER) == Some(CONTROL_AF_TRIGGER_START)
+}
 
 /// The AF state a capture reports, from the AF trigger of its settings: a webcam
 /// focuses on its own, so a trigger "locks" at once and a cancel unlocks.
@@ -635,7 +638,7 @@ mod tests {
         let mut settings = sensor.default_request(Template::StillCapture);
         settings.set(CONTROL_AF_TRIGGER, &[CONTROL_AF_TRIGGER_START]);
         assert!(af_locked_after(&settings, false));
-        let result = sensor.result(&settings, 42, true);
+        let result = sensor.result(&settings, 42, CONTROL_AF_STATE_FOCUSED_LOCKED);
         assert_eq!(result.first(SENSOR_TIMESTAMP), Some(42));
         assert_eq!(result.first(CONTROL_AF_STATE), Some(CONTROL_AF_STATE_FOCUSED_LOCKED));
         assert_eq!(

@@ -11,8 +11,9 @@ use crate::isp::{
     AutoExposure, AutoWhiteBalance, Exposure, ExposureLimits, Isp, RawLayout, Settings, Stats,
 };
 use crate::media::{
-    BayerOrder, BusFormat, Entity, MediaDevice, Route, Subdev, CID_ANALOGUE_GAIN, CID_EXPOSURE,
-    CID_HBLANK, CID_PIXEL_RATE, CID_VBLANK, FUNCTION_CAMERA_SENSOR,
+    BayerOrder, BusFormat, ControlRange, Entity, MediaDevice, Route, Subdev, CID_ANALOGUE_GAIN,
+    CID_EXPOSURE, CID_FOCUS_ABSOLUTE, CID_HBLANK, CID_PIXEL_RATE, CID_VBLANK,
+    FUNCTION_CAMERA_SENSOR,
 };
 use crate::v4l2::{FourCc, Interval, Mode};
 
@@ -26,6 +27,12 @@ const AE_PERIOD: u32 = 3;
 /// How far each update moves toward the estimate.
 const AE_SPEED: f32 = 0.7;
 const AWB_SPEED: f32 = 0.25;
+/// Frames to skip after moving the lens: the next one is exposed while it moves.
+const AF_SETTLE_FRAMES: u32 = 2;
+/// The first focus sweep waits for exposure to settle, at most this many frames.
+const AF_FIRST_FRAME: u32 = 20;
+/// Positions of the coarse focus sweep, over the whole lens range.
+const AF_COARSE_STEPS: i32 = 10;
 
 /// Where a camera points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,6 +66,8 @@ pub struct RawSensor {
     pub rotation: i32,
     /// Its modes: capture size and frame interval at the default blanking.
     pub modes: Vec<(Size, Interval)>,
+    /// The sub-device of its focus motor, if it has one.
+    pub lens: Option<PathBuf>,
 }
 
 fn is_pix_path(entity: &Entity) -> bool {
@@ -140,7 +149,9 @@ impl RawSensor {
         if modes.is_empty() {
             return Ok(None);
         }
+        let lens = media.lens_of(entity.id).and_then(|lens| lens.node.clone());
         Ok(Some(Self {
+            lens,
             media: path.to_owned(),
             name: entity.name.clone(),
             subdev: subdev_path,
@@ -172,7 +183,7 @@ impl RawSensor {
     /// # Errors
     ///
     /// Returns the first media, format or control error.
-    pub fn start(&self, size: Size, previous: Option<&RawPipeline>) -> io::Result<RawPipeline> {
+    pub fn start(&self, size: Size, previous: Option<RawPipeline>) -> io::Result<RawPipeline> {
         let mut media = MediaDevice::open(&self.media)?;
         let entity = media
             .entity_named(&self.name)
@@ -192,15 +203,29 @@ impl RawSensor {
         media.reset_links()?;
         media.configure(&route, format)?;
         let limits = exposure_limits(&subdev, size)?;
+        let previous_ae = previous.as_ref().map(|previous| (previous.ae.exposure(), previous.awb));
+        // The lens stays powered (and in place) while its node is open, so carry it over.
+        let af = match previous.and_then(|previous| previous.af) {
+            Some(af) => Some(af),
+            None => match &self.lens {
+                Some(path) => AutoFocus::open(path)
+                    .inspect_err(|err| log::warn!("{}: {err}", path.display()))
+                    .ok()
+                    .flatten(),
+                None => None,
+            },
+        };
         let mut pipeline = RawPipeline {
             subdev,
             layout: RawLayout { size, stride: 0, order: self.order },
             isp: Isp::new(),
-            ae: match previous {
-                Some(previous) => AutoExposure::resume(limits, previous.ae.exposure()),
+            ae: match previous_ae {
+                Some((exposure, _)) => AutoExposure::resume(limits, exposure),
                 None => AutoExposure::new(limits),
             },
-            awb: previous.map_or_else(AutoWhiteBalance::default, |previous| previous.awb),
+            awb: previous_ae.map_or_else(AutoWhiteBalance::default, |(_, awb)| awb),
+            af,
+            frames: 0,
             frames_since_exposure: 0,
             applied: None,
             stats: Stats::default(),
@@ -257,9 +282,29 @@ pub struct RawPipeline {
     frames_since_exposure: u32,
     applied: Option<Exposure>,
     stats: Stats,
+    af: Option<AutoFocus>,
+    /// Frames processed so far.
+    frames: u32,
 }
 
 impl RawPipeline {
+    /// Whether the camera has a focus motor.
+    pub fn has_focus(&self) -> bool {
+        self.af.is_some()
+    }
+
+    /// Starts a focus sweep (an AF trigger, or the first frames of a camera).
+    pub fn trigger_focus(&mut self) {
+        if let Some(af) = &mut self.af {
+            af.start();
+        }
+    }
+
+    /// Whether a focus sweep is running.
+    pub fn focusing(&self) -> bool {
+        self.af.as_ref().is_some_and(AutoFocus::scanning)
+    }
+
     /// The size of the processed frames.
     pub fn output_size(&self) -> Size {
         self.layout.output_size()
@@ -314,6 +359,11 @@ impl RawPipeline {
         self.stats = stats;
         self.awb.update(&stats, AWB_SPEED);
         self.frames_since_exposure += 1;
+        self.frames = self.frames.saturating_add(1);
+        let settled = self.ae.converged() || self.frames >= AF_FIRST_FRAME;
+        if let Some(af) = self.af.as_mut().filter(|_| settled) {
+            af.update(&stats);
+        }
         if self.frames_since_exposure >= AE_PERIOD {
             // The ISP's digital gain counts as exposure too.
             let mut metered = stats;
@@ -325,5 +375,87 @@ impl RawPipeline {
             }
         }
         Ok(image)
+    }
+}
+
+/// Contrast auto focus: a coarse sweep over the lens range, then a fine one around the
+/// sharpest position, then the lens stays at the best one.
+#[derive(Debug)]
+struct AutoFocus {
+    lens: Subdev,
+    range: ControlRange,
+    /// Positions still to measure, next first.
+    pending: Vec<i32>,
+    /// Measured positions and their sharpness.
+    measured: Vec<(i32, f32)>,
+    fine: bool,
+    /// Frames to skip before the next measurement.
+    wait: u32,
+}
+
+impl AutoFocus {
+    /// Opens the lens at `path`; `None` if it has no focus control.
+    fn open(path: &Path) -> io::Result<Option<Self>> {
+        let lens = Subdev::open(path)?;
+        let Some(range) = lens.control_range(CID_FOCUS_ABSOLUTE)? else { return Ok(None) };
+        let mut af = Self { lens, range, pending: Vec::new(), measured: Vec::new(), fine: false, wait: 0 };
+        af.start();
+        Ok(Some(af))
+    }
+
+    fn scanning(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn start(&mut self) {
+        let span = self.range.max - self.range.min;
+        self.pending = (0..=AF_COARSE_STEPS).map(|step| self.range.min + span * step / AF_COARSE_STEPS).collect();
+        self.measured.clear();
+        self.fine = false;
+        self.move_to(self.pending[0]);
+    }
+
+    fn move_to(&mut self, position: i32) {
+        if let Err(err) = self.lens.set_control(CID_FOCUS_ABSOLUTE, position) {
+            log::warn!("focus {position}: {err}");
+        }
+        self.wait = AF_SETTLE_FRAMES;
+    }
+
+    fn update(&mut self, stats: &Stats) {
+        if self.pending.is_empty() {
+            return;
+        }
+        if self.wait > 0 {
+            self.wait -= 1;
+            return;
+        }
+        let position = self.pending.remove(0);
+        self.measured.push((position, stats.sharpness));
+        if self.pending.is_empty() {
+            let best = self.best();
+            if !self.fine {
+                self.fine = true;
+                let step = ((self.range.max - self.range.min) / AF_COARSE_STEPS / 4).max(1);
+                self.pending = (-3..=3)
+                    .map(|offset| best + offset * step)
+                    .filter(|p| (self.range.min..=self.range.max).contains(p))
+                    .filter(|p| !self.measured.iter().any(|(known, _)| known == p))
+                    .collect();
+            }
+            if self.pending.is_empty() {
+                log::info!("focus at {best} ({:?})", self.measured);
+                self.move_to(best);
+                return;
+            }
+        }
+        self.move_to(self.pending[0]);
+    }
+
+    fn best(&self) -> i32 {
+        self.measured
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(self.range.default, |(position, _)| *position)
     }
 }
