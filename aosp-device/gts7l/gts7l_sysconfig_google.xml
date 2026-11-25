@@ -2,9 +2,10 @@
 <!-- What Google's google.xml gives a preinstalled GmsCore and Play Store, for the user-installed
      microG and Play Store: they keep network access in Doze and Data Saver, and their
      systemExempted foreground services may start (Play's DownloadService crashes without it).
-     The user allowlist tools/gts7l-google-apps.sh sets is lost when Play reinstalls itself. -->
+     Play needs the full allow-in-power-save: -except-idle does not exempt its systemExempted
+     services. The user allowlist gts7l-google-apps.sh sets is lost when Play reinstalls itself. -->
 <config>
     <allow-in-power-save package="com.google.android.gms"/>
     <allow-in-data-usage-save package="com.google.android.gms"/>
-    <allow-in-power-save-except-idle package="com.android.vending"/>
+    <allow-in-power-save package="com.android.vending"/>
 </config>
