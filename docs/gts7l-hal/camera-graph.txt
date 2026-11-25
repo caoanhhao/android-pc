@@ -1,0 +1,349 @@
+- entity 1: msm_csiphy0 (function 0x4002) /dev/v4l-subdev0
+	pad0: Sink
+		<- "s5k3m5 21-002d":0 [ENABLED,IMMUTABLE]
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 4: msm_csiphy1 (function 0x4002) /dev/v4l-subdev1
+	pad0: Sink
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 7: msm_csiphy2 (function 0x4002) /dev/v4l-subdev2
+	pad0: Sink
+		<- "s5k-tab 23-0010":0 [ENABLED,IMMUTABLE]
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 10: msm_csiphy3 (function 0x4002) /dev/v4l-subdev3
+	pad0: Sink
+		<- "s5k-tab 22-002d":0 [ENABLED,IMMUTABLE]
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 13: msm_csiphy4 (function 0x4002) /dev/v4l-subdev4
+	pad0: Sink
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 16: msm_csiphy5 (function 0x4002) /dev/v4l-subdev5
+	pad0: Sink
+	pad1: Source
+		-> "msm_csid0":0 []
+		-> "msm_csid1":0 []
+		-> "msm_csid2":0 []
+		-> "msm_csid3":0 []
+- entity 19: msm_csid0 (function 0x4002) /dev/v4l-subdev6
+	pad0: Sink
+		<- "msm_csiphy0":1 []
+		<- "msm_csiphy1":1 []
+		<- "msm_csiphy2":1 []
+		<- "msm_csiphy3":1 []
+		<- "msm_csiphy4":1 []
+		<- "msm_csiphy5":1 []
+	pad1: Source
+		-> "msm_vfe0_rdi0":0 []
+		-> "msm_vfe1_rdi0":0 []
+		-> "msm_vfe2_rdi0":0 []
+		-> "msm_vfe3_rdi0":0 []
+	pad2: Source
+		-> "msm_vfe0_rdi1":0 []
+		-> "msm_vfe1_rdi1":0 []
+		-> "msm_vfe2_rdi1":0 []
+		-> "msm_vfe3_rdi1":0 []
+	pad3: Source
+		-> "msm_vfe0_rdi2":0 []
+		-> "msm_vfe1_rdi2":0 []
+		-> "msm_vfe2_rdi2":0 []
+		-> "msm_vfe3_rdi2":0 []
+	pad4: Source
+		-> "msm_vfe2_rdi3":0 []
+		-> "msm_vfe3_rdi3":0 []
+- entity 25: msm_csid1 (function 0x4002) /dev/v4l-subdev7
+	pad0: Sink
+		<- "msm_csiphy0":1 []
+		<- "msm_csiphy1":1 []
+		<- "msm_csiphy2":1 []
+		<- "msm_csiphy3":1 []
+		<- "msm_csiphy4":1 []
+		<- "msm_csiphy5":1 []
+	pad1: Source
+		-> "msm_vfe0_rdi0":0 []
+		-> "msm_vfe1_rdi0":0 []
+		-> "msm_vfe2_rdi0":0 []
+		-> "msm_vfe3_rdi0":0 []
+	pad2: Source
+		-> "msm_vfe0_rdi1":0 []
+		-> "msm_vfe1_rdi1":0 []
+		-> "msm_vfe2_rdi1":0 []
+		-> "msm_vfe3_rdi1":0 []
+	pad3: Source
+		-> "msm_vfe0_rdi2":0 []
+		-> "msm_vfe1_rdi2":0 []
+		-> "msm_vfe2_rdi2":0 []
+		-> "msm_vfe3_rdi2":0 []
+	pad4: Source
+		-> "msm_vfe2_rdi3":0 []
+		-> "msm_vfe3_rdi3":0 []
+- entity 31: msm_csid2 (function 0x4002) /dev/v4l-subdev8
+	pad0: Sink
+		<- "msm_csiphy0":1 []
+		<- "msm_csiphy1":1 []
+		<- "msm_csiphy2":1 []
+		<- "msm_csiphy3":1 []
+		<- "msm_csiphy4":1 []
+		<- "msm_csiphy5":1 []
+	pad1: Source
+		-> "msm_vfe0_rdi0":0 []
+		-> "msm_vfe1_rdi0":0 []
+		-> "msm_vfe2_rdi0":0 []
+		-> "msm_vfe3_rdi0":0 []
+	pad2: Source
+		-> "msm_vfe0_rdi1":0 []
+		-> "msm_vfe1_rdi1":0 []
+		-> "msm_vfe2_rdi1":0 []
+		-> "msm_vfe3_rdi1":0 []
+	pad3: Source
+		-> "msm_vfe0_rdi2":0 []
+		-> "msm_vfe1_rdi2":0 []
+		-> "msm_vfe2_rdi2":0 []
+		-> "msm_vfe3_rdi2":0 []
+	pad4: Source
+		-> "msm_vfe2_rdi3":0 []
+		-> "msm_vfe3_rdi3":0 []
+- entity 37: msm_csid3 (function 0x4002) /dev/v4l-subdev9
+	pad0: Sink
+		<- "msm_csiphy0":1 []
+		<- "msm_csiphy1":1 []
+		<- "msm_csiphy2":1 []
+		<- "msm_csiphy3":1 []
+		<- "msm_csiphy4":1 []
+		<- "msm_csiphy5":1 []
+	pad1: Source
+		-> "msm_vfe0_rdi0":0 []
+		-> "msm_vfe1_rdi0":0 []
+		-> "msm_vfe2_rdi0":0 []
+		-> "msm_vfe3_rdi0":0 []
+	pad2: Source
+		-> "msm_vfe0_rdi1":0 []
+		-> "msm_vfe1_rdi1":0 []
+		-> "msm_vfe2_rdi1":0 []
+		-> "msm_vfe3_rdi1":0 []
+	pad3: Source
+		-> "msm_vfe0_rdi2":0 []
+		-> "msm_vfe1_rdi2":0 []
+		-> "msm_vfe2_rdi2":0 []
+		-> "msm_vfe3_rdi2":0 []
+	pad4: Source
+		-> "msm_vfe2_rdi3":0 []
+		-> "msm_vfe3_rdi3":0 []
+- entity 43: msm_vfe0_rdi0 (function 0x4002) /dev/v4l-subdev10
+	pad0: Sink
+		<- "msm_csid0":1 []
+		<- "msm_csid1":1 []
+		<- "msm_csid2":1 []
+		<- "msm_csid3":1 []
+	pad1: Source
+		-> "msm_vfe0_video0":0 [ENABLED,IMMUTABLE]
+- entity 46: msm_vfe0_video0 (function 0x10001) /dev/video0
+	pad0: Sink
+		<- "msm_vfe0_rdi0":1 [ENABLED,IMMUTABLE]
+- entity 52: msm_vfe0_rdi1 (function 0x4002) /dev/v4l-subdev11
+	pad0: Sink
+		<- "msm_csid0":2 []
+		<- "msm_csid1":2 []
+		<- "msm_csid2":2 []
+		<- "msm_csid3":2 []
+	pad1: Source
+		-> "msm_vfe0_video1":0 [ENABLED,IMMUTABLE]
+- entity 55: msm_vfe0_video1 (function 0x10001) /dev/video1
+	pad0: Sink
+		<- "msm_vfe0_rdi1":1 [ENABLED,IMMUTABLE]
+- entity 61: msm_vfe0_rdi2 (function 0x4002) /dev/v4l-subdev12
+	pad0: Sink
+		<- "msm_csid0":3 []
+		<- "msm_csid1":3 []
+		<- "msm_csid2":3 []
+		<- "msm_csid3":3 []
+	pad1: Source
+		-> "msm_vfe0_video2":0 [ENABLED,IMMUTABLE]
+- entity 64: msm_vfe0_video2 (function 0x10001) /dev/video2
+	pad0: Sink
+		<- "msm_vfe0_rdi2":1 [ENABLED,IMMUTABLE]
+- entity 70: msm_vfe1_rdi0 (function 0x4002) /dev/v4l-subdev13
+	pad0: Sink
+		<- "msm_csid0":1 []
+		<- "msm_csid1":1 []
+		<- "msm_csid2":1 []
+		<- "msm_csid3":1 []
+	pad1: Source
+		-> "msm_vfe1_video0":0 [ENABLED,IMMUTABLE]
+- entity 73: msm_vfe1_video0 (function 0x10001) /dev/video3
+	pad0: Sink
+		<- "msm_vfe1_rdi0":1 [ENABLED,IMMUTABLE]
+- entity 79: msm_vfe1_rdi1 (function 0x4002) /dev/v4l-subdev14
+	pad0: Sink
+		<- "msm_csid0":2 []
+		<- "msm_csid1":2 []
+		<- "msm_csid2":2 []
+		<- "msm_csid3":2 []
+	pad1: Source
+		-> "msm_vfe1_video1":0 [ENABLED,IMMUTABLE]
+- entity 82: msm_vfe1_video1 (function 0x10001) /dev/video4
+	pad0: Sink
+		<- "msm_vfe1_rdi1":1 [ENABLED,IMMUTABLE]
+- entity 88: msm_vfe1_rdi2 (function 0x4002) /dev/v4l-subdev15
+	pad0: Sink
+		<- "msm_csid0":3 []
+		<- "msm_csid1":3 []
+		<- "msm_csid2":3 []
+		<- "msm_csid3":3 []
+	pad1: Source
+		-> "msm_vfe1_video2":0 [ENABLED,IMMUTABLE]
+- entity 91: msm_vfe1_video2 (function 0x10001) /dev/video5
+	pad0: Sink
+		<- "msm_vfe1_rdi2":1 [ENABLED,IMMUTABLE]
+- entity 97: msm_vfe2_rdi0 (function 0x4002) /dev/v4l-subdev16
+	pad0: Sink
+		<- "msm_csid0":1 []
+		<- "msm_csid1":1 []
+		<- "msm_csid2":1 []
+		<- "msm_csid3":1 []
+	pad1: Source
+		-> "msm_vfe2_video0":0 [ENABLED,IMMUTABLE]
+- entity 100: msm_vfe2_video0 (function 0x10001) /dev/video6
+	pad0: Sink
+		<- "msm_vfe2_rdi0":1 [ENABLED,IMMUTABLE]
+- entity 106: msm_vfe2_rdi1 (function 0x4002) /dev/v4l-subdev17
+	pad0: Sink
+		<- "msm_csid0":2 []
+		<- "msm_csid1":2 []
+		<- "msm_csid2":2 []
+		<- "msm_csid3":2 []
+	pad1: Source
+		-> "msm_vfe2_video1":0 [ENABLED,IMMUTABLE]
+- entity 109: msm_vfe2_video1 (function 0x10001) /dev/video7
+	pad0: Sink
+		<- "msm_vfe2_rdi1":1 [ENABLED,IMMUTABLE]
+- entity 115: msm_vfe2_rdi2 (function 0x4002) /dev/v4l-subdev18
+	pad0: Sink
+		<- "msm_csid0":3 []
+		<- "msm_csid1":3 []
+		<- "msm_csid2":3 []
+		<- "msm_csid3":3 []
+	pad1: Source
+		-> "msm_vfe2_video2":0 [ENABLED,IMMUTABLE]
+- entity 118: msm_vfe2_video2 (function 0x10001) /dev/video8
+	pad0: Sink
+		<- "msm_vfe2_rdi2":1 [ENABLED,IMMUTABLE]
+- entity 124: msm_vfe2_rdi3 (function 0x4002) /dev/v4l-subdev19
+	pad0: Sink
+		<- "msm_csid0":4 []
+		<- "msm_csid1":4 []
+		<- "msm_csid2":4 []
+		<- "msm_csid3":4 []
+	pad1: Source
+		-> "msm_vfe2_video3":0 [ENABLED,IMMUTABLE]
+- entity 127: msm_vfe2_video3 (function 0x10001) /dev/video9
+	pad0: Sink
+		<- "msm_vfe2_rdi3":1 [ENABLED,IMMUTABLE]
+- entity 133: msm_vfe3_rdi0 (function 0x4002) /dev/v4l-subdev20
+	pad0: Sink
+		<- "msm_csid0":1 []
+		<- "msm_csid1":1 []
+		<- "msm_csid2":1 []
+		<- "msm_csid3":1 []
+	pad1: Source
+		-> "msm_vfe3_video0":0 [ENABLED,IMMUTABLE]
+- entity 136: msm_vfe3_video0 (function 0x10001) /dev/video10
+	pad0: Sink
+		<- "msm_vfe3_rdi0":1 [ENABLED,IMMUTABLE]
+- entity 142: msm_vfe3_rdi1 (function 0x4002) /dev/v4l-subdev21
+	pad0: Sink
+		<- "msm_csid0":2 []
+		<- "msm_csid1":2 []
+		<- "msm_csid2":2 []
+		<- "msm_csid3":2 []
+	pad1: Source
+		-> "msm_vfe3_video1":0 [ENABLED,IMMUTABLE]
+- entity 145: msm_vfe3_video1 (function 0x10001) /dev/video11
+	pad0: Sink
+		<- "msm_vfe3_rdi1":1 [ENABLED,IMMUTABLE]
+- entity 151: msm_vfe3_rdi2 (function 0x4002) /dev/v4l-subdev22
+	pad0: Sink
+		<- "msm_csid0":3 []
+		<- "msm_csid1":3 []
+		<- "msm_csid2":3 []
+		<- "msm_csid3":3 []
+	pad1: Source
+		-> "msm_vfe3_video2":0 [ENABLED,IMMUTABLE]
+- entity 154: msm_vfe3_video2 (function 0x10001) /dev/video12
+	pad0: Sink
+		<- "msm_vfe3_rdi2":1 [ENABLED,IMMUTABLE]
+- entity 160: msm_vfe3_rdi3 (function 0x4002) /dev/v4l-subdev23
+	pad0: Sink
+		<- "msm_csid0":4 []
+		<- "msm_csid1":4 []
+		<- "msm_csid2":4 []
+		<- "msm_csid3":4 []
+	pad1: Source
+		-> "msm_vfe3_video3":0 [ENABLED,IMMUTABLE]
+- entity 163: msm_vfe3_video3 (function 0x10001) /dev/video13
+	pad0: Sink
+		<- "msm_vfe3_rdi3":1 [ENABLED,IMMUTABLE]
+- entity 329: s5k3m5 21-002d (function 0x20001) /dev/v4l-subdev24
+	pad0: Source
+		-> "msm_csiphy0":0 [ENABLED,IMMUTABLE]
+- entity 331: s5k-tab 22-002d (function 0x20001) /dev/v4l-subdev25
+	pad0: Source
+		-> "msm_csiphy3":0 [ENABLED,IMMUTABLE]
+- entity 333: s5k-tab 23-0010 (function 0x20001) /dev/v4l-subdev26
+	pad0: Source
+		-> "msm_csiphy2":0 [ENABLED,IMMUTABLE]
+- entity 335: dw9807 24-000c (function 0x20003) /dev/v4l-subdev27
+
+sensor s5k3m5 21-002d (/dev/v4l-subdev24)
+  active 0x300a 4128x3096
+  code 0x300a: [(4128, 3096), (1008, 756)]
+  exposure = 256 ControlRange { min: 8, max: 3318, step: 1, default: 256 }
+  analogue_gain = 1 ControlRange { min: 1, max: 16, step: 1, default: 1 }
+  vblank = 226 ControlRange { min: 226, max: 62439, step: 1, default: 226 }
+  hblank = 720 ControlRange { min: 720, max: 720, step: 1, default: 720 }
+  orientation = 1 ControlRange { min: 0, max: 2, step: 1, default: 1 }
+  rotation = 90 ControlRange { min: 90, max: 90, step: 1, default: 90 }
+  pixel_rate = 552960000
+  route: s5k3m5 21-002d -> msm_csiphy0 -> msm_csid0 -> msm_vfe0_rdi0 -> msm_vfe0_video0
+
+sensor s5k-tab 22-002d (/dev/v4l-subdev25)
+  active 0x300e 3264x2448
+  code 0x300e: [(3264, 2448), (800, 600)]
+  exposure = 629 ControlRange { min: 2, max: 2508, step: 1, default: 629 }
+  analogue_gain = 32 ControlRange { min: 32, max: 512, step: 1, default: 32 }
+  vblank = 68 ControlRange { min: 68, max: 63087, step: 1, default: 68 }
+  hblank = 424 ControlRange { min: 424, max: 424, step: 1, default: 424 }
+  orientation = 0 ControlRange { min: 0, max: 2, step: 1, default: 0 }
+  rotation = 270 ControlRange { min: 270, max: 270, step: 1, default: 270 }
+  pixel_rate = 633600000
+  route: s5k-tab 22-002d -> msm_csiphy3 -> msm_csid0 -> msm_vfe0_rdi0 -> msm_vfe0_video0
+
+sensor s5k-tab 23-0010 (/dev/v4l-subdev26)
+  active 0x300e 2576x1932
+  code 0x300e: [(2576, 1932), (1296, 972)]
+  exposure = 507 ControlRange { min: 2, max: 2022, step: 1, default: 507 }
+  analogue_gain = 32 ControlRange { min: 32, max: 512, step: 1, default: 32 }
+  vblank = 98 ControlRange { min: 98, max: 63603, step: 1, default: 98 }
+  hblank = 536 ControlRange { min: 536, max: 536, step: 1, default: 536 }
+  orientation = 1 ControlRange { min: 0, max: 2, step: 1, default: 1 }
+  rotation = 90 ControlRange { min: 90, max: 90, step: 1, default: 90 }
+  pixel_rate = 359040000
+  route: s5k-tab 23-0010 -> msm_csiphy2 -> msm_csid0 -> msm_vfe0_rdi0 -> msm_vfe0_video0

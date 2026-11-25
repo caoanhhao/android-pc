@@ -22,6 +22,8 @@ const CID_CAMERA_ORIENTATION: u32 = 0x009a_0922;
 /// `V4L2_CID_CAMERA_SENSOR_ROTATION`, degrees.
 const CID_CAMERA_SENSOR_ROTATION: u32 = 0x009a_0923;
 
+/// Highest frame rate a raw camera reports.
+pub const MAX_FPS: u32 = 30;
 /// Frames between exposure updates: a new exposure shows up two frames after it is set.
 const AE_PERIOD: u32 = 3;
 /// How far each update moves toward the estimate.
@@ -164,14 +166,19 @@ impl RawSensor {
         }))
     }
 
-    /// The V4L2 capture modes: packed RAW10 at each size.
+    /// The V4L2 capture modes: packed RAW10 at each size, at most [`MAX_FPS`] (the
+    /// software ISP keeps up with no more, faster small modes would only drop frames).
     pub fn capture_modes(&self) -> Vec<Mode> {
         self.modes
             .iter()
             .map(|(size, interval)| Mode {
                 fourcc: FourCc(self.order.raw10_fourcc()),
                 size: *size,
-                intervals: vec![*interval],
+                intervals: vec![if interval.fps() > f64::from(MAX_FPS) {
+                    Interval { numerator: 1, denominator: MAX_FPS }
+                } else {
+                    *interval
+                }],
             })
             .collect()
     }

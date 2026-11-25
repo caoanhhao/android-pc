@@ -317,8 +317,8 @@ impl Isp {
                                     acc.add(r, g, b, r >= clip || g1 >= clip || g2 >= clip || b >= clip);
                                 }
                                 let encode = |value: u16, channel: usize| {
-                                    let linear = i64::from(value.saturating_sub(BLACK_LEVEL))
-                                        * gains[channel]
+                                    let linear = (i64::from(value.saturating_sub(BLACK_LEVEL))
+                                        * gains[channel])
                                         >> 12;
                                     gamma[(linear as usize).min(GAMMA_ENTRIES - 1)]
                                 };
