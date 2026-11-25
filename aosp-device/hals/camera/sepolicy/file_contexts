@@ -1,1 +1,4 @@
 /vendor/bin/hw/android\.hardware\.camera\.provider-service\.pc    u:object_r:hal_pc_camera_exec:s0
+# Raw cameras (Qualcomm CAMSS): the media controller and the sensor/CSI sub-devices.
+/dev/media[0-9]*         u:object_r:video_device:s0
+/dev/v4l-subdev[0-9]*    u:object_r:video_device:s0

@@ -83,6 +83,31 @@ impl Yuv420 {
         Self { size, y: vec![y; area(size)], cb: vec![cb; chroma], cr: vec![cr; chroma] }
     }
 
+    /// A frame from its planes: `y` of `size`, `cb` and `cr` of [`chroma_size`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConvertError`] if a plane has the wrong length.
+    pub fn from_owned_planes(
+        size: Size,
+        y: Vec<u8>,
+        cb: Vec<u8>,
+        cr: Vec<u8>,
+    ) -> Result<Self, ConvertError> {
+        let chroma = area(chroma_size(size));
+        if y.len() != area(size) || cb.len() != chroma || cr.len() != chroma {
+            return Err(ConvertError(format!(
+                "planes of {}, {} and {} bytes for {}x{}",
+                y.len(),
+                cb.len(),
+                cr.len(),
+                size.width,
+                size.height
+            )));
+        }
+        Ok(Self { size, y, cb, cr })
+    }
+
     /// The image size.
     pub fn size(&self) -> Size {
         self.size

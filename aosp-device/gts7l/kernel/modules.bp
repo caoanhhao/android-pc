@@ -76,5 +76,14 @@ prebuilt_kernel_modules {
         // takes qcom,sm8250-venus over venus when both are built; firmware
         // qcom/sm8250/gts7xl/venus.mbn (DT firmware-name) from gts7l_fw.
         "qcom-iris.ko",
+        // Cameras (docs/gts7l-hal/camera.md): camera clock controller, the two CCI I2C
+        // masters, CAMSS, the s5k3m5 rear, s5k4ha front and s5k5e9 ultrawide sensors
+        // (s5k-tab) and the rear focus motor. modprobe pulls in the V4L2 cores.
+        "camcc-sm8250.ko",
+        "i2c-qcom-cci.ko",
+        "qcom-camss.ko",
+        "s5k3m5.ko",
+        "s5k-tab.ko",
+        "dw9807-vcm.ko",
     ],
 }

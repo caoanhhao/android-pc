@@ -47,6 +47,16 @@ rust_test_host {
     },
 }
 
+// Bring-up tool for raw CAMSS cameras: media graph, raw frames, the HAL's ISP on the
+// command line. Not in any product; `m pccamera-raw` and push it.
+rust_binary {
+    name: "pccamera-raw",
+    vendor: true,
+    srcs: ["src/bin/pccamera_raw.rs"],
+    edition: "2021",
+    rustlibs: ["libpccamera"],
+}
+
 rust_defaults {
     name: "android.hardware.camera.provider-service.pc_defaults",
     defaults: ["pc_hal_defaults"],
