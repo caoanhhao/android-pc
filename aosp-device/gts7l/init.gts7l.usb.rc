@@ -64,11 +64,13 @@ on init
 on property:vendor.usb.gadget.hal=1
     setprop sys.usb.configfs 2
 
+# Sets the gadget up once and exits; without oneshot init restarts it every few seconds.
 service vendor.gts7l-usb /vendor/bin/gts7l-usb.sh
     class core
     user root
     group root shell
     disabled
+    oneshot
 
 # The ACM function's tty. Restarted by init after each session.
 service vendor.gts7l-console /vendor/bin/gts7l-usb.sh console
