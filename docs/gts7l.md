@@ -1230,27 +1230,37 @@ Open:
   `sa_data` bytes with `to_ne_bytes` now.
 
 
-## 24. microG and Aurora Store, as user apps (2026-11-25)
+## 24. microG, Play Store and Aurora Store, as user apps (2026-11-25)
 
-The ROM carries nothing of Google's (the user's choice): unlike the PC product, `aosp_gts7l.mk`
-does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs over
-adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
+The ROM carries no Google apps (the user's choice): unlike the PC product, `aosp_gts7l.mk`
+does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs them
+over adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
 
 - microG GmsCore (`com.google.android.gms`), the APK of `tools/fetch-apps.sh microg` (one APK
-  for every ABI), with its runtime permissions granted and on the Doze allowlist. As a user
-  app it gets no signature spoofing (`aosp17-microg-signature-spoofing.patch` accepts only
-  preinstalled system apps) and no privileged permissions, so its self-check fails the
-  spoofing test and Google sign-in through it is limited.
+  for every ABI), with its runtime permissions granted and on the Doze allowlist.
+- Google Play Store (`com.android.vending` 50.7.34-31), the arm64 `Phonesky.apk` of
+  `google_apis_playstore/arm64-v8a-37.0_r08.zip` (the PC's copy has only `lib/x86_64/`
+  libraries), pinned by SHA-256 and signer; extracted into `out/downloads/playstore/`, never
+  into git.
 - Aurora Store (`com.aurora.store` 4.8.4), F-Droid's build pinned by SHA-256 and signer: an
-  open-source client of Google Play's catalogue (anonymous or with a Google account) that
-  needs no privileges. Apps from it (games, Steam, Google Home, Authenticator) install into
-  userdata like any user app.
+  open-source client of Google Play's catalogue that needs no privileges, kept as a fallback.
 
-Google's Play Store does not work this way. Tried as a user app (the arm64 `Phonesky.apk`
-from `google_apis_playstore/arm64-v8a-37.0_r08.zip`; the PC's copy has only `lib/x86_64/`
-libraries): it crashes in `ClassicApplication.onCreate` on `UserManager.getUsers()`, which
-needs the privileged `MANAGE_USERS` (`checkCreateUsersPermission`), and logs `Unexpected
-android-id = 0` (no microG checkin without spoofing). Privileged permissions cannot be
-granted afterwards (`pm grant` takes only runtime and development permissions), so it would
-have to be a system app: built in (rejected), or the PC's extras scheme (empty placeholders in
-the ROM, the APK in `/data/vendor/pc-extras` bind-mounted at boot, docs/google-extras.md).
+Two framework patches in `tools/patches/` make the first two work without being system apps:
+
+- `aosp17-microg-signature-spoofing.patch`: a preinstalled microG may report Google's signature
+  (its `fake-signature` meta-data), and so may an installed `com.google.android.gms` signed with
+  microG's release key (certificate SHA-256 `9bd06727…d14165`). Without it Play Store sees no
+  Google signature on GmsCore and microG's self-check fails the spoofing test.
+- `aosp17-play-store-user-app.patch` (`AppIdPermissionPolicy.kt`): an installed
+  `com.android.vending` signed with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`)
+  gets the privileged permissions the emulator image allowlists for its preinstalled Play
+  Store. Without them it crashes at start on `UserManager.getUserCount()` → `getUsers()`, which
+  needs `MANAGE_USERS`; `pm grant` cannot give privileged permissions.
+
+Both are keyed on the signing certificate, so another app with the same package name gets
+nothing. Google's own Play services do not work as a user app either: they crash in
+`UsageReportingChimeraService` on `getUsers()` and on `isSafetyCenterEnabled` (Safety Center
+permissions), so microG stays the GmsCore.
+
+After installing: open microG settings, turn on device registration (checkin) and cloud
+messaging, add the Google account, then open Play Store.
