@@ -115,6 +115,23 @@ PRODUCT_VENDOR_PROPERTIES += ro.vendor.audio.pc.capture_device=1
 $(call inherit-product, frameworks/av/services/audiopolicy/audio_policy_config_vendor_1.mk)
 $(call inherit-product, hardware/interfaces/audio/aidl/default/audio_effects.mk)
 
+# Media: AOSP's software Codec2 codecs (com.android.media.swcodec). The AIDL software store
+# is the real platform store only with the AIDL HAL selected; unset it defaults to HIDL, the
+# AIDL /software instance is registered empty and the HIDL store is not in VINTF, so no codec
+# but the in-process AAC decoder existed (docs/gts7l-hal/security-usb-media.md §5). There is
+# no IOmx either, so encoders take their input surface from AidlGraphicBufferSource in the
+# client (c2inputsurface=-1); without it screenrecord crashed in CCodec::createInputSurface.
+# Both as on Cuttlefish (device/google/cuttlefish/shared/device.mk).
+PRODUCT_VENDOR_PROPERTIES += \
+    media.c2.hal.selection?=aidl \
+    debug.stagefright.c2inputsurface=-1
+# Hardware video decode: the SM8250 video codec (qcom-iris, its firmware from gts7l_fw) behind
+# AOSP's V4L2 Codec2 components, served as the AIDL IComponentStore/default (media/).
+PRODUCT_SOONG_NAMESPACES += \
+    external/v4l2_codec2 \
+    $(GTS7L_DEVICE_DIR)/media
+PRODUCT_PACKAGES += android.hardware.media.c2-service.gts7l
+
 # Kernel: mainline v7.3 with our patches, built by tools/gts7l-kernel.sh into out/gts7l/
 # (Image.gz, sm8250-samsung-gts7l.dtb, modules/), which tools/aosp-device-link.sh copies to
 # device/android-pc/gts7l-kernel; the DTB goes in the boot image's own section

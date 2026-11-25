@@ -28,3 +28,6 @@
 # USB without the screen (init.gts7l.usb.rc).
 /vendor/bin/usbroute           u:object_r:gts7l_usb_exec:s0
 /vendor/bin/gts7l-usb\.sh      u:object_r:gts7l_usb_exec:s0
+
+# Codec2 HAL over the SM8250 video codec (media/); /dev/video* is video_device in the core policy.
+/vendor/bin/hw/android\.hardware\.media\.c2-service\.gts7l  u:object_r:mediacodec_exec:s0

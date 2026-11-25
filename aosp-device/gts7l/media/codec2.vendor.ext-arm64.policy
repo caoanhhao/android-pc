@@ -1,0 +1,12 @@
+# Syscalls of external/v4l2_codec2 (libchrome's message loops, the V4L2 device poller) on top
+# of frameworks/av's android.hardware.media.c2-default-arm64.policy.
+epoll_create1: 1
+epoll_ctl: 1
+epoll_pwait: 1
+eventfd2: 1
+getcwd: 1
+pselect6: 1
+statfs: 1
+sysinfo: 1
+prlimit64: 1
+sched_setscheduler: 1
