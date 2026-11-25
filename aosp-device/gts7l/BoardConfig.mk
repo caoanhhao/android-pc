@@ -71,6 +71,15 @@ ifeq ($(GTS7L_SELINUX_PERMISSIVE),true)
 BOARD_KERNEL_CMDLINE += androidboot.selinux=permissive
 endif
 
+# Wi-Fi: QCA6390 on ath11k (nl80211). wpa_supplicant and hostapd come from AOSP's generic
+# com.android.hardware.wpa_supplicant APEX, which BOARD_HOSTAPD_DRIVER enables; no private
+# driver command library (the stub), as ath11k needs no vendor commands for STA/AP.
+BOARD_WPA_SUPPLICANT_DRIVER := NL80211
+BOARD_HOSTAPD_DRIVER := NL80211
+WPA_SUPPLICANT_VERSION := VER_0_8_X
+WIFI_FEATURE_SUPPLICANT_11AX := true
+WIFI_FEATURE_HOSTAPD_11AX := true
+
 # Partitions: non-A/B, with the stock UFS layout. super (sda29) holds the logical partitions;
 # the stock odm is not used (odm files go to vendor/odm).
 TARGET_USERIMAGES_USE_EXT4 := true

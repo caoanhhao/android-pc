@@ -267,7 +267,7 @@ group). Stable, no pstore records. Seen:
 | Works | Not yet |
 |---|---|
 | 8 CPUs with cpufreq, 5.5 GiB RAM, 25 thermal zones | remoteprocs (ADSP/CDSP/SLPI): none registered, no firmware in the initramfs |
-| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` |
+| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` (later: the pwrctrl module was missing, §23) |
 | USB gadget (DWC3 peripheral) after `usbroute` | display: `msm_dpu` binds (DP only), DSI and the NT36523 panel are off, no simpledrm/fbdev |
 | Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS (driver since §17) |
 | power key, volume down (resin), gpio-keys, regulator haptics | S Pen (i2c-17 0x56): deferred on `spen-3v3-regulator`, GPIO from the S7+ wiring |
@@ -1031,6 +1031,25 @@ Open:
 - Bluetooth audio: the audio HAL's `IModule/bluetooth` exists (§16, attempt 6), A2DP/LE audio
   untested.
 
+### Keyboards and mice (HID over GATT)
+
+A Logitech M196 mouse and a MeetionKB1 keyboard paired but never produced input. The kernel
+side was fine (`CONFIG_UHID=y`, `CONFIG_HID_GENERIC=y`, `/dev/uhid` 0660 `uhid` labelled
+`uhid_device`); `dumpsys bluetooth_manager` showed only `GattService` and
+`HearingAidService` and `shim::legacy::hid status:BTIF_HH_DISABLED`. The Bluetooth app starts
+only the profiles whose `bluetooth.profile.*.enabled` property is set, and the product set
+none (Cuttlefish and goldfish set them in their own product props). `aosp_gts7l.mk` now sets
+`bluetooth.profile.gatt.enabled` and `bluetooth.profile.hid.host.enabled` (product
+properties); profiles that need a Bluetooth audio HAL (A2DP, HFP, LE audio) stay off.
+
+Devices bonded while HID Host was off have no HID connection yet: tap them once in
+Settings → Connected devices (Settings itself must be restarted if it was running when the
+profile came up: `No profiles. Maybe we will connect later`), then wake the device (move the
+mouse, press a key) within the 30 s connect window. Verified 2026-11-25: `hh_open_handler:
+Connected` for both, `Logi M196 Mouse` and `MeetionKB1 Keyboard` input devices through uhid,
+`getevent` shows `REL_X`/`REL_Y`/`BTN_MOUSE` and key presses. LE HID devices reconnect by
+themselves afterwards.
+
 ## 21. Panel: the real bootloader state, kernels #24-#28 (2026-11-24 night)
 
 Still open: same picture (DSI0 half right for the first ~80-160 portrait lines, DSI1 half
@@ -1173,3 +1192,59 @@ kernel #35 again (`4b26de41...`). In Android the stripes were fainter, and on a 
 they were no longer visible. A white frame then ran for 60 minutes (01:40-02:39); the webcam had
 moved and the grey check photo is out of focus (`k35-gray-after-white60.jpg`), so the result
 is not measured. The tablet was then powered off.
+
+## 23. Wi-Fi: QCA6390 on ath11k (2026-11-25)
+
+No DT change was needed. The `qcom,qca6390-pmu` node (pwrseq-qcom-wcn) and the `wifi@0`
+node under `pcieport0` from the S7+ series are right for this board: the stock dtbo (entry
+04, fragment 167 on the `cnss` node) has the same WLAN_EN GPIO 90, BT_EN GPIO 76 and S6A as
+the digital supply.
+`qcom-pcie: cannot initialize host` and the host that never bound were only the missing
+power control driver: on v7.3 the controller creates a platform device for each child node
+with supplies (`1c00000.pcie:pcie@0:wifi@0`) and brings the link up only once a pwrctrl
+driver has powered that device. Its driver, `pci-pwrctrl-pwrseq`, is a module
+(`CONFIG_PCI_PWRCTRL_PWRSEQ=m`) and was never loaded. Loading it on the running Android:
+the link trains at 5 GT/s x1, `17cb:1101` enumerates, `ath11k_pci` loads `amss.bin` and
+`m3.bin` from `gts7l_fw` (MSI, 32 vectors), and `wlan0` scans.
+
+```
+qca6390 hw2.0, chip_id 0x0 chip_family 0xb board_id 0xff soc_id 0xffffffff
+fw_version 0x10178624 fw_build_timestamp 2024-01-15 22:34
+fw_build_id WLAN.HST.1.0.1.r1-01571-QCAHSTSWPL_SILICONZ-1.615178.11.632599.7
+```
+
+`board.bin` is the tablet's own `bdwlan.elf`; with OTP `board_id 0xff` ath11k takes
+`board.bin` directly (no `board-2.bin` lookup). The chip
+offers managed, AP, P2P-client/GO and P2P-device (`iw list`).
+
+Image side:
+
+- `kernel/modules.bp`: `pwrseq-qcom-wcn`, `pci-pwrctrl-pwrseq`, `rfkill`, `cfg80211`,
+  `libarc4`, `mac80211`, `ath11k`, `ath11k_pci` in `modules.load` (loaded after
+  `mount_all --early`, so the firmware is there at probe).
+- `hals.list`: `wifi`, the Rust nl80211 HAL of the PC product (`hals/wifi`).
+- `BoardConfig.mk`: `BOARD_WPA_SUPPLICANT_DRIVER`/`BOARD_HOSTAPD_DRIVER := NL80211`, which
+  enables AOSP's generic `com.android.hardware.wpa_supplicant` APEX (wpa_supplicant and
+  hostapd, their rc files and VINTF fragments); no private driver library (the stub), 11ax on.
+- `aosp_gts7l.mk`: the APEX, `wifi.interface=wlan0`, `android.hardware.wifi.xml`. No
+  `wifi.direct` feature until P2P is tested.
+- `init.gts7l.rc`: `/data/vendor/wifi/{wpa,hostapd}/sockets`.
+- `sepolicy/kernel.te`: `firmware_load` on `firmware_file` (the denial `ath11k_pci` hit).
+
+Result (combined Bluetooth + Wi-Fi vendor image, flashed with `--keep-data`): the modules load
+at boot, `vendor.wifi-pc` runs, `cmd wifi set-wifi-enabled enabled` brings up the client
+mode manager on wlan0 and starts wpa_supplicant from the APEX, and `cmd wifi start-scan` /
+`list-scan-results` list the 2.4 and 5 GHz networks around. No SELinux denials from the
+Wi-Fi stack (permissive boot, `dmesg`).
+
+Open:
+- MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
+  `00:03:7f:xx:xx:xx` address that changes at every boot (Android's factory MAC with it;
+  connections use randomized MACs anyway). The tablet's own address is in
+  `efs:/wifi/.mac.info`; set it on wlan0 before the HAL starts, as the Bluetooth HAL does
+  with the efs Bluetooth address (§20).
+- Connecting to a WPA2 network (needs a password from the user), then SoftAP/hotspot through
+  hostapd and P2P (`wifi.direct` feature, `p2p_supplicant.conf`).
+- The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
+  `sa_data` bytes with `to_ne_bytes` now.
+

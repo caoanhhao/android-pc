@@ -36,5 +36,15 @@ prebuilt_kernel_modules {
         "btbcm.ko",
         "btqca.ko",
         "hci_uart.ko",
+        // Wi-Fi (docs/gts7l.md §23): the PCIe power control driver for the wifi@0 node
+        // (powered through pwrseq-qcom-wcn above). qcom-pcie (built in) brings the link up only
+        // once pci-pwrctrl-pwrseq has powered the chip; without it the host never binds.
+        // ath11k_pci's firmware (ath11k/QCA6390/hw2.0) comes from gts7l_fw.
+        "pci-pwrctrl-pwrseq.ko",
+        "cfg80211.ko",
+        "libarc4.ko",
+        "mac80211.ko",
+        "ath11k.ko",
+        "ath11k_pci.ko",
     ],
 }

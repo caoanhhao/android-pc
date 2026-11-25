@@ -157,8 +157,25 @@ PRODUCT_PACKAGES += \
     android.hardware.sensors-service.gts7l \
     gts7l-sensors-setup
 
-# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light, telephony
-# and Wi-Fi features once their HALs exist.
+# Wi-Fi (docs/gts7l.md §23): the QCA6390 on ath11k_pci as wlan0, our Rust HAL
+# (hals/wifi, from hals.list) and wpa_supplicant/hostapd from AOSP's generic APEX
+# (BoardConfig.mk). P2P stays off until it is tested: no wifi.direct feature.
+PRODUCT_PACKAGES += com.android.hardware.wpa_supplicant
+PRODUCT_VENDOR_PROPERTIES += \
+    wifi.interface=wlan0 \
+    wifi.direct.interface=p2p-dev-wlan0
+PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.wifi.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.wifi.xml
+
+# Bluetooth profiles (docs/gts7l.md §20). The Bluetooth app starts only the profiles whose
+# bluetooth.profile.*.enabled is set; without HID Host, keyboards and mice paired but never
+# connected. Only what works without a Bluetooth audio HAL.
+PRODUCT_PRODUCT_PROPERTIES += \
+    bluetooth.profile.gatt.enabled=true \
+    bluetooth.profile.hid.host.enabled=true
+
+# Hardware the framework may rely on. TODO(T4): camera, gyroscope/compass/light and telephony
+# features once their HALs exist.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.bluetooth.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.bluetooth.xml \
     frameworks/native/data/etc/android.hardware.bluetooth_le.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.bluetooth_le.xml \

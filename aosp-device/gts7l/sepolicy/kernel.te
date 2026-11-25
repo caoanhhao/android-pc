@@ -1,3 +1,5 @@
 # Firmware loaded by the kernel itself (firmware_class.path=/mnt/vendor/firmware): gts7l_fw and
 # the apnhlos files its links point to.
 r_dir_file(kernel, firmware_file)
+# ath11k_pci and the other drivers request their firmware from gts7l_fw (firmware_file).
+allow kernel firmware_file:system firmware_load;
