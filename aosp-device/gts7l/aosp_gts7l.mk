@@ -246,6 +246,10 @@ PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.software.verified_boot.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.verified_boot.xml \
     $(GTS7L_DEVICE_DIR)/gts7l_stock_features.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/gts7l_stock_features.xml
 
+# Doze/Data Saver allowlists a preinstalled GmsCore and Play Store get (gts7l_sysconfig_google.xml).
+PRODUCT_COPY_FILES += \
+    $(GTS7L_DEVICE_DIR)/gts7l_sysconfig_google.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/sysconfig/gts7l_sysconfig_google.xml
+
 # The 11" 2560x1600 panel. TODO(T5): density and orientation from the first boot (the
 # panel may scan out in portrait, docs/gts7l.md §6/T5).
 PRODUCT_AAPT_CONFIG := normal large xlarge
