@@ -4,12 +4,15 @@
 /// The `GadgetFunction` bits (android.hardware.usb.gadget), repeated here so this module
 /// builds without the AIDL crate.
 pub const ADB: i64 = 1;
+#[allow(dead_code)] // only the tests name it
 pub const ACCESSORY: i64 = 1 << 1;
 pub const MTP: i64 = 1 << 2;
 pub const MIDI: i64 = 1 << 3;
 pub const PTP: i64 = 1 << 4;
 pub const RNDIS: i64 = 1 << 5;
+#[allow(dead_code)] // only the tests name it
 pub const AUDIO_SOURCE: i64 = 1 << 6;
+#[allow(dead_code)] // only the tests name it
 pub const UVC: i64 = 1 << 7;
 pub const NCM: i64 = 1 << 10;
 
