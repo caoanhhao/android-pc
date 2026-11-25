@@ -1301,4 +1301,8 @@ names `com.android.vending`. Google's own Play services do not work as a user ap
 permissions), so microG stays the GmsCore.
 
 After installing: open microG settings, turn on device registration (checkin) and cloud
-messaging, add the Google account, then open Play Store.
+messaging, add the Google account, then open Play Store. With device registration off, Play
+signs in but shows "Error retrieving information from server. DF-DFERH-01" (logcat: Finsky
+`Unexpected android-id = 0`, HTTP 400 from `fdfe/toc`); turn it on, wait for microG's
+`GmsCheckinSvc: Checked in as …`, then `adb shell am force-stop com.android.vending` and reopen
+Play (verified 2026-11-25: store pages load).
