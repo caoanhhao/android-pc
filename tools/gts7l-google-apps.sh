@@ -5,7 +5,9 @@
 #
 #   tools/gts7l-google-apps.sh [--accept-license] [ADB_SERIAL]
 #
-# - microG: the APK tools/fetch-apps.sh microg fetched and checked (one APK for every ABI).
+# - microG: the APK tools/fetch-apps.sh microg fetched and checked (one APK for every ABI),
+#   0.3.18 or later: 0.3.16.1 and 0.3.17 break AccountManager sign-in from other apps
+#   (Aurora Store's "microG" login, microg/GmsCore#3853).
 #   tools/patches/aosp17-microg-signature-spoofing.patch lets it report Google's signature
 #   although it is not a system app, because it is signed with microG's release key. Its
 #   runtime permissions are granted here.
@@ -98,5 +100,11 @@ done
 for p in com.google.android.gms com.android.vending; do
     "${adb[@]}" shell cmd deviceidle whitelist +$p >/dev/null
 done
+# A preinstalled microG is also allow-in-data-usage-save (aosp-device/microg/sysconfig-microg.xml):
+# with Data Saver on, push messaging and checkin keep their background network access.
+gms_uid=$("${adb[@]}" shell pm list packages -U com.google.android.gms |
+          sed -n 's/^package:com\.google\.android\.gms uid:\([0-9]*\).*/\1/p')
+[[ -n $gms_uid ]] || die "no uid for com.google.android.gms"
+"${adb[@]}" shell cmd netpolicy add restrict-background-whitelist "$gms_uid"
 "${adb[@]}" shell pm list packages --show-versioncode |
     grep -E 'com.google.android.gms|com.android.vending|com.aurora.store'

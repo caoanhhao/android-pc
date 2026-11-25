@@ -32,6 +32,8 @@
 #   Android.bp (androidx and Material from prebuilts/sdk, crcalc as a bundled jar).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# From a git worktree, use the main checkout's aosp/ and out/.
+[[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 APPS=$ROOT/aosp/device/android-pc/apps
 HOST=$ROOT/aosp/out/host/linux-x86/bin
 
@@ -84,7 +86,7 @@ fdroid() {
 }
 
 microg() {
-    local ver=${MICROG_VER:-0.3.17.252432}
+    local ver=${MICROG_VER:-0.3.18.252432}
     local url=https://github.com/microg/GmsCore/releases/download/v$ver
     local dl=$ROOT/out/downloads/microg-$ver
     local cert=9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165

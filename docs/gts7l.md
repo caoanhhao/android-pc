@@ -1236,8 +1236,9 @@ The ROM carries no Google apps (the user's choice): unlike the PC product, `aosp
 does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs them
 over adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
 
-- microG GmsCore (`com.google.android.gms`), the APK of `tools/fetch-apps.sh microg` (one APK
-  for every ABI), with its runtime permissions granted and on the Doze allowlist.
+- microG GmsCore (`com.google.android.gms` 0.3.18), the APK of `tools/fetch-apps.sh microg`
+  (one APK for every ABI), with its runtime permissions granted, on the Doze allowlist and on
+  the Data Saver allowlist (what `sysconfig-microg.xml` gives a preinstalled microG).
 - Google Play Store (`com.android.vending` 50.7.34-31), the arm64 `Phonesky.apk` of
   `google_apis_playstore/arm64-v8a-37.0_r08.zip` (the PC's copy has only `lib/x86_64/`
   libraries), pinned by SHA-256 and signer; extracted into `out/downloads/playstore/`, never
@@ -1264,3 +1265,33 @@ permissions), so microG stays the GmsCore.
 
 After installing: open microG settings, turn on device registration (checkin) and cloud
 messaging, add the Google account, then open Play Store.
+
+**Sign-in from other apps needs microG 0.3.18.** With 0.3.16.1 and 0.3.17, signing in to Aurora
+Store with its "microG" option spins forever: logcat shows `Permission Denial: starting Intent {
+cmp=com.google.android.gms/org.microg.gms.auth.AskPackageOverrideActivity … } … not exported`.
+This is microG's bug, not the user-app setup (a system microG fails the same way,
+microg/GmsCore#3853): the fix for GHSA-rp4p-8x89-jhv5 made `AskPermissionActivity` and
+`AskPackageOverrideActivity` non-exported, but `AccountAuthenticator.getAuthToken()` still put
+them raw into `KEY_INTENT`, and `AccountManager` starts that intent from the calling app's
+process. 0.3.18 (commit 342c280) wraps both in the exported `UnpackingRedirectActivity`, which
+starts them through a PendingIntent of microG's own, so AOSP's `AccountManagerService`
+(`checkKeyIntent`: the activity belongs to the authenticator's own package) and the activity
+start both pass. No framework change is needed for it. Upgrading in place (`adb install -r`)
+keeps the account and settings.
+
+What a user-app microG still lacks next to a preinstalled one (`privapp-permissions-microg.xml`):
+the privileged permissions are not granted, since `pm grant` cannot grant them. The one that
+matters for push messaging is `CHANGE_DEVICE_IDLE_TEMP_WHITELIST`: microG's `McsService` puts
+the app a message is for on the temporary power allowlist for 10 s (`PowerExemptionManager.
+addToTemporaryAllowList`), so it may start a service from the background and reach the network
+in Doze; without it the message is still delivered, but an app that starts a background
+service to handle it can fail. `START_ACTIVITIES_FROM_BACKGROUND` lets microG open its consent
+dialogs from the background. The others (`INSTALL_LOCATION_PROVIDER`, `LOCATION_HARDWARE`,
+`UPDATE_APP_OPS_STATS`, `INTERACT_ACROSS_USERS`, `MANAGE_USB`, `MODIFY_PHONE_STATE`,
+`NETWORK_SCAN`, `DUMP`, `WATCH_APPOPS`, `UPDATE_DEVICE_STATS`, the credential-service ones) are
+for the system network location provider, multi-user and the credential manager, none of which
+Google sign-in, checkin, push or Play Store need. Account authenticator (`com.google`), the
+`com.google.android.gsf.gservices` provider and checkin need no privileges. A user-app microG
+reads no `/product/etc/microg.xml`, so checkin and cloud messaging start off (turn them on as
+above), and SafetyNet/DroidGuard too (turn them on in microG settings if an app needs Play
+Integrity).
