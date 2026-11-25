@@ -45,7 +45,7 @@ interface IWifiChip {
   @PropagateAllowBlocking android.hardware.wifi.IWifiApIface createBridgedApIface();
   @PropagateAllowBlocking android.hardware.wifi.IWifiNanIface createNanIface();
   @PropagateAllowBlocking android.hardware.wifi.IWifiP2pIface createP2pIface();
-  @PropagateAllowBlocking android.hardware.wifi.IWifiRttController createRttController(in android.hardware.wifi.IWifiStaIface boundIface);
+  @PropagateAllowBlocking android.hardware.wifi.IWifiRttController createRttController(in @nullable android.hardware.wifi.IWifiStaIface boundIface);
   @PropagateAllowBlocking android.hardware.wifi.IWifiStaIface createStaIface();
   void enableDebugErrorAlerts(in boolean enable);
   void flushRingBufferToFile();

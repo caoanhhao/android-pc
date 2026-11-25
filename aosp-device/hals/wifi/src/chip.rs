@@ -636,9 +636,12 @@ impl IWifiChip for Chip {
         invalid_args()
     }
 
+    // The framework passes a null iface for an unbound controller, although the frozen API
+    // does not mark it @nullable: our copy of IWifiChip.aidl does (the wire format is the
+    // same), else the Rust stub answers EX_NULL_POINTER and system_server dies on it.
     fn createRttController(
         &self,
-        _bound_iface: &Strong<dyn IWifiStaIface>,
+        _bound_iface: Option<&Strong<dyn IWifiStaIface>>,
     ) -> binder::Result<Strong<dyn IWifiRttController>> {
         self.unsupported()
     }
