@@ -1,0 +1,82 @@
+diff --git a/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt b/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
+index 8ba08f95f..07210ba9e 100644
+--- a/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
++++ b/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
+@@ -1785,6 +1785,18 @@ class AppIdPermissionPolicy : SchemePolicy() {
+                 return true
+             }
+         }
++        if (
++            permission.isPrivileged &&
++                !packageState.isSystem &&
++                packageName == PLAY_STORE_PACKAGE_NAME &&
++                permission.name in PLAY_STORE_PRIVILEGED_PERMISSIONS &&
++                androidPackage.signingDetails.hasSha256Certificate(PLAY_STORE_CERT_SHA256)
++        ) {
++            // Local (android-pc): Google Play Store installed as an ordinary app in userdata,
++            // signed with Google's Play Store key, gets the privileged permissions a
++            // preinstalled Play Store is allowlisted for; without MANAGE_USERS it crashes at start.
++            return true
++        }
+         if (permission.isPre23 && androidPackage.targetSdkVersion < Build.VERSION_CODES.M) {
+             // If this was a previously normal/dangerous permission that got moved
+             // to a system permission as part of the runtime permission redesign, then
+@@ -2084,6 +2096,58 @@ class AppIdPermissionPolicy : SchemePolicy() {
+ 
+         private const val PLATFORM_PACKAGE_NAME = "android"
+ 
++        // Local (android-pc): Google Play Store as an ordinary app (see
++        // shouldGrantPermissionByProtectionFlags). The permissions are the ones the Android 17
++        // emulator image allowlists for its preinstalled Play Store
++        // (privapp-permissions-google-p.xml); the certificate is Play Store's signing key.
++        private const val PLAY_STORE_PACKAGE_NAME = "com.android.vending"
++        private val PLAY_STORE_CERT_SHA256 =
++            libcore.util.HexEncoding.decode(
++                "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"
++            )
++        private val PLAY_STORE_PRIVILEGED_PERMISSIONS =
++            indexedSetOf(
++                "android.permission.ALLOCATE_AGGRESSIVE",
++                "android.permission.BACKUP",
++                "android.permission.BATTERY_STATS",
++                "android.permission.CHANGE_COMPONENT_ENABLED_STATE",
++                "android.permission.CHANGE_DEVICE_IDLE_TEMP_WHITELIST",
++                "android.permission.CHANGE_OVERLAY_PACKAGES",
++                "android.permission.CLEAR_APP_CACHE",
++                "android.permission.CONNECTIVITY_INTERNAL",
++                "android.permission.DELETE_PACKAGES",
++                "android.permission.DUMP",
++                "android.permission.FORCE_STOP_PACKAGES",
++                "android.permission.GET_ACCOUNTS_PRIVILEGED",
++                "android.permission.GET_APP_OPS_STATS",
++                "android.permission.HIDE_STATUS_BAR_NOTIFICATION",
++                "android.permission.INSTALL_PACKAGES",
++                "android.permission.INTERACT_ACROSS_USERS",
++                "android.permission.LOADER_USAGE_STATS",
++                "android.permission.MANAGE_CLOUDSEARCH",
++                "android.permission.MANAGE_ROLLBACKS",
++                "android.permission.MANAGE_USERS",
++                "android.permission.PACKAGE_USAGE_STATS",
++                "android.permission.PACKAGE_VERIFICATION_AGENT",
++                "android.permission.QUERY_ADVANCED_PROTECTION_MODE",
++                "android.permission.READ_SYSTEM_GRAMMATICAL_GENDER",
++                "android.permission.READ_PRIVILEGED_PHONE_STATE",
++                "android.permission.READ_RUNTIME_PROFILES",
++                "android.permission.REAL_GET_TASKS",
++                "android.permission.REBOOT",
++                "android.permission.SEND_DEVICE_CUSTOMIZATION_READY",
++                "android.permission.SEND_SAFETY_CENTER_UPDATE",
++                "android.permission.SEND_SMS_NO_CONFIRMATION",
++                "android.permission.SET_PREFERRED_APPLICATIONS",
++                "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
++                "android.permission.STATUS_BAR",
++                "android.permission.SUBSTITUTE_NOTIFICATION_APP_NAME",
++                "android.permission.UPDATE_DEVICE_STATS",
++                "android.permission.WRITE_SECURE_SETTINGS",
++                "com.android.permission.USE_INSTALLER_V2",
++                "android.permission.OVERRIDE_COMPAT_CHANGE_CONFIG_ON_RELEASE_BUILD",
++            )
++
+         // A set of permissions that we don't want to revoke when they are no longer implicit.
+         private val NO_IMPLICIT_FLAG_PERMISSIONS =
+             indexedSetOf(
