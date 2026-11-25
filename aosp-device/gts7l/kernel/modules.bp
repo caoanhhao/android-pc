@@ -46,5 +46,13 @@ prebuilt_kernel_modules {
         "mac80211.ko",
         "ath11k.ko",
         "ath11k_pci.ko",
+        // PMIC ADC (docs/gts7l-hal/power.md): the battery thermistor channel the MAX77705
+        // fuel gauge (max17042, built in) defers its probe on, the batt/chg/skin/blkt
+        // thermal zones read through generic-adc-thermal, ADC_TM and the PMIC temp alarms.
+        "qcom-vadc-common.ko",
+        "qcom-spmi-adc5.ko",
+        "thermal-generic-adc.ko",
+        "qcom-spmi-adc-tm5.ko",
+        "qcom-spmi-temp-alarm.ko",
     ],
 }

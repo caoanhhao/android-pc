@@ -24,7 +24,7 @@ use binder::{ExceptionCode, Interface, Status, Strong};
 use log::{debug, info};
 use pchal::procstat::CpuTimes;
 
-use crate::pstate::{CpuFreq, Profile};
+use crate::pstate::Profile;
 
 /// Modes this HAL acts on. FIXED_PERFORMANCE is required (VTS `hasFixedPerformance`),
 /// even on machines where it changes nothing.
@@ -123,14 +123,17 @@ impl Power {
         Self { inner: Arc::default() }
     }
 
-    /// Starts the thread that applies the hints to `cpu`.
+    /// Starts the thread that applies the hints' profile with `apply`.
     ///
     /// # Errors
     ///
     /// Returns the error from spawning the thread.
-    pub fn spawn_worker(&self, mut cpu: CpuFreq) -> std::io::Result<()> {
+    pub fn spawn_worker(
+        &self,
+        mut apply: impl FnMut(Profile) + Send + 'static,
+    ) -> std::io::Result<()> {
         let inner = Arc::clone(&self.inner);
-        thread::Builder::new().name("pstate".into()).spawn(move || {
+        thread::Builder::new().name("cpufreq".into()).spawn(move || {
             let mut hints = inner.hints.lock().expect("hints lock poisoned");
             let mut applied = None;
             loop {
@@ -138,7 +141,7 @@ impl Power {
                 let profile = hints.profile(now);
                 if applied != Some(profile) {
                     debug!("profile {profile:?}");
-                    cpu.apply(&cpu.settings(profile));
+                    apply(profile);
                     applied = Some(profile);
                 }
                 // Sleep until the next hint, or until the running boost ends.

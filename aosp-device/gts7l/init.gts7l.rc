@@ -29,8 +29,20 @@ on boot
     write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor schedutil
     write /sys/devices/system/cpu/cpufreq/policy4/scaling_governor schedutil
     write /sys/devices/system/cpu/cpufreq/policy7/scaling_governor schedutil
-    # TODO(T4): the power HAL drives cpufreq/devfreq here (it only knows intel_pstate today
-    # and ignores hints without it).
+    # The power HAL (user system, hals/power freq.rs) moves each policy's floor and cap for
+    # Android's boosts and modes.
+    chown root system /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+    chown root system /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+    chown root system /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq
+    chown root system /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq
+    chown root system /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
+    chown root system /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
+    chmod 0664 /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
 
 # Bluetooth HAL (hals/bluetooth) on the QCA6390 (hci_uart, docs/gts7l.md §20). The kernel holds
 # the controller unconfigured (its NVM has the default address), so the HAL gives it Samsung's

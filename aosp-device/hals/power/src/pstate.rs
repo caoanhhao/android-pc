@@ -7,8 +7,8 @@
 //! Android's power hints map to a [`Profile`], and each profile to [`Settings`] relative
 //! to the values the kernel booted with.
 //!
-//! Without `intel_pstate` in active mode (AMD, `acpi-cpufreq`, Cuttlefish) every setting
-//! is unavailable and the hints change nothing.
+//! Without `intel_pstate` in active mode (AMD, `acpi-cpufreq`, Cuttlefish, ARM SoCs) every
+//! setting here is unavailable, and the HAL steers the cpufreq limits instead (`freq.rs`).
 //!
 //! This module only reads and writes sysfs and knows nothing about AIDL, so its tests run
 //! on the host (`android.hardware.power-service.pc_pstate_test`).
@@ -111,10 +111,15 @@ impl CpuFreq {
                 defaults.epp,
                 available_epp
             ),
-            Some(status) => info!("intel_pstate is {status}, power hints are ignored"),
-            None => info!("no intel_pstate, power hints are ignored"),
+            Some(status) => info!("intel_pstate is {status}, using the cpufreq limits"),
+            None => info!("no intel_pstate, using the cpufreq limits"),
         }
         Self { policies, pstate_dir, available_epp, current: defaults.clone(), defaults }
+    }
+
+    /// Whether `intel_pstate` runs in active mode, so the hints have knobs to steer.
+    pub fn is_active(&self) -> bool {
+        self.pstate_dir.is_some()
     }
 
     /// The settings for `profile`, from the boot defaults. Knobs this machine lacks stay

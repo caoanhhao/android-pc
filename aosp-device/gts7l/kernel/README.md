@@ -40,6 +40,7 @@ Ours start at `0094`:
 | 0101 | a6xx: accept the tablet's a650 SQE 0.93 firmware |
 | 0102-0104 | NT36523 touchscreen in `novatek-nvt-ts`, enabled in the DTS (docs/gts7l.md §17) |
 | 0105-0107 | panel fix: C-PHY without a clock lane, bonded slave PHY dividers, PLL bias on every enable (docs/gts7l.md §22) |
+| 0220-0221 | Fuel gauge: DTS wires the MAX77705 FG alert interrupt; max17042 takes an optional platform IRQ (defers on `-EPROBE_DEFER`) and reports `cycle_count` in whole cycles (docs/gts7l-hal/power.md) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with
 `git format-patch -1 --start-number N -o aosp-device/gts7l/kernel/patches`. The script

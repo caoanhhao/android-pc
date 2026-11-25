@@ -272,8 +272,11 @@ fn read_battery(dir: &Path) -> Battery {
         .or_else(|| to_charge(attr(dir, "energy_full_design")?))
         .unwrap_or(0);
     let level = attr::<i32>(dir, "capacity").map_or(0, |level| level.clamp(0, 100));
-    let charge_counter_uah = attr(dir, "charge_counter")
-        .or_else(|| attr(dir, "charge_now"))
+    // Android's charge counter is the remaining charge, which is the kernel's `charge_now`.
+    // The kernel's `charge_counter` is a coulomb counter that only some drivers keep equal
+    // to it (max17042 exports its free-running QH register there), so it comes second.
+    let charge_counter_uah = attr(dir, "charge_now")
+        .or_else(|| attr(dir, "charge_counter"))
         .or_else(|| to_charge(energy_now?))
         .unwrap_or_else(|| saturate(i64::from(full_charge_uah) * i64::from(level) / 100));
 
@@ -428,6 +431,34 @@ mod tests {
         assert_eq!(battery.charge_counter_uah, 2_000_000);
         assert_eq!(battery.temp_tenths_c, 250);
         assert_eq!(battery.energy_nwh, None);
+    }
+
+    #[test]
+    fn fuel_gauge_charge_now_wins_over_coulomb_counter() {
+        // The Galaxy Tab S7's MAX77705 gauge (max17042 driver) on a USB charger.
+        let root = tempfile::tempdir().expect("create temp dir");
+        supply(root.path(), "max77705-charger", &[("type", "USB"), ("online", "1")]);
+        supply(
+            root.path(),
+            "max170xx_battery",
+            &[
+                ("type", "Battery"),
+                ("present", "1"),
+                ("status", "Full"),
+                ("capacity", "98"),
+                ("charge_now", "7310000"),
+                ("charge_counter", "55325000"),
+                ("charge_full", "7257500"),
+                ("current_now", "-170312"),
+                ("temp", "337"),
+                ("cycle_count", "276"),
+            ],
+        );
+        let battery = Snapshot::read(root.path()).battery.expect("battery found");
+        assert_eq!(battery.charge_counter_uah, 7_310_000);
+        // Neither charging nor discharging: the sign stays as the kernel reports it.
+        assert_eq!(battery.current_now_ua, -170_312);
+        assert_eq!(battery.cycle_count, 276);
     }
 
     #[test]

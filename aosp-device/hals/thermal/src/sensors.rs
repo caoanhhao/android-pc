@@ -7,9 +7,14 @@
 //!   packages, with TjMax), GPU drivers, NVMe, and their fans (`fanN_input`, in RPM);
 //! - `/sys/class/thermal/cooling_device*`: fans, ACPI processor throttling, powerclamp.
 //!
+//! Qualcomm SoC zones (the Galaxy Tab S7, docs/gts7l-hal/power.md) are typed by name:
+//! `cpuN-*-thermal`/`clusterN-thermal` are CPUs, `gpu-*-thermal` GPUs, `batt-thermal` and
+//! the fuel gauge's `max170xx_battery` the battery, `wlan-thermal` Wi-Fi, and the display
+//! backlight thermistor `blkt-thermal`, behind the front glass, is the skin sensor.
+//!
 //! A PC has no skin sensor, so a virtual `SKIN` sensor reports the hottest CPU package:
 //! that is what limits sustained performance on a desktop or laptop, and Android derives
-//! its thermal status and headroom from the single `SKIN` sensor.
+//! its thermal status and headroom from the `SKIN` sensor.
 //!
 //! This module only reads sysfs and knows nothing about AIDL, so its tests run on the
 //! host (`android.hardware.thermal-service.pc_sensors_test`).
@@ -26,8 +31,10 @@ pub enum SensorKind {
     Cpu,
     /// A GPU.
     Gpu,
-    /// The virtual skin sensor.
+    /// A skin sensor: a real one, or the virtual one of a PC.
     Skin,
+    /// The battery.
+    Battery,
     /// A Wi-Fi adapter.
     Wifi,
     /// Anything else (ACPI zones, disks).
@@ -83,6 +90,18 @@ const MIN_PLAUSIBLE_TRIP: f32 = 40.0;
 const GPU_DEFAULT_THRESHOLDS: Thresholds =
     [None, Some(80.0), Some(85.0), Some(90.0), Some(95.0), Some(100.0), None];
 
+/// Skin thresholds (°C) for a skin thermistor without trip points, the values phones and
+/// tablets use for their surface. The Tab S7's backlight thermistor reads 34-35 °C idle on
+/// a charger.
+const SKIN_DEFAULT_THRESHOLDS: Thresholds =
+    [None, Some(39.0), Some(43.0), Some(45.0), Some(47.0), Some(52.0), Some(55.0)];
+
+/// Battery thresholds (°C) for a battery thermistor without trip points: Li-ion cells
+/// stop charging around 45-50 °C and must not exceed 60 °C. SHUTDOWN is left to the
+/// charger and the kernel.
+const BATTERY_DEFAULT_THRESHOLDS: Thresholds =
+    [None, None, Some(45.0), Some(50.0), Some(55.0), Some(60.0), None];
+
 /// CPU thresholds relative to TjMax. A CPU at TjMax is already throttling itself, which
 /// Android calls SEVERE. Readings never exceed TjMax (the sensor counts down to it), so
 /// the higher severities only mark the order the framework expects; SHUTDOWN, which makes
@@ -137,8 +156,10 @@ impl Sensor {
 pub enum CoolingKind {
     /// A fan.
     Fan,
-    /// CPU throttling (ACPI processor states, powerclamp, TCC offset).
+    /// CPU throttling (ACPI processor states, powerclamp, TCC offset, cpufreq).
     Cpu,
+    /// GPU throttling (devfreq).
+    Gpu,
     /// A Wi-Fi adapter's transmit power.
     Wifi,
     /// Anything else.
@@ -195,22 +216,24 @@ impl Sensors {
         let have_cpu = sensors.iter().any(|sensor| sensor.kind == SensorKind::Cpu);
         sensors.extend(zone_sensors(thermal_dir, have_cpu));
 
+        let have_skin = sensors.iter().any(|sensor| sensor.kind == SensorKind::Skin);
         let cpus: Vec<usize> = sensors
             .iter()
             .enumerate()
             .filter(|(_, sensor)| sensor.kind == SensorKind::Cpu)
             .map(|(index, _)| index)
             .collect();
-        if !cpus.is_empty() {
+        if !cpus.is_empty() && !have_skin {
             let thresholds = cpus
                 .iter()
                 .map(|&index| sensors[index].thresholds)
+                .filter(|thresholds| thresholds[Severity::Severe as usize].is_some())
                 .min_by(|a, b| {
                     a[Severity::Severe as usize]
                         .partial_cmp(&b[Severity::Severe as usize])
                         .expect("thresholds are not NaN")
                 })
-                .expect("at least one CPU sensor");
+                .unwrap_or([None; 7]);
             sensors.push(Sensor {
                 name: "VIRTUAL-SKIN".into(),
                 kind: SensorKind::Skin,
@@ -360,6 +383,21 @@ fn hwmon_thresholds(input: &Path) -> Thresholds {
     thresholds
 }
 
+/// The kind of a thermal zone from its type, for zones not named after the PC CPU package.
+fn zone_kind(zone_type: &str) -> SensorKind {
+    let soc_zone = |prefix: &str| {
+        zone_type.strip_prefix(prefix).is_some_and(|rest| rest.ends_with("-thermal"))
+    };
+    match zone_type {
+        t if t.starts_with("iwlwifi") || t == "wlan-thermal" => SensorKind::Wifi,
+        _ if soc_zone("cpu") || soc_zone("cluster") => SensorKind::Cpu,
+        _ if soc_zone("gpu") => SensorKind::Gpu,
+        "batt-thermal" | "max170xx_battery" | "battery" => SensorKind::Battery,
+        "blkt-thermal" => SensorKind::Skin,
+        _ => SensorKind::Unknown,
+    }
+}
+
 /// Thermal zones. `x86_pkg_temp` counts as a CPU only when no hwmon CPU sensor exists
 /// (it reads the same package sensor as `coretemp`).
 fn zone_sensors(thermal_dir: &Path, have_cpu: bool) -> Vec<Sensor> {
@@ -373,22 +411,32 @@ fn zone_sensors(thermal_dir: &Path, have_cpu: bool) -> Vec<Sensor> {
             continue;
         }
         let Some(zone_type) = read_attr::<String>(&dir.join("type")) else { continue };
-        let kind = match zone_type.as_str() {
-            "x86_pkg_temp" if have_cpu => continue,
-            "x86_pkg_temp" => SensorKind::Cpu,
-            t if t.starts_with("iwlwifi") => SensorKind::Wifi,
-            _ => SensorKind::Unknown,
-        };
-        let (name, thresholds) = if kind == SensorKind::Cpu {
+        if zone_type == "x86_pkg_temp" {
+            if have_cpu {
+                continue;
+            }
             cpus += 1;
-            (format!("CPU{}", cpus - 1), cpu_thresholds(DEFAULT_TJMAX))
-        } else {
-            let seen = names.entry(zone_type.clone()).or_default();
-            *seen += 1;
-            let name =
-                if *seen == 1 { zone_type.clone() } else { format!("{zone_type}-{}", *seen - 1) };
-            (name, trip_thresholds(&dir))
-        };
+            sensors.push(Sensor {
+                name: format!("CPU{}", cpus - 1),
+                kind: SensorKind::Cpu,
+                thresholds: cpu_thresholds(DEFAULT_TJMAX),
+                source: Source::File(dir.join("temp")),
+            });
+            continue;
+        }
+        let kind = zone_kind(&zone_type);
+        let seen = names.entry(zone_type.clone()).or_default();
+        *seen += 1;
+        let name =
+            if *seen == 1 { zone_type.clone() } else { format!("{zone_type}-{}", *seen - 1) };
+        let mut thresholds = trip_thresholds(&dir);
+        if thresholds.iter().all(Option::is_none) {
+            match kind {
+                SensorKind::Skin => thresholds = SKIN_DEFAULT_THRESHOLDS,
+                SensorKind::Battery => thresholds = BATTERY_DEFAULT_THRESHOLDS,
+                _ => {}
+            }
+        }
         sensors.push(Sensor { name, kind, thresholds, source: Source::File(dir.join("temp")) });
     }
     sensors
@@ -466,7 +514,9 @@ fn cooling_devices(thermal_dir: &Path) -> Vec<CoolingDevice> {
             let kind = match device_type.as_str() {
                 "Fan" => CoolingKind::Fan,
                 "Processor" | "intel_powerclamp" | "TCC Offset" => CoolingKind::Cpu,
-                t if t.starts_with("iwlwifi") => CoolingKind::Wifi,
+                t if t.starts_with("cpufreq-") => CoolingKind::Cpu,
+                t if t.starts_with("devfreq-") && t.ends_with(".gpu") => CoolingKind::Gpu,
+                t if t.starts_with("iwlwifi") || t == "ath11k_thermal" => CoolingKind::Wifi,
                 _ => CoolingKind::Component,
             };
             let name = format!("{}-{index}", device_type.to_lowercase().replace(' ', "_"));
@@ -645,6 +695,86 @@ mod tests {
         let cpu = sensors.sensors().iter().find(|s| s.kind == SensorKind::Cpu).expect("a CPU");
         assert_eq!(cpu.name, "CPU0");
         assert_eq!(sensors.sensors().last().map(|s| s.kind), Some(SensorKind::Skin));
+    }
+
+    /// The Galaxy Tab S7 (SM8250): tsens zones with trip points, PMIC ADC thermistors
+    /// without, the fuel gauge's zone, cpufreq/devfreq/ath11k cooling devices.
+    #[test]
+    fn discovers_the_sm8250_tablet() {
+        let root = tempfile::tempdir().expect("create temp dir");
+        let thermal = root.path().join("thermal");
+        let three_trips = &[("90000", "passive"), ("95000", "passive"), ("110000", "critical")][..];
+        for (zone, zone_type, temp, trips) in [
+            ("thermal_zone0", "aoss0-thermal", "40500", &[("90000", "hot")][..]),
+            ("thermal_zone1", "cpu0-thermal", "42000", three_trips),
+            ("thermal_zone10", "cpu7-top-thermal", "45900", three_trips),
+            ("thermal_zone5", "cluster0-thermal", "42800", &[("90000", "hot")][..]),
+            (
+                "thermal_zone15",
+                "gpu-top-thermal",
+                "38600",
+                &[("85000", "passive"), ("90000", "hot"), ("110000", "critical")][..],
+            ),
+            ("thermal_zone17", "wlan-thermal", "39900", &[("90000", "hot")][..]),
+            ("thermal_zone25", "max170xx_battery", "33600", &[][..]),
+            ("thermal_zone26", "batt-thermal", "33676", &[][..]),
+            ("thermal_zone28", "skin-msm-thermal", "40639", &[][..]),
+            ("thermal_zone29", "blkt-thermal", "34597", &[][..]),
+        ] {
+            let dir = thermal.join(zone);
+            write(&dir.join("type"), zone_type);
+            write(&dir.join("temp"), temp);
+            for (index, (trip, trip_type)) in trips.iter().enumerate() {
+                write(&dir.join(format!("trip_point_{index}_temp")), trip);
+                write(&dir.join(format!("trip_point_{index}_type")), trip_type);
+            }
+        }
+        for (device, device_type) in [
+            ("cooling_device0", "cpufreq-cpu0"),
+            ("cooling_device3", "devfreq-3d00000.gpu"),
+            ("cooling_device4", "ath11k_thermal"),
+        ] {
+            write(&thermal.join(device).join("type"), device_type);
+            write(&thermal.join(device).join("cur_state"), "0");
+        }
+        let sensors = Sensors::discover(&thermal, &root.path().join("no-hwmon"));
+
+        let kind = |name: &str| {
+            sensors.sensors().iter().find(|s| s.name == name).map(|s| s.kind).expect(name)
+        };
+        assert_eq!(kind("cpu0-thermal"), SensorKind::Cpu);
+        assert_eq!(kind("cpu7-top-thermal"), SensorKind::Cpu);
+        assert_eq!(kind("cluster0-thermal"), SensorKind::Cpu);
+        assert_eq!(kind("gpu-top-thermal"), SensorKind::Gpu);
+        assert_eq!(kind("wlan-thermal"), SensorKind::Wifi);
+        assert_eq!(kind("batt-thermal"), SensorKind::Battery);
+        assert_eq!(kind("max170xx_battery"), SensorKind::Battery);
+        assert_eq!(kind("blkt-thermal"), SensorKind::Skin);
+        assert_eq!(kind("skin-msm-thermal"), SensorKind::Unknown);
+        assert_eq!(kind("aoss0-thermal"), SensorKind::Unknown);
+        assert!(
+            sensors.sensors().iter().all(|s| s.name != "VIRTUAL-SKIN"),
+            "a real skin sensor replaces the virtual one"
+        );
+
+        let skin = sensors.sensors().iter().find(|s| s.kind == SensorKind::Skin).expect("skin");
+        assert_eq!(skin.thresholds, SKIN_DEFAULT_THRESHOLDS);
+        assert_eq!(skin.severity(34.6), Severity::None);
+        assert_eq!(skin.severity(44.0), Severity::Moderate);
+        let cpu = sensors.sensors().iter().find(|s| s.name == "cpu0-thermal").expect("cpu0");
+        assert_eq!(cpu.thresholds[Severity::Severe as usize], Some(90.0));
+        assert_eq!(cpu.thresholds[Severity::Shutdown as usize], Some(110.0));
+
+        let cooling: Vec<(&str, CoolingKind)> =
+            sensors.cooling_devices().iter().map(|c| (c.name.as_str(), c.kind)).collect();
+        assert_eq!(
+            cooling,
+            [
+                ("cpufreq-cpu0-0", CoolingKind::Cpu),
+                ("devfreq-3d00000.gpu-3", CoolingKind::Gpu),
+                ("ath11k_thermal-4", CoolingKind::Wifi),
+            ]
+        );
     }
 
     #[test]
