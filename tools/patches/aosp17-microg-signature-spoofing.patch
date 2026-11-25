@@ -1,5 +1,5 @@
 diff --git a/services/core/java/com/android/server/pm/ComputerEngine.java b/services/core/java/com/android/server/pm/ComputerEngine.java
-index 4ce3cabdd..6817c512f 100644
+index 4ce3cabdd..c8c752025 100644
 --- a/services/core/java/com/android/server/pm/ComputerEngine.java
 +++ b/services/core/java/com/android/server/pm/ComputerEngine.java
 @@ -1545,6 +1545,7 @@ public class ComputerEngine implements Computer {
@@ -10,19 +10,22 @@ index 4ce3cabdd..6817c512f 100644
              return packageInfo;
          } else if ((flags & (MATCH_UNINSTALLED_PACKAGES | MATCH_ARCHIVED_PACKAGES)) != 0
                  && PackageUserStateUtils.isAvailable(state, flags)) {
-@@ -1585,6 +1586,46 @@ public class ComputerEngine implements Computer {
+@@ -1585,6 +1586,50 @@ public class ComputerEngine implements Computer {
          }
      }
  
 +    // Local (android-pc): restricted signature spoofing for microG. Only these packages, and
 +    // only when preinstalled on a system partition, may report the Google signature carried
 +    // in their "fake-signature" meta-data. The one exception is microG's GmsCore installed
-+    // as an ordinary app, and only when signed with microG's own release key (SHA-256 of the
-+    // certificate below), so it can live in userdata on a ROM that carries no Google apps.
++    // as an ordinary app, and only when signed with microG's own release key or, for our
++    // patched build of it (tools/gts7l-microg-patch.sh), AOSP's testkey (SHA-256 of the
++    // certificates below), so it can live in userdata on a ROM that carries no Google apps.
 +    private static final Set<String> MICROG_PACKAGES = Set.of(
 +            "com.google.android.gms", "com.google.android.gsf", "com.android.vending");
 +    private static final byte[] MICROG_CERT_SHA256 = libcore.util.HexEncoding.decode(
 +            "9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165");
++    private static final byte[] TESTKEY_CERT_SHA256 = libcore.util.HexEncoding.decode(
++            "a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc");
 +
 +    private static void spoofMicroGSignature(PackageStateInternal ps, AndroidPackage p,
 +            long flags, PackageInfo packageInfo) {
@@ -33,7 +36,8 @@ index 4ce3cabdd..6817c512f 100644
 +            return;
 +        }
 +        if (!ps.isSystem() && !("com.google.android.gms".equals(p.getPackageName())
-+                && p.getSigningDetails().hasSha256Certificate(MICROG_CERT_SHA256))) {
++                && (p.getSigningDetails().hasSha256Certificate(MICROG_CERT_SHA256)
++                || p.getSigningDetails().hasSha256Certificate(TESTKEY_CERT_SHA256)))) {
 +            return;
 +        }
 +        final String fake = p.getMetaData().getString("fake-signature");

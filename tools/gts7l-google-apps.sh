@@ -8,9 +8,12 @@
 # - microG: the APK tools/fetch-apps.sh microg fetched and checked (one APK for every ABI),
 #   0.3.18 or later: 0.3.16.1 and 0.3.17 break AccountManager sign-in from other apps
 #   (Aurora Store's "microG" login, microg/GmsCore#3853).
+#   tools/gts7l-microg-patch.sh makes it check in with a Vietnamese mobile network instead
+#   of microG's German one and signs it with AOSP's testkey; it replaces a microG signed
+#   with microG's key only after `adb uninstall com.google.android.gms` (sign in again).
 #   tools/patches/aosp17-microg-signature-spoofing.patch lets it report Google's signature
-#   although it is not a system app, because it is signed with microG's release key. Its
-#   runtime permissions are granted here.
+#   although it is not a system app, because it is signed with testkey or microG's release
+#   key. Its runtime permissions are granted here.
 # - Google Play Store (com.android.vending): Google's APK from the Android 17 arm64 emulator
 #   image (Android SDK License Agreement; asks unless --accept-license), pinned by SHA-256 and
 #   signer. tools/patches/aosp17-play-store-user-app.patch gives it, as an ordinary app, the
@@ -88,7 +91,10 @@ fi
 echo "$ps_sha  $ps" | sha256sum -c --quiet
 signed_by "$ps" $ps_cert || die "$ps is not signed with Google Play's certificate"
 
-"${adb[@]}" install -r "$gms"
+gms_vn=$ROOT/out/gts7l/microg/GmsCore-vn.apk
+"$WT/tools/gts7l-microg-patch.sh" "$gms_vn"
+"${adb[@]}" install -r "$gms_vn" ||
+    die "microG not updated: if it is still signed with microG's key, adb uninstall com.google.android.gms first"
 "${adb[@]}" install -r "$ps"
 "${adb[@]}" install -r "$dl/$aurora_apk"
 for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION READ_PHONE_STATE \
