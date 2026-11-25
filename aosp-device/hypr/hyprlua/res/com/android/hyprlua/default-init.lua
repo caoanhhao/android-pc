@@ -34,9 +34,6 @@ hl.config({
     dwindle = { preserve_split = false },
     master = { new_status = "slave", mfact = 0.55 },
 
-    -- Focus follows the mouse: 1 hovering focuses, 0 a click does.
-    input = { follow_mouse = 1 },
-
     -- This shell's own settings.
     shell = {
         main_mod = mainMod,     -- modifier of the default binds and of the mouse binds
@@ -54,14 +51,14 @@ hl.curve("almostLinear",   { type = "bezier", points = { {0.5, 0.5},   {0.75, 1}
 hl.curve("quick",          { type = "bezier", points = { {0.15, 0},    {0.1, 1}  } })
 
 hl.animation({ leaf = "global",     enabled = true, speed = 10,   bezier = "default" })
-hl.animation({ leaf = "border",     enabled = true, speed = 5.39, bezier = "easeOutQuint" })
-hl.animation({ leaf = "windows",    enabled = true, speed = 4.79, bezier = "easeOutQuint" })
-hl.animation({ leaf = "windowsIn",  enabled = true, speed = 4.1,  bezier = "easeOutQuint", style = "popin 87%" })
-hl.animation({ leaf = "windowsOut", enabled = true, speed = 1.49, bezier = "linear",       style = "popin 87%" })
-hl.animation({ leaf = "fadeIn",     enabled = true, speed = 1.73, bezier = "almostLinear" })
-hl.animation({ leaf = "fadeOut",    enabled = true, speed = 1.46, bezier = "almostLinear" })
-hl.animation({ leaf = "fade",       enabled = true, speed = 3.03, bezier = "quick" })
-hl.animation({ leaf = "workspaces", enabled = true, speed = 2.5,  bezier = "easeOutQuint", style = "slide" })
+hl.animation({ leaf = "border",     enabled = true, speed = 6.39, bezier = "easeOutQuint" })
+hl.animation({ leaf = "windows",    enabled = true, speed = 5.79, bezier = "easeOutQuint" })
+hl.animation({ leaf = "windowsIn",  enabled = true, speed = 5.1,  bezier = "easeOutQuint", style = "popin 87%" })
+hl.animation({ leaf = "windowsOut", enabled = true, speed = 2.49, bezier = "linear",       style = "popin 87%" })
+hl.animation({ leaf = "fadeIn",     enabled = true, speed = 2.73, bezier = "almostLinear" })
+hl.animation({ leaf = "fadeOut",    enabled = true, speed = 2.46, bezier = "almostLinear" })
+hl.animation({ leaf = "fade",       enabled = true, speed = 4.03, bezier = "quick" })
+hl.animation({ leaf = "workspaces", enabled = true, speed = 3.5,  bezier = "easeOutQuint", style = "slide" })
 
 ---------------------
 ---- KEYBINDINGS ----
@@ -109,3 +106,6 @@ hl.bar({
 
 -- hl.on("workspace.active", function(ws) hl.notify("Workspace " .. ws.name) end)
 -- hl.on("window.open", function(w) print("opened " .. w.class) end)
+
+-- Keybinds modelled on the host configuration (binds.lua next to this file).
+require("binds")

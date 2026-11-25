@@ -1,8 +1,8 @@
-From f73c2f6db29423138de6f1a576355dc2f497a35d Mon Sep 17 00:00:00 2001
+From f915675ccb2c1ea338134b6bbfc139dfc1a02805 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao2@gmail.com>
 Date: Tue, 24 Nov 2026 08:21:26 +0700
-Subject: [PATCH] drm/msm/a6xx: accept the Galaxy Tab S7's a650 SQE 0.93 with a
- warning
+Subject: [PATCH 101/107] drm/msm/a6xx: accept the Galaxy Tab S7's a650 SQE
+ 0.93 with a warning
 
 The only a650_sqe.fw on the Galaxy Tab S7 LTE (gts7l) is Samsung's 0.93 in
 the stock vendor image. a6xx_ucode_check_version() rejects anything older

@@ -400,9 +400,15 @@ class HyprLua(private val host: LuaHost, private val isKey: (String) -> Boolean)
         }
 
         /** The default init.lua, copied for the user on first run. */
-        val DEFAULT_INIT: String by lazy {
-            HyprLua::class.java.getResourceAsStream("default-init.lua")!!.bufferedReader().readText()
+        val DEFAULT_INIT: String by lazy { resource("default-init.lua") }
+
+        /** The modules the default init.lua requires, by path next to it, copied with it. */
+        val DEFAULT_MODULES: Map<String, String> by lazy {
+            mapOf("binds.lua" to resource("default-binds.lua"))
         }
+
+        private fun resource(name: String): String =
+            HyprLua::class.java.getResourceAsStream(name)!!.bufferedReader().readText()
 
         /** An error without Lua's stack traceback, which only the log gets. */
         fun firstLines(message: String?): String =

@@ -1,0 +1,44 @@
+From 5fa92d9eab21ae69f0f9d310a473bbba65c63563 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 23:47:51 +0700
+Subject: [PATCH 106/107] drm/msm/dsi/phy: 7nm: give the bonded slave PHY the
+ master's dividers
+
+In bonded mode the slave PHY runs from the master's PLL, but its
+CMN_CLK_CFG0 dividers are its own and no clock in the tree sets them: they
+keep the reset value (0xf1 on SM8250), while the master is programmed to
+0x11. With the Galaxy Tab S7 LTE's dual C-PHY panel this leaves the second
+link unusable: the DSI1 half stays dark and the panel stops taking the DSI0
+half after ~160 lines.
+
+The downstream driver writes the master's CLK_CFG0 to the slave before it
+enables the PLL. Do the same in vco_prepare, before the PLL bias comes up.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 5decaa246..4a7c6f60e 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -516,6 +516,15 @@ static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
+ 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+ 	int rc;
+ 
++	/*
++	 * The bonded slave PHY runs from the master's PLL but has its own
++	 * dividers, which no clock in the tree sets: copy the master's before
++	 * the PLL bias comes up.
++	 */
++	if (pll_7nm->slave)
++		dsi_pll_cmn_clk_cfg0_write(pll_7nm->slave,
++					   readl(pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_CLK_CFG0));
++
+ 	dsi_pll_enable_pll_bias(pll_7nm);
+ 	if (pll_7nm->slave)
+ 		dsi_pll_enable_pll_bias(pll_7nm->slave);
+-- 
+2.56.1
+
