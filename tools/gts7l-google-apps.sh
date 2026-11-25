@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # microG GmsCore and Aurora Store on the Galaxy Tab S7 LTE as ordinary user apps, in userdata
-# (docs/gts7l.md §22). The aosp_gts7l ROM carries nothing of Google's, unlike the PC product;
+# (docs/gts7l.md §24). The aosp_gts7l ROM carries nothing of Google's, unlike the PC product;
 # these are installed over adb and survive `gts7l-android-flash.sh --keep-data`.
 #
 #   tools/gts7l-google-apps.sh [ADB_SERIAL]

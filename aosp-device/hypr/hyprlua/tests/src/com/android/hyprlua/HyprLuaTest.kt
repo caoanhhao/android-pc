@@ -47,6 +47,9 @@ class FakeHost(val files: Map<String, String> = emptyMap()) : LuaHost {
 class HyprLuaTest {
     private val keys = setOf("Q", "C", "V", "J", "F", "E", "D", "SPACE", "GRAVE", "ENTER", "B",
         "DPAD_LEFT", "DPAD_RIGHT", "DPAD_UP", "DPAD_DOWN", "TAB", "SLASH", "T") + (0..9).map { "$it" }
+    /** KeyEvent's names (without KEYCODE_) that the default binds.lua uses. */
+    private val androidKeys = keys + ('A'..'Z').map { "$it" } + (1..12).map { "F$it" } +
+        (0..9).map { "NUMPAD_$it" } + listOf("NUMPAD_ENTER", "ESCAPE", "EQUALS", "MINUS")
     private val host = FakeHost()
     private val lua = HyprLua(host) { it in keys }
 
@@ -87,7 +90,11 @@ class HyprLuaTest {
 
     @Test
     fun theDefaultInitLuaLoadsWithoutWarnings() {
+<<<<<<< HEAD
         val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in keys })
+=======
+        val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in androidKeys })
+>>>>>>> gts7l
         assertEquals(emptyList<String>(), c.warnings)
         val v = c.wire.values
         assertEquals("ALT", v["mod"])

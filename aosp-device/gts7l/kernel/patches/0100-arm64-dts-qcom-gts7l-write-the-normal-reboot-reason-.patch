@@ -1,8 +1,8 @@
-From 68078e9bf3170fd55627db478a8da60806323393 Mon Sep 17 00:00:00 2001
+From 975d3c9ec9776b4ea71a9fca4402f4bc92b94624 Mon Sep 17 00:00:00 2001
 From: caoanhhao <dev@skyperry.com>
 Date: Tue, 24 Nov 2026 07:08:16 +0700
-Subject: [PATCH] arm64: dts: qcom: gts7l: write the normal reboot reason to
- IMEM
+Subject: [PATCH 100/107] arm64: dts: qcom: gts7l: write the normal reboot
+ reason to IMEM
 
 A reboot into recovery leaves 0x77665502 in the IMEM restart reason. A
 plain reboot afterwards wrote nothing there, so the stale value could
