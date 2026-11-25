@@ -267,7 +267,7 @@ group). Stable, no pstore records. Seen:
 | Works | Not yet |
 |---|---|
 | 8 CPUs with cpufreq, 5.5 GiB RAM, 25 thermal zones | remoteprocs (ADSP/CDSP/SLPI): none registered, no firmware in the initramfs |
-| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` |
+| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` (later: the pwrctrl module was missing, §21) |
 | USB gadget (DWC3 peripheral) after `usbroute` | display: `msm_dpu` binds (DP only), DSI and the NT36523 panel are off, no simpledrm/fbdev |
 | Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS (driver since §17) |
 | power key, volume down (resin), gpio-keys, regulator haptics | S Pen (i2c-17 0x56): deferred on `spen-3v3-regulator`, GPIO from the S7+ wiring |
@@ -1065,3 +1065,21 @@ Image side:
   `wifi.direct` feature until P2P is tested.
 - `init.gts7l.rc`: `/data/vendor/wifi/{wpa,hostapd}/sockets`.
 - `sepolicy/kernel.te`: `firmware_load` on `firmware_file` (the denial `ath11k_pci` hit).
+
+Result (combined Bluetooth + Wi-Fi vendor image, flashed with `--keep-data`): the modules load
+at boot, `vendor.wifi-pc` runs, `cmd wifi set-wifi-enabled enabled` brings up the client
+mode manager on wlan0 and starts wpa_supplicant from the APEX, and `cmd wifi start-scan` /
+`list-scan-results` list the 2.4 and 5 GHz networks around. No SELinux denials from the
+Wi-Fi stack (permissive boot, `dmesg`).
+
+Open:
+- MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
+  `00:03:7f:xx:xx:xx` address that changes at every boot (Android's factory MAC with it;
+  connections use randomized MACs anyway). The tablet's own address is in
+  `efs:/wifi/.mac.info`; set it on wlan0 before the HAL starts, as the Bluetooth HAL does
+  with the efs Bluetooth address (§20).
+- Connecting to a WPA2 network (needs a password from the user), then SoftAP/hotspot through
+  hostapd and P2P (`wifi.direct` feature, `p2p_supplicant.conf`).
+- The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
+  `sa_data` bytes with `to_ne_bytes` now.
+
