@@ -332,6 +332,8 @@ hl.dsp = namespace("hl.dsp", {
   -- SystemUI's notification shade and quick settings (the touch gestures' top edge).
   notifications = function() return dsp("notifications") end,
   quick_settings = function() return dsp("quicksettings") end,
+  -- Android's back for the focused window (the touch gestures' side edges).
+  back = function() return dsp("back") end,
   -- System actions (Phase E9), SystemUI's own: the host runs scripts for these.
   clipboard_history = function() return dsp("clipboardhistory") end,
   translate = function() return dsp("translate") end,

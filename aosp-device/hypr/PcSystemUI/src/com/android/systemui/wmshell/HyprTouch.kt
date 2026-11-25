@@ -15,6 +15,7 @@ import android.view.InputDevice
 import android.view.InputEvent
 import android.view.InputEventReceiver
 import android.view.InputMonitor
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.view.WindowManagerGlobal
@@ -30,9 +31,12 @@ import kotlin.math.hypot
 /**
  * Touch gestures in the style of HarmonyOS's PC mode (Phase D6, docs/hypr-desktop.md):
  *
- * - edge swipes (bottom: app launcher, left/right: workspace, top: notifications, its right
- *   third: quick settings), skipped where apps asked for the edge (system gesture exclusion);
- * - three-finger swipes and, on the wallpaper or the bar, pinches (overview);
+ * - edge swipes as on phones (bottom: overview, left/right: back to the window at that edge,
+ *   top: notifications, its right third: quick settings), skipped where apps asked for the
+ *   edge (system gesture exclusion); the mouse does the same with the left button pressed on
+ *   the screen's outermost pixels and dragged inward;
+ * - three-finger swipes (sideways: workspace, up: app launcher) and, on the wallpaper or the
+ *   bar, pinches (overview);
  * - a long-press on a window's frame (its border, the gap next to it, a floating window's
  *   caption) picks the window up: dragging swaps it with the tile under the finger (a floating
  *   one lands there, or joins the layout at the left or right screen edge), releasing without
@@ -72,6 +76,8 @@ class HyprTouch(
     private var downY = 0f
     /** The gesture was taken (pilfered); the rest of it is ignored. */
     private var taken = false
+    /** A left-button mouse drag from a screen edge is being followed. */
+    private var mouseEdge = false
     private val holdRunnable = Runnable { onHold() }
 
     private val exclusionListener = object : ISystemGestureExclusionListener.Stub() {
@@ -99,6 +105,8 @@ class HyprTouch(
                 try {
                     if (event is MotionEvent && event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
                         onTouch(event)
+                    } else if (event is MotionEvent && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+                        onMouse(event)
                     }
                 } catch (e: RuntimeException) {
                     Log.e(TAG, "touch gesture failed", e)
@@ -190,6 +198,39 @@ class HyprTouch(
         }
     }
 
+    /**
+     * The mouse's edge swipes: the left button pressed (no modifier) on the screen's outermost
+     * pixels, where the pointer stops, and dragged inward as far as a finger would swipe. Only
+     * edge gestures; a press anywhere else is the app's.
+     */
+    private fun onMouse(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                mouseEdge = false
+                if (!enabled || e.buttonState != MotionEvent.BUTTON_PRIMARY ||
+                    e.metaState and MODIFIERS != 0 || menu.contains(e.rawX, e.rawY)) return
+                val x = e.rawX
+                val y = e.rawY
+                val c = touchConfig().copy(edge = dp(MOUSE_EDGE_DP))
+                if (x >= c.edge && x < c.width - c.edge && y >= c.edge && y < c.height - c.edge) return
+                downX = x
+                downY = y
+                taken = false
+                mouseEdge = true
+                recognizer.config = c
+                recognizer.down(e.getPointerId(0), x, y, e.eventTime,
+                    excluded = excluded.contains(x.toInt(), y.toInt()), onWindow = false)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!mouseEdge || taken) return
+                val names = recognizer.move(mapOf(e.getPointerId(0) to (e.rawX to e.rawY)), e.eventTime)
+                    ?: return
+                fire(names)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> mouseEdge = false
+        }
+    }
+
     /** Runs the first of [names] that has a bind. */
     private fun fire(names: List<String>) {
         val binds = gestureBinds()
@@ -207,7 +248,18 @@ class HyprTouch(
         }
         monitor?.pilferPointers()
         Log.i(TAG, "gesture $name -> ${bind.dispatcher} ${bind.arg}")
-        if (!controller.dispatch(bind.dispatcher, bind.arg)) {
+        // Back from a side edge goes to the window at that edge, as on a phone.
+        val target = if (bind.dispatcher == "back" && name.startsWith("EDGE_")) {
+            controller.frameAt(displayId, downX, downY, dp(BACK_REACH_DP), 0)
+        } else {
+            null
+        }
+        val ok = if (target != null) {
+            controller.dispatchOn(target.taskId, bind.dispatcher, bind.arg)
+        } else {
+            controller.dispatch(bind.dispatcher, bind.arg)
+        }
+        if (!ok) {
             Log.w(TAG, "gesture $name: dispatch ${bind.dispatcher} ${bind.arg} refused")
         }
     }
@@ -276,6 +328,12 @@ class HyprTouch(
         /** Under the 400 ms of apps' long-press, so the app gets a cancel before it acts. */
         const val HOLD_MS = 350L
         const val EDGE_DP = 20
+        /** The mouse stops at the screen's edge: its edge zone is the outermost pixels. */
+        const val MOUSE_EDGE_DP = 4
+        /** How far from the swipe's start the window that gets a back may be (the outer gap). */
+        const val BACK_REACH_DP = 48
+        const val MODIFIERS = KeyEvent.META_SHIFT_ON or KeyEvent.META_CTRL_ON or
+            KeyEvent.META_ALT_ON or KeyEvent.META_META_ON
         const val DISTANCE_DP = 72
         const val SLOP_DP = 12
         /** How far inside a window's edge its frame reaches for a finger. */

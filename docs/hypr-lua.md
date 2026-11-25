@@ -374,7 +374,7 @@ notifications side by side) and close all work.
 ## Touch gestures
 
 ```lua
-hl.bind("gesture:edge_bottom", hl.dsp.launcher())
+hl.bind("gesture:edge_bottom", hl.dsp.launcher())   -- instead of the overview
 hl.bind("gesture:swipe_4_down", function() hl.notify("four fingers") end)
 hl.unbind("gesture:edge_top_right")          -- the whole top edge opens notifications
 hl.config({ shell = { touch = true } })
@@ -385,18 +385,23 @@ function. `hl.unbind` frees it (an unbound gesture leaves the touch to the app).
 
 | Gesture | What | Default |
 |---|---|---|
-| `edge_bottom` | one finger swiping up from the bottom edge | `hl.dsp.launcher()` |
-| `edge_left` | from the left edge, to the right | `hl.dsp.focus({ workspace = "e-1" })` |
-| `edge_right` | from the right edge, to the left | `hl.dsp.focus({ workspace = "e+1" })` |
+| `edge_bottom` | one finger swiping up from the bottom edge | `hl.dsp.overview()` |
+| `edge_left` | from the left edge, to the right | `hl.dsp.back()` |
+| `edge_right` | from the right edge, to the left | `hl.dsp.back()` |
 | `edge_top` | from the top edge, down | `hl.dsp.notifications()` |
 | `edge_top_right` | from the right third of the top edge (when unbound, `edge_top`) | `hl.dsp.quick_settings()` |
-| `swipe_<N>_<dir>` | N = 3, 4 or 5 fingers swiping `up`, `down`, `left` or `right`, anywhere | `swipe_3_up`: `hl.dsp.overview()` |
+| `swipe_<N>_<dir>` | N = 3, 4 or 5 fingers swiping `up`, `down`, `left` or `right`, anywhere | `swipe_3_up`: `hl.dsp.launcher()`; `swipe_3_left`/`swipe_3_right`: workspace `e+1`/`e-1` |
 | `pinch_in`, `pinch_out` | two fingers on the wallpaper or the bar (on a window a pinch is the app's zoom) | `pinch_in`: `hl.dsp.overview()` |
 
 - An edge swipe starts within 20 dp of the edge and goes 72 dp inward within 0.7 s. Where an
   app asked for priority (`View.setSystemGestureExclusionRects`, as WindowManager limits it on
   the side edges) there is no edge swipe and no other gesture. The lock screen takes only
   `edge_top`/`edge_top_right`.
+- The mouse has the edge swipes too: the left button pressed (no modifier) on the screen's
+  outermost 4 dp, where the pointer stops, and dragged 72 dp inward. A press anywhere else is
+  the app's.
+- `hl.dsp.back()` is Android's back (a BACK key). From a side edge it goes to the window at that
+  edge, as on a phone: that window is focused first when it is not.
 - `hl.dsp.notifications()` and `hl.dsp.quick_settings()` open SystemUI's shade (also usable on
   keys).
 - Not a bind: a long-press (350 ms, `persist.hypr.touch_hold`) on a window's frame (14 dp inside
@@ -455,6 +460,7 @@ dispatchers this shell does not have (`hl.dsp.workspace.*` other than `toggle_sp
 | `hl.dsp.overview()` | `overview` | the hyprexpo-like overview |
 | `hl.dsp.notifications()` | `notifications` | SystemUI's notification shade |
 | `hl.dsp.quick_settings()` | `quicksettings` | SystemUI's quick settings |
+| `hl.dsp.back()` | `back` | Android's back for the focused window |
 | `hl.dsp.bar.toggle()`, `.show()`, `.hide()` | `bar toggle\|show\|hide` | the bar; hidden, it gives its strip back to the windows (waybar's `SIGUSR1`) |
 | `hl.dsp.bar.reveal()` | `bar reveal` | an auto-hiding bar comes out for 3 s (or `autohide_delay`, if longer) |
 | `hl.dsp.bar.reload()` | `bar reload` | re-creates the bar from the configuration in force (its views, Lua modules and configured visibility), without running init.lua again |

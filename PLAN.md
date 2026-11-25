@@ -723,7 +723,10 @@ docs/hypr-desktop.md.
   (`hl.bind("gesture:edge_bottom", ...)`, `hl.gesture` lines, `shell.touch`), docs/hypr-lua.md.
   Checked on Waydroid with injected touches (`aosp-device/hypr/tools/touchinject/`): every gesture, the menu
   entries, and scrolling, taps, long-presses and pinches inside apps unchanged; 8 new host tests.
-  Details and limits in docs/hypr-desktop.md, "Touch gestures (D6)".
+  Details and limits in docs/hypr-desktop.md, "Touch gestures (D6)". 2026-11-25 (user): edges
+  as on phones, bottom edge → overview, side edges → back (to the window at that edge),
+  workspaces on three fingers sideways, launcher on three fingers up; the mouse has the same
+  edge swipes (left button from the screen's outermost pixels, dragged inward).
 - **D7 — Waydroid:** the shell in the Phase W container (modifier key next to the host's
   Hyprland), with the user's OK to start Waydroid. Status (2026-11-21): done. The full image
   (build `eng.builder.20261121.2248`) packed for Waydroid replaced the D1-D6 overlay APKs (moved
