@@ -13,3 +13,8 @@ firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
 # Input devices: touchscreen, S Pen, Book Cover keyboard and touchpad (core ueventd.rc covers
 # /dev/input). DRM card and render node: core ueventd.rc. TODO(T4): vibrator (input force
 # feedback), audio.
+
+# SM8250 video codec (qcom-iris): V4L2 decoder/encoder nodes for the Codec2 HAL
+# (media/, user mediacodec in group camera).
+/dev/video*  0660  system  camera
+/dev/media*  0660  system  camera

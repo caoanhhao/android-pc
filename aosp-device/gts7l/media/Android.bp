@@ -1,0 +1,47 @@
+// Hardware video codecs of gts7l: the Codec2 AIDL store over external/v4l2_codec2's V4L2
+// components (service.cpp), its media_codecs_c2.xml and the extra seccomp rules.
+soong_namespace {
+    imports: ["external/v4l2_codec2"],
+}
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+cc_binary {
+    name: "android.hardware.media.c2-service.gts7l",
+    vendor: true,
+    relative_install_path: "hw",
+    defaults: ["libcodec2-aidl-defaults"],
+    srcs: ["service.cpp"],
+    shared_libs: [
+        "libavservices_minijail",
+        "libbase",
+        "libbinder_ndk",
+        "liblog",
+        "libv4l2_codec2_v4l2",
+    ],
+    init_rc: ["android.hardware.media.c2-service.gts7l.rc"],
+    vintf_fragments: ["android.hardware.media.c2-service.gts7l.xml"],
+    required: [
+        "android.hardware.media.c2-default-seccomp_policy",
+        "android.hardware.media.c2-extended-seccomp_policy.gts7l",
+        "media_codecs_c2.gts7l.xml",
+    ],
+    visibility: ["//visibility:public"],
+}
+
+prebuilt_etc {
+    name: "android.hardware.media.c2-extended-seccomp_policy.gts7l",
+    vendor: true,
+    sub_dir: "seccomp_policy",
+    src: "codec2.vendor.ext-arm64.policy",
+    filename: "android.hardware.media.c2-extended-seccomp_policy",
+}
+
+prebuilt_etc {
+    name: "media_codecs_c2.gts7l.xml",
+    vendor: true,
+    src: "media_codecs_c2.xml",
+    filename: "media_codecs_c2.xml",
+}

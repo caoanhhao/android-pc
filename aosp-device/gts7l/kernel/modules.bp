@@ -36,5 +36,9 @@ prebuilt_kernel_modules {
         "btbcm.ko",
         "btqca.ko",
         "hci_uart.ko",
+        // The SM8250 video codec (docs/gts7l-hal/security-usb-media.md §5): qcom-iris, which
+        // takes qcom,sm8250-venus over venus when both are built; firmware
+        // qcom/sm8250/gts7xl/venus.mbn (DT firmware-name) from gts7l_fw.
+        "qcom-iris.ko",
     ],
 }
