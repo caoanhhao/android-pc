@@ -1,0 +1,97 @@
+From c8a679bd30b1e496da9aa4606f6bebd947fc2cb7 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 23:47:38 +0700
+Subject: [PATCH 105/107] drm/msm/dsi: C-PHY: do not drive a clock lane
+
+C-PHY has no clock lane, but the 7nm PHY enabled lane 4 as one
+(LANE_CTRL0 0x17, LANE_CFG1 0x84), configured lanes 3 and 4 like D-PHY
+lanes, forced continuous clock in LANE_CTRL1, and the host set CLK_EN and
+CLKLN_HS_FORCE_REQUEST. The bootloader and the downstream driver of the
+Galaxy Tab S7 LTE (SM8250, CSOT PPA957DB1 over bonded C-PHY links) enable
+the three trios only (LANE_CTRL0 0x07, LANE_CFG1 0x04), leave lane 4 alone,
+write only the drive control of lane 3 (0x06), and neither set CLK_EN nor
+request a continuous clock.
+
+Do the same in C-PHY mode.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/dsi/dsi_host.c        |  5 +++--
+ drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c | 17 +++++++++++++++--
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index 2c13b3318..7f96d1546 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -916,7 +916,8 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
+ 
+ 	dsi_write(msm_host, REG_DSI_CLK_CTRL, DSI_CLK_CTRL_ENABLE_CLKS);
+ 
+-	data = DSI_CTRL_CLK_EN;
++	/* C-PHY has no clock lane */
++	data = msm_host->cphy_mode ? 0 : DSI_CTRL_CLK_EN;
+ 
+ 	DBG("lane number=%d", msm_host->lanes);
+ 	data |= ((DSI_CTRL_LANE0 << msm_host->lanes) - DSI_CTRL_LANE0);
+@@ -924,7 +925,7 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
+ 	dsi_write(msm_host, REG_DSI_LANE_SWAP_CTRL,
+ 		  DSI_LANE_SWAP_CTRL_DLN_SWAP_SEL(msm_host->dlane_swap));
+ 
+-	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS)) {
++	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS) && !msm_host->cphy_mode) {
+ 		lane_ctrl = dsi_read(msm_host, REG_DSI_LANE_CTRL);
+ 
+ 		if (msm_dsi_phy_set_continuous_clock(phy, true))
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+index 2523b439f..5decaa246 100644
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -970,6 +970,15 @@ static void dsi_phy_hw_v4_0_lane_settings(struct msm_dsi_phy *phy)
+ 
+ 	/* other settings */
+ 	for (i = 0; i < 5; i++) {
++		/*
++		 * C-PHY uses only the three trios (lanes 0-2), no clock lane.
++		 * Lane 3 still needs the downstream drive control value.
++		 */
++		if (phy->cphy_mode && i > 2) {
++			if (i == 3)
++				writel(0x06, lane_base + REG_DSI_7nm_PHY_LN_TX_DCTRL(i));
++			continue;
++		}
+ 		writel(0x0, lane_base + REG_DSI_7nm_PHY_LN_CFG0(i));
+ 		writel(0x0, lane_base + REG_DSI_7nm_PHY_LN_CFG1(i));
+ 		writel(i == 4 ? 0x8a : 0xa, lane_base + REG_DSI_7nm_PHY_LN_CFG2(i));
+@@ -1039,7 +1048,7 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 		vreg_ctrl_1 = 0x55;
+ 		glbl_hstx_str_ctrl_0 = 0x00;
+ 		glbl_pemph_ctrl_0 = 0x11;
+-		lane_ctrl0 = 0x17;
++		lane_ctrl0 = 0x07;
+ 	} else {
+ 		vreg_ctrl_0 = less_than_1500_mhz ? 0x53 : 0x52;
+ 		vreg_ctrl_1 = 0x5c;
+@@ -1144,7 +1153,7 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
+ 
+ 	/* Configure PHY lane swap (TODO: we need to calculate this) */
+ 	writel(0x21, base + REG_DSI_7nm_PHY_CMN_LANE_CFG0);
+-	writel(0x84, base + REG_DSI_7nm_PHY_CMN_LANE_CFG1);
++	writel(phy->cphy_mode ? 0x04 : 0x84, base + REG_DSI_7nm_PHY_CMN_LANE_CFG1);
+ 
+ 	if (phy->cphy_mode)
+ 		writel(BIT(6), base + REG_DSI_7nm_PHY_CMN_GLBL_CTRL);
+@@ -1234,6 +1243,10 @@ static bool dsi_7nm_set_continuous_clock(struct msm_dsi_phy *phy, bool enable)
+ 	void __iomem *base = phy->base;
+ 	u32 data;
+ 
++	/* C-PHY has no clock lane */
++	if (phy->cphy_mode)
++		return false;
++
+ 	data = readl(base + REG_DSI_7nm_PHY_CMN_LANE_CTRL1);
+ 	if (enable)
+ 		data |= BIT(5) | BIT(6);
+-- 
+2.56.1
+

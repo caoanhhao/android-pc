@@ -267,7 +267,7 @@ group). Stable, no pstore records. Seen:
 | Works | Not yet |
 |---|---|
 | 8 CPUs with cpufreq, 5.5 GiB RAM, 25 thermal zones | remoteprocs (ADSP/CDSP/SLPI): none registered, no firmware in the initramfs |
-| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` (later: the pwrctrl module was missing, §21) |
+| UFS: sda-sdd, 82 partitions | PCIe (QCA6390 Wi-Fi): `qcom-pcie: cannot initialize host` (later: the pwrctrl module was missing, §23) |
 | USB gadget (DWC3 peripheral) after `usbroute` | display: `msm_dpu` binds (DP only), DSI and the NT36523 panel are off, no simpledrm/fbdev |
 | Book Cover keyboard, touchpad, tablet-mode switch (STM32 pogo, i2c-9) | touch (Novatek, i2c-5 0x62): node disabled in the DTS (driver since §17) |
 | power key, volume down (resin), gpio-keys, regulator haptics | S Pen (i2c-17 0x56): deferred on `spen-3v3-regulator`, GPIO from the S7+ wiring |
@@ -882,6 +882,9 @@ Still open: the DSI0 half shows only the first ~160 portrait lines right and the
 stays dark. This round ruled out the DSI/PHY programming. The tablet is back on kernel #18
 (touch session) in `boot` and our `recovery.img`; `dtbo` stays zeroed.
 
+**Correction (§19): this dump is not the bootloader's.** The kernel has `CONFIG_CMDLINE_FORCE`, so
+`msm.modeset=0` from the image header was ignored and msm had already reprogrammed the link.
+
 **The bootloader's registers, read while it drives the panel.** `recovery` held a bring-up
 image with kernel #20 (`CONFIG_DEVMEM=y` by hand) and `msm.modeset=0 clk_ignore_unused
 pd_ignore_unused` (`gts7l-stock/s6/recovery-k20-modeset0.img`), so msm never touches the
@@ -1047,7 +1050,150 @@ Connected` for both, `Logi M196 Mouse` and `MeetionKB1 Keyboard` input devices t
 `getevent` shows `REL_X`/`REL_Y`/`BTN_MOUSE` and key presses. LE HID devices reconnect by
 themselves afterwards.
 
-## 21. Wi-Fi: QCA6390 on ath11k (2026-11-25)
+## 21. Panel: the real bootloader state, kernels #24-#28 (2026-11-24 night)
+
+Still open: same picture (DSI0 half right for the first ~80-160 portrait lines, DSI1 half
+dark). The tablet is back on kernel #18 in `boot` and our `recovery.img` (`2f71f318...`).
+
+**§18's "bootloader" dump was ours.** `CONFIG_CMDLINE_FORCE=y` drops the boot image cmdline, so
+`recovery-k20-modeset0.img` ran msm normally (`/sys/module/msm/parameters/modeset` = Y, fbdev
+console on screen). Debug kernels must put such arguments into `CONFIG_CMDLINE` (the fragment).
+
+**Real bootloader dumps** (`gts7l-stock/s6/`, all read with the display clocks on):
+- `abl-dsi-regs.txt`: kernel #24/#25, `msm.modeset=0 clk_ignore_unused pd_ignore_unused` in
+  `CONFIG_CMDLINE`, `abldump.sh` (DSI ctrl/PHY/lanes/PLL only). The old file is
+  `k20-recovery-dsi-regs-NOT-abl.txt`.
+- `abl-dispcc-regs.txt`: dispcc through `/sys/kernel/debug/regmap/af00000.clock-controller/registers`
+  (ours: `k18-dispcc-regmap.txt`). pclk/byte RCGs, dividers and branches match.
+- `abl-dpu-snapshot.txt`: kernel #27 with two DEBUG params, `msm.mdss_noreset=1` (skip the MDSS
+  reset at probe) and `msm.boot_snapshot=1` (the DPU driver's own snapshot at the start of
+  `dpu_kms_hw_init`, before any DPU write, to devcoredump). No `devmem` on DPU registers.
+
+**What the bootloader does differently (C-PHY):**
+- PHY: `LANE_CTRL0` 0x07 (three trios, no clock lane; mainline 0x17), `LANE_CFG1` 0x04 (0x84),
+  `LANE_CTRL1` 0 (no continuous clock), lanes 3 and 4 not configured, timings = the stock DT
+  bytes (`TIMING_CTRL_4..8` 11 3e 0d 1e 0a), PLL `SYSTEM_MUXES` 0xc0 on both PHYs (ours reads 0:
+  the PLL bias refcount drops to zero while the PLL runs), VCO 998.0 MHz (`FRAC_DIV` 0x3f506;
+  ours 997.96).
+- DSI host: `DSI_CTRL` 0x77 (no `CLK_EN`, `CMD_MODE_EN` set), `LANE_CTRL` 0 (no
+  `HS_REQ_SEL_PHY`/`CLKLN_HS_FORCE_REQUEST`), `TRIG_CTRL` 0x4 (no TE), `CLKOUT_TIMING_CTRL` 0,
+  `HS_TIMER_CTRL` 0x4ea60.
+- DPU: INTF_1/INTF_2 timing, prog fetch, panel format, pingpong, LM and DSC blocks **match ours**.
+  Only `INTF_CONFIG2` 0x100 (ours 0x10), `INTF_DISPLAY_DATA_HCTL` 0 and `INTF_MUX` bits 16-19 = 0
+  (ours 0xf) differ.
+
+| Kernel (in `recovery`, bring-up shell) | Change | Result |
+|---|---|---|
+| #26 | C-PHY: no clock lane (`LANE_CTRL0` 0x07, `LANE_CFG1` 0x04, lanes 0-2 only, no `CLK_EN`, no continuous clock) | same picture at boot; after a reset + full init DCS commands time out and DSI1 stays busy |
+| #28 | #26 + every DSI host value above + stock C-PHY timings + the bootloader's `INTF_CONFIG2`/`DATA_HCTL`/`INTF_MUX` (`msm.abl_dsi`, `msm.abl_intf`, `msm.cphy_timing`) | same picture |
+| #28 live | PLL `SYSTEM_MUXES` 0xc0 on both PHYs (`devmem`, DSI PHY) | same |
+
+Debug code: `gts7l-stock/s6/k24-k28-debug.diff` (snapshot/no-reset params, ABL-match params, the
+C-PHY lane change). The kernel tree is clean again.
+
+**New observations (webcam):**
+- The bootloader's unlock warning and the "SAMSUNG Galaxy Tab S7" logo fill **both halves**,
+  including text far below line 160, so its link setup works on this panel.
+- With our kernel, a new frame updates only the first ~80-160 lines of the DSI0 half; the rest
+  of the panel **keeps the previous image** (a sparse white-on-black frame leaves the old
+  console stripes in place). The fault does not depend on the content: the panel stops
+  writing lines a fixed time or amount of data into each frame.
+
+Open: with the static DSI, PHY, dispcc and DPU state now matching the bootloader, the remaining
+differences are dynamic: the start order of PLL/PHY/controllers/INTFs, the panel's state after
+our link restart, and the SSPP fetch path (the bootloader uses other pipes on LM0/LM1). Next
+candidates: start the link in the bootloader's order (PHY + both controllers, then both INTFs
+in one flush, display-on after video starts), and read the panel's error report (`0x05`,
+`0x0a`, `0x0e`) over DSI1 right after one frame.
+
+### Kernel #29 (same night)
+
+`msm.intf_reg` (DEBUG, in `k24-k29-debug.diff`): `echo IDX,OFF[,VAL]` reads/writes an INTF
+register through the DPU driver once it set the INTF up (IDX = enum: 2 = INTF_1, 3 = INTF_2).
+- INTF `0x1c4` (bootloader 0xe00, ours 0xa00) is read-only status.
+- Panel registers over DSI1 with video running: `0x05` 0 (one error at the first read only),
+  `0x0a` 0x9e, `0x0c` 0x07, `0x0e` 0x80, `0x0f` 0xc0 (self-diagnosis fine). The panel does not
+  see packet errors.
+- DSI0 video engine off (`DSI_CTRL` 0x71): the DSI1 half still shows nothing.
+- Display off/on (`28`/`29`) with video running, and the stock `TX_DFPS` sequence
+  (`ff 2a, fb 01, 23 0d|0c, ff 10, fb 01`; Samsung sends it in `samsung_panel_on_post`):
+  no change. The Samsung panel source (`ss_dsi_panel_NT36523_PPA957DB1.c` and its dtsi, copied
+  to `gts7l-stock/s6/`) does nothing else in on_pre/on_post besides the LCD bias buck.
+- With the quadrant pattern (`k29-dfps120-pattern.jpg`) the yellow 8 px border at x 0-7 and the
+  centre line at x ~799 are right on **every** line of the DSI0 half; past the first ~160 lines
+  only the middle of each line is not updated.
+
+Photos with a person in them were deleted at once; only screen photos without people are kept.
+
+## 22. Panel fixed: bonded C-PHY slave dividers, PLL bias, no clock lane (2026-11-24 night)
+
+**The panel works:** full picture on both halves, from the bootloader's state and from a cold
+reset + stock init, in the bring-up shell and in Android (kernel #35, `boot`
+`gts7l-stock/s6/boot-k35.img`, SHA-256 `3f7d2535...`). Photos: `k33-clean-fix.jpg`,
+`k33-cold-init.jpg`.
+
+**How it was found.** A debug build of the LineageOS 4.19 kernel
+(`LineageOS/android_kernel_samsung_sm8250`, lineage-24.0, `kona-perf_defconfig` +
+`kona-sec-common.config` + `gts7l.config` + DEBUG_FS/DEVMEM, LTO/CFI and module signing off,
+`HOSTCFLAGS=-DOPENSSL_IS_BORINGSSL` because the host OpenSSL has no ENGINE API) went into the
+Lineage recovery image (`gts7l-stock/s6/lineage-rec/`). Its downstream driver drives the panel
+correctly. Its `sde_dbg` debugfs (`/sys/kernel/debug/dri/0/debug/<blk>_off|_reg`, one block
+range per read) gave the working DSI/PHY/DPU state (`gts7l-stock/s6/lineage-dump/`). The DPU
+matched ours; on the DSI side the slave PHY's `CLK_CFG0` (0x11 vs our 0xf1), the PLL bias
+(`PLL_SYSTEM_MUXES` 0xc0 vs our 0) and lane 3's `TX_DCTRL` (0x06) differed. Written live in
+that order the picture came up; the order matters (the link has to come up with the right
+dividers and bias, a later write does not repair it).
+
+**Fixes** (new patches, `aosp-device/gts7l/kernel/patches`):
+- 0105 `drm/msm/dsi: C-PHY: do not drive a clock lane`: `LANE_CTRL0` 0x07, `LANE_CFG1` 0x04,
+  lanes 3/4 not configured except lane 3 `TX_DCTRL` 0x06, no `CLK_EN`, no continuous clock.
+- 0106 `drm/msm/dsi/phy: 7nm: give the bonded slave PHY the master's dividers`: the slave's
+  `CLK_CFG0` is never set by any clock in the tree; copy the master's in `vco_prepare`, before
+  the bias, as downstream does.
+- 0107 `drm/msm/dsi/phy: 7nm: program the PLL bias on every enable`: the first `vco_prepare`
+  runs at probe before the PHY is powered, the write is lost and the refcount never writes it
+  again.
+
+**Series cleanup.** The DEBUG patches are gone: 0099 (`drm/panel: nt36523: gts7l: stock
+on-commands as a table, backlight on both links`) replaces the old 0097-0099, 0102-0104; the
+panel is always reset and initialised and gets display off/sleep in on disable. 0097/0098
+(C-PHY tuning from DT) and the reboot-reason, a650 and touchscreen patches keep their content
+(renumbered 0100-0104). The old branch is `gts7l-debug-backup` in `gts7l-kernel`;
+`gts7l-stock/s6/k24-k32-debug.diff` keeps the debug switches (ABL-match params, `intf_reg`,
+boot DPU snapshot, MDSS no-reset).
+
+**Image retention.** The DSI0 half shows faint horizontal stripes in the shape of the old
+garbage (`k34-android-ghost-*.jpg`, `k35-android-ghost-recents-t3min.jpg`). They stay put
+across a panel reset and power cycle while new content (card outlines, wallpaper) draws
+correctly through them, so they are LCD image retention from the hours the broken link held
+the same lines, not a signal fault. They should fade with normal use; recheck later.
+
+Checked again on 2026-11-25 00:06: the debug LineageOS recovery (downstream driver, none of our
+code, panel reset and initialised by the bootloader) shows the same stripes in the same place
+on its black background (`lineage-downstream-stripes-0006.jpg`), so they live in the panel.
+Android at 00:04 (`k35-android-stripes-0004.jpg`) had not visibly faded yet. Bright, changing
+content or the panel switched off for a few hours usually clears this kind of retention.
+
+Solid-colour test (bring-up shell, kernel #35, `k35-solid-colors.jpg`): black, white, green, red
+and grey frames fill the whole panel, including the striped area, so every pixel is refreshed.
+The stripes show only on black and grey. After 10 minutes of a white frame they were visibly
+fainter on grey (`k35-gray-white10-compare.jpg`). The tablet then rebooted into Android (boot
+reason `recovery`) and the stripes were still there. They come from the hours the broken link
+held the same lines; whether they clear fully is not known yet. `recovery` now holds the
+bring-up image with kernel #35 (`4b26de41...`), which drives the panel correctly.
+
+Next: rebuild the Android images with this kernel; retest touch (§17: the firmware reported a
+fixed palm, likely because the panel was not running).
+
+2026-11-25: the tablet was reflashed with build eng.caoanh.20261124.1208 (`--keep-data`) after
+another session's flash was cut off; `boot` has kernel #35, but that build's `recovery.img`
+still has kernel #15 (broken panel), so `recovery` was rewritten with the bring-up image on
+kernel #35 again (`4b26de41...`). In Android the stripes were fainter, and on a black console
+they were no longer visible. A white frame then ran for 60 minutes (01:40-02:39); the webcam had
+moved and the grey check photo is out of focus (`k35-gray-after-white60.jpg`), so the result
+is not measured. The tablet was then powered off.
+
+## 23. Wi-Fi: QCA6390 on ath11k (2026-11-25)
 
 No DT change was needed. The `qcom,qca6390-pmu` node (pwrseq-qcom-wcn) and the `wifi@0`
 node under `pcieport0` from the S7+ series are right for this board: the stock dtbo (entry

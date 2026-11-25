@@ -1,31 +1,37 @@
-From fe1f0e85e4d845e5bd2c2af7332d034cc01a8413 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
-Date: Mon, 23 Nov 2026 23:04:16 +0700
-Subject: [PATCH] DEBUG drm/panel: nt36523: gts7l init from a table, bisect
- switches
+From e5bc592fdbc7133cd446e264fe92ecfd3895c28c Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Tue, 24 Nov 2026 23:47:25 +0700
+Subject: [PATCH 099/107] drm/panel: nt36523: gts7l: stock on-commands as a
+ table, backlight on both links
+
+The CSOT PPA957DB1 on-command list of the stock
+ss_dsi_panel_NT36523_PPA957DB1_WQXGA node (sleep out included) has some 360
+entries. Keep it as a { delay, length, bytes } table and send every entry to
+both DSI links, then display on to both. The panel is reset and initialised
+on every prepare, and sent display off and sleep in on disable, as for the
+other panels of this driver.
+
+With bonded DSI hosts that run synchronised (qcom,sync-dual-dsi), msm only
+queues a command sent to DSI0 and transmits it when the same command is sent
+to DSI1. The backlight used DSI0 alone, so its brightness never reached the
+panel: the stock init sequence sets the brightness to 0 and the panel stayed
+dark after a reset. Send the brightness to every link, as the init sequence
+does, and read it back from the first link that answers (this panel answers
+reads on DSI1 only).
+
+This replaces the gts7l bring-up switches (skip reset/init/disable, init
+bisection, DCS read/write module parameters).
 
 caoanhhao used AI to code
 ---
- drivers/gpu/drm/panel/panel-novatek-nt36523.c | 764 +++++++++---------
- 1 file changed, 395 insertions(+), 369 deletions(-)
+ drivers/gpu/drm/panel/panel-novatek-nt36523.c | 801 +++++++++---------
+ 1 file changed, 412 insertions(+), 389 deletions(-)
 
 diff --git a/drivers/gpu/drm/panel/panel-novatek-nt36523.c b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
-index 2dd378788..eca542ac2 100644
+index 554ad47d2..f9a5968c7 100644
 --- a/drivers/gpu/drm/panel/panel-novatek-nt36523.c
 +++ b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
-@@ -35,6 +35,11 @@ static bool skip_init = true;
- module_param(skip_init, bool, 0644);
- static bool cmd_hs;
- module_param(cmd_hs, bool, 0644);
-+/* gts7l init: send only the first N stock commands (-1: all), on DSI0 (1), DSI1 (2) or both */
-+static int init_limit = -1;
-+module_param(init_limit, int, 0644);
-+static int init_dsi = 3;
-+module_param(init_dsi, int, 0644);
- 
- struct panel_info {
- 	struct drm_panel panel;
-@@ -901,379 +906,400 @@ static int j606f_boe_init_sequence(struct panel_info *pinfo)
+@@ -889,379 +889,391 @@ static int j606f_boe_init_sequence(struct panel_info *pinfo)
  	return dsi_ctx.accum_err;
  }
  
@@ -404,21 +410,14 @@ index 2dd378788..eca542ac2 100644
 +	struct mipi_dsi_multi_context ctx0 = { .dsi = pinfo->dsi[0] };
 +	struct mipi_dsi_multi_context ctx1 = { .dsi = pinfo->dsi[1] };
 +	const u8 *c = gts7l_csot_on_cmds;
-+	int n = 0;
 +
 +	while (c < gts7l_csot_on_cmds + sizeof(gts7l_csot_on_cmds)) {
-+		if (init_limit >= 0 && n >= init_limit)
-+			break;
-+		if (init_dsi & 1)
-+			mipi_dsi_dcs_write_buffer_multi(&ctx0, c + 2, c[1]);
-+		if (init_dsi & 2)
-+			mipi_dsi_dcs_write_buffer_multi(&ctx1, c + 2, c[1]);
++		mipi_dsi_dcs_write_buffer_multi(&ctx0, c + 2, c[1]);
++		mipi_dsi_dcs_write_buffer_multi(&ctx1, c + 2, c[1]);
 +		if (c[0])
 +			msleep(c[0]);
 +		c += 2 + c[1];
-+		n++;
 +	}
-+	dev_info(&pinfo->dsi[0]->dev, "init: %d commands, dsi mask %d\n", n, init_dsi);
  
 -	/*
 -	 * Samsung Galaxy Tab S7 LTE (gts7l), CSOT PPA957DB1: the on-commands of the stock
@@ -785,16 +784,109 @@ index 2dd378788..eca542ac2 100644
 -	mipi_dsi_dual_dcs_write_seq_multi(&dsi_ctx, dsi0, dsi1, 0xff, 0x10);
 -	mipi_dsi_dual_dcs_write_seq_multi(&dsi_ctx, dsi0, dsi1, 0xfb, 0x01);
 -	mipi_dsi_dual_dcs_write_seq_multi(&dsi_ctx, dsi0, dsi1, MIPI_DCS_SET_DISPLAY_ON, 0x00);
-+	if (init_dsi & 1)
-+		mipi_dsi_dcs_set_display_on_multi(&ctx0);
-+	if (init_dsi & 2)
-+		mipi_dsi_dcs_set_display_on_multi(&ctx1);
++	mipi_dsi_dcs_set_display_on_multi(&ctx0);
++	mipi_dsi_dcs_set_display_on_multi(&ctx1);
  
 -	return dsi_ctx.accum_err;
 +	return ctx0.accum_err ?: ctx1.accum_err;
  }
  
  static const struct drm_display_mode elish_boe_modes[] = {
+@@ -1517,38 +1529,48 @@ static const struct drm_panel_funcs nt36523_panel_funcs = {
+ 	.get_orientation = nt36523_get_orientation,
+ };
+ 
++/*
++ * Bonded DSI hosts may run synchronised: a command sent to the first link is only
++ * queued, and the transfer on the second link triggers both. Send the brightness
++ * to every link, like the init sequence, so it reaches the panel either way.
++ */
+ static int nt36523_bl_update_status(struct backlight_device *bl)
+ {
+-	struct mipi_dsi_device *dsi = bl_get_data(bl);
++	struct panel_info *pinfo = bl_get_data(bl);
+ 	u16 brightness = backlight_get_brightness(bl);
+-	int ret;
+-
+-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++	int i, ret;
+ 
+-	ret = mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
+-	if (ret < 0)
+-		return ret;
++	for (i = 0; i < DSI_NUM_MIN + pinfo->desc->is_dual_dsi; i++) {
++		struct mipi_dsi_device *dsi = pinfo->dsi[i];
+ 
+-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++		dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++		ret = mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
++		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++		if (ret < 0)
++			return ret;
++	}
+ 
+ 	return 0;
+ }
+ 
++/* Some dual-link panels answer reads on one link only: use the first that does */
+ static int nt36523_bl_get_brightness(struct backlight_device *bl)
+ {
+-	struct mipi_dsi_device *dsi = bl_get_data(bl);
++	struct panel_info *pinfo = bl_get_data(bl);
+ 	u16 brightness;
+-	int ret;
+-
+-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++	int i, ret = -EIO;
+ 
+-	ret = mipi_dsi_dcs_get_display_brightness_large(dsi, &brightness);
+-	if (ret < 0)
+-		return ret;
++	for (i = 0; i < DSI_NUM_MIN + pinfo->desc->is_dual_dsi; i++) {
++		struct mipi_dsi_device *dsi = pinfo->dsi[i];
+ 
+-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++		dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++		ret = mipi_dsi_dcs_get_display_brightness_large(dsi, &brightness);
++		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++		if (!ret)
++			return brightness;
++	}
+ 
+-	return brightness;
++	return ret;
+ }
+ 
+ static const struct backlight_ops nt36523_bl_ops = {
+@@ -1557,8 +1579,9 @@ static const struct backlight_ops nt36523_bl_ops = {
+ };
+ 
+ static struct backlight_device *nt36523_create_backlight(struct mipi_dsi_device *dsi,
+-							 const struct panel_desc *desc)
++							 struct panel_info *pinfo)
+ {
++	const struct panel_desc *desc = pinfo->desc;
+ 	struct device *dev = &dsi->dev;
+ 	unsigned int max = desc->max_brightness ?: 4095;
+ 	const struct backlight_properties props = {
+@@ -1568,7 +1591,7 @@ static struct backlight_device *nt36523_create_backlight(struct mipi_dsi_device
+ 		.scale = BACKLIGHT_SCALE_NON_LINEAR,
+ 	};
+ 
+-	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
++	return devm_backlight_device_register(dev, dev_name(dev), dev, pinfo,
+ 					      &nt36523_bl_ops, &props);
+ }
+ 
+@@ -1633,7 +1656,7 @@ static int nt36523_probe(struct mipi_dsi_device *dsi)
+ 	pinfo->panel.prepare_prev_first = true;
+ 
+ 	if (pinfo->desc->has_dcs_backlight) {
+-		pinfo->panel.backlight = nt36523_create_backlight(dsi, pinfo->desc);
++		pinfo->panel.backlight = nt36523_create_backlight(dsi, pinfo);
+ 		if (IS_ERR(pinfo->panel.backlight))
+ 			return dev_err_probe(dev, PTR_ERR(pinfo->panel.backlight),
+ 					     "Failed to create backlight\n");
 -- 
 2.56.1
 
