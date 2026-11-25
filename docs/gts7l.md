@@ -1028,6 +1028,25 @@ Open:
 - Bluetooth audio: the audio HAL's `IModule/bluetooth` exists (§16, attempt 6), A2DP/LE audio
   untested.
 
+### Keyboards and mice (HID over GATT)
+
+A Logitech M196 mouse and a MeetionKB1 keyboard paired but never produced input. The kernel
+side was fine (`CONFIG_UHID=y`, `CONFIG_HID_GENERIC=y`, `/dev/uhid` 0660 `uhid` labelled
+`uhid_device`); `dumpsys bluetooth_manager` showed only `GattService` and
+`HearingAidService` and `shim::legacy::hid status:BTIF_HH_DISABLED`. The Bluetooth app starts
+only the profiles whose `bluetooth.profile.*.enabled` property is set, and the product set
+none (Cuttlefish and goldfish set them in their own product props). `aosp_gts7l.mk` now sets
+`bluetooth.profile.gatt.enabled` and `bluetooth.profile.hid.host.enabled` (product
+properties); profiles that need a Bluetooth audio HAL (A2DP, HFP, LE audio) stay off.
+
+Devices bonded while HID Host was off have no HID connection yet: tap them once in
+Settings → Connected devices (Settings itself must be restarted if it was running when the
+profile came up: `No profiles. Maybe we will connect later`), then wake the device (move the
+mouse, press a key) within the 30 s connect window. Verified 2026-11-25: `hh_open_handler:
+Connected` for both, `Logi M196 Mouse` and `MeetionKB1 Keyboard` input devices through uhid,
+`getevent` shows `REL_X`/`REL_Y`/`BTN_MOUSE` and key presses. LE HID devices reconnect by
+themselves afterwards.
+
 ## 21. Wi-Fi: QCA6390 on ath11k (2026-11-25)
 
 No DT change was needed. The `qcom,qca6390-pmu` node (pwrseq-qcom-wcn) and the `wifi@0`
