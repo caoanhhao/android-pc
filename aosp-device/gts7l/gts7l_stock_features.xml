@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What stock's handheld_core_hardware.xml and location files declare beyond AOSP's
+     tablet_core_hardware.xml and android.hardware.location.gps.xml. -->
+<permissions>
+    <feature name="android.software.connectionservice" />
+    <feature name="android.hardware.location.network" />
+</permissions>
