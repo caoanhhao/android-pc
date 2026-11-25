@@ -147,6 +147,10 @@ PRODUCT_COPY_FILES += \
 PRODUCT_PACKAGES += \
     usbroute \
     gts7l-usb.sh
+# The USB HAL (hals.list) takes the gadget over once the framework runs and keeps the ACM
+# console in every configuration; the framework reads the gadget state from the UDC (rro/).
+PRODUCT_PACKAGES += gts7l_overlay_frameworks_base_core
+PRODUCT_VENDOR_PROPERTIES += persist.vendor.usb.gadget.acm=1
 PRODUCT_PRODUCT_PROPERTIES += \
     persist.sys.usb.config=adb \
     ro.adb.secure=0 \

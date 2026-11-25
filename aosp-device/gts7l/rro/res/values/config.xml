@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- UsbDeviceManager reads the gadget state from /sys/class/udc/<udc>/state: mainline
+         Linux has no android_usb device sending USB_STATE uevents (kernel patch 0270 only
+         adds the empty class UsbService looks for). -->
+    <bool name="config_enableUdcSysfsUsbStateUpdate">true</bool>
+</resources>

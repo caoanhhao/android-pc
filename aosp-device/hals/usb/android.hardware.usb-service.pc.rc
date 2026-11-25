@@ -1,0 +1,5 @@
+service vendor.usb-pc /vendor/bin/hw/android.hardware.usb-service.pc
+    class hal
+    user system
+    group system shell mtp
+    shutdown critical

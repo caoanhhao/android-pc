@@ -1,0 +1,12 @@
+// Framework settings of the Galaxy Tab S7 LTE.
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "gts7l_overlay_frameworks_base_core",
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

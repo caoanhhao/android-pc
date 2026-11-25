@@ -1,0 +1,2 @@
+vendor.usb.gadget.hal            u:object_r:vendor_pc_usb_prop:s0 exact bool
+persist.vendor.usb.gadget.acm    u:object_r:vendor_pc_usb_prop:s0 exact bool

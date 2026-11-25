@@ -1,1 +1,5 @@
 genfscon sysfs /module/firmware_class/parameters/path u:object_r:sysfs_gts7l_firmware_path:s0
+# USB: the DWC3 UDC (gadget state for UsbDeviceManager and the USB HAL) and the MAX77705's
+# Type-C port (the USB HAL's port status).
+genfscon sysfs /devices/platform/soc@0/a6f8800.usb/a600000.usb/udc u:object_r:sysfs_udc:s0
+genfscon sysfs /devices/platform/soc@0/9c0000.geniqup/980000.i2c/i2c-0/0-0025/typec u:object_r:sysfs_typec:s0
