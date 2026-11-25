@@ -1,7 +1,7 @@
-From 3f075c32e32344b2173fc93c686827fb832e59d0 Mon Sep 17 00:00:00 2001
+From 9f70f83c8b2a411353acae640340e8626ca3c75a Mon Sep 17 00:00:00 2001
 From: caoanhhao <dev@skyperry.com>
 Date: Tue, 24 Nov 2026 00:16:03 +0700
-Subject: [PATCH 100/102] drm/msm/dsi/phy: 7nm: board C-PHY analog tuning from
+Subject: [PATCH 097/107] drm/msm/dsi/phy: 7nm: board C-PHY analog tuning from
  the device tree
 
 The Galaxy Tab S7 LTE (gts7l) drives its NT36523 panel over two C-PHY links
