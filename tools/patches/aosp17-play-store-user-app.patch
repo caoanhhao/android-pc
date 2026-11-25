@@ -1,40 +1,111 @@
+diff --git a/services/core/java/com/android/server/pm/AppsFilterImpl.java b/services/core/java/com/android/server/pm/AppsFilterImpl.java
+index 319e09216..f25b26b4f 100644
+--- a/services/core/java/com/android/server/pm/AppsFilterImpl.java
++++ b/services/core/java/com/android/server/pm/AppsFilterImpl.java
+@@ -611,7 +611,8 @@ public final class AppsFilterImpl extends AppsFilterLocked implements Watchable,
+                             || (newPkgSetting.isSystem() && (mSystemAppsQueryable
+                             || newPkg.isForceQueryable()
+                             || ArrayUtils.contains(mForceQueryableByDevicePackageNames,
+-                            newPkg.getPackageName())));
++                            newPkg.getPackageName())))
++                            || isPlayStoreUserApp(newPkgSetting);
+             if (newIsForceQueryable
+                     || (mSystemSigningDetails != null
+                     && isSystemSigned(mSystemSigningDetails, newPkgSetting))) {
+@@ -997,6 +998,19 @@ public final class AppsFilterImpl extends AppsFilterLocked implements Watchable,
+         }
+     }
+ 
++    // Local (android-pc): Google Play Store installed as an ordinary app in userdata and signed
++    // with Google's Play Store key is force-queryable, as a preinstalled one is on GMS devices
++    // (config_forceQueryablePackages), so apps without a <queries> entry still find it.
++    // Same certificate as AppIdPermissionPolicy.PLAY_STORE_CERT_SHA256.
++    private static final byte[] PLAY_STORE_CERT_SHA256 = libcore.util.HexEncoding.decode(
++            "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83");
++
++    private static boolean isPlayStoreUserApp(PackageStateInternal pkgSetting) {
++        return !pkgSetting.isSystem()
++                && "com.android.vending".equals(pkgSetting.getPackageName())
++                && pkgSetting.getSigningDetails().hasSha256Certificate(PLAY_STORE_CERT_SHA256);
++    }
++
+     private static boolean isSystemSigned(@NonNull SigningDetails sysSigningDetails,
+             PackageStateInternal pkgSetting) {
+         return pkgSetting.isSystem()
+diff --git a/services/core/java/com/android/server/pm/verify/domain/DomainVerificationService.java b/services/core/java/com/android/server/pm/verify/domain/DomainVerificationService.java
+index dee678e4d..808ef5d98 100644
+--- a/services/core/java/com/android/server/pm/verify/domain/DomainVerificationService.java
++++ b/services/core/java/com/android/server/pm/verify/domain/DomainVerificationService.java
+@@ -1180,6 +1180,19 @@ public class DomainVerificationService extends SystemService
+         }
+     }
+ 
++    // Local (android-pc): Google Play Store installed as an ordinary app in userdata and signed
++    // with Google's Play Store key gets its app links approved like a preinstalled one, which
++    // the emulator image's google.xml lists as <app-link>. Same certificate as
++    // AppIdPermissionPolicy.PLAY_STORE_CERT_SHA256.
++    private static final byte[] PLAY_STORE_CERT_SHA256 = libcore.util.HexEncoding.decode(
++            "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83");
++
++    private static boolean isPlayStoreUserApp(@NonNull PackageStateInternal pkgSetting) {
++        return !pkgSetting.isSystem()
++                && "com.android.vending".equals(pkgSetting.getPackageName())
++                && pkgSetting.getSigningDetails().hasSha256Certificate(PLAY_STORE_CERT_SHA256);
++    }
++
+     /**
+      * Applies any immutable state as the final step when adding or migrating state. Currently only
+      * applies {@link SystemConfig#getLinkedApps()}, which approves all domains for a system app.
+@@ -1189,8 +1202,9 @@ public class DomainVerificationService extends SystemService
+     private boolean applyImmutableState(@NonNull PackageStateInternal pkgSetting,
+             @NonNull ArrayMap<String, Integer> stateMap,
+             @NonNull ArraySet<String> autoVerifyDomains) {
+-        if (pkgSetting.isSystem()
+-                && mSystemConfig.getLinkedApps().contains(pkgSetting.getPackageName())) {
++        if ((pkgSetting.isSystem()
++                && mSystemConfig.getLinkedApps().contains(pkgSetting.getPackageName()))
++                || isPlayStoreUserApp(pkgSetting)) {
+             int domainsSize = autoVerifyDomains.size();
+             for (int index = 0; index < domainsSize; index++) {
+                 stateMap.put(autoVerifyDomains.valueAt(index),
 diff --git a/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt b/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
-index 8ba08f95f..07210ba9e 100644
+index 8ba08f95f..df6d9156a 100644
 --- a/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
 +++ b/services/permission/java/com/android/server/permission/access/permission/AppIdPermissionPolicy.kt
-@@ -1785,6 +1785,18 @@ class AppIdPermissionPolicy : SchemePolicy() {
+@@ -1785,6 +1785,17 @@ class AppIdPermissionPolicy : SchemePolicy() {
                  return true
              }
          }
 +        if (
-+            permission.isPrivileged &&
-+                !packageState.isSystem &&
++            !packageState.isSystem &&
 +                packageName == PLAY_STORE_PACKAGE_NAME &&
-+                permission.name in PLAY_STORE_PRIVILEGED_PERMISSIONS &&
++                permission.name in PLAY_STORE_PERMISSIONS &&
 +                androidPackage.signingDetails.hasSha256Certificate(PLAY_STORE_CERT_SHA256)
 +        ) {
 +            // Local (android-pc): Google Play Store installed as an ordinary app in userdata,
-+            // signed with Google's Play Store key, gets the privileged permissions a
-+            // preinstalled Play Store is allowlisted for; without MANAGE_USERS it crashes at start.
++            // signed with Google's Play Store key, gets the signature permissions a preinstalled
++            // Play Store holds; without MANAGE_USERS it crashes at start.
 +            return true
 +        }
          if (permission.isPre23 && androidPackage.targetSdkVersion < Build.VERSION_CODES.M) {
              // If this was a previously normal/dangerous permission that got moved
              // to a system permission as part of the runtime permission redesign, then
-@@ -2084,6 +2096,58 @@ class AppIdPermissionPolicy : SchemePolicy() {
+@@ -2084,6 +2095,73 @@ class AppIdPermissionPolicy : SchemePolicy() {
  
          private const val PLATFORM_PACKAGE_NAME = "android"
  
 +        // Local (android-pc): Google Play Store as an ordinary app (see
-+        // shouldGrantPermissionByProtectionFlags). The permissions are the ones the Android 17
-+        // emulator image allowlists for its preinstalled Play Store
-+        // (privapp-permissions-google-p.xml); the certificate is Play Store's signing key.
++        // shouldGrantPermissionByProtectionFlags). The certificate is Play Store's signing key.
++        // The permissions are what the Android 17 emulator image's preinstalled Play Store
++        // holds: its privileged allowlist (privapp-permissions-google-p.xml), the "verifier"
++        // permissions it gets as the package verifier and the "preinstalled" ones it gets as a
++        // system app, all limited to what Phonesky 50.7 requests.
 +        private const val PLAY_STORE_PACKAGE_NAME = "com.android.vending"
 +        private val PLAY_STORE_CERT_SHA256 =
 +            libcore.util.HexEncoding.decode(
 +                "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"
 +            )
-+        private val PLAY_STORE_PRIVILEGED_PERMISSIONS =
++        private val PLAY_STORE_PERMISSIONS =
 +            indexedSetOf(
 +                "android.permission.ALLOCATE_AGGRESSIVE",
 +                "android.permission.BACKUP",
@@ -75,6 +146,19 @@ index 8ba08f95f..07210ba9e 100644
 +                "android.permission.WRITE_SECURE_SETTINGS",
 +                "com.android.permission.USE_INSTALLER_V2",
 +                "android.permission.OVERRIDE_COMPAT_CHANGE_CONFIG_ON_RELEASE_BUILD",
++                // signature|verifier (or |installer)
++                "android.permission.ACCESS_INSTANT_APPS",
++                "android.permission.GET_APP_METADATA",
++                "android.permission.GRANT_RUNTIME_PERMISSIONS",
++                "android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS",
++                "android.permission.MANAGE_APP_OPS_MODES",
++                "android.permission.REVOKE_RUNTIME_PERMISSIONS",
++                "android.permission.SET_HARMFUL_APP_WARNINGS",
++                "android.permission.WRITE_DEVICE_CONFIG",
++                // signature|preinstalled
++                "android.permission.HIDE_NON_SYSTEM_OVERLAY_WINDOWS",
++                "android.permission.READ_DEVICE_CONFIG",
++                "android.permission.WRITE_SETTINGS",
 +            )
 +
          // A set of permissions that we don't want to revoke when they are no longer implicit.

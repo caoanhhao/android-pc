@@ -14,8 +14,9 @@
 # - Google Play Store (com.android.vending): Google's APK from the Android 17 arm64 emulator
 #   image (Android SDK License Agreement; asks unless --accept-license), pinned by SHA-256 and
 #   signer. tools/patches/aosp17-play-store-user-app.patch gives it, as an ordinary app, the
-#   privileged permissions a preinstalled Play Store has; without them it crashes at start
-#   (UserManager.getUsers needs MANAGE_USERS). Personal use only: never publish the APK.
+#   signature permissions a preinstalled Play Store has (without them it crashes at start:
+#   UserManager.getUsers needs MANAGE_USERS), makes it force-queryable and approves its app
+#   links. Personal use only: never publish the APK.
 # - Aurora Store (com.aurora.store), an open-source client of Google Play's catalogue that
 #   needs no privileges: F-Droid's build, pinned by version code and SHA-256, signer checked.
 set -euo pipefail
@@ -95,8 +96,9 @@ for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION 
          NEARBY_WIFI_DEVICES; do
     "${adb[@]}" shell pm grant com.google.android.gms android.permission.$p 2>/dev/null || true
 done
-# A preinstalled Play Store is allow-in-power-save-except-idle; without it downloads crash
-# com.android.vending:background (docs/arm-translation.md, F9d).
+# A preinstalled Play Store is allow-in-power-save-except-idle (google.xml); without it downloads
+# crash com.android.vending:background (docs/arm-translation.md, F9d). The user allowlist is
+# kept in /data/system/deviceidle.xml across reboots and self-updates (not across uninstall).
 for p in com.google.android.gms com.android.vending; do
     "${adb[@]}" shell cmd deviceidle whitelist +$p >/dev/null
 done
