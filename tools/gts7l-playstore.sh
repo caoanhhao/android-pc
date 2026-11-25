@@ -19,7 +19,7 @@ OUT=$ROOT/out/gts7l-playstore
 extras=$OUT/extras pre=$OUT/prebuilt
 
 "$WT/tools/add-google-extras.sh" --arch arm64 --only playstore "$@" --dir "$extras"
-unzip -l "$extras/product/priv-app/Phonesky/Phonesky.apk" | grep -q ' lib/arm64-v8a/' ||
+unzip -Z1 "$extras/product/priv-app/Phonesky/Phonesky.apk" | grep '^lib/arm64-v8a/' >/dev/null ||
     { echo "gts7l-playstore: Phonesky.apk has no arm64-v8a libraries" >&2; exit 1; }
 
 rm -rf "$pre" && mkdir -p "$pre"
