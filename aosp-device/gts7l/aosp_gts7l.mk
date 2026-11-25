@@ -79,11 +79,14 @@ PRODUCT_VENDOR_PROPERTIES += \
     debug.hwui.renderer=skiagl \
     ro.hardware.egl=mesa \
     ro.hardware.vulkan=freedreno
+# Mesa exposes GL_ANDROID_extension_pack_es31a on the a650, as stock declares: Play hides
+# apps that require opengles.aep (Genshin Impact) without it.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.vulkan.level-1.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.vulkan.level.xml \
     frameworks/native/data/etc/android.hardware.vulkan.version-1_3.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.vulkan.version.xml \
     frameworks/native/data/etc/android.software.vulkan.deqp.level-latest.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.vulkan.deqp.level.xml \
-    frameworks/native/data/etc/android.software.opengles.deqp.level-latest.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.opengles.deqp.level.xml
+    frameworks/native/data/etc/android.software.opengles.deqp.level-latest.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.software.opengles.deqp.level.xml \
+    frameworks/native/data/etc/android.hardware.opengles.aep.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.opengles.aep.xml
 else
 $(warning aosp_gts7l: no Mesa in $(GTS7L_MESA_DIR), the image will have no GPU driver)
 endif
