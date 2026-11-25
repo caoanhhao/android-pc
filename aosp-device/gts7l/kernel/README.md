@@ -35,8 +35,11 @@ Ours start at `0094`:
 | Patch | What |
 |---|---|
 | 0094 | `sm8250-samsung-gts7l.dts`: stub derived from the gts7xlwifi DTS |
-| 0095-0104 | panel, S Pen supply, C-PHY tuning, backlight (DEBUG ones marked; docs/gts7l.md §12) |
-| 0105 | DTS: `mode-normal` in the IMEM reboot-mode, so a plain reboot clears a stale recovery reason (docs/gts7l.md §15) |
+| 0095-0099 | panel driver entry and stock on-commands, S Pen supply, C-PHY analog tuning from the DT (docs/gts7l.md §12) |
+| 0100 | DTS: `mode-normal` in the IMEM reboot-mode, so a plain reboot clears a stale recovery reason (docs/gts7l.md §15) |
+| 0101 | a6xx: accept the tablet's a650 SQE 0.93 firmware |
+| 0102-0104 | NT36523 touchscreen in `novatek-nvt-ts`, enabled in the DTS (docs/gts7l.md §17) |
+| 0105-0107 | panel fix: C-PHY without a clock lane, bonded slave PHY dividers, PLL bias on every enable (docs/gts7l.md §22) |
 | 0220-0221 | Fuel gauge: DTS wires the MAX77705 FG alert interrupt; max17042 takes an optional platform IRQ (defers on `-EPROBE_DEFER`) and reports `cycle_count` in whole cycles (docs/gts7l-hal/power.md) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with
