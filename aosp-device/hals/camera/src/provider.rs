@@ -1,4 +1,5 @@
-//! `ICameraProvider`: finds webcams under `/dev` and follows them being plugged in and out.
+//! `ICameraProvider`: finds webcams and raw CAMSS sensors under `/dev` and follows them
+//! appearing and going away.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -56,7 +57,8 @@ impl Provider {
         self.state.lock().expect("provider state lock poisoned")
     }
 
-    /// Compares `/dev/video*` with the known cameras and reports the differences.
+    /// Compares `/dev/video*` and the media devices with the known cameras and reports the
+    /// differences.
     pub fn rescan(&self) {
         let numbers = video_nodes();
         let known: Vec<(String, Arc<Camera>)> = self
@@ -69,13 +71,22 @@ impl Provider {
         let mut gone = Vec::new();
         let mut cameras = BTreeMap::new();
         for (name, camera) in known {
-            if camera.path().exists() {
+            if camera.present() {
                 cameras.insert(name, camera);
             } else {
                 gone.push(name);
             }
         }
         let mut added = Vec::new();
+        // Raw sensors appear together once CAMSS and the sensor drivers have probed; look
+        // again while none is known (a session may hold one, so never re-probe them).
+        if !cameras.values().any(|camera| camera.raw().is_some()) {
+            for camera in Camera::probe_raw() {
+                let name = camera.device_name();
+                added.push(name.clone());
+                cameras.insert(name, Arc::new(camera));
+            }
+        }
         for number in numbers {
             let path = format!("/dev/video{number}");
             if cameras.values().any(|camera| camera.path().as_os_str() == path.as_str()) {
@@ -172,11 +183,26 @@ impl ICameraProvider for Provider {
     }
 
     fn getCameraDeviceInterface(&self, name: &str) -> binder::Result<Strong<dyn ICameraDevice>> {
-        let camera = self.lock().cameras.get(name).cloned();
-        let Some(camera) = camera else {
-            return Err(service_error(Status::ILLEGAL_ARGUMENT));
+        let (camera, conflicting) = {
+            let state = self.lock();
+            let Some(camera) = state.cameras.get(name).cloned() else {
+                return Err(service_error(Status::ILLEGAL_ARGUMENT));
+            };
+            // Raw cameras share the CAMSS graph: only one streams at a time.
+            let conflicting: Vec<String> = if camera.raw().is_some() {
+                state
+                    .cameras
+                    .iter()
+                    .filter(|(other, cam)| other.as_str() != name && cam.raw().is_some())
+                    .map(|(other, _)| other.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (camera, conflicting)
         };
-        Ok(BnCameraDevice::new_binder(CameraDevice::new(camera), BinderFeatures::default()))
+        let device = CameraDevice::new(camera, conflicting);
+        Ok(BnCameraDevice::new_binder(device, BinderFeatures::default()))
     }
 
     fn notifyDeviceStateChange(&self, _state: i64) -> binder::Result<()> {

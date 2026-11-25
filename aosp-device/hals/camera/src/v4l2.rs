@@ -1,7 +1,8 @@
-//! Video capture through the V4L2 ioctl ABI (`linux/videodev2.h`), as used by `uvcvideo`.
+//! Video capture through the V4L2 ioctl ABI (`linux/videodev2.h`), as used by `uvcvideo`
+//! and by Qualcomm CAMSS.
 //!
-//! Only what a webcam needs: query a node, list its discrete formats, sizes and frame
-//! rates, and stream memory-mapped buffers.
+//! Only what a camera needs: query a node, list its discrete formats, sizes and frame
+//! rates, and stream memory-mapped buffers through the single- or multi-planar API.
 
 use std::fmt;
 use std::fs::File;
@@ -72,13 +73,16 @@ pub struct Mode {
 }
 
 const CAP_VIDEO_CAPTURE: u32 = 0x0000_0001;
+const CAP_VIDEO_CAPTURE_MPLANE: u32 = 0x0000_1000;
 const CAP_STREAMING: u32 = 0x0400_0000;
 const BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
+const BUF_TYPE_VIDEO_CAPTURE_MPLANE: u32 = 9;
 const MEMORY_MMAP: u32 = 1;
 const FMT_FLAG_EMULATED: u32 = 0x0002;
 const FRMSIZE_TYPE_DISCRETE: u32 = 1;
 const FRMIVAL_TYPE_DISCRETE: u32 = 1;
 const FIELD_ANY: u32 = 0;
+const FIELD_NONE: u32 = 1;
 
 #[repr(C)]
 #[derive(Default)]
@@ -156,6 +160,40 @@ struct Format {
 }
 
 #[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct PlanePixFormat {
+    sizeimage: u32,
+    bytesperline: u32,
+    reserved: [u16; 6],
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct PixFormatMplane {
+    width: u32,
+    height: u32,
+    pixelformat: u32,
+    field: u32,
+    colorspace: u32,
+    plane_fmt: [PlanePixFormat; 8],
+    num_planes: u8,
+    flags: u8,
+    ycbcr_enc: u8,
+    quantization: u8,
+    xfer_func: u8,
+    reserved: [u8; 7],
+}
+
+/// `struct v4l2_format` holding `pix_mp`.
+#[repr(C)]
+struct FormatMplane {
+    kind: u32,
+    padding: u32,
+    pix_mp: PixFormatMplane,
+    raw: [u64; 1],
+}
+
+#[repr(C)]
 #[derive(Default)]
 struct CaptureParm {
     capability: u32,
@@ -196,11 +234,25 @@ struct Buffer {
     timecode: [u32; 4],
     sequence: u32,
     memory: u32,
-    /// `m.offset` for MMAP buffers (a union with a pointer, hence 64 bits).
+    /// `m.offset` for MMAP buffers, `m.planes` for multi-planar ones (a union with a
+    /// pointer, hence 64 bits).
     offset: u64,
+    /// The buffer size, or the number of planes for multi-planar buffers.
     length: u32,
     reserved2: u32,
     request_fd: u32,
+}
+
+/// `struct v4l2_plane`.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct BufferPlane {
+    bytesused: u32,
+    length: u32,
+    /// `m.mem_offset` for MMAP buffers.
+    offset: u64,
+    data_offset: u32,
+    reserved: [u32; 11],
 }
 
 const fn ioc(dir: u32, nr: u32, size: usize) -> u32 {
@@ -274,15 +326,31 @@ impl Device {
     ///
     /// Returns the error of `VIDIOC_QUERYCAP`.
     pub fn capture_name(&self) -> io::Result<Option<String>> {
-        let mut cap = Capability::default();
-        // SAFETY: VIDIOC_QUERYCAP takes a `struct v4l2_capability`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_QUERYCAP, &mut cap)? };
+        let cap = self.capability()?;
         let wanted = CAP_VIDEO_CAPTURE | CAP_STREAMING;
         if cap.device_caps & wanted != wanted {
             return Ok(None);
         }
         let len = cap.card.iter().position(|byte| *byte == 0).unwrap_or(cap.card.len());
         Ok(Some(String::from_utf8_lossy(&cap.card[..len]).into_owned()))
+    }
+
+    fn capability(&self) -> io::Result<Capability> {
+        let mut cap = Capability::default();
+        // SAFETY: VIDIOC_QUERYCAP takes a `struct v4l2_capability`.
+        unsafe { ioctl(self.file.as_fd(), VIDIOC_QUERYCAP, &mut cap)? };
+        Ok(cap)
+    }
+
+    /// Whether the node captures through the multi-planar API (CAMSS does).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of `VIDIOC_QUERYCAP`.
+    pub fn is_multiplanar(&self) -> io::Result<bool> {
+        let cap = self.capability()?;
+        Ok(cap.device_caps & CAP_VIDEO_CAPTURE_MPLANE != 0
+            && cap.device_caps & CAP_VIDEO_CAPTURE == 0)
     }
 
     /// Every discrete size of every native (not emulated) format in `fourccs`, with
@@ -380,6 +448,10 @@ pub struct Stream {
     file: File,
     mode: Mode,
     interval: Interval,
+    /// `BUF_TYPE_VIDEO_CAPTURE` or `BUF_TYPE_VIDEO_CAPTURE_MPLANE`.
+    kind: u32,
+    /// Bytes per row of the captured frames.
+    stride: usize,
     buffers: Vec<Mapping>,
 }
 
@@ -397,37 +469,65 @@ impl Stream {
     pub fn start(device: &Device, mode: &Mode, interval: Interval, count: u32) -> io::Result<Self> {
         let file = device.file.try_clone()?;
         let fd = file.as_fd();
-        let mut format = Format {
-            kind: BUF_TYPE_VIDEO_CAPTURE,
-            padding: 0,
-            pix: PixFormat {
-                width: mode.size.width,
-                height: mode.size.height,
-                pixelformat: mode.fourcc.0,
-                field: FIELD_ANY,
-                ..Default::default()
-            },
-            raw: [0; 19],
+        let multiplanar = device.is_multiplanar()?;
+        let (kind, accepted, stride) = if multiplanar {
+            let mut format = FormatMplane {
+                kind: BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+                padding: 0,
+                pix_mp: PixFormatMplane {
+                    width: mode.size.width,
+                    height: mode.size.height,
+                    pixelformat: mode.fourcc.0,
+                    field: FIELD_NONE,
+                    num_planes: 1,
+                    ..Default::default()
+                },
+                raw: [0; 1],
+            };
+            // SAFETY: VIDIOC_S_FMT takes a `struct v4l2_format`.
+            unsafe { ioctl(fd, VIDIOC_S_FMT, &mut format)? };
+            let pix = &format.pix_mp;
+            (
+                BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+                (pix.width, pix.height, pix.pixelformat),
+                pix.plane_fmt[0].bytesperline as usize,
+            )
+        } else {
+            let mut format = Format {
+                kind: BUF_TYPE_VIDEO_CAPTURE,
+                padding: 0,
+                pix: PixFormat {
+                    width: mode.size.width,
+                    height: mode.size.height,
+                    pixelformat: mode.fourcc.0,
+                    field: FIELD_ANY,
+                    ..Default::default()
+                },
+                raw: [0; 19],
+            };
+            // SAFETY: VIDIOC_S_FMT takes a `struct v4l2_format`.
+            unsafe { ioctl(fd, VIDIOC_S_FMT, &mut format)? };
+            let pix = &format.pix;
+            (
+                BUF_TYPE_VIDEO_CAPTURE,
+                (pix.width, pix.height, pix.pixelformat),
+                pix.bytesperline as usize,
+            )
         };
-        // SAFETY: VIDIOC_S_FMT takes a `struct v4l2_format`.
-        unsafe { ioctl(fd, VIDIOC_S_FMT, &mut format)? };
-        if format.pix.width != mode.size.width
-            || format.pix.height != mode.size.height
-            || format.pix.pixelformat != mode.fourcc.0
-        {
+        if accepted != (mode.size.width, mode.size.height, mode.fourcc.0) {
             return Err(io::Error::other(format!(
                 "{:?} {}x{} not accepted (got {:?} {}x{})",
                 mode.fourcc,
                 mode.size.width,
                 mode.size.height,
-                FourCc(format.pix.pixelformat),
-                format.pix.width,
-                format.pix.height
+                FourCc(accepted.2),
+                accepted.0,
+                accepted.1
             )));
         }
 
         let mut parm = StreamParm {
-            kind: BUF_TYPE_VIDEO_CAPTURE,
+            kind,
             capture: CaptureParm {
                 timeperframe: [interval.numerator, interval.denominator],
                 ..Default::default()
@@ -435,14 +535,13 @@ impl Stream {
             raw: [0; 160],
         };
         // SAFETY: VIDIOC_S_PARM takes a `struct v4l2_streamparm`.
-        unsafe { ioctl(fd, VIDIOC_S_PARM, &mut parm)? };
+        match unsafe { ioctl(fd, VIDIOC_S_PARM, &mut parm) } {
+            // CAMSS has no frame rate setting: the sensor's blanking sets it.
+            Err(err) if multiplanar && err.raw_os_error() == Some(libc::ENOTTY) => {}
+            result => result?,
+        }
 
-        let mut request = RequestBuffers {
-            count,
-            kind: BUF_TYPE_VIDEO_CAPTURE,
-            memory: MEMORY_MMAP,
-            ..Default::default()
-        };
+        let mut request = RequestBuffers { count, kind, memory: MEMORY_MMAP, ..Default::default() };
         // SAFETY: VIDIOC_REQBUFS takes a `struct v4l2_requestbuffers`.
         unsafe { ioctl(fd, VIDIOC_REQBUFS, &mut request)? };
 
@@ -450,14 +549,22 @@ impl Stream {
             file,
             mode: mode.clone(),
             interval,
+            kind,
+            stride,
             buffers: Vec::with_capacity(request.count as usize),
         };
         for index in 0..request.count {
-            let mut buffer = new_buffer(index);
-            // SAFETY: VIDIOC_QUERYBUF takes a `struct v4l2_buffer`.
+            let mut plane = BufferPlane::default();
+            let mut buffer = stream.new_buffer(index, &mut plane);
+            // SAFETY: VIDIOC_QUERYBUF takes a `struct v4l2_buffer`; a multi-planar one
+            // points at `plane`, which outlives the call.
             unsafe { ioctl(stream.file.as_fd(), VIDIOC_QUERYBUF, &mut buffer)? };
-            let length = buffer.length as usize;
-            let offset = libc::off_t::try_from(buffer.offset).map_err(io::Error::other)?;
+            let (length, offset) = if multiplanar {
+                (plane.length as usize, plane.offset & 0xffff_ffff)
+            } else {
+                (buffer.length as usize, buffer.offset)
+            };
+            let offset = libc::off_t::try_from(offset).map_err(io::Error::other)?;
             // SAFETY: maps `length` bytes of the device at the offset the driver chose; the
             // result is checked before use and unmapped in `Drop`.
             let address = unsafe {
@@ -478,7 +585,7 @@ impl Stream {
             stream.queue(index)?;
         }
 
-        let mut kind = BUF_TYPE_VIDEO_CAPTURE as i32;
+        let mut kind = kind as i32;
         // SAFETY: VIDIOC_STREAMON takes an `int` buffer type.
         unsafe { ioctl(stream.file.as_fd(), VIDIOC_STREAMON, &mut kind)? };
         Ok(stream)
@@ -494,9 +601,25 @@ impl Stream {
         self.interval
     }
 
+    /// Bytes per row of the frames, as the driver laid them out.
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    /// A `struct v4l2_buffer` for buffer `index`; a multi-planar one points at `plane`.
+    fn new_buffer(&self, index: u32, plane: &mut BufferPlane) -> Buffer {
+        let mut buffer = Buffer { index, kind: self.kind, memory: MEMORY_MMAP, ..Default::default() };
+        if self.kind == BUF_TYPE_VIDEO_CAPTURE_MPLANE {
+            buffer.offset = ptr::from_mut(plane) as u64;
+            buffer.length = 1;
+        }
+        buffer
+    }
+
     fn queue(&self, index: u32) -> io::Result<()> {
-        let mut buffer = new_buffer(index);
-        // SAFETY: VIDIOC_QBUF takes a `struct v4l2_buffer`.
+        let mut plane = BufferPlane::default();
+        let mut buffer = self.new_buffer(index, &mut plane);
+        // SAFETY: VIDIOC_QBUF takes a `struct v4l2_buffer`; `plane` outlives the call.
         unsafe { ioctl(self.file.as_fd(), VIDIOC_QBUF, &mut buffer) }
     }
 
@@ -512,13 +635,19 @@ impl Stream {
         if !pchal::poll::readable(self.file.as_fd(), timeout)? {
             return Ok(None);
         }
-        let mut buffer = new_buffer(0);
-        // SAFETY: VIDIOC_DQBUF takes a `struct v4l2_buffer`.
+        let mut plane = BufferPlane::default();
+        let mut buffer = self.new_buffer(0, &mut plane);
+        // SAFETY: VIDIOC_DQBUF takes a `struct v4l2_buffer`; `plane` outlives the call.
         unsafe { ioctl(self.file.as_fd(), VIDIOC_DQBUF, &mut buffer)? };
         let mapping = self.buffers.get(buffer.index as usize).ok_or_else(|| {
             io::Error::other(format!("driver returned unknown buffer {}", buffer.index))
         })?;
-        let len = (buffer.bytesused as usize).min(mapping.length);
+        let used = if self.kind == BUF_TYPE_VIDEO_CAPTURE_MPLANE {
+            plane.bytesused
+        } else {
+            buffer.bytesused
+        };
+        let len = (used as usize).min(mapping.length);
         // SAFETY: the mapping is `length` readable bytes; the driver does not write the
         // buffer again until it is queued, which only `Frame::drop` does.
         let data = unsafe { std::slice::from_raw_parts(mapping.address.as_ptr(), len) };
@@ -526,13 +655,9 @@ impl Stream {
     }
 }
 
-fn new_buffer(index: u32) -> Buffer {
-    Buffer { index, kind: BUF_TYPE_VIDEO_CAPTURE, memory: MEMORY_MMAP, ..Default::default() }
-}
-
 impl Drop for Stream {
     fn drop(&mut self) {
-        let mut kind = BUF_TYPE_VIDEO_CAPTURE as i32;
+        let mut kind = self.kind as i32;
         // SAFETY: VIDIOC_STREAMOFF takes an `int` buffer type.
         if let Err(err) = unsafe { ioctl(self.file.as_fd(), VIDIOC_STREAMOFF, &mut kind) } {
             log::warn!("VIDIOC_STREAMOFF: {err}");
@@ -542,12 +667,8 @@ impl Drop for Stream {
             // it any more (frames borrow the stream).
             unsafe { libc::munmap(mapping.address.as_ptr().cast(), mapping.length) };
         }
-        let mut request = RequestBuffers {
-            count: 0,
-            kind: BUF_TYPE_VIDEO_CAPTURE,
-            memory: MEMORY_MMAP,
-            ..Default::default()
-        };
+        let mut request =
+            RequestBuffers { count: 0, kind: self.kind, memory: MEMORY_MMAP, ..Default::default() };
         // SAFETY: VIDIOC_REQBUFS takes a `struct v4l2_requestbuffers`.
         if let Err(err) = unsafe { ioctl(self.file.as_fd(), VIDIOC_REQBUFS, &mut request) } {
             log::warn!("VIDIOC_REQBUFS 0: {err}");
@@ -598,6 +719,9 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Buffer, offset), 64);
         assert_eq!(std::mem::offset_of!(Buffer, length), 72);
         assert_eq!(std::mem::offset_of!(Format, pix), 8);
+        assert_eq!(size_of::<PixFormatMplane>(), 192);
+        assert_eq!(size_of::<FormatMplane>(), 208);
+        assert_eq!(size_of::<BufferPlane>(), 64);
     }
 
     #[test]

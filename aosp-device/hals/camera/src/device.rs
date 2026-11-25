@@ -1,4 +1,4 @@
-//! `ICameraDevice`: one webcam's description and the entry to a session.
+//! `ICameraDevice`: one camera's description and the entry to a session.
 
 use std::sync::Arc;
 
@@ -21,16 +21,18 @@ use crate::camera::Camera;
 use crate::service_error;
 use crate::session::{self, Session};
 
-/// A webcam as an `ICameraDevice`.
+/// A camera as an `ICameraDevice`.
 #[derive(Debug)]
 pub struct CameraDevice {
     camera: Arc<Camera>,
+    /// Device names that cannot stream at the same time as this one.
+    conflicting: Vec<String>,
 }
 
 impl CameraDevice {
-    /// Serves `camera`.
-    pub fn new(camera: Arc<Camera>) -> Self {
-        Self { camera }
+    /// Serves `camera`, which excludes the `conflicting` devices.
+    pub fn new(camera: Arc<Camera>, conflicting: Vec<String>) -> Self {
+        Self { camera, conflicting }
     }
 }
 
@@ -51,8 +53,8 @@ impl ICameraDevice for CameraDevice {
     }
 
     fn getResourceCost(&self) -> binder::Result<CameraResourceCost> {
-        // A webcam takes its USB bandwidth whole.
-        Ok(CameraResourceCost { resourceCost: 100, conflictingDevices: Vec::new() })
+        // A webcam takes its USB bandwidth whole, a raw camera the CAMSS graph.
+        Ok(CameraResourceCost { resourceCost: 100, conflictingDevices: self.conflicting.clone() })
     }
 
     fn isStreamCombinationSupported(&self, streams: &StreamConfiguration) -> binder::Result<bool> {

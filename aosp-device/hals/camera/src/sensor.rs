@@ -1,14 +1,18 @@
-//! What a webcam offers Android: output sizes, static characteristics, request templates
+//! What a camera offers Android: output sizes, static characteristics, request templates
 //! and result metadata, derived from the V4L2 capture modes.
 //!
 //! A webcam runs its own exposure, white balance and focus, so this is an `EXTERNAL`
 //! hardware level camera, like AOSP's C++ external camera HAL: 3A states are reported as
-//! converged, and settings the camera cannot apply are echoed back unchanged.
+//! converged, and settings the camera cannot apply are echoed back unchanged. Raw sensors
+//! (CAMSS) get the same treatment: the HAL's software ISP runs their 3A on its own, and
+//! each 2x2 Bayer block becomes one output pixel, so their output sizes are half the
+//! capture sizes.
 
 use std::collections::BTreeMap;
 
 use crate::image::Size;
 use crate::metadata::{Metadata, Rational, Tag, Value};
+use crate::raw::Facing;
 use crate::tags::*;
 use crate::v4l2::{FourCc, Interval, Mode};
 
@@ -102,6 +106,11 @@ const OFF: u8 = 0;
 pub struct Sensor {
     /// Sorted by area, smallest first.
     modes: Vec<Mode>,
+    /// Capture pixels per output pixel in each direction (2 for raw Bayer sensors).
+    binning: u32,
+    facing: Facing,
+    /// `ANDROID_SENSOR_ORIENTATION`.
+    orientation: i32,
 }
 
 impl Sensor {
@@ -133,22 +142,50 @@ impl Sensor {
             return None;
         }
         modes.sort_by_key(|mode| (mode.size.area(), mode.size.width));
-        Some(Self { modes })
+        Some(Self { modes, binning: 1, facing: Facing::External, orientation: 0 })
+    }
+
+    /// A raw Bayer sensor built into the device: its RAW10 `modes`, where it faces and
+    /// how its image is rotated. Returns `None` without a mode at [`MIN_FPS`] or more.
+    pub fn raw(modes: &[Mode], facing: Facing, orientation: i32) -> Option<Self> {
+        let mut modes: Vec<Mode> = modes
+            .iter()
+            .filter(|mode| max_fps(mode) >= MIN_FPS && mode.size.width >= 4 && mode.size.height >= 4)
+            .cloned()
+            .collect();
+        if modes.is_empty() {
+            return None;
+        }
+        modes.sort_by_key(|mode| (mode.size.area(), mode.size.width));
+        modes.dedup_by_key(|mode| mode.size);
+        Some(Self { modes, binning: 2, facing, orientation: orientation.rem_euclid(360) })
+    }
+
+    /// The size of the frames `mode` turns into: the capture size, or for raw sensors one
+    /// pixel per 2x2 block, rounded to even sizes for 4:2:0.
+    fn output(&self, mode: &Mode) -> Size {
+        if self.binning == 1 {
+            return mode.size;
+        }
+        Size {
+            width: (mode.size.width / self.binning) & !1,
+            height: (mode.size.height / self.binning) & !1,
+        }
     }
 
     /// Output sizes, smallest first.
     pub fn sizes(&self) -> impl Iterator<Item = Size> + '_ {
-        self.modes.iter().map(|mode| mode.size)
+        self.modes.iter().map(|mode| self.output(mode))
     }
 
     /// The largest size, which is also the active pixel array.
     pub fn max_size(&self) -> Size {
-        self.modes.last().expect("a sensor has at least one mode").size
+        self.output(self.modes.last().expect("a sensor has at least one mode"))
     }
 
     /// Whether `size` is an output size.
     pub fn supports(&self, size: Size) -> bool {
-        self.modes.iter().any(|mode| mode.size == size)
+        self.sizes().any(|output| output == size)
     }
 
     /// The capture mode for a set of output sizes: the smallest mode at least as wide and
@@ -158,7 +195,10 @@ impl Sensor {
         let height = outputs.iter().map(|size| size.height).max().unwrap_or(0);
         self.modes
             .iter()
-            .find(|mode| mode.size.width >= width && mode.size.height >= height)
+            .find(|mode| {
+                let output = self.output(mode);
+                output.width >= width && output.height >= height
+            })
             .unwrap_or_else(|| self.modes.last().expect("a sensor has at least one mode"))
     }
 
@@ -214,7 +254,12 @@ impl Sensor {
         md.set(HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES, &[OFF]);
         md.set(JPEG_AVAILABLE_THUMBNAIL_SIZES, &[0, 0]);
         md.set(JPEG_MAX_SIZE, &[i32::try_from(self.jpeg_max_size()).unwrap_or(i32::MAX)]);
-        md.set(LENS_FACING, &[LENS_FACING_EXTERNAL]);
+        let facing = match self.facing {
+            Facing::Back => LENS_FACING_BACK,
+            Facing::Front => LENS_FACING_FRONT,
+            Facing::External => LENS_FACING_EXTERNAL,
+        };
+        md.set(LENS_FACING, &[facing]);
         md.set(LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, &[OFF]);
         md.set(LENS_INFO_FOCUS_DISTANCE_CALIBRATION, &[OFF]);
         md.set(NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES, &[OFF]);
@@ -237,8 +282,8 @@ impl Sensor {
         let slowest = self.frame_rates().first().copied().unwrap_or(DEFAULT_FPS);
         md.set(SENSOR_INFO_MAX_FRAME_DURATION, &[1_000_000_000 / i64::from((slowest / 2).max(1))]);
         md.set(SENSOR_INFO_TIMESTAMP_SOURCE, &[SENSOR_INFO_TIMESTAMP_SOURCE_UNKNOWN]);
-        // A PC display is landscape, like the camera.
-        md.set(SENSOR_ORIENTATION, &[0]);
+        // A webcam: a PC display is landscape, like the camera.
+        md.set(SENSOR_ORIENTATION, &[self.orientation]);
         md.set(SENSOR_AVAILABLE_TEST_PATTERN_MODES, &[0]);
         md.set(SENSOR_READOUT_TIMESTAMP, &[OFF]);
 
@@ -263,7 +308,8 @@ impl Sensor {
         let mut durations = Vec::new();
         let mut stalls = Vec::new();
         for mode in self.modes.iter().rev() {
-            let (width, height) = (mode.size.width as i32, mode.size.height as i32);
+            let output = self.output(mode);
+            let (width, height) = (output.width as i32, output.height as i32);
             let frame = mode.intervals.first().map_or(0, |interval| interval.nanos());
             for format in STREAM_FORMATS {
                 configurations.extend([
@@ -550,6 +596,24 @@ mod tests {
         assert_eq!(md.get(CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).unwrap(), [7, 15, 15, 30]);
         assert_eq!(md.first(SENSOR_INFO_MAX_FRAME_DURATION), Some(1_000_000_000 / 7));
         assert!(webcam().jpeg_max_size() > MIN_JPEG_BUFFER_SIZE);
+    }
+
+    #[test]
+    fn raw_sensors_output_half_size() {
+        let raw = FourCc(u32::from_le_bytes(*b"pGAA"));
+        let sensor = Sensor::raw(
+            &[mode(raw, 4128, 3096, &[30]), mode(raw, 2064, 1548, &[30]), mode(raw, 100, 100, &[2])],
+            Facing::Back,
+            -270,
+        )
+        .unwrap();
+        assert_eq!(sensor.max_size(), Size { width: 2064, height: 1548 });
+        assert_eq!(sensor.sizes().collect::<Vec<_>>()[0], Size { width: 1032, height: 774 });
+        assert_eq!(sensor.mode_for(&[Size { width: 1920, height: 1080 }]).size.width, 4128);
+        assert_eq!(sensor.mode_for(&[Size { width: 640, height: 480 }]).size.width, 2064);
+        let md = sensor.characteristics();
+        assert_eq!(md.first(LENS_FACING), Some(LENS_FACING_BACK));
+        assert_eq!(md.first(SENSOR_ORIENTATION), Some(90));
     }
 
     #[test]

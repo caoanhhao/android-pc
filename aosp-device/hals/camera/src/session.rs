@@ -40,6 +40,7 @@ use pccamera::sensor::{
     self, OutputFormat, Sensor, Template, JPEG_BLOB_TRAILER_SIZE, MAX_PROCESSED_STREAMS,
     MAX_STALL_STREAMS, PIPELINE_DEPTH,
 };
+use pccamera::raw::RawPipeline;
 use pccamera::v4l2::{self, FourCc, Interval, Mode};
 
 use crate::camera::Camera;
@@ -492,6 +493,9 @@ struct Worker {
     shared: Arc<Shared>,
     device: v4l2::Device,
     stream: Option<v4l2::Stream>,
+    /// The software ISP and 3A of a raw camera; kept across streams so exposure and
+    /// white balance carry over.
+    raw: Option<RawPipeline>,
     /// Whether an AF trigger "locked" focus (reported in results until cancelled).
     af_locked: bool,
 }
@@ -506,7 +510,7 @@ enum CaptureFailure {
 
 impl Worker {
     fn new(shared: Arc<Shared>, device: v4l2::Device) -> Self {
-        Self { shared, device, stream: None, af_locked: false }
+        Self { shared, device, stream: None, raw: None, af_locked: false }
     }
 
     fn run(mut self) {
@@ -573,6 +577,12 @@ impl Worker {
         }
         // Stop the old stream before the device accepts a new format.
         self.stream = None;
+        if let Some(sensor) = self.shared.camera.raw() {
+            let pipeline = sensor
+                .start(capture.mode.size, self.raw.as_ref())
+                .map_err(|err| format!("{}: cannot set up the pipeline: {err}", sensor.name))?;
+            self.raw = Some(pipeline);
+        }
         let stream =
             v4l2::Stream::start(&self.device, &capture.mode, capture.interval, V4L2_BUFFERS)
                 .map_err(|err| format!("{}: cannot stream: {err}", self.device.path().display()))?;
@@ -651,6 +661,7 @@ impl Worker {
         let stream =
             self.stream.as_mut().ok_or_else(|| CaptureFailure::Request("not streaming".into()))?;
         let mode = stream.mode().clone();
+        let stride = stream.stride();
         let mut last_problem = String::from("no frame");
         for _ in 0..FRAME_ATTEMPTS {
             let frame = match stream.next_frame(FRAME_TIMEOUT) {
@@ -662,7 +673,9 @@ impl Worker {
                 Err(err) => return Err(CaptureFailure::Device(format!("capture: {err}"))),
             };
             let timestamp = monotonic_now();
-            let converted = if mode.fourcc == FourCc::MJPEG {
+            let converted = if let Some(pipeline) = self.raw.as_mut() {
+                pipeline.process(frame.data(), stride).map_err(|err| err.to_string())
+            } else if mode.fourcc == FourCc::MJPEG {
                 jpeg::decode(frame.data(), mode.size).map_err(|err| err.to_string())
             } else {
                 Yuv420::from_yuyv(frame.data(), mode.size).map_err(|err| err.to_string())

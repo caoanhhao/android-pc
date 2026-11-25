@@ -5,8 +5,11 @@
 //! device, session) and gralloc live in the HAL binary.
 
 pub mod image;
+pub mod isp;
 pub mod jpeg;
+pub mod media;
 pub mod metadata;
+pub mod raw;
 pub mod sensor;
 pub mod tags;
 pub mod v4l2;

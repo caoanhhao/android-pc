@@ -10,6 +10,12 @@ firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
 # FastRPC to the sensor DSP (sdsp) for gts7l-sensord (user system), docs/gts7l.md §19.
 /dev/fastrpc-sdsp  0660  system  system
 
+# Cameras (CAMSS, docs/gts7l-hal/camera.md): the capture nodes, the media controller and the
+# sensor sub-devices for the camera HAL (user cameraserver, group camera).
+/dev/video*        0660  system  camera
+/dev/media*        0660  system  camera
+/dev/v4l-subdev*   0660  system  camera
+
 # Input devices: touchscreen, S Pen, Book Cover keyboard and touchpad (core ueventd.rc covers
 # /dev/input). DRM card and render node: core ueventd.rc. TODO(T4): vibrator (input force
 # feedback), audio.
