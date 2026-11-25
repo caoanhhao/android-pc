@@ -176,6 +176,11 @@ PRODUCT_PRODUCT_PROPERTIES += \
     ro.adb.secure=0 \
     service.adb.tcp.port=5555
 
+# Our 7.3 kernel has no ashmem (gone upstream), and libcutils uses memfd only for apps that
+# target SDK 37+: older apps (Play Store, targetSdk 36) fail every CursorWindow and crash.
+# sys.use_memfd makes every process use memfd.
+PRODUCT_PRODUCT_PROPERTIES += sys.use_memfd=true
+
 # Sensors (docs/gts7l.md §19): the SLPI's accelerometer through gts7l-sensord, which also
 # serves the DSP its configuration (sensors/).
 PRODUCT_PACKAGES += \
