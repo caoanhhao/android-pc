@@ -73,7 +73,8 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         started = true
         LuaState.fallbackPath = "${desktop.context.applicationInfo.sourceDir}!/lib/" +
             "${Build.SUPPORTED_64_BIT_ABIS.firstOrNull() ?: "x86_64"}/libhyprlua_jni.so"
-        cachedWire()?.let { push(it) }
+        val cached = cachedWire()
+        if (cached != null) push(cached) else lua.post { loadBuiltIn() }
         val um = desktop.context.getSystemService(UserManager::class.java)
         if (um.isUserUnlocked) {
             lua.post { begin() }
@@ -101,6 +102,14 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         try {
             if (!init.exists()) {
                 dir.mkdirs()
+                // binds.lua and the other modules the default init.lua requires, unless present.
+                for ((path, text) in HyprLua.DEFAULT_MODULES) {
+                    val f = File(dir, path)
+                    if (!f.exists()) {
+                        f.writeText(text)
+                        Log.i(TAG, "wrote the default $f")
+                    }
+                }
                 init.writeText(HyprLua.DEFAULT_INIT)
                 Log.i(TAG, "wrote the default $init")
             }
@@ -138,6 +147,31 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
         lua.removeCallbacks(reload)
         lua.postDelayed(reload, RELOAD_DELAY_MS)
     }
+
+    /**
+     * No configuration was ever loaded (first boot, before the first unlock): the default
+     * init.lua and its modules from the APK, so the shell starts with the same configuration
+     * that first run writes to the shared storage.
+     */
+    private fun loadBuiltIn() {
+        if (everLoaded) return
+        builtIn = true
+        val r = try {
+            runtime.load(HyprLua.DEFAULT_INIT)
+        } finally {
+            builtIn = false
+        }
+        when (r) {
+            is HyprLua.Result.Failed -> Log.w(TAG, "built-in init.lua: ${r.message}")
+            is HyprLua.Result.Loaded -> {
+                Log.i(TAG, "built-in init.lua applied until the user is unlocked")
+                apply(r.config)
+            }
+        }
+    }
+
+    /** Set while [loadBuiltIn] runs: modules come from the APK, not the shared storage. */
+    private var builtIn = false
 
     private fun load() {
         stamps = stampFiles()
@@ -300,6 +334,7 @@ class LuaConfig(private val desktop: Desktop) : LuaHost {
     // ---- LuaHost ----
 
     override fun readModule(path: String): String? {
+        if (builtIn) return HyprLua.DEFAULT_MODULES[path]
         val f = File(dir, path).canonicalFile
         if (!f.path.startsWith(dir.canonicalPath + "/")) return null
         return if (f.isFile) f.readText() else null
