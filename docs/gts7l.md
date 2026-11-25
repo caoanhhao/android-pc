@@ -1255,8 +1255,9 @@ The ROM carries no Google apps (the user's choice): unlike the PC product, `aosp
 does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs them
 over adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
 
-- microG GmsCore (`com.google.android.gms`), the APK of `tools/fetch-apps.sh microg` (one APK
-  for every ABI), with its runtime permissions granted and on the Doze allowlist.
+- microG GmsCore (`com.google.android.gms` 0.3.18), the APK of `tools/fetch-apps.sh microg`
+  (one APK for every ABI), with its runtime permissions granted, on the Doze allowlist and on
+  the Data Saver allowlist (what `sysconfig-microg.xml` gives a preinstalled microG).
 - Google Play Store (`com.android.vending` 50.7.34-31), the arm64 `Phonesky.apk` of
   `google_apis_playstore/arm64-v8a-37.0_r08.zip` (the PC's copy has only `lib/x86_64/`
   libraries), pinned by SHA-256 and signer; extracted into `out/downloads/playstore/`, never
@@ -1270,16 +1271,84 @@ Two framework patches in `tools/patches/` make the first two work without being 
   (its `fake-signature` meta-data), and so may an installed `com.google.android.gms` signed with
   microG's release key (certificate SHA-256 `9bd06727…d14165`). Without it Play Store sees no
   Google signature on GmsCore and microG's self-check fails the spoofing test.
-- `aosp17-play-store-user-app.patch` (`AppIdPermissionPolicy.kt`): an installed
-  `com.android.vending` signed with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`)
-  gets the privileged permissions the emulator image allowlists for its preinstalled Play
-  Store. Without them it crashes at start on `UserManager.getUserCount()` → `getUsers()`, which
-  needs `MANAGE_USERS`; `pm grant` cannot give privileged permissions.
+- `aosp17-play-store-user-app.patch`: an installed, non-system `com.android.vending` signed
+  with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`) gets what a preinstalled Play
+  Store gets on a GMS device:
+  - `AppIdPermissionPolicy.kt`: the signature permissions the emulator image's Play Store
+    holds, limited to what Phonesky 50.7 requests: its privileged allowlist
+    (`privapp-permissions-google-p.xml`), the `verifier` permissions it holds as the package
+    verifier (`GRANT/REVOKE_RUNTIME_PERMISSIONS`, `INSTALL_GRANT_RUNTIME_PERMISSIONS`,
+    `GET_APP_METADATA`, `MANAGE_APP_OPS_MODES`, `SET_HARMFUL_APP_WARNINGS`,
+    `WRITE_DEVICE_CONFIG`, `ACCESS_INSTANT_APPS`) and the `preinstalled` ones
+    (`READ_DEVICE_CONFIG`, `HIDE_NON_SYSTEM_OVERLAY_WINDOWS`, `WRITE_SETTINGS`). Without
+    `MANAGE_USERS` it crashes at start on `UserManager.getUserCount()` → `getUsers()`;
+    `pm grant` cannot give any of them. `INSTALL_PACKAGES` and `DELETE_PACKAGES` make its
+    installs, updates (its own too) and uninstalls silent; `PackageInstaller` checks only the
+    permissions there, not `isSystem`.
+  - `AppsFilterImpl.java`: force-queryable, like `config_forceQueryablePackages` of the
+    emulator's GoogleConfigOverlay (honoured for system apps only), so apps without a
+    `<queries>` entry (billing, licensing, `market://` checks) still see it.
+  - `DomainVerificationService.java`: its verified app links (`play.google.com`) are approved
+    like google.xml's `<app-link>` (also honoured for system apps only).
 
 Both are keyed on the signing certificate, so another app with the same package name gets
-nothing. Google's own Play services do not work as a user app either: they crash in
+nothing.
+
+What stays different from a preinstalled Play Store, on purpose:
+
+- It is not the package verifier (`PackageManagerService` picks verifiers among system apps
+  only), so installs never wait on Play Protect; it gets the verifier's permissions instead.
+- google.xml's `allow-in-power-save-except-idle` is replaced by `cmd deviceidle whitelist`
+  in the script (the stronger user allowlist, kept across reboots and self-updates).
+- `whitelisted-staged-installer` (Mainline/APEX trains), `rollback-whitelisted-app` and
+  `update-ownership` of `com.google.android.gms` are left out: Google's module trains do not
+  match this ROM's APEX keys, and Play must not own updates of microG. Play may offer Google's
+  Play services as an update to microG; it fails on the signature (microG's real certificate
+  differs), so turn off auto-update for it if Play keeps retrying.
+
+After a flash with the patch, check on the tablet (after running the script):
+
+```bash
+adb shell dumpsys package com.android.vending | grep -E 'MANAGE_USERS|INSTALL_PACKAGES|READ_DEVICE_CONFIG|GRANT_RUNTIME_PERMISSIONS'
+```
+
+Every line should say `granted=true`. Then `adb shell pm get-app-links com.android.vending`
+(`play.google.com: system_configured`), `adb shell dumpsys package queries | sed -n '/via forceQueryable/,/via package/p'`
+(lists `com.android.vending`), Play opens without crashing, installs, updates and uninstalls
+an app without a prompt, and `adb shell dumpsys package <app> | grep installerPackageName`
+names `com.android.vending`. Google's own Play services do not work as a user app either: they crash in
 `UsageReportingChimeraService` on `getUsers()` and on `isSafetyCenterEnabled` (Safety Center
 permissions), so microG stays the GmsCore.
 
 After installing: open microG settings, turn on device registration (checkin) and cloud
 messaging, add the Google account, then open Play Store.
+
+**Sign-in from other apps needs microG 0.3.18.** With 0.3.16.1 and 0.3.17, signing in to Aurora
+Store with its "microG" option spins forever: logcat shows `Permission Denial: starting Intent {
+cmp=com.google.android.gms/org.microg.gms.auth.AskPackageOverrideActivity … } … not exported`.
+This is microG's bug, not the user-app setup (a system microG fails the same way,
+microg/GmsCore#3853): the fix for GHSA-rp4p-8x89-jhv5 made `AskPermissionActivity` and
+`AskPackageOverrideActivity` non-exported, but `AccountAuthenticator.getAuthToken()` still put
+them raw into `KEY_INTENT`, and `AccountManager` starts that intent from the calling app's
+process. 0.3.18 (commit 342c280) wraps both in the exported `UnpackingRedirectActivity`, which
+starts them through a PendingIntent of microG's own, so AOSP's `AccountManagerService`
+(`checkKeyIntent`: the activity belongs to the authenticator's own package) and the activity
+start both pass. No framework change is needed for it. Upgrading in place (`adb install -r`)
+keeps the account and settings.
+
+What a user-app microG still lacks next to a preinstalled one (`privapp-permissions-microg.xml`):
+the privileged permissions are not granted, since `pm grant` cannot grant them. The one that
+matters for push messaging is `CHANGE_DEVICE_IDLE_TEMP_WHITELIST`: microG's `McsService` puts
+the app a message is for on the temporary power allowlist for 10 s (`PowerExemptionManager.
+addToTemporaryAllowList`), so it may start a service from the background and reach the network
+in Doze; without it the message is still delivered, but an app that starts a background
+service to handle it can fail. `START_ACTIVITIES_FROM_BACKGROUND` lets microG open its consent
+dialogs from the background. The others (`INSTALL_LOCATION_PROVIDER`, `LOCATION_HARDWARE`,
+`UPDATE_APP_OPS_STATS`, `INTERACT_ACROSS_USERS`, `MANAGE_USB`, `MODIFY_PHONE_STATE`,
+`NETWORK_SCAN`, `DUMP`, `WATCH_APPOPS`, `UPDATE_DEVICE_STATS`, the credential-service ones) are
+for the system network location provider, multi-user and the credential manager, none of which
+Google sign-in, checkin, push or Play Store need. Account authenticator (`com.google`), the
+`com.google.android.gsf.gservices` provider and checkin need no privileges. A user-app microG
+reads no `/product/etc/microg.xml`, so checkin and cloud messaging start off (turn them on as
+above), and SafetyNet/DroidGuard too (turn them on in microG settings if an app needs Play
+Integrity).

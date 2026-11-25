@@ -5,15 +5,18 @@
 #
 #   tools/gts7l-google-apps.sh [--accept-license] [ADB_SERIAL]
 #
-# - microG: the APK tools/fetch-apps.sh microg fetched and checked (one APK for every ABI).
+# - microG: the APK tools/fetch-apps.sh microg fetched and checked (one APK for every ABI),
+#   0.3.18 or later: 0.3.16.1 and 0.3.17 break AccountManager sign-in from other apps
+#   (Aurora Store's "microG" login, microg/GmsCore#3853).
 #   tools/patches/aosp17-microg-signature-spoofing.patch lets it report Google's signature
 #   although it is not a system app, because it is signed with microG's release key. Its
 #   runtime permissions are granted here.
 # - Google Play Store (com.android.vending): Google's APK from the Android 17 arm64 emulator
 #   image (Android SDK License Agreement; asks unless --accept-license), pinned by SHA-256 and
 #   signer. tools/patches/aosp17-play-store-user-app.patch gives it, as an ordinary app, the
-#   privileged permissions a preinstalled Play Store has; without them it crashes at start
-#   (UserManager.getUsers needs MANAGE_USERS). Personal use only: never publish the APK.
+#   signature permissions a preinstalled Play Store has (without them it crashes at start:
+#   UserManager.getUsers needs MANAGE_USERS), makes it force-queryable and approves its app
+#   links. Personal use only: never publish the APK.
 # - Aurora Store (com.aurora.store), an open-source client of Google Play's catalogue that
 #   needs no privileges: F-Droid's build, pinned by version code and SHA-256, signer checked.
 set -euo pipefail
@@ -93,10 +96,17 @@ for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION 
          NEARBY_WIFI_DEVICES; do
     "${adb[@]}" shell pm grant com.google.android.gms android.permission.$p 2>/dev/null || true
 done
-# A preinstalled Play Store is allow-in-power-save-except-idle; without it downloads crash
-# com.android.vending:background (docs/arm-translation.md, F9d).
+# A preinstalled Play Store is allow-in-power-save-except-idle (google.xml); without it downloads
+# crash com.android.vending:background (docs/arm-translation.md, F9d). The user allowlist is
+# kept in /data/system/deviceidle.xml across reboots and self-updates (not across uninstall).
 for p in com.google.android.gms com.android.vending; do
     "${adb[@]}" shell cmd deviceidle whitelist +$p >/dev/null
 done
+# A preinstalled microG is also allow-in-data-usage-save (aosp-device/microg/sysconfig-microg.xml):
+# with Data Saver on, push messaging and checkin keep their background network access.
+gms_uid=$("${adb[@]}" shell pm list packages -U com.google.android.gms |
+          sed -n 's/^package:com\.google\.android\.gms uid:\([0-9]*\).*/\1/p')
+[[ -n $gms_uid ]] || die "no uid for com.google.android.gms"
+"${adb[@]}" shell cmd netpolicy add restrict-background-whitelist "$gms_uid"
 "${adb[@]}" shell pm list packages --show-versioncode |
     grep -E 'com.google.android.gms|com.android.vending|com.aurora.store'

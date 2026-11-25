@@ -90,7 +90,7 @@ Store. microG's own Play Store "FakeStore" is only a stub, so the real Play Stor
 it and runs on top of microG.
 
 - `tools/fetch-apps.sh microg` fetches GmsCore (`com.google.android.gms`) from microG's
-  GitHub release (`MICROG_VER`, default 0.3.17.252432). It checks the APK against
+  GitHub release (`MICROG_VER`, default 0.3.18.252432). It checks the APK against
   microG's signing certificate (SHA-256 `9bd06727…d14165`) and sets it up as a
   `/product/priv-app` prebuilt in `aosp/device/android-pc/apps/GmsCore`.
   `aosp-device/microg/privapp-permissions-microg.xml` grants the privileged permissions it
