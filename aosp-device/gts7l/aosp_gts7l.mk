@@ -36,24 +36,6 @@ include $(PC_DEVICE_DIR)/desktop/desktop.mk
 # Phase D, the Hyprland-style desktop shell: PcSystemUI and HyprLauncher (docs/hypr-desktop.md).
 include $(PC_DEVICE_DIR)/hypr/hypr.mk
 
-# microG GmsCore and Google Play Store (docs/gts7l.md §22). microG as on the PC product
-# (microg.mk: privapp permissions, sysconfig, default settings; signature spoofing is
-# tools/patches/aosp17-microg-signature-spoofing.patch in frameworks/base) with its APK from
-# tools/fetch-apps.sh microg (one APK for every ABI); pc/pc.mk, which installs every fetched
-# app, is not read here, so it is named. Play Store is built in, not a user-added extra as on
-# the PC: tools/gts7l-playstore.sh takes the arm64 one from Google's emulator image.
-include $(PC_DEVICE_DIR)/microg.mk
-ifneq (,$(wildcard device/android-pc/apps/GmsCore/GmsCore.apk))
-PRODUCT_PACKAGES += GmsCore
-else
-$(warning aosp_gts7l: no microG, run tools/fetch-apps.sh microg)
-endif
-ifneq (,$(wildcard device/android-pc/gts7l-playstore/Android.bp))
-PRODUCT_PACKAGES += Phonesky privapp-permissions-phonesky.xml sysconfig-phonesky.xml
-else
-$(warning aosp_gts7l: no Play Store, run tools/gts7l-playstore.sh)
-endif
-
 # Composer: drm_hwcomposer (HWC3) on the msm DRM driver's card.
 PRODUCT_PACKAGES += com.android.hardware.graphics.composer.drm_hwcomposer
 # The msm card is card1 on the tablet (S7 first boot; minor 0 is taken during probe), and

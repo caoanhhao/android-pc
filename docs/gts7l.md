@@ -1084,35 +1084,27 @@ Open:
   `sa_data` bytes with `to_ne_bytes` now.
 
 
-## 22. microG and Google Play Store (2026-11-25)
+## 22. microG and Aurora Store, as user apps (2026-11-25)
 
-The tablet gets the same pair as the PC product (docs/arm-translation.md,
-docs/google-extras.md): microG GmsCore as `com.google.android.gms` and Google's real Play
-Store (`com.android.vending`), both privileged apps in `/product/priv-app`.
+The ROM carries nothing of Google's (the user's choice): unlike the PC product, `aosp_gts7l.mk`
+does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs over
+adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
 
-- microG: `aosp_gts7l.mk` includes `microg.mk` (privapp permissions, the sysconfig power-save
-  and data-saver allowlists, `/product/etc/microg.xml` with checkin, GCM, SafetyNet and
-  DroidGuard on) and names `GmsCore` itself, since `pc/pc.mk` (which installs every app
-  `tools/fetch-apps.sh` fetched) is PC-only. The release APK carries all four ABIs, so the
-  `tools/fetch-apps.sh microg` copy serves both products. There is no GsfProxy or FakeStore:
-  microG 0.3.x serves `com.google.android.gsf` from GmsCore, and the real Play Store
-  replaces FakeStore.
-- Signature spoofing: `tools/patches/aosp17-microg-signature-spoofing.patch` in
-  `frameworks/base` (the shared tree, so arm64 `services.jar` has it too). Only
-  preinstalled system packages named `com.google.android.gms`, `.gsf` or `com.android.vending`
-  may report the signature in their `fake-signature` meta-data.
-- Play Store: built in, not a user-added extra. The PC image is published and so cannot carry
-  it; the tablet's images already carry its own firmware and never leave this host (§10).
-  The PC's copy is no use here: its `Phonesky.apk` has only `lib/x86_64/` libraries.
-  `tools/gts7l-playstore.sh` runs `tools/add-google-extras.sh --arch arm64 --only playstore`
-  on Google's `google_apis_playstore/arm64-v8a-37.0_r08.zip` (SHA-1 pinned from Google's
-  sys-img XML; the user accepts the Android SDK License there) and writes
-  `out/gts7l-playstore/prebuilt/`: `Phonesky.apk`, `privapp-permissions-phonesky.xml` and
-  `sysconfig-phonesky.xml` from the image's own entries, and an `Android.bp`.
-  `tools/aosp-device-link.sh` copies it to `device/android-pc/gts7l-playstore`;
-  `aosp_gts7l.mk` installs it when that is there (and warns otherwise). The PC product
-  filters these module names out (`PC_EXTRAS_NOT_BUILT_IN`), so it is unaffected.
+- microG GmsCore (`com.google.android.gms`), the APK of `tools/fetch-apps.sh microg` (one APK
+  for every ABI), with its runtime permissions granted and on the Doze allowlist. As a user
+  app it gets no signature spoofing (`aosp17-microg-signature-spoofing.patch` accepts only
+  preinstalled system apps) and no privileged permissions, so its self-check fails the
+  spoofing test and Google sign-in through it is limited.
+- Aurora Store (`com.aurora.store` 4.8.4), F-Droid's build pinned by SHA-256 and signer: an
+  open-source client of Google Play's catalogue (anonymous or with a Google account) that
+  needs no privileges. Apps from it (games, Steam, Google Home, Authenticator) install into
+  userdata like any user app.
 
-Rebuild: `STEPS=product.img tools/gts7l-image.sh` (the apps and XML files are all in
-product; the system image on the tablet since 2026-11-24 already has the patched
-`services.jar`), then `tools/gts7l-android-flash.sh --yes --keep-data` from the bring-up shell.
+Google's Play Store does not work this way. Tried as a user app (the arm64 `Phonesky.apk`
+from `google_apis_playstore/arm64-v8a-37.0_r08.zip`; the PC's copy has only `lib/x86_64/`
+libraries): it crashes in `ClassicApplication.onCreate` on `UserManager.getUsers()`, which
+needs the privileged `MANAGE_USERS` (`checkCreateUsersPermission`), and logs `Unexpected
+android-id = 0` (no microG checkin without spoofing). Privileged permissions cannot be
+granted afterwards (`pm grant` takes only runtime and development permissions), so it would
+have to be a system app: built in (rejected), or the PC's extras scheme (empty placeholders in
+the ROM, the APK in `/data/vendor/pc-extras` bind-mounted at boot, docs/google-extras.md).

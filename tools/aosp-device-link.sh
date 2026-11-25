@@ -66,9 +66,3 @@ if [[ -f $ROOT/out/gts7l-mesa/prebuilt/Android.bp ]]; then
     mkdir -p "$ROOT/aosp/device/android-pc/gts7l-mesa"
     rsync -a --delete "$ROOT/out/gts7l-mesa/prebuilt/" "$ROOT/aosp/device/android-pc/gts7l-mesa/"
 fi
-# Google Play Store for gts7l (tools/gts7l-playstore.sh writes out/gts7l-playstore/prebuilt/),
-# which aosp_gts7l.mk installs when the Android.bp is there. Proprietary: never in git.
-if [[ -f $ROOT/out/gts7l-playstore/prebuilt/Android.bp ]]; then
-    mkdir -p "$ROOT/aosp/device/android-pc/gts7l-playstore"
-    rsync -a --delete "$ROOT/out/gts7l-playstore/prebuilt/" "$ROOT/aosp/device/android-pc/gts7l-playstore/"
-fi
