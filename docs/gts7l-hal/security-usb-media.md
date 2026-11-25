@@ -13,8 +13,8 @@ end (test keys deleted, the PIN cleared). SELinux is **Permissive** on this buil
 | Gatekeeper `nonsecure` + gatekeeperd + LockSettings | **Works** |
 | USB gadget: adb | **Works** |
 | USB gadget: ACM | **Works** |
-| USB gadget: NCM | **Partial**: link and ARP up, no IP traffic under Android |
-| IUsb / IUsbGadget HAL | **Absent**; framework USB device manager missing |
+| USB gadget: NCM | **Partial**: link and ARP up, no IP traffic under Android (fix on the USB HAL branch, untested, §4) |
+| IUsb / IUsbGadget HAL | **Absent** on this build; Rust HAL `hals/usb` added since, untested on the tablet (§4) |
 | Codec2 `IComponentStore/software` | **Fails**: store registered empty, no codec at all |
 | Hardware Venus codecs | **Absent** (driver not loaded) |
 | Camera | **Absent** (no provider, 0 cameras) |
@@ -224,7 +224,7 @@ local network (`ndc network interface add local usb0` and
 `ndc network route add local usb0 172.16.42.0/24`), or add an `ip rule` for `iif usb0` /
 `to 172.16.42.0/24` that looks up `main`.
 
-### IUsb / IUsbGadget HAL — Absent
+### IUsb / IUsbGadget HAL — Absent on this build
 No `android.hardware.usb.IUsb/*` or `IUsbGadget/*` service (the only USB entry in
 `service list` is the framework's `usb: [android.hardware.usb.IUsbManager]`), no
 `/sys/class/android_usb`. As a result `UsbService` creates no device manager and no port
@@ -244,11 +244,70 @@ AndroidRuntime: FATAL EXCEPTION: main ... java.lang.IllegalStateException
   at com.android.server.usb.UsbService.getCurrentFunctions(UsbService.java:970)
 ```
 
-adb, ACM and NCM still work because `init.usb.configfs.rc` drives the gadget from
-`sys.usb.config` without a HAL. What does not work: Settings → "USB preferences" (MTP/file
-transfer, PTP, MIDI, USB tethering), `svc usb setFunctions`, USB-C port/role info. A gadget
-HAL (AOSP's `android.hardware.usb.gadget-service.example`-style, configfs) and an IUsb HAL
-(typec class, MAX77705 is a `typec` driver here) would close this.
+Root cause, in the framework (`frameworks/base/services/usb/.../UsbService.java:241`):
+`UsbDeviceManager` is created only when `/sys/class/android_usb` exists. The Android common
+kernel creates that class (`CONFIG_USB_CONFIGFS_UEVENT`); mainline has nothing like it. The
+missing gadget HAL alone would only have selected the legacy `sys.usb.config` handler.
+
+### USB HAL (branch `claude/gts7l-usb-hal-5d9a0d`) — ready to merge, untested on the tablet
+Written 2026-11-25. The user's rule since then: no partial build is flashed; the main session
+merges every branch, builds once, flashes once and checks each fix. So nothing below ran on
+the tablet yet. What was checked: the host unit tests (13 pass: function plans and product
+IDs, the configfs layout on a fake gadget, the typec parser on the tablet's own sysfs
+values), patch 0270 compiled against the gts7l kernel config (no warning), an out-of-tree
+module with the same class built and modversioned against the gts7l kernel, and the HAL
+type-checked by rustc in the AOSP build (the first build stopped only on `dead_code` lints,
+fixed since; the build after was cancelled under the new rule).
+
+The pieces:
+
+| Piece | What it does |
+|---|---|
+| `aosp-device/hals/usb` (`android.hardware.usb-service.pc`, Rust on libpchal) | One process, two services. **IUsbGadget/default** (V2): maps the framework's `GadgetFunction` bits to the configfs gadget `g1` (ADB `ffs.adb`, MTP `ffs.mtp`, PTP `ffs.ptp`, MIDI `midi.gs5`, RNDIS `rndis.gs4`, NCM `ncm.gs9`; charging only = nothing bound), Google's 18d1 product IDs (MTP 4ee1, MTP+adb 4ee2, RNDIS 4ee3/4ee4, PTP 4ee5/4ee6, adb 4ee7, MIDI 4ee8/4ee9, NCM 4eeb/4eec), EF/02/01 device class when a function needs an IAD. A thread watches `/dev/usb-ffs/*` with inotify and binds the gadget again when adbd or the MTP server comes back (the kernel unbinds the whole gadget when a FunctionFS daemon closes, e.g. on `adb root`). ACCESSORY, AUDIO_SOURCE and UVC answer `CONFIGURATION_NOT_SUPPORTED` (no f_accessory/f_audio_source in mainline, no UVC daemon). **IUsb/default** (V4): `port0` from `/sys/class/typec` (current data/power role, mode UFP/DFP/accessory, DRP support, plugged or not), pushed to the framework on every typec uevent. The MAX77705 driver's role files are read-only, so role swaps report `NOT_SUPPORTED`; disabling USB data, contaminant detection, power limiting and port reset are `NOT_SUPPORTED` too. |
+| kernel patch `0270-usb-gadget-configfs-register-an-empty-android_usb-cl.patch` | Registers an empty `android_usb` class, so `UsbService` creates its device and port managers. |
+| `gts7l/rro` (`gts7l_overlay_frameworks_base_core`) | `config_enableUdcSysfsUsbStateUpdate=true`: the framework reads the gadget state from `/sys/class/udc/a600000.usb/state` instead of `USB_STATE` uevents of an `android0` device (the flag `enable_udc_sysfs_usb_state_update` is already on, genfs labels version 202604). |
+| `init.gts7l.usb.rc` | Mounts the `mtp` and `ptp` FunctionFS ports (uid/gid mtp, `no_disconnect`) before system_server, which writes their descriptors at start; hands the gadget files the HAL writes to `system`; `on property:vendor.usb.gadget.hal=1` sets `sys.usb.configfs=2` (only init and system_server may set it). |
+| `gts7l-usb.sh` | Puts the bring-up NCM link into netd's local network (the NCM fix below) and steps aside once `sys.usb.configfs=2`. |
+| `aosp_gts7l.mk` | The HAL (`hals.list`), the RRO, `persist.vendor.usb.gadget.acm=1`. |
+
+How the gadget changes hands: until the framework's first request (at boot completion) the
+gadget is the bring-up one from `init.usb.configfs.rc` (f1 adb, f8 ACM, f9 NCM), so adb, the
+ACM shell and NCM still work if the framework never comes up. The first
+`setCurrentUsbFunctions` sets `vendor.usb.gadget.hal=1`; init answers with
+`sys.usb.configfs=2`, which disables the stock `sys.usb.config` triggers; the HAL then
+unbinds, relinks the requested functions as f1..fN and binds.
+
+The bring-up and debug paths afterwards:
+- **adb**: the framework keeps ADB in every configuration while USB debugging is on (it is,
+  `persist.sys.usb.config=adb`).
+- **ACM root shell**: kept in every configuration, also "charging only", while
+  `persist.vendor.usb.gadget.acm=1` (the product default). `setprop
+  persist.vendor.usb.gadget.acm 0` and a function change drop it.
+- **NCM 172.16.42.1**: only before the HAL takes over (boot, or when the framework is dead).
+  Afterwards NCM is the tethering function and Android's tethering gives it its own address.
+  To get the old link back without the framework: `setprop ctl.stop vendor.usb-pc`, then as
+  root `echo > /config/usb_gadget/g1/UDC`, link `functions/ncm.gs9` (mkdir it first if needed)
+  and write `a600000.usb` to UDC; or boot the recovery bring-up image.
+
+### NCM IP traffic — fixed in the same path (untested)
+`gts7l-usb.sh` now adds `usb0` to netd's local network with the 172.16.42.0/24 route
+whenever it puts 172.16.42.1 on it, so replies to the host find a table. For tethering
+(RNDIS by default, NCM with `settings put global tether_force_usb_functions 1`) the
+Tethering module does the same itself, once the HAL exists.
+
+### Checks for the merged build (main session)
+```
+adb shell service list | grep -i 'hardware.usb'      # IUsb/default and IUsbGadget/default
+adb shell ls -d /sys/class/android_usb               # patch 0270
+adb shell dumpsys usb | grep -A8 -E 'device_manager|port_manager'
+adb shell getprop sys.usb.configfs                   # 2 after boot
+adb shell svc usb getFunctions                       # adb
+adb shell svc usb setFunctions mtp; sleep 3; lsusb -d 18d1:   # 18d1:4ee2 (MTP+adb)
+mtp-detect | head -30; gio mount -li | grep -i -A3 mtp
+adb shell svc usb setFunctions ""; sleep 3; lsusb -d 18d1:    # back to 18d1:4ee7 (adb)
+adb root; sleep 5; adb shell id                      # gadget rebound after adbd restart
+logcat -s android.hardware.usb-service.pc            # the HAL's log
+```
 
 ## 5. Media
 
@@ -364,9 +423,13 @@ system; nothing on the tablet needs one. State only, not tested.
 3. **Cổng serial ACM bằng tay.** Trên PC: `picocom -b 115200 /dev/ttyACM0` (hoặc
    `screen /dev/ttyACM0`), gõ `getprop ro.serialno` rồi Enter → phải in ra `R52R504WFTK`.
    Thoát picocom bằng Ctrl-A Ctrl-X.
-4. **Cài đặt USB (cần IUsb HAL).** Kéo thanh thông báo xuống khi cắm cáp vào PC: có thông báo
-   "USB" / "Charging this device via USB" không? Vào Settings → Connected devices → USB: có mở
-   được không, có lựa chọn File transfer không? (Dự đoán: không có, vì thiếu USB HAL.)
+4. **Cài đặt USB (sau khi bản gộp có USB HAL được flash).** Cắm cáp vào PC, kéo thanh thông báo
+   xuống: phải có thông báo "Charging this device via USB". Chạm vào → Settings → Connected
+   devices → USB. Lần lượt chọn: **File transfer** (trên PC phải hiện ổ "android-pc Galaxy Tab S7
+   LTE" trong trình quản lý file, mở được thư mục Download), **PTP** (PC thấy máy như máy ảnh),
+   **MIDI**, **No data transfer** (chỉ sạc), và trong Settings → Network → Hotspot & tethering bật
+   **USB tethering** (PC phải nhận được mạng mới và vào được web qua máy). Sau mỗi lần đổi, adb
+   phải vẫn chạy (`adb devices`). Báo lại: mục nào không chọn được, báo lỗi hay làm mất adb.
 5. **Phát video / nhạc (sau khi sửa `media.c2.hal.selection=aidl` và flash lại).** Chép một
    file MP4 (H.264 + AAC) vào máy (`adb push clip.mp4 /sdcard/Movies/`), mở bằng app Files
    hoặc Photos, xem có hình và tiếng không. Với bản hiện tại dự đoán: không phát được video.
