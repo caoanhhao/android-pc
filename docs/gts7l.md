@@ -1248,3 +1248,28 @@ Open:
 - The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
   `sa_data` bytes with `to_ne_bytes` now.
 
+
+## 24. microG and Aurora Store, as user apps (2026-11-25)
+
+The ROM carries nothing of Google's (the user's choice): unlike the PC product, `aosp_gts7l.mk`
+does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh` installs over
+adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
+
+- microG GmsCore (`com.google.android.gms`), the APK of `tools/fetch-apps.sh microg` (one APK
+  for every ABI), with its runtime permissions granted and on the Doze allowlist. As a user
+  app it gets no signature spoofing (`aosp17-microg-signature-spoofing.patch` accepts only
+  preinstalled system apps) and no privileged permissions, so its self-check fails the
+  spoofing test and Google sign-in through it is limited.
+- Aurora Store (`com.aurora.store` 4.8.4), F-Droid's build pinned by SHA-256 and signer: an
+  open-source client of Google Play's catalogue (anonymous or with a Google account) that
+  needs no privileges. Apps from it (games, Steam, Google Home, Authenticator) install into
+  userdata like any user app.
+
+Google's Play Store does not work this way. Tried as a user app (the arm64 `Phonesky.apk`
+from `google_apis_playstore/arm64-v8a-37.0_r08.zip`; the PC's copy has only `lib/x86_64/`
+libraries): it crashes in `ClassicApplication.onCreate` on `UserManager.getUsers()`, which
+needs the privileged `MANAGE_USERS` (`checkCreateUsersPermission`), and logs `Unexpected
+android-id = 0` (no microG checkin without spoofing). Privileged permissions cannot be
+granted afterwards (`pm grant` takes only runtime and development permissions), so it would
+have to be a system app: built in (rejected), or the PC's extras scheme (empty placeholders in
+the ROM, the APK in `/data/vendor/pc-extras` bind-mounted at boot, docs/google-extras.md).

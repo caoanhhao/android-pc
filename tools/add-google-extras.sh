@@ -23,6 +23,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# From a git worktree, the AOSP tree (and its host tools) is the main checkout's.
+[[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 only="" accept=0 dir="" target="" cache=${XDG_CACHE_HOME:-$HOME/.cache}/android-pc-extras
 while [[ $# -gt 0 ]]; do
     case "$1" in

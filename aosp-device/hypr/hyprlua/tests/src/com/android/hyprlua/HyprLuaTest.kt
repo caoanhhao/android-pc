@@ -90,7 +90,11 @@ class HyprLuaTest {
 
     @Test
     fun theDefaultInitLuaLoadsWithoutWarnings() {
+<<<<<<< HEAD
+        val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in keys })
+=======
         val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in androidKeys })
+>>>>>>> gts7l
         assertEquals(emptyList<String>(), c.warnings)
         val v = c.wire.values
         assertEquals("ALT", v["mod"])
