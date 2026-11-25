@@ -47,6 +47,9 @@ class FakeHost(val files: Map<String, String> = emptyMap()) : LuaHost {
 class HyprLuaTest {
     private val keys = setOf("Q", "C", "V", "J", "F", "E", "D", "SPACE", "GRAVE", "ENTER", "B",
         "DPAD_LEFT", "DPAD_RIGHT", "DPAD_UP", "DPAD_DOWN", "TAB", "SLASH", "T") + (0..9).map { "$it" }
+    /** KeyEvent's names (without KEYCODE_) that the default binds.lua uses. */
+    private val androidKeys = keys + ('A'..'Z').map { "$it" } + (1..12).map { "F$it" } +
+        (0..9).map { "NUMPAD_$it" } + listOf("NUMPAD_ENTER", "ESCAPE", "EQUALS", "MINUS")
     private val host = FakeHost()
     private val lua = HyprLua(host) { it in keys }
 
@@ -87,12 +90,19 @@ class HyprLuaTest {
 
     @Test
     fun theDefaultInitLuaLoadsWithoutWarnings() {
-        val c = load(HyprLua.DEFAULT_INIT)
+        val c = load(HyprLua.DEFAULT_INIT, HyprLua(FakeHost(HyprLua.DEFAULT_MODULES)) { it in androidKeys })
         assertEquals(emptyList<String>(), c.warnings)
-        val empty = HyprLua(FakeHost()) { it in keys }
-        val d = load("", empty)
-        assertEquals(d.wire.values, c.wire.values)
-        assertEquals(d.wire.lists.getValue("binds"), c.wire.lists.getValue("binds"))
+        val v = c.wire.values
+        assertEquals("ALT", v["mod"])
+        assertEquals("20", v["workspaces"])
+        assertEquals("switcher", v["alt_tab"])
+        assertTrue(Bind(setOf(Mod.ALT), "Q", "killactive") in binds(c))
+        assertTrue(Bind(setOf(Mod.ALT, Mod.CTRL), "5", "movetoworkspace", "5") in binds(c))
+    }
+
+    @Test
+    fun theDefaultInitLuaNeedsItsModules() {
+        assertTrue(error(HyprLua.DEFAULT_INIT).contains("module 'binds' not found"))
     }
 
     @Test

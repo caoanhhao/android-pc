@@ -11,12 +11,12 @@ clear error. The bar (`hl.bar`, `hl.bar_module`) is this shell's own.
 | | |
 |---|---|
 | File | `Documents/hypr/init.lua` on the shared storage: `/sdcard/Documents/hypr/init.lua` (`/storage/emulated/0/...`), reachable from any file manager, text editor, `adb push` or MTP |
-| First run | HyprLauncher writes a commented default there (the built-in defaults, spelled out) |
+| First run | when init.lua is missing, HyprLauncher writes the default configuration there: `init.lua` and the `binds.lua` it requires (the user's tuned Waydroid configuration, 2026-11-25: ALT as `main_mod`, the host-style binds below, 20 workspaces, the ALT + Tab switcher). A file already there is never overwritten; delete init.lua (and binds.lua) to get the defaults back |
 | Split files | `require("name")` reads `name.lua` next to init.lua; `require("config.binds")` reads `config/binds.lua`. A module runs once; its return value is cached. Names are letters, digits, `_`, `-` and dots, never `..` or `/` |
 | Reload | on save (FileObserver on the directory and its sub-directories, plus a modification-time check every 3 s for writes that bypass the FUSE mount); 300 ms after the last write, so an editor's several writes give one reload |
 | Errors | a syntax or runtime error, a bad value or an unknown option: the new file is not used, the last good configuration stays, and a red strip under the bar shows `init.lua: config error` and the message with its line (`init.lua:12: general.gaps_in: expected a whole number, got 'wide'`), until a save loads again. Errors in event hooks, Lua binds and timers show as notifications |
 | Warnings | options that exist in Hyprland but do nothing here (`decoration.blur.*`, most of `input.*`, ...), unsupported bind flags, ignored rule effects: the file loads, a yellow notification lists them, logcat (`HyprLua`) has all |
-| Before unlock | the shared storage is not mounted; the last good configuration (kept in device-protected storage) is applied until the user unlocks, then init.lua loads |
+| Before unlock | the shared storage is not mounted; the last good configuration (kept in device-protected storage) is applied until the user unlocks, then init.lua loads. On a first boot, with nothing kept yet, the default init.lua and binds.lua bundled in the APK are applied instead, so the shell starts with the same configuration first run writes |
 
 Edit live from the host (Waydroid or adb):
 
@@ -331,7 +331,9 @@ with CTRL `SUPER + CTRL + left` is AOSP's (split-screen navigation).
 
 `docs/examples/hypr-binds.lua` carries a desktop Hyprland configuration's binds over with
 `main_mod` kept at ALT: the host's `SUPER` binds are on `ALT`. Copy it next to init.lua as
-`binds.lua` and add `require("binds")` at the end of init.lua.
+`binds.lua` and add `require("binds")` at the end of init.lua. The user's own copy of it
+(as tuned on Waydroid) is the shipped default: `hyprlua/res/.../default-binds.lua`, written
+next to the default init.lua on first run.
 
 | Keys | Action |
 |---|---|
@@ -724,7 +726,7 @@ end)
 | The `hl` API | `hyprlua/res/com/android/hyprlua/prelude.lua` |
 | Lua → configuration | `hyprlua/src/.../ConfigBuilder.kt` (options, binds, rules, bar), `HyprLua.kt` (runtime: load, keep the last good state, hooks, timers) |
 | Hyprland's option names | `hyprlua/res/.../hyprland-options.txt` (from Hyprland 0.57's `hl.meta.lua`) |
-| Default init.lua | `hyprlua/res/.../default-init.lua` |
+| Default init.lua | `hyprlua/res/.../default-init.lua` and the modules it requires (`default-binds.lua` as `binds.lua`; `HyprLua.DEFAULT_MODULES`) |
 | In the launcher | `HyprLauncher/.../LuaConfig.kt` (file, reload, events, bar modules), `Notifier.kt` (error strip, notifications), `Bar.kt` |
 | In the shell | `PcSystemUI/.../HyprTileController.kt` (tiling, window and workspace rules), `HyprStyleProps.kt` (decoration, animations), `HyprKeybinds.kt` (binds), `HyprMouse.kt` |
 | Tests | `hyprlua/run-tests.sh` (real Lua on the host; `hyprlua-tests` under Soong), `hyprtile/run-tests.sh` (`RulesTest`) |
