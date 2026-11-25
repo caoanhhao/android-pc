@@ -136,6 +136,7 @@ pub struct Preferred {
 }
 
 impl Primary {
+    #[cfg(test)]
     pub fn select(pcms: &[PcmInfo]) -> Self {
         Self::select_preferred(pcms, Preferred::default())
     }

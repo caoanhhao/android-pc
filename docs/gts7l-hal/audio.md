@@ -1,5 +1,96 @@
 # gts7l audio HAL check
 
+## Update 2026-11-25: speakers and microphone (branch `claude/gts7l-fix-audio-8566a2`)
+
+The sections after this one are the first check (build `eng.caoanh.20261124.1208`), kept as
+the record of what failed. What changed since:
+
+| Part | State | Evidence |
+|---|---|---|
+| Kernel ALSA card | **Works** (no kernel change) | modules loaded by hand on the running build: `/proc/asound/cards` = ` 0 [S7 ]: sm8250 - Galaxy Tab S7+`, PCMs `00-00 MultiMedia1` (playback + capture), `00-01 MultiMedia2` (capture), `00-02 MultiMedia3` (playback, DP) |
+| Speakers (4x CS35L41, Primary TDM RX 0) | **Works** with tinyplay | DAPM on during playback (`FL ASPRX1`, `FL PCM Source`, `FL Main AMP`, `FL SPK` On on all four amps); the host's webcam microphone (UGREEN, next to the tablet) recorded the 1 kHz tone at amplitude 740 against 0.2 with the tablet silent |
+| Built-in mic (VA macro DMIC, MultiMedia2) | **Works** with tinycap | real non-zero samples: quiet room rms 4-6 on DMIC0-3; with the speakers playing 1 kHz, DMIC0-3 each capture it (amplitude ~90 at 0 dB, 1841 at +26 dB `VA_DEC0 Volume`); with `VA DMIC MUX0 = ZERO` the capture returns no data |
+| Mic through MultiMedia1 | Fails | rms ~5 and no trace of the tone while it plays: use MultiMedia2 |
+| Rust HAL (`hals/audio`) on gts7l | **Built, not run on the tablet** | the build of this branch compiles it; the user's rule of 2026-11-25 (one flash after every branch is merged) means AudioTrack/AudioRecord through the HAL are still to be tested |
+
+### What was wrong
+
+Only the module list. `kernel/modules.bp` loads the drivers in `src_filenames_to_load`
+(`modules.load`), and none of the audio stack was there. Loading these (modprobe pulls in
+their dependencies from `modules.dep`) brings the card up:
+
+```
+apr q6core q6afe q6asm q6adm q6routing q6afe-clocks q6afe-dai q6asm-dai
+pinctrl-sm8250-lpass-lpi lpass-gfm-sm8250 snd-soc-lpass-va-macro snd-soc-cs35l41-i2c
+snd-soc-hdmi-codec snd-soc-sm8250
+```
+
+`snd-soc-hdmi-codec` is needed although nothing plays to DisplayPort yet: the card waits for
+every codec of its DAI links (`devices_deferred`: `snd-sm8250: DisplayPort Playback: codec dai
+not found`). The four amps probe without a reset GPIO (`Cirrus Logic CS35L41 (35a40),
+Revision: A0` at 11-0040..43); the stock DT's TDM setup (Primary TDM, 4 slots, data delay 1,
+sync source 1) is what the S7+ series already has.
+
+### Mixer routes
+
+`aosp-device/gts7l/audio_mixer_setup.conf` (installed as `/vendor/etc/audio_mixer_setup.conf`):
+
+```
+PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1 = On      # speakers
+VA DMIC MUX0 = DMIC1                               # mic
+VA DEC0 MUX = VA_DMIC
+VA_AIF1_CAP Mixer DEC0 = On
+VA_DEC0 Volume = 100                               # +16 dB (84 = 0 dB)
+MultiMedia2 Mixer VA_CODEC_DMA_TX_0 = On
+```
+
+DMIC0-3 all hear the speakers at about the same level, and the stock routing names no main
+mic, so DMIC1 is a choice, not a measurement. The amps play the ASP input directly (`PCM
+Source = ASP`); the speaker-protection DSP firmware and the `sec_efs` calibration (patch 0019)
+are not loaded.
+
+### Audio HAL
+
+gts7l now uses android-pc's Rust HAL (`hals/audio`, added to `hals.list`) for
+`IModule/default`; AOSP's default HAL keeps `IConfig`, `r_submix`, `bluetooth` and the effects,
+with `hals/audio/audio_policy_configuration.xml` (no primary module) instead of Cuttlefish's.
+Changes to the HAL, none of them visible on the PC (no setup file there):
+
+- `ctl.rs`: enumerated controls (item names), and a board mixer setup file of `<control> =
+  <value>` lines (On/Off, a number, an item name), written to the primary card at start.
+- `config.rs`: with a setup file, the HAL waits up to 20 s for a sound card (the SoC card
+  appears only once the ADSP has booted), then applies it.
+- `cards.rs`: `ro.vendor.audio.pc.playback_device` / `capture_device` pick the PCM devices on
+  the primary card; `aosp_gts7l.mk` sets `capture_device=1` (MultiMedia2). Host test
+  `selects_the_preferred_soc_devices`.
+
+### Reproduce on the running build (no flash)
+
+```
+adb -s R52R504WFTK root
+adb -s R52R504WFTK shell 'for m in apr q6core q6afe q6asm q6adm q6routing q6afe-clocks q6afe-dai q6asm-dai pinctrl-sm8250-lpass-lpi lpass-gfm-sm8250 snd-soc-lpass-va-macro snd-soc-cs35l41-i2c snd-soc-hdmi-codec snd-soc-sm8250; do /vendor/bin/modprobe -d /vendor/lib/modules $m; done'
+adb -s R52R504WFTK shell 'stop audioserver; tinymix -D 0 "PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1" 1; tinyplay /data/local/tmp/tone12.wav -D 0 -d 0'
+adb -s R52R504WFTK shell 'tinymix -D 0 "MultiMedia2 Mixer VA_CODEC_DMA_TX_0" 1; tinymix -D 0 "VA_AIF1_CAP Mixer DEC0" 1; tinymix -D 0 "VA DMIC MUX0" DMIC1; tinycap /data/local/tmp/mic.wav -D 0 -d 1 -c 1 -r 48000 -b 16 -T 3; start audioserver'
+```
+
+### Still to test after the merged flash
+
+1. `/proc/asound/cards` lists the card at boot (modules from `modules.load`).
+2. logcat `android.hardware.audio.service.pc`: `found card 0 ...`, `Playback: card 0 device 0`,
+   `Capture: card 0 device 1`, the `card 0: <control> = <value>` lines of the setup file.
+3. `AudioCheck play 4` (§3): `dumpsys media.audio_flinger` shows `Frames written` growing and no
+   `ERROR` state.
+4. `AudioCheck rec1 2`: `nonzero` > 0 and rms > 0.
+5. The user listens (below).
+
+Follow-ups: speaker-protection firmware and calibration (`cirrus/cs35l41-*` in `gts7l_fw`,
+DSP1 firmware); which DMIC is the main mic (stereo capture from two DMICs for noise
+suppression); DisplayPort audio (MultiMedia3, `DISPLAY_PORT_RX`); headset is absent
+(`audio,no-earjack` in the stock DT).
+
+---
+
+
 Build `eng.caoanh.20261124.1208` (userdebug), tablet `R52R504WFTK`, checked 2026-11-25.
 Check only: nothing in the image was changed. The tablet rebooted twice during the check
 (other sessions); every result below was seen after a full boot (`sys.boot_completed=1`).
@@ -248,28 +339,18 @@ Partial: needs a manual test (below).
 
 ## Cần bạn tự kiểm tra
 
-Loa trong hiện **không thể** phát ra tiếng (kernel không có sound card nào), nên không có
-bước nghe thử loa. Những việc dưới đây chỉ bạn làm được:
+Sau khi phiên chính gộp mọi nhánh và flash một lần (nhánh này không tự flash):
 
-1. **Xác nhận loa im lặng (tùy chọn, để đối chiếu).** Trên máy tính, ở thư mục gốc repo
-   (có `aosp/`), build và chạy chương trình thử:
+1. **Nghe loa.** Ở thư mục gốc repo, build và chạy chương trình thử như ở §3:
    ```
-   J=aosp/prebuilts/jdk/jdk21/linux-x86/bin; AJ=aosp/prebuilts/sdk/36/public/android.jar
-   mkdir -p /tmp/ac/cls /tmp/ac/dex
-   $J/javac --release 17 -cp $AJ -d /tmp/ac/cls docs/gts7l-hal/audio-check/AudioCheck.java
-   $J/java -cp aosp/prebuilts/r8/r8.jar com.android.tools.r8.D8 --lib $AJ --output /tmp/ac/dex /tmp/ac/cls/*.class
-   adb -s R52R504WFTK push /tmp/ac/dex/classes.dex /data/local/tmp/audiocheck.dex
    adb -s R52R504WFTK shell CLASSPATH=/data/local/tmp/audiocheck.dex app_process /system/bin AudioCheck play 4
    ```
-   Áp tai gần bốn loa (hai cạnh ngắn của tablet) trong 4 giây. Kết quả mong đợi theo bằng
-   chứng trên: **không nghe gì**. Nếu bạn nghe thấy tiếng bíp 1 kHz, hãy báo lại vì điều đó
-   trái với log (`Frames written: 0`).
-2. **Âm thanh Bluetooth (A2DP).** Trên tablet: Cài đặt → Thiết bị đã kết nối → Ghép nối
-   thiết bị mới, ghép một tai nghe hoặc loa Bluetooth. Khi đã kết nối, chạy lệnh ở bước 1
-   (hoặc `AudioCheck play 10` cho 10 giây). Mong đợi: nghe tiếng bíp 1 kHz đều trong tai
-   nghe, không rè hay ngắt quãng. Ghi lại: có tiếng / không có tiếng / bị ngắt.
-   Sau đó chạy `adb -s R52R504WFTK shell dumpsys media.audio_flinger | grep -A3 "Output devices"`
-   trong lúc phát và gửi kết quả (phải thấy `AUDIO_DEVICE_OUT_BLUETOOTH_A2DP`).
-3. **Tai nghe Bluetooth có micro (LE Audio, nếu có).** Chỉ cần nếu tai nghe hỗ trợ LE Audio:
-   kết nối rồi chạy `AudioCheck rec1 3` trong khi nói vào micro tai nghe; gửi dòng
-   `frames=... rms=...` (rms phải lớn hơn 0 rõ rệt).
+   Áp tai gần bốn loa (hai cạnh ngắn của tablet) trong 4 giây. Mong đợi: tiếng bíp 1 kHz đều,
+   không rè, không ngắt, nghe được từ cả hai cạnh. Ghi lại: có tiếng / không / rè / chỉ một bên.
+   (Trước đó, khi phát bằng tinyplay, micro webcam đã ghi được tiếng bíp; nhưng chưa ai nghe
+   bằng tai và chưa phát qua HAL.)
+2. **Nghe âm lượng.** Bấm nút âm lượng lên/xuống trong lúc phát `AudioCheck play 10`. Mong đợi:
+   tiếng to/nhỏ theo nút.
+3. **Mic.** Chạy `AudioCheck rec1 3` rồi nói to gần tablet trong 3 giây; gửi dòng
+   `frames=... rms=...` (rms phải lớn hơn rõ rệt so với khi im lặng, khoảng vài chục trở lên).
+4. **Bluetooth (A2DP)**: như bước 2 của lần kiểm tra trước (ghép tai nghe, `AudioCheck play 10`).
