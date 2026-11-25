@@ -1251,14 +1251,52 @@ Two framework patches in `tools/patches/` make the first two work without being 
   (its `fake-signature` meta-data), and so may an installed `com.google.android.gms` signed with
   microG's release key (certificate SHA-256 `9bd06727…d14165`). Without it Play Store sees no
   Google signature on GmsCore and microG's self-check fails the spoofing test.
-- `aosp17-play-store-user-app.patch` (`AppIdPermissionPolicy.kt`): an installed
-  `com.android.vending` signed with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`)
-  gets the privileged permissions the emulator image allowlists for its preinstalled Play
-  Store. Without them it crashes at start on `UserManager.getUserCount()` → `getUsers()`, which
-  needs `MANAGE_USERS`; `pm grant` cannot give privileged permissions.
+- `aosp17-play-store-user-app.patch`: an installed, non-system `com.android.vending` signed
+  with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`) gets what a preinstalled Play
+  Store gets on a GMS device:
+  - `AppIdPermissionPolicy.kt`: the signature permissions the emulator image's Play Store
+    holds, limited to what Phonesky 50.7 requests: its privileged allowlist
+    (`privapp-permissions-google-p.xml`), the `verifier` permissions it holds as the package
+    verifier (`GRANT/REVOKE_RUNTIME_PERMISSIONS`, `INSTALL_GRANT_RUNTIME_PERMISSIONS`,
+    `GET_APP_METADATA`, `MANAGE_APP_OPS_MODES`, `SET_HARMFUL_APP_WARNINGS`,
+    `WRITE_DEVICE_CONFIG`, `ACCESS_INSTANT_APPS`) and the `preinstalled` ones
+    (`READ_DEVICE_CONFIG`, `HIDE_NON_SYSTEM_OVERLAY_WINDOWS`, `WRITE_SETTINGS`). Without
+    `MANAGE_USERS` it crashes at start on `UserManager.getUserCount()` → `getUsers()`;
+    `pm grant` cannot give any of them. `INSTALL_PACKAGES` and `DELETE_PACKAGES` make its
+    installs, updates (its own too) and uninstalls silent; `PackageInstaller` checks only the
+    permissions there, not `isSystem`.
+  - `AppsFilterImpl.java`: force-queryable, like `config_forceQueryablePackages` of the
+    emulator's GoogleConfigOverlay (honoured for system apps only), so apps without a
+    `<queries>` entry (billing, licensing, `market://` checks) still see it.
+  - `DomainVerificationService.java`: its verified app links (`play.google.com`) are approved
+    like google.xml's `<app-link>` (also honoured for system apps only).
 
 Both are keyed on the signing certificate, so another app with the same package name gets
-nothing. Google's own Play services do not work as a user app either: they crash in
+nothing.
+
+What stays different from a preinstalled Play Store, on purpose:
+
+- It is not the package verifier (`PackageManagerService` picks verifiers among system apps
+  only), so installs never wait on Play Protect; it gets the verifier's permissions instead.
+- google.xml's `allow-in-power-save-except-idle` is replaced by `cmd deviceidle whitelist`
+  in the script (the stronger user allowlist, kept across reboots and self-updates).
+- `whitelisted-staged-installer` (Mainline/APEX trains), `rollback-whitelisted-app` and
+  `update-ownership` of `com.google.android.gms` are left out: Google's module trains do not
+  match this ROM's APEX keys, and Play must not own updates of microG. Play may offer Google's
+  Play services as an update to microG; it fails on the signature (microG's real certificate
+  differs), so turn off auto-update for it if Play keeps retrying.
+
+After a flash with the patch, check on the tablet (after running the script):
+
+```bash
+adb shell dumpsys package com.android.vending | grep -E 'MANAGE_USERS|INSTALL_PACKAGES|READ_DEVICE_CONFIG|GRANT_RUNTIME_PERMISSIONS'
+```
+
+Every line should say `granted=true`. Then `adb shell pm get-app-links com.android.vending`
+(`play.google.com: system_configured`), `adb shell dumpsys package queries | sed -n '/via forceQueryable/,/via package/p'`
+(lists `com.android.vending`), Play opens without crashing, installs, updates and uninstalls
+an app without a prompt, and `adb shell dumpsys package <app> | grep installerPackageName`
+names `com.android.vending`. Google's own Play services do not work as a user app either: they crash in
 `UsageReportingChimeraService` on `getUsers()` and on `isSafetyCenterEnabled` (Safety Center
 permissions), so microG stays the GmsCore.
 
