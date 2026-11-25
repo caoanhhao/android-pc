@@ -35,7 +35,6 @@ android_app_import {
     apk: "Phonesky.apk",
     // Signed by Google with APK signature v2+: install it unchanged.
     preprocessed: true,
-    skip_preprocessed_apk_checks: true,
     product_specific: true,
     privileged: true,
     dex_preopt: {
