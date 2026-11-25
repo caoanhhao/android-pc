@@ -1083,3 +1083,36 @@ Open:
 - The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
   `sa_data` bytes with `to_ne_bytes` now.
 
+
+## 22. microG and Google Play Store (2026-11-25)
+
+The tablet gets the same pair as the PC product (docs/arm-translation.md,
+docs/google-extras.md): microG GmsCore as `com.google.android.gms` and Google's real Play
+Store (`com.android.vending`), both privileged apps in `/product/priv-app`.
+
+- microG: `aosp_gts7l.mk` includes `microg.mk` (privapp permissions, the sysconfig power-save
+  and data-saver allowlists, `/product/etc/microg.xml` with checkin, GCM, SafetyNet and
+  DroidGuard on) and names `GmsCore` itself, since `pc/pc.mk` (which installs every app
+  `tools/fetch-apps.sh` fetched) is PC-only. The release APK carries all four ABIs, so the
+  `tools/fetch-apps.sh microg` copy serves both products. There is no GsfProxy or FakeStore:
+  microG 0.3.x serves `com.google.android.gsf` from GmsCore, and the real Play Store
+  replaces FakeStore.
+- Signature spoofing: `tools/patches/aosp17-microg-signature-spoofing.patch` in
+  `frameworks/base` (the shared tree, so arm64 `services.jar` has it too). Only
+  preinstalled system packages named `com.google.android.gms`, `.gsf` or `com.android.vending`
+  may report the signature in their `fake-signature` meta-data.
+- Play Store: built in, not a user-added extra. The PC image is published and so cannot carry
+  it; the tablet's images already carry its own firmware and never leave this host (§10).
+  The PC's copy is no use here: its `Phonesky.apk` has only `lib/x86_64/` libraries.
+  `tools/gts7l-playstore.sh` runs `tools/add-google-extras.sh --arch arm64 --only playstore`
+  on Google's `google_apis_playstore/arm64-v8a-37.0_r08.zip` (SHA-1 pinned from Google's
+  sys-img XML; the user accepts the Android SDK License there) and writes
+  `out/gts7l-playstore/prebuilt/`: `Phonesky.apk`, `privapp-permissions-phonesky.xml` and
+  `sysconfig-phonesky.xml` from the image's own entries, and an `Android.bp`.
+  `tools/aosp-device-link.sh` copies it to `device/android-pc/gts7l-playstore`;
+  `aosp_gts7l.mk` installs it when that is there (and warns otherwise). The PC product
+  filters these module names out (`PC_EXTRAS_NOT_BUILT_IN`), so it is unaffected.
+
+Rebuild: `STEPS=product.img tools/gts7l-image.sh` (the apps and XML files are all in
+product; the system image on the tablet since 2026-11-24 already has the patched
+`services.jar`), then `tools/gts7l-android-flash.sh --yes --keep-data` from the bring-up shell.

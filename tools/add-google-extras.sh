@@ -14,6 +14,9 @@
 # Options: --only playstore|ndk  add only one of the two (default: both)
 #          --accept-license      do not ask; you accept the Android SDK License Agreement
 #                                (https://developer.android.com/studio/terms) for the images
+#          --arch arm64          Play Store from the arm64 image instead (its native libraries
+#                                are per ABI), for an arm64 build: aosp_gts7l
+#                                (tools/gts7l-playstore.sh); takes --only playstore
 #          --cache DIR           where the downloads are kept (default ~/.cache/android-pc-extras;
 #                                2.1 GB per image, reused by later runs)
 #          --dir DIR             write to a directory instead of an ESP
@@ -23,10 +26,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-only="" accept=0 dir="" target="" cache=${XDG_CACHE_HOME:-$HOME/.cache}/android-pc-extras
+# From a git worktree, the AOSP tree (and its host tools) is the main checkout's.
+[[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
+only="" arch=x86_64 accept=0 dir="" target="" cache=${XDG_CACHE_HOME:-$HOME/.cache}/android-pc-extras
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) only="$2"; shift ;;
+        --arch) arch="$2"; shift ;;
         --accept-license) accept=1 ;;
         --cache) cache="$2"; shift ;;
         --dir) dir="$2"; shift ;;
@@ -39,6 +45,8 @@ done
 die() { echo "add-google-extras.sh: $*" >&2; exit 1; }
 [[ -n $dir || -n $target ]] || die "no target (see --help)"
 [[ -z $only || $only == playstore || $only == ndk ]] || die "--only takes playstore or ndk"
+[[ $arch == x86_64 || ( $arch == arm64 && $only == playstore ) ]] ||
+    die "--arch takes x86_64, or arm64 with --only playstore"
 
 # Tools: from PATH, else from an AOSP build in this checkout.
 aosp_host=$ROOT/aosp/out/host/linux-x86/bin
@@ -66,6 +74,12 @@ NDK_ZIP=google_apis-x86_64-37.0_r08.zip NDK_SHA1=a266cfbcf4d6c769b166c0af4d68eff
 NDK_URL=$SYSIMG/google_apis/x86_64-37.0_r08.zip
 PS_ZIP=google_apis_playstore-x86_64-37.0_r08.zip PS_SHA1=7ba53fe131fad2cfc3de2b88e32fde5c529fc9c7
 PS_URL=$SYSIMG/google_apis_playstore/x86_64-37.0_r08.zip
+ABI=x86_64
+if [[ $arch == arm64 ]]; then
+    PS_ZIP=google_apis_playstore-arm64-v8a-37.0_r08.zip PS_SHA1=ac251e27178d78cffb0b7ee577d79643491a89a6
+    PS_URL=$SYSIMG/google_apis_playstore/arm64-v8a-37.0_r08.zip
+    ABI=arm64-v8a
+fi
 
 if (( ! accept )); then
     cat <<EOF
@@ -93,11 +107,11 @@ fetch() {   # fetch ZIP URL SHA1
 }
 partition() {   # partition ZIP NAME: the image's dynamic partition NAME, as $work/NAME.img
     local start
-    unzip -q -o -d "$work" "$cache/$1" x86_64/system.img
-    # x86_64/system.img is a GPT disk whose partition 2 is the dynamic-partition "super".
-    start=$(sfdisk -d "$work/x86_64/system.img" | sed -n 's/.*: start= *\([0-9]*\),.*/\1/p' | sed -n 2p)
-    dd if="$work/x86_64/system.img" of="$work/super.img" bs=512 skip="$start" status=none
-    rm -f "$work/x86_64/system.img"
+    unzip -q -o -d "$work" "$cache/$1" $ABI/system.img
+    # $ABI/system.img is a GPT disk whose partition 2 is the dynamic-partition "super".
+    start=$(sfdisk -d "$work/$ABI/system.img" | sed -n 's/.*: start= *\([0-9]*\),.*/\1/p' | sed -n 2p)
+    dd if="$work/$ABI/system.img" of="$work/super.img" bs=512 skip="$start" status=none
+    rm -f "$work/$ABI/system.img"
     "$LPUNPACK" -p "$2" "$work/super.img" "$work" >/dev/null
     rm -f "$work/super.img"
 }
