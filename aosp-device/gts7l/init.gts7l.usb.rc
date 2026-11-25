@@ -8,6 +8,13 @@
 #   f9 NCM: 172.16.42.1, adb over TCP on port 5555.
 # persist.sys.usb.config=adb, ro.adb.secure=0 and service.adb.tcp.port=5555 are set by
 # aosp_gts7l.mk.
+#
+# Once the framework is up, the USB HAL (aosp-device/hals/usb) takes the gadget over: its first
+# request sets vendor.usb.gadget.hal=1, the trigger below sets sys.usb.configfs=2 (which turns
+# the stock sys.usb.config triggers off), and from then on the HAL links the functions the
+# framework asks for (Settings -> USB: file transfer = ffs.mtp, PTP = ffs.ptp, MIDI, tethering =
+# rndis/ncm, adb = ffs.adb). It keeps f8 (ACM) in every configuration while
+# persist.vendor.usb.gadget.acm=1 and drops the bring-up NCM function f9.
 
 on init
     mkdir /dev/usb-ffs 0775 shell shell
@@ -23,6 +30,15 @@ on init
     mkdir /config/usb_gadget/g1/functions/ffs.adb
     # FunctionFS finds its device by the function's name: mount only after ffs.adb exists.
     mount functionfs adb /dev/usb-ffs/adb rmode=0770,fmode=0660,uid=2000,gid=2000
+    # MTP and PTP: FunctionFS ports whose descriptors system_server writes when it starts
+    # (UsbDeviceManager), so they must be mounted before; the MTP server opens the endpoints as
+    # the mtp group. no_disconnect: the gadget stays bound when the MTP server closes them.
+    mkdir /dev/usb-ffs/mtp 0770 mtp mtp
+    mkdir /dev/usb-ffs/ptp 0770 mtp mtp
+    mkdir /config/usb_gadget/g1/functions/ffs.mtp
+    mkdir /config/usb_gadget/g1/functions/ffs.ptp
+    mount functionfs mtp /dev/usb-ffs/mtp rmode=0770,fmode=0660,uid=1024,gid=1024,no_disconnect=1
+    mount functionfs ptp /dev/usb-ffs/ptp rmode=0770,fmode=0660,uid=1024,gid=1024,no_disconnect=1
     mkdir /config/usb_gadget/g1/functions/acm.gs8
     mkdir /config/usb_gadget/g1/functions/ncm.gs9
     mkdir /config/usb_gadget/g1/configs/b.1 0777 shell shell
@@ -30,10 +46,23 @@ on init
     write /config/usb_gadget/g1/configs/b.1/MaxPower 500
     symlink /config/usb_gadget/g1/functions/acm.gs8 /config/usb_gadget/g1/configs/b.1/f8
     symlink /config/usb_gadget/g1/functions/ncm.gs9 /config/usb_gadget/g1/configs/b.1/f9
+    # The USB HAL runs as system: what it writes and the directories it links and creates in.
+    chown system system /config/usb_gadget/g1/UDC
+    chown system system /config/usb_gadget/g1/idProduct
+    chown system system /config/usb_gadget/g1/bDeviceClass
+    chown system system /config/usb_gadget/g1/bDeviceSubClass
+    chown system system /config/usb_gadget/g1/bDeviceProtocol
+    chown system system /config/usb_gadget/g1/functions
+    chown system system /config/usb_gadget/g1/configs/b.1
+    chown system system /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration
     setprop sys.usb.controller ${ro.boot.usbcontroller:-a600000.usb}
     setprop sys.usb.configfs 1
     start vendor.gts7l-usb
     start vendor.gts7l-console
+
+# The USB HAL's first request (see the top of this file).
+on property:vendor.usb.gadget.hal=1
+    setprop sys.usb.configfs 2
 
 service vendor.gts7l-usb /vendor/bin/gts7l-usb.sh
     class core

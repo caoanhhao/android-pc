@@ -1,0 +1,64 @@
+From 4f62613c27e4940986ed0203927a6e0cff775ffd Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Wed, 25 Nov 2026 07:59:38 +0700
+Subject: [PATCH] usb: gadget: configfs: register an empty android_usb class
+
+Android's UsbService only creates its USB device manager when
+/sys/class/android_usb exists. The Android common kernel creates that
+class with CONFIG_USB_CONFIGFS_UEVENT; mainline has no such thing.
+
+With config_enableUdcSysfsUsbStateUpdate the framework reads the gadget
+state from /sys/class/udc/<udc>/state, so an empty class is enough to
+bring up the device manager, the gadget HAL path, MTP and USB
+tethering.
+
+caoanhhao used AI to code
+---
+ drivers/usb/gadget/configfs.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/gadget/configfs.c b/drivers/usb/gadget/configfs.c
+index 51df6d1d1..bfa3a5b63 100644
+--- a/drivers/usb/gadget/configfs.c
++++ b/drivers/usb/gadget/configfs.c
+@@ -2090,6 +2090,16 @@ void unregister_gadget_item(struct config_item *item)
+ }
+ EXPORT_SYMBOL_GPL(unregister_gadget_item);
+ 
++/*
++ * Android's UsbService creates its USB device manager (gadget functions, MTP, tethering,
++ * the "USB" notification) only when /sys/class/android_usb exists. With the gadget
++ * state read from /sys/class/udc/<udc>/state (config_enableUdcSysfsUsbStateUpdate), the
++ * class needs no devices: an empty class is enough.
++ */
++static const struct class android_usb_class = {
++	.name = "android_usb",
++};
++
+ static int __init gadget_cfs_init(void)
+ {
+ 	int ret;
+@@ -2097,12 +2107,19 @@ static int __init gadget_cfs_init(void)
+ 	config_group_init(&gadget_subsys.su_group);
+ 
+ 	ret = configfs_register_subsystem(&gadget_subsys);
+-	return ret;
++	if (ret)
++		return ret;
++
++	if (class_register(&android_usb_class))
++		pr_warn("usb_gadget: cannot register the android_usb class\n");
++	return 0;
+ }
+ module_init(gadget_cfs_init);
+ 
+ static void __exit gadget_cfs_exit(void)
+ {
++	if (class_is_registered(&android_usb_class))
++		class_unregister(&android_usb_class);
+ 	configfs_unregister_subsystem(&gadget_subsys);
+ }
+ module_exit(gadget_cfs_exit);
+-- 
+2.56.1
+

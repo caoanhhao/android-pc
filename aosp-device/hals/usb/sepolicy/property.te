@@ -1,0 +1,3 @@
+# vendor.usb.gadget.*: the USB HAL tells the device's init script it has taken the gadget
+# over; persist.vendor.usb.gadget.acm keeps an ACM serial function in every configuration.
+vendor_internal_prop(vendor_pc_usb_prop)

@@ -1,0 +1,17 @@
+# USB HAL: android.hardware.usb-service.pc, IUsb/default and IUsbGadget/default in one
+# process. hal_usb_server already reads and writes the typec sysfs nodes and receives
+# uevents; hal_usb_gadget_server already rearranges configfs and reads FunctionFS.
+pc_hal_service(hal_pc_usb, hal_usb)
+hal_server_domain(hal_pc_usb, hal_usb_gadget)
+
+# Binding the gadget: the UDC name, its state and speed.
+get_prop(hal_pc_usb, usb_control_prop)
+r_dir_file(hal_pc_usb, sysfs_udc)
+allow hal_pc_usb sysfs_udc:file rw_file_perms;
+
+# Watching the FunctionFS mounts for daemons (adbd, the MTP server) coming and going.
+allow hal_pc_usb functionfs:dir { watch watch_reads };
+
+# vendor.usb.gadget.hal (taking the gadget over from init) and
+# persist.vendor.usb.gadget.acm (keep the ACM console in every configuration).
+set_prop(hal_pc_usb, vendor_pc_usb_prop)
