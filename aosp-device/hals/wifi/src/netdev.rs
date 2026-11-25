@@ -212,7 +212,8 @@ impl Netdev {
         let hwaddr = unsafe { req.data.hwaddr };
         let mut mac = [0; 6];
         for (dst, src) in mac.iter_mut().zip(hwaddr.sa_data) {
-            *dst = src as u8;
+            // c_char is i8 on x86_64 and u8 on arm64: a plain cast is lint-clean on only one.
+            *dst = u8::from_ne_bytes(src.to_ne_bytes());
         }
         Ok(mac)
     }
