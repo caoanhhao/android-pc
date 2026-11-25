@@ -189,7 +189,7 @@ PRODUCT_PACKAGES += \
 
 # Wi-Fi (docs/gts7l.md §23): the QCA6390 on ath11k_pci as wlan0, our Rust HAL
 # (hals/wifi, from hals.list) and wpa_supplicant/hostapd from AOSP's generic APEX
-# (BoardConfig.mk). P2P stays off until it is tested: no wifi.direct feature.
+# (BoardConfig.mk). wifi.direct is declared with stock's features below; P2P is untested.
 PRODUCT_PACKAGES += com.android.hardware.wpa_supplicant
 PRODUCT_VENDOR_PROPERTIES += \
     wifi.interface=wlan0 \

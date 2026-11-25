@@ -102,9 +102,9 @@ for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION 
          NEARBY_WIFI_DEVICES; do
     "${adb[@]}" shell pm grant com.google.android.gms android.permission.$p 2>/dev/null || true
 done
-# A preinstalled Play Store is allow-in-power-save-except-idle (google.xml); without it downloads
-# crash com.android.vending:background (docs/arm-translation.md, F9d). The user allowlist is
-# kept in /data/system/deviceidle.xml across reboots and self-updates (not across uninstall).
+# Play's systemExempted services need the Doze allowlist; without it downloads crash
+# com.android.vending:background (docs/arm-translation.md, F9d). The ROM's
+# gts7l_sysconfig_google.xml has both; the user allowlist here is for older builds.
 for p in com.google.android.gms com.android.vending; do
     "${adb[@]}" shell cmd deviceidle whitelist +$p >/dev/null
 done

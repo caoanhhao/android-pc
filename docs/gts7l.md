@@ -1256,8 +1256,13 @@ does not include `microg.mk` and has no Play Store. `tools/gts7l-google-apps.sh`
 over adb, into userdata, so they survive `gts7l-android-flash.sh --keep-data`:
 
 - microG GmsCore (`com.google.android.gms` 0.3.18), the APK of `tools/fetch-apps.sh microg`
-  (one APK for every ABI), with its runtime permissions granted, on the Doze allowlist and on
-  the Data Saver allowlist (what `sysconfig-microg.xml` gives a preinstalled microG).
+  (one APK for every ABI) patched by `tools/gts7l-microg-patch.sh`, with its runtime
+  permissions granted. microG's `PhoneInfo` hard-codes the mobile network `26207` (O2,
+  Germany) for every checkin, so Google registers the device as `device_country=de` and Play
+  shows Germany's catalogue: the script replaces it with `MCCMNC` (default `45204`, Vietnam)
+  and signs the APK with AOSP's testkey. It replaces a microG signed with microG's key only
+  after `adb uninstall com.google.android.gms`, which drops the Google account (sign in again,
+  and turn device registration on in microG's settings before the first checkin).
 - Google Play Store (`com.android.vending` 50.7.34-31), the arm64 `Phonesky.apk` of
   `google_apis_playstore/arm64-v8a-37.0_r08.zip` (the PC's copy has only `lib/x86_64/`
   libraries), pinned by SHA-256 and signer; extracted into `out/downloads/playstore/`, never
@@ -1269,7 +1274,8 @@ Two framework patches in `tools/patches/` make the first two work without being 
 
 - `aosp17-microg-signature-spoofing.patch`: a preinstalled microG may report Google's signature
   (its `fake-signature` meta-data), and so may an installed `com.google.android.gms` signed with
-  microG's release key (certificate SHA-256 `9bd06727…d14165`). Without it Play Store sees no
+  microG's release key (certificate SHA-256 `9bd06727…d14165`) or with AOSP's testkey
+  (`a40da80a…71bf5dc`, the patched build above). Without it Play Store sees no
   Google signature on GmsCore and microG's self-check fails the spoofing test.
 - `aosp17-play-store-user-app.patch`: an installed, non-system `com.android.vending` signed
   with Google Play's key (certificate SHA-256 `f0fd6c5b…60db83`) gets what a preinstalled Play
@@ -1298,8 +1304,13 @@ What stays different from a preinstalled Play Store, on purpose:
 
 - It is not the package verifier (`PackageManagerService` picks verifiers among system apps
   only), so installs never wait on Play Protect; it gets the verifier's permissions instead.
-- google.xml's `allow-in-power-save-except-idle` is replaced by `cmd deviceidle whitelist`
-  in the script (the stronger user allowlist, kept across reboots and self-updates).
+- google.xml's `allow-in-power-save-except-idle` becomes the full `allow-in-power-save` in
+  `aosp-device/gts7l/gts7l_sysconfig_google.xml` (with microG's Doze and Data Saver entries):
+  `-except-idle` does not exempt Play's `systemExempted` foreground services, and
+  `VpaService`/`DownloadService` crash `com.android.vending` without it. The script's
+  `cmd deviceidle whitelist` alone is lost when Play reinstalls itself.
+- The kernel has no `/dev/ashmem`, and libcutils uses memfd only for apps targeting SDK 37+:
+  `sys.use_memfd=true` (product properties) makes Play's (SDK 36) `CursorWindow`s work.
 - `whitelisted-staged-installer` (Mainline/APEX trains), `rollback-whitelisted-app` and
   `update-ownership` of `com.google.android.gms` are left out: Google's module trains do not
   match this ROM's APEX keys, and Play must not own updates of microG. Play may offer Google's
