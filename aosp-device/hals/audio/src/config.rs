@@ -12,6 +12,8 @@
 //! a monitor with audio is plugged in (WiredAccessoryManager reads the HD Audio HDMI/DP
 //! jacks as input switches). [`Endpoint::connect_hdmi`] then picks the PCM.
 
+use std::time::{Duration, Instant};
+
 use log::{info, warn};
 
 use crate::aidl::{
@@ -29,6 +31,13 @@ const LATENCY_MS: i32 = 40;
 /// Virtual sound cards (virtio-snd on Cuttlefish) are fed by a host process with coarse
 /// timing; AOSP's Cuttlefish HAL uses this latency to pass CTS on them.
 const VIRTUAL_LATENCY_MS: i32 = 85;
+
+/// A board's mixer setup ([`ctl::parse_setup`]): the routes of a SoC card, written to the
+/// primary card at start. Boards whose codec needs none have no file.
+const MIXER_SETUP_PATH: &str = "/vendor/etc/audio_mixer_setup.conf";
+/// How long the HAL waits for a sound card at start on a board with a mixer setup: a SoC
+/// card only appears once its DSP has booted and announced its services.
+const CARD_WAIT: Duration = Duration::from_secs(20);
 
 /// Rates of the HDMI path: CEA-861 basic audio (stereo LPCM at 32, 44.1 and 48 kHz), which
 /// every HDMI sink with audio takes.
@@ -51,6 +60,24 @@ fn hdmi_choice() -> HdmiChoice {
     }
     #[cfg(not(target_os = "android"))]
     HdmiChoice::Auto
+}
+
+/// The PCM devices a board asks for (`ro.vendor.audio.pc.playback_device`,
+/// `ro.vendor.audio.pc.capture_device`), see [`cards::Preferred`].
+fn preferred_devices() -> cards::Preferred {
+    #[cfg(target_os = "android")]
+    {
+        use rustutils::android::system_properties;
+        let read = |name: &str| {
+            system_properties::read(name).ok().flatten().and_then(|value| value.trim().parse().ok())
+        };
+        cards::Preferred {
+            playback: read("ro.vendor.audio.pc.playback_device"),
+            capture: read("ro.vendor.audio.pc.capture_device"),
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    cards::Preferred::default()
 }
 
 /// Logs the monitor state of every HDMI pin of `card` (`/proc/asound/card<N>/eld#*`).
@@ -216,11 +243,22 @@ pub struct Hardware {
 impl Hardware {
     /// Finds the built-in codec in `/proc/asound` and probes its PCMs.
     pub fn discover() -> Self {
-        let pcms = cards::discover();
+        let setup = std::fs::read_to_string(MIXER_SETUP_PATH)
+            .map(|text| ctl::parse_setup(&text))
+            .unwrap_or_default();
+        let mut pcms = cards::discover();
+        if !setup.is_empty() {
+            let start = Instant::now();
+            while pcms.is_empty() && start.elapsed() < CARD_WAIT {
+                std::thread::sleep(Duration::from_millis(250));
+                pcms = cards::discover();
+            }
+            info!("{} PCMs after {:?}", pcms.len(), start.elapsed());
+        }
         for pcm in &pcms {
             info!("found {pcm}");
         }
-        let primary = cards::Primary::select(&pcms);
+        let primary = cards::Primary::select_preferred(&pcms, preferred_devices());
         let hardware = Self {
             output: Endpoint::probe(primary.playback.as_ref(), Direction::Playback),
             input: Endpoint::probe(primary.capture.as_ref(), Direction::Capture),
@@ -233,6 +271,9 @@ impl Hardware {
         cards.dedup();
         for card in cards {
             ctl::unmute(card);
+            if !setup.is_empty() {
+                ctl::apply_setup(card, &setup);
+            }
         }
         hardware
     }
