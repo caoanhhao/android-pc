@@ -90,6 +90,19 @@ class TouchTest {
     }
 
     @Test
+    fun mouseEdgeZoneIsTheOutermostPixels() {
+        val r = TouchRecognizer(config.copy(edge = 4))
+        r.down(0, 2f, 500f, 0, excluded = false, onWindow = false)
+        var out: List<String>? = null
+        for (i in 1..10) out = out ?: r.move(mapOf(0 to (2f + 20f * i to 500f)), 20L * i)
+        assertEquals(listOf("EDGE_LEFT"), out)
+        // 10 px in is no longer the edge for a mouse.
+        val r2 = TouchRecognizer(config.copy(edge = 4))
+        r2.down(0, 10f, 500f, 0, excluded = false, onWindow = false)
+        for (i in 1..10) assertNull(r2.move(mapOf(0 to (10f + 20f * i to 500f)), 20L * i))
+    }
+
+    @Test
     fun aSecondFingerEndsTheEdgeSwipe() {
         val r = TouchRecognizer(config)
         r.down(0, 1200f, 1075f, 0, excluded = false, onWindow = false)
@@ -104,9 +117,12 @@ class TouchTest {
         assertEquals("SWIPE_4_LEFT", TouchGesture.nameOf("GESTURE:SWIPE_4_LEFT"))
         assertTrue(runCatching { TouchGesture.nameOf("gesture:swipe_2_up") }.isFailure)
         val defaults = defaultTouchBinds().associate { TouchGesture.nameOf(it.key) to it.dispatcher }
-        assertEquals("launcher", defaults["EDGE_BOTTOM"])
+        assertEquals("overview", defaults["EDGE_BOTTOM"])
+        assertEquals("back", defaults["EDGE_LEFT"])
+        assertEquals("back", defaults["EDGE_RIGHT"])
         assertEquals("overview", defaults["PINCH_IN"])
-        assertEquals("overview", defaults["SWIPE_3_UP"])
+        assertEquals("launcher", defaults["SWIPE_3_UP"])
+        assertEquals("workspace", defaults["SWIPE_3_LEFT"])
         // A gesture bind survives the wire format.
         val b = defaultTouchBinds().first { it.arg == "e+1" }
         assertEquals(b, parseBind(b.toString()))

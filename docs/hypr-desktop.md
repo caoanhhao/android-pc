@@ -1080,13 +1080,24 @@ injector (`aosp-device/hypr/tools/touchinject/`). Still no `frameworks/base` cha
   removed with `hl.unbind`. `HyprKeybinds` skips them; Hyprland's `hl.gesture` lines (touchpad
   gestures there) are turned into the same binds. Without a Lua configuration the defaults
   apply. Reference: docs/hypr-lua.md, "Touch gestures".
-- **HarmonyOS PC mode's layout of edges**: bottom edge → app launcher, left/right edge →
-  previous/next workspace, top edge → notifications, its right third → quick settings
-  (HarmonyOS opens its control centre from the top right). Two new dispatchers,
-  `notifications` and `quicksettings` (`StatusBarManager.expandNotificationsPanel` /
-  `expandSettingsPanel`, SystemUI holds `EXPAND_STATUS_BAR`). Overview: pinch in on the
-  wallpaper or the bar, or three fingers up anywhere; a tap on a window in the overview
-  focuses it (the overview's click handler, unchanged).
+- **Edges as on phones** (the user, 2026-11-25; D6 first had HarmonyOS PC mode's layout, the
+  bottom edge for the launcher and the side edges for workspaces): bottom edge → overview,
+  left/right edge → back, top edge → notifications, its right third → quick settings
+  (HarmonyOS opens its control centre from the top right). Workspaces moved to three fingers
+  sideways (left: next, right: previous, as Hyprland's swipe), the launcher to three fingers
+  up. Dispatchers added for them: `notifications`, `quicksettings`
+  (`StatusBarManager.expandNotificationsPanel` / `expandSettingsPanel`, SystemUI holds
+  `EXPAND_STATUS_BAR`) and `back` (a BACK key injected as SystemUI's navigation bar does).
+  Several windows share the screen, so a back from a side edge goes to the window at that edge
+  (the nearest within 48 dp of the swipe's start): it is focused first when it is not, and the
+  key follows 250 ms later. Overview also with a pinch in on the wallpaper or the bar; a tap
+  on a window in the overview focuses it (the overview's click handler, unchanged).
+- **The mouse does the same.** The left button pressed without a modifier on the screen's
+  outermost 4 dp (where the pointer stops at the edge; a finger's 20 dp would take presses
+  inside the outer windows) and dragged inward runs the same edge gestures through the same
+  recognizer and binds: drag up from the bottom edge for the overview, inward from a side edge
+  for back, down from the top for the shade. A press anywhere else is the app's; a mouse
+  button bind with no modifier on the left button would take the press first.
 - **System gesture exclusion respected.** `HyprTouch` registers an
   `ISystemGestureExclusionListener` (as SystemUI's back gesture does): an edge swipe never
   starts in the region WindowManager grants the apps (limited to 200 dp per side edge), and
@@ -1146,6 +1157,19 @@ shell, touchscreen source, finger tool type).
 | init.lua `hl.bind("gesture:edge_bottom", hl.dsp.overview())`, `hl.bind("gesture:swipe_4_down", function() hl.notify(...) end)` | loaded at once (43 binds); the bottom edge opens the overview, four fingers down show the Lua notification |
 | `shell = { touch = false }` | the bottom edge swipe does nothing; restoring the file brings the gestures back |
 | Crashes | none (`logcat -b crash` empty) |
+
+Checked again on 2026-11-25 for the phone layout of the edges (test data, three windows:
+Settings, Files, Settings' Display page as a task of its own; `TouchInject mousedrag` presses
+the left button, which `input mouse swipe` does not):
+
+| Check | Result |
+|---|---|
+| Files focused, swipe in from the right edge over the Display window | `EDGE_RIGHT -> back`: Display is focused first, then gets the BACK (`Task root back pressed taskId=13`: a task's root activity is not finished by back, as with the BACK key) |
+| Settings on its Display page, Files focused, swipe in from the left edge | Settings is focused and goes back to its main page |
+| Swipe up from the bottom edge / three fingers up / three fingers left, then right | the overview / the app launcher / workspace `e+1`, then `e-1` |
+| Mouse: left button from x = 1 dragged 300 px right, Settings on a sub-page | `EDGE_LEFT -> back`, Settings back on its main page |
+| Mouse: from the bottom row up / from the top row down | the overview / the notification shade |
+| Mouse: drags starting 20 px from the left edge and in the middle of a window | the app's (a scroll and a click in Settings); `HyprTouch` logs nothing |
 
 Screenshots: `out/hypr-d6/` (`edge-topright.png`, `pinch-overview.png`, `menu.png`,
 `menu-float.png`, `menu-label.png`, `drag-snap.png`, `drag-swap.png`, `scroll-compare.png`, `lua-notify.png`).

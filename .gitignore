@@ -6,5 +6,6 @@ out/
 __pycache__/
 gki/
 gts7l-kernel/
+gts7l-kernel-*/
 gts7l-stock/
 gts7l-backup/

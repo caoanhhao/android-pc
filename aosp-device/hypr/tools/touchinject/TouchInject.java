@@ -27,6 +27,8 @@ import java.lang.reflect.Method;
  *   hover STEP...               mouse hover moves (focus follows the mouse): a step is `X,Y` (the
  *                               pointer jumps there), `X,Y~MS` (it glides there over MS, a move
  *                               every 8 ms) or `@MS` (wait). Example: hover 600,500 @400 1900,500~200
+ *   mousedrag X Y X2 Y2 MS      the left mouse button pressed at (X, Y), dragged to (X2, Y2) over
+ *                               MS, released (`input mouse swipe` presses no button)
  */
 public final class TouchInject {
     private static Object sInput;
@@ -73,6 +75,9 @@ public final class TouchInject {
                 break;
             case "hover":
                 hover(args);
+                break;
+            case "mousedrag":
+                mouseDrag(f(args[1]), f(args[2]), f(args[3]), f(args[4]), Long.parseLong(args[5]));
                 break;
             default:
                 throw new IllegalArgumentException("unknown command " + args[0]);
@@ -166,6 +171,38 @@ public final class TouchInject {
         coords[0].y = y;
         MotionEvent e = MotionEvent.obtain(now, now, MotionEvent.ACTION_HOVER_MOVE, 1, props,
                 coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        sInject.invoke(sInput, e, 0);
+        e.recycle();
+    }
+
+    private static void mouseDrag(float x, float y, float x2, float y2, long ms) throws Exception {
+        long down = SystemClock.uptimeMillis();
+        mouse(down, MotionEvent.ACTION_DOWN, x, y, MotionEvent.BUTTON_PRIMARY);
+        mouse(down, MotionEvent.ACTION_BUTTON_PRESS, x, y, MotionEvent.BUTTON_PRIMARY);
+        int steps = (int) Math.max(1, ms / 16);
+        for (int s = 1; s <= steps; s++) {
+            Thread.sleep(16);
+            mouse(down, MotionEvent.ACTION_MOVE, x + (x2 - x) * s / steps, y + (y2 - y) * s / steps,
+                    MotionEvent.BUTTON_PRIMARY);
+        }
+        mouse(down, MotionEvent.ACTION_BUTTON_RELEASE, x2, y2, 0);
+        mouse(down, MotionEvent.ACTION_UP, x2, y2, 0);
+    }
+
+    private static void mouse(long down, int action, float x, float y, int buttons) throws Exception {
+        MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
+        props[0].id = 0;
+        props[0].toolType = MotionEvent.TOOL_TYPE_MOUSE;
+        MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
+        coords[0].x = x;
+        coords[0].y = y;
+        coords[0].pressure = 1f;
+        MotionEvent e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, 1, props,
+                coords, 0, buttons, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE) {
+            // Hidden API, so through reflection.
+            MotionEvent.class.getMethod("setActionButton", int.class).invoke(e, MotionEvent.BUTTON_PRIMARY);
+        }
         sInject.invoke(sInput, e, 0);
         e.recycle();
     }

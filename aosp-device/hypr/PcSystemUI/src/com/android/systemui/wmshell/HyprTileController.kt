@@ -15,6 +15,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Rect
 import android.hardware.input.InputManager
+import android.hardware.input.InputManagerGlobal
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
@@ -23,6 +24,9 @@ import android.os.UserHandle
 import android.util.Log
 import android.view.Display.DEFAULT_DISPLAY
 import android.view.Display.INVALID_DISPLAY
+import android.view.InputDevice
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceControl
 import android.view.WindowManager.TRANSIT_CHANGE
@@ -1001,6 +1005,7 @@ class HyprTileController(
                 context.getSystemService(StatusBarManager::class.java)?.expandNotificationsPanel()
             "quicksettings" ->
                 context.getSystemService(StatusBarManager::class.java)?.expandSettingsPanel()
+            "back" -> back(dispatchTarget)
             "exec" -> exec(arg.trim())
             // SystemUI-side system actions (E9): clipboard, translate, screenshot, lock, users.
             in HyprSystemActions.NAMES -> return HyprSystemActions.dispatch(name, arg)
@@ -1025,6 +1030,32 @@ class HyprTileController(
      * Runs [name] on window [taskId] instead of the focused one (the touch window menu): the
      * dispatchers that act on "the focused window" take it. Main thread.
      */
+    /**
+     * Android's back, as a phone's edge swipe gives it: a BACK key to the focused window. With
+     * [target] (the window next to the swipe) not focused, it is focused first and the key
+     * follows once the focus moved.
+     */
+    private fun back(target: RunningTaskInfo?) {
+        if (target != null && !focusTransitionObserver.hasGlobalFocus(target)) {
+            focusWindow(target.taskId)
+            mainExecutor.executeDelayed({ injectBack(target.displayId) }, BACK_AFTER_FOCUS_MS)
+        } else {
+            injectBack(target?.displayId ?: focusedDisplayId())
+        }
+    }
+
+    private fun injectBack(displayId: Int) {
+        val now = SystemClock.uptimeMillis()
+        val im = InputManagerGlobal.getInstance()
+        for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            val ev = KeyEvent(now, now, action, KeyEvent.KEYCODE_BACK, 0, 0,
+                KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+                KeyEvent.FLAG_FROM_SYSTEM or KeyEvent.FLAG_VIRTUAL_HARD_KEY, InputDevice.SOURCE_KEYBOARD)
+            ev.displayId = displayId
+            im.injectInputEvent(ev, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC)
+        }
+    }
+
     fun dispatchOn(taskId: Int, name: String, arg: String = ""): Boolean {
         val task = taskOrganizer.getRunningTaskInfo(taskId) ?: return false
         dispatchTarget = task
@@ -2734,6 +2765,8 @@ class HyprTileController(
         const val FOCUS_SPECIAL_DELAY_MS = 300L
         /** Smallest floating window a mouse resize makes, unless the app asks for more. */
         const val MIN_SIZE = 200
+        /** How long a window takes to get the focus before a back for it is sent. */
+        const val BACK_AFTER_FOCUS_MS = 250L
 
         /**
          * The tiling configuration: [overrides] (string values under the property names without

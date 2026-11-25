@@ -34,15 +34,21 @@ object TouchGesture {
     fun key(name: String) = PREFIX + name
 }
 
-/** The default gesture binds: launcher, workspaces, notifications, quick settings, overview. */
+/**
+ * The default gesture binds, as phones use their edges: the bottom edge opens the overview,
+ * the side edges go back; three fingers sideways switch workspace, up open the app launcher;
+ * the top edge opens notifications (its right third quick settings); a pinch in the overview.
+ */
 fun defaultTouchBinds(): List<Bind> = listOf(
-    Bind(emptySet(), TouchGesture.key("EDGE_BOTTOM"), "launcher"),
-    Bind(emptySet(), TouchGesture.key("EDGE_LEFT"), "workspace", "e-1"),
-    Bind(emptySet(), TouchGesture.key("EDGE_RIGHT"), "workspace", "e+1"),
+    Bind(emptySet(), TouchGesture.key("EDGE_BOTTOM"), "overview"),
+    Bind(emptySet(), TouchGesture.key("EDGE_LEFT"), "back"),
+    Bind(emptySet(), TouchGesture.key("EDGE_RIGHT"), "back"),
     Bind(emptySet(), TouchGesture.key("EDGE_TOP"), "notifications"),
     Bind(emptySet(), TouchGesture.key("EDGE_TOP_RIGHT"), "quicksettings"),
     Bind(emptySet(), TouchGesture.key("PINCH_IN"), "overview"),
-    Bind(emptySet(), TouchGesture.key("SWIPE_3_UP"), "overview"),
+    Bind(emptySet(), TouchGesture.key("SWIPE_3_UP"), "launcher"),
+    Bind(emptySet(), TouchGesture.key("SWIPE_3_LEFT"), "workspace", "e+1"),
+    Bind(emptySet(), TouchGesture.key("SWIPE_3_RIGHT"), "workspace", "e-1"),
 )
 
 /**
