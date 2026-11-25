@@ -127,12 +127,34 @@ pub struct Primary {
     pub capture: Option<PcmInfo>,
 }
 
+/// PCM device numbers a board asks for, on the first card with analog PCMs (a SoC card
+/// whose microphone is on another front end than its speakers). `None`: the first one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Preferred {
+    pub playback: Option<u32>,
+    pub capture: Option<u32>,
+}
+
 impl Primary {
+    #[cfg(test)]
     pub fn select(pcms: &[PcmInfo]) -> Self {
-        let first = |wanted: fn(&PcmInfo) -> bool| {
-            pcms.iter().find(|p| p.kind == Kind::Analog && wanted(p)).cloned()
+        Self::select_preferred(pcms, Preferred::default())
+    }
+
+    /// [`Primary::select`], with the devices `preferred` names where the card has them.
+    pub fn select_preferred(pcms: &[PcmInfo], preferred: Preferred) -> Self {
+        let card = pcms.iter().find(|p| p.kind == Kind::Analog).map(|p| p.card);
+        let pick = |wanted: fn(&PcmInfo) -> bool, device: Option<u32>| {
+            let analog = || pcms.iter().filter(|p| p.kind == Kind::Analog && wanted(p));
+            device
+                .and_then(|device| analog().find(|p| Some(p.card) == card && p.device == device))
+                .or_else(|| analog().next())
+                .cloned()
         };
-        Self { playback: first(|p| p.playback), capture: first(|p| p.capture) }
+        Self {
+            playback: pick(|p| p.playback, preferred.playback),
+            capture: pick(|p| p.capture, preferred.capture),
+        }
     }
 }
 
@@ -275,6 +297,31 @@ mod tests {
         assert_eq!(playback.name, "ALC897 Analog");
         let capture = primary.capture.expect("analog capture");
         assert_eq!((capture.card, capture.device), (0, 0));
+    }
+
+    const SOC_CARDS: &str =
+        " 0 [S7             ]: sm8250 - Galaxy Tab S7+\n                      Galaxy Tab S7+\n";
+    const SOC_PCMS: &str = "00-00: MultiMedia1 (*) :  : playback 1 : capture 1\n00-01: MultiMedia2 (*) :  : capture 1\n00-02: MultiMedia3 (*) :  : playback 1\n";
+
+    #[test]
+    fn selects_the_preferred_soc_devices() {
+        let pcms = list(SOC_CARDS, SOC_PCMS);
+        let device = |p: &Option<PcmInfo>| p.as_ref().map(|p| (p.card, p.device));
+        let first = Primary::select(&pcms);
+        assert_eq!((device(&first.playback), device(&first.capture)), (Some((0, 0)), Some((0, 0))));
+        let preferred = Preferred { playback: None, capture: Some(1) };
+        let chosen = Primary::select_preferred(&pcms, preferred);
+        assert_eq!(
+            (device(&chosen.playback), device(&chosen.capture)),
+            (Some((0, 0)), Some((0, 1)))
+        );
+        // A device without that direction falls back to the first one.
+        let wrong = Preferred { playback: Some(1), capture: Some(2) };
+        let chosen = Primary::select_preferred(&pcms, wrong);
+        assert_eq!(
+            (device(&chosen.playback), device(&chosen.capture)),
+            (Some((0, 0)), Some((0, 0)))
+        );
     }
 
     #[test]

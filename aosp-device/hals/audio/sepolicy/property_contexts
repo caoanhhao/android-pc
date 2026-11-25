@@ -1,1 +1,3 @@
 persist.vendor.audio.hdmi    u:object_r:vendor_pc_audio_prop:s0 exact string
+ro.vendor.audio.pc.playback_device    u:object_r:vendor_pc_audio_prop:s0 exact int
+ro.vendor.audio.pc.capture_device     u:object_r:vendor_pc_audio_prop:s0 exact int

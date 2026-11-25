@@ -95,22 +95,23 @@ PRODUCT_PACKAGES += \
     com.android.hardware.keymint.rust_nonsecure \
     com.android.hardware.gatekeeper.nonsecure
 
-# Audio: AOSP's default AIDL audio and effects HALs (as on Cuttlefish) until a CS35L41/WCD
-# HAL exists. Without any audio HAL audioserver crashes in AudioFlinger::onFirstRef and
-# keeps restarting (S7 first boot).
-# The HAL creates its modules from /vendor/etc/audio_policy_configuration.xml, and audioserver
-# waits for every IModule its VINTF fragment declares (default, r_submix, bluetooth). The
-# vendor_1 makefile installs only the files the top file includes. Without the top file the
-# HAL registered no IModule and system_server's watchdog killed AudioService's start after
-# 66 s (S7 attempt 3); with frameworks/av's generic one (primary + r_submix) audioserver waited
-# for IModule/bluetooth (attempt 5). Cuttlefish's set has all three. Copied, not
+# Audio: android-pc's Rust HAL (hals/audio, in hals.list) serves IModule/default over the
+# sm8250 card (MultiMedia1 to the four CS35L41, VA macro mic); the mixer routes are in
+# audio_mixer_setup.conf (docs/gts7l-hal/audio.md). AOSP's default AIDL HAL keeps IConfig,
+# r_submix, bluetooth and the effects; it creates one module per <module> of
+# /vendor/etc/audio_policy_configuration.xml, so that file (hals/audio's) has no primary
+# module. audioserver waits for every IModule the APEX's VINTF fragment declares (default,
+# r_submix, bluetooth): without the policy file system_server's watchdog killed AudioService's
+# start (S7 attempt 3), without bluetooth audioserver waited forever (attempt 5). Copied, not
 # PRODUCT_PACKAGES: Cuttlefish's auto targets define modules with the same names, and the
 # generated vendor image left them out (attempt 4).
 PRODUCT_PACKAGES += com.android.hardware.audio
 PRODUCT_COPY_FILES += \
-    device/google/cuttlefish/shared/config/audio/policy/audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy_configuration.xml \
-    device/google/cuttlefish/shared/config/audio/policy/primary_audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/primary_audio_policy_configuration.xml \
-    frameworks/av/services/audiopolicy/config/bluetooth_with_le_audio_policy_configuration_7_0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/bluetooth_with_le_audio_policy_configuration_7_0.xml
+    $(PC_DEVICE_DIR)/hals/audio/audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/audio_policy_configuration.xml \
+    frameworks/av/services/audiopolicy/config/bluetooth_with_le_audio_policy_configuration_7_0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/bluetooth_with_le_audio_policy_configuration_7_0.xml \
+    $(GTS7L_DEVICE_DIR)/audio_mixer_setup.conf:$(TARGET_COPY_OUT_VENDOR)/etc/audio_mixer_setup.conf
+# The microphone is on MultiMedia2 (PCM 1), the speakers on MultiMedia1 (PCM 0).
+PRODUCT_VENDOR_PROPERTIES += ro.vendor.audio.pc.capture_device=1
 $(call inherit-product, frameworks/av/services/audiopolicy/audio_policy_config_vendor_1.mk)
 $(call inherit-product, hardware/interfaces/audio/aidl/default/audio_effects.mk)
 
