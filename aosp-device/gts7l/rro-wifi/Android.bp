@@ -1,0 +1,13 @@
+// Wi-Fi service settings of the Galaxy Tab S7 LTE (ath11k, WCN6750 family).
+
+package {
+    default_visibility: ["//visibility:private"],
+}
+
+runtime_resource_overlay {
+    name: "gts7l_overlay_wifi",
+    resource_dirs: ["res"],
+    soc_specific: true,
+    sdk_version: "current",
+    visibility: ["//visibility:public"],
+}

@@ -1304,6 +1304,37 @@ country. ath11k already runs the firmware's VN domain (self-managed: 2.4 GHz 1-1
 with it. `hal_pc_wifi.te` adds the two denials the efs MAC code hit: `search` on
 `mnt_vendor_file` and `SIOCGIFHWADDR` on its own UDP socket.
 
+Tablet hotspot (2026-11-27, builds 20261126.2334 to 20261127.0102). `cmd wifi start-softap
+NAME wpa2 PASS -b 2|5` (as root) and a host laptop joining it with `nmcli`:
+- 2.4 GHz worked from the start: channel 8, 20 MHz, 802.11n; DHCP from the tablet,
+  iperf3 70 Mbit/s host to tablet, 85 Mbit/s back.
+- 5 GHz failed with "Can not start softAp with band 5Ghz not supported": the Wi-Fi
+  service's `config_wifi5ghzSupport` defaults to false and gts7l had no overlay for it.
+  `rro-wifi/` (`gts7l_overlay_wifi`, target `com.android.wifi.resources`) sets it, plus
+  VHT and HE for the AP. With it: channel 153 (149-161 are the 5 GHz channels VN allows
+  an AP on without DFS), 802.11ax, 20 MHz while the station link sits on the host's
+  80 MHz channel 149 (40/80 MHz only without overlapping networks), iperf3 204 Mbit/s
+  host to tablet, 121 Mbit/s back. With no overlapping network it comes up at 80 MHz.
+
+Regulatory domain, still open: right after boot `iw reg get` shows phy0 on `US` (the
+board's default: 30 dBm on 2.4 GHz and 5170-5250 MHz) and it stays there, hotspot
+included, until Wi-Fi is turned off and on; then the framework's
+`setCountryCodeNative(VN)` goes through `driver_cmd` and phy0 switches to `VN`.
+At boot the framework skips it (its stored driver country is already VN and the client
+interface is never idle, since it auto-connects). The radio's actual power is 20 dBm
+(`iw dev wlan0 info`), within Vietnam's 2.4 GHz limit. Tried without fixing the boot case:
+- `CONFIG_CFG80211_CERTIFICATION_ONUS` + `CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS`
+  (gts7l.fragment). Needed: without them ath11k drops every user hint ("Country Setting
+  is not allowed"), so neither `driver_cmd` nor `iw reg set VN` did anything. With them
+  `iw reg set VN` and the framework's set work at runtime.
+- Kernel patch 0290: ath11k starts no 802.11d scan unless `ath11k.enable_11d=1`, so
+  nearby access points cannot pick the country. It did not change the boot case (no 11d
+  event and no regulatory change event appear after boot; the radio is US from the start).
+- `config_wifiStaDynamicCountryCodeUpdateSupported` (rro-wifi): no visible effect at boot.
+- `country=VN` in the supplicant config: no effect at boot either.
+Next step: an `CONFIG_ATH11K_DEBUG` kernel with `debug_mask` for REG/WMI to see the order
+of the firmware's default domain and the first user hint at boot.
+
 Open:
 - DHCP never reaching the AP after a forced join (once, after ~7 h uptime with suspend
   cycles; the tablet's TX after EAPOL looked stalled). If it comes back, before rebooting:
