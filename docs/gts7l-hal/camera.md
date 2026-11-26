@@ -259,6 +259,8 @@ so the `sysfs_leds` policy was not exercised.
 - Found and fixed: a still sent while the precapture sequence was running (the test app did
   not wait for it) left the sequence running, so the LED stayed lit after the photo until
   the session closed (up to 90 frames). The still now ends the sequence.
+  Checked on the tablet with the fixed HAL: the still came 200 ms into the sequence, the
+  LED went off as the JPEG arrived and the next frame reported FLASH_REQUIRED again.
 
 Quirks seen while swapping the HAL at run time (not with a full image):
 
