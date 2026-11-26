@@ -1,0 +1,16 @@
+diff --git a/src/com/android/settings/biometrics/fingerprint/UdfpsEnrollEnrollingView.java b/src/com/android/settings/biometrics/fingerprint/UdfpsEnrollEnrollingView.java
+index 931974e..f02c9c5 100644
+--- a/src/com/android/settings/biometrics/fingerprint/UdfpsEnrollEnrollingView.java
++++ b/src/com/android/settings/biometrics/fingerprint/UdfpsEnrollEnrollingView.java
+@@ -163,7 +163,10 @@ public class UdfpsEnrollEnrollingView extends GlifLayout {
+     }
+ 
+     void adjustUdfpsVieWithFooterBar() {
+-        final FrameLayout allContent = findViewById(R.id.suc_layout_status);
++        // suc_layout_status is a LinearLayout in some layouts (the landscape one on
++        // aosp_pc_x86_64): casting it to FrameLayout crashed enrollment. Only View methods
++        // are used here.
++        final View allContent = findViewById(R.id.suc_layout_status);
+         final ImageView udfpsProgressView = findViewById(
+                 R.id.udfps_enroll_animation_fp_progress_view);
+ 
