@@ -169,9 +169,10 @@ I servicemanager: ... Could not find android.hardware.camera.provider.ICameraPro
 The registration fails only because the running image's vendor manifest does not declare
 the instance yet; the full image has the HAL's VINTF fragment.
 
-## Not tested yet (needs the full image)
+## On the full image
 
-These need the next full build flashed:
+2026-11-26: on the full image the user took photos with the Camera app (user report).
+Not yet checked one by one:
 
 - `dumpsys media.camera` lists 3 cameras (`device@1.1/pc/0..2`), facing back/front/back.
 - A still through the framework (`am start -a android.media.action.IMAGE_CAPTURE` or the
