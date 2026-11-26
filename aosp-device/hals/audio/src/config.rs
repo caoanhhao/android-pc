@@ -259,20 +259,25 @@ impl Hardware {
             info!("found {pcm}");
         }
         let primary = cards::Primary::select_preferred(&pcms, preferred_devices());
+        let mut cards: Vec<u32> =
+            [&primary.playback, &primary.capture].into_iter().flatten().map(|p| p.card).collect();
+        cards.dedup();
+        // Before the probe: a SoC card's front ends (DPCM) refuse to open, with EINVAL, until
+        // the setup has routed them to a back end.
+        if !setup.is_empty() {
+            for &card in &cards {
+                ctl::apply_setup(card, &setup);
+            }
+        }
         let hardware = Self {
             output: Endpoint::probe(primary.playback.as_ref(), Direction::Playback),
             input: Endpoint::probe(primary.capture.as_ref(), Direction::Capture),
         };
-        let mut cards: Vec<u32> = [&hardware.output.pcm, &hardware.input.pcm]
-            .into_iter()
-            .flatten()
-            .map(|address| address.card)
-            .collect();
-        cards.dedup();
         for card in cards {
-            ctl::unmute(card);
-            if !setup.is_empty() {
-                ctl::apply_setup(card, &setup);
+            if hardware.output.pcm.as_ref().is_some_and(|a| a.card == card)
+                || hardware.input.pcm.as_ref().is_some_and(|a| a.card == card)
+            {
+                ctl::unmute(card);
             }
         }
         hardware
