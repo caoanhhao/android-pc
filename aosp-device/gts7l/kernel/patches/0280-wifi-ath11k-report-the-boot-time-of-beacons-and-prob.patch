@@ -1,0 +1,41 @@
+From be786fd47fd2875faa530f545797a847d029d161 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao2@gmail.com>
+Date: Thu, 26 Nov 2026 09:21:01 +0700
+Subject: [PATCH] wifi: ath11k: report the boot time of beacons and probe
+ responses
+
+ath11k never sets boottime_ns in the rx status of the management
+frames it passes up, so cfg80211 keeps no ts_boottime for the BSSes it
+finds and nl80211 sends no NL80211_BSS_LAST_SEEN_BOOTTIME. ath10k,
+wcn36xx, iwlwifi, mt76 and rtw89 all stamp beacons and probe responses
+with ktime_get_boottime_ns(); do the same.
+
+Without the attribute, Android's Wi-Fi scanner falls back to the BSS's
+TSF, which is the AP's own clock, and drops every result older than the
+start of the scan. Once an AP restarts, its TSF stays below the
+tablet's uptime, so its beacons never count as fresh and the framework
+never joins it again on its own until the tablet reboots.
+
+caoanhhao used AI to code
+---
+ drivers/net/wireless/ath/ath11k/wmi.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/net/wireless/ath/ath11k/wmi.c b/drivers/net/wireless/ath/ath11k/wmi.c
+index bbca275a8..8b994eb88 100644
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -7717,6 +7717,10 @@ static void ath11k_mgmt_rx_event(struct ath11k_base *ab, struct sk_buff *skb)
+ 	if (ieee80211_is_beacon(hdr->frame_control))
+ 		ath11k_mac_handle_beacon(ar, skb);
+ 
++	if (ieee80211_is_beacon(hdr->frame_control) ||
++	    ieee80211_is_probe_resp(hdr->frame_control))
++		status->boottime_ns = ktime_get_boottime_ns();
++
+ 	ath11k_dbg(ab, ATH11K_DBG_MGMT,
+ 		   "event mgmt rx skb %p len %d ftype %02x stype %02x\n",
+ 		   skb, skb->len,
+-- 
+2.56.1
+

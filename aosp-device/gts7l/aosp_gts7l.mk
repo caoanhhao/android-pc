@@ -194,6 +194,10 @@ PRODUCT_PACKAGES += com.android.hardware.wpa_supplicant
 PRODUCT_VENDOR_PROPERTIES += \
     wifi.interface=wlan0 \
     wifi.direct.interface=p2p-dev-wlan0
+# The QCA6390 has no MAC address in OTP, so ath11k makes one up at every boot; the HAL
+# gives wlan0 the tablet's own address from efs instead (docs/gts7l.md §23).
+PRODUCT_VENDOR_PROPERTIES += \
+    ro.vendor.wifi.factory_mac_file=/mnt/vendor/efs/wifi/.mac.info
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.wifi.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.wifi.xml
 
