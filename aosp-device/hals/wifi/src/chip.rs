@@ -39,7 +39,7 @@ use pchal::Callbacks;
 
 use crate::concurrency::{self, Combination, Counts, Kind};
 use crate::iface::{ApIface, P2pIface, StaIface, Validity};
-use crate::netdev::{self, Netdev};
+use crate::netdev::{self, format_mac, MacAddress, Netdev};
 use crate::nl80211::{Band, Channel, Iftype, Nl80211};
 use crate::props;
 use crate::status::{error, invalid_args, not_supported, unknown};
@@ -52,6 +52,9 @@ const MODE_ID: i32 = 0;
 const MAX_WLAN_IFACES: u32 = 5;
 /// Set to the first STA (or AP) interface, as AOSP's default HAL does.
 const ACTIVE_IFACE_PROPERTY: &str = "wifi.active.interface";
+/// A file holding the primary interface's factory MAC address (`aa:bb:cc:dd:ee:ff`), for a
+/// chip without one of its own: the Galaxy Tab S7 sets `/mnt/vendor/efs/wifi/.mac.info`.
+const FACTORY_MAC_FILE_PROPERTY: &str = "ro.vendor.wifi.factory_mac_file";
 
 /// The name of the `index`-th WLAN interface: `wifi.interface` / `wifi.concurrent.interface`
 /// for the first two, then `wifi.interface.<index>`, else `wlan<index>`.
@@ -64,6 +67,39 @@ fn wlan_name(index: u32) -> String {
     alias
         .or_else(|| props::read(&format!("wifi.interface.{index}")))
         .unwrap_or_else(|| format!("wlan{index}"))
+}
+
+/// The factory MAC address in the file `FACTORY_MAC_FILE_PROPERTY` names, if any; a file
+/// that cannot be read or holds no valid address is logged and ignored.
+fn factory_mac() -> Option<MacAddress> {
+    let path = props::read(FACTORY_MAC_FILE_PROPERTY)?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| warn!("factory MAC address: {path}: {err}"))
+        .ok()?;
+    let mac = netdev::parse_mac(&text);
+    if mac.is_none() {
+        warn!("factory MAC address: {path}: no valid address");
+    }
+    mac
+}
+
+/// Gives interface `name` its factory address `mac` if it has another one. The driver of
+/// a chip without an address makes up a new one at every boot, which the network then
+/// sees as a new device each time (and the framework connects with it while connected MAC
+/// randomization is off).
+fn apply_factory_mac(netdev: &Netdev, name: &str, mac: MacAddress) {
+    match netdev.current_mac(name) {
+        Ok(current) if current == mac => {}
+        Ok(current) => match netdev.set_mac(name, mac) {
+            Ok(()) => info!(
+                "{name}: factory MAC address {} (was {})",
+                format_mac(mac),
+                format_mac(current)
+            ),
+            Err(err) => warn!("{name}: set factory MAC address: {err}"),
+        },
+        Err(err) => warn!("{name}: MAC address: {err}"),
+    }
 }
 
 /// Asks the kernel for the regulatory rules of country `code`.
@@ -140,10 +176,15 @@ impl ChipState {
             return Err(io::Error::other(format!("{}: no STA, AP or P2P support", wiphy.name)));
         }
         info!("{primary} on {}: combinations {combinations:?}", wiphy.name);
+        let mut netdev = Netdev::open()?;
+        if let Some(mac) = factory_mac() {
+            apply_factory_mac(&netdev, &primary, mac);
+            netdev = netdev.with_factory_mac(&primary, mac);
+        }
         Ok(Self {
             valid: true,
             nl80211: Arc::new(Mutex::new(nl80211)),
-            netdev: Arc::new(Netdev::open()?),
+            netdev: Arc::new(netdev),
             primary,
             wiphy: wiphy.index,
             combinations,

@@ -1237,12 +1237,47 @@ mode manager on wlan0 and starts wpa_supplicant from the APEX, and `cmd wifi sta
 `list-scan-results` list the 2.4 and 5 GHz networks around. No SELinux denials from the
 Wi-Fi stack (permissive boot, `dmesg`).
 
+MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
+`00:03:7f:xx:xx:xx` address at every boot. Connected MAC randomization is off
+(`config_wifi_connected_mac_randomization_supported` false), so the framework connects with
+that address and the AP sees a new device after each boot (new DHCP lease). The tablet's own
+address is in `efs:/wifi/.mac.info` (`.mac.cob` holds the same one). `aosp_gts7l.mk` sets
+`ro.vendor.wifi.factory_mac_file` to it; the HAL gives wlan0 that address when it starts
+(`IWifi::start`) and reports it as the factory MAC (`getFactoryMacAddress`), as the
+Bluetooth HAL does with the efs Bluetooth address (§20). `sepolicy/hal_pc_wifi.te` lets it
+read efs and the property.
+
+No rejoin after the AP restarts (2026-11-26, build 0021): when the host's hotspot went down
+and came back, the tablet never joined it again on its own until it rebooted. The scanner
+saw the AP, but `WificondScannerImpl` dropped it ("Filtering out 1 scan results") and network
+selection found no candidate. Android 17's `Nl80211Utils` takes a result's timestamp from
+`NL80211_BSS_LAST_SEEN_BOOTTIME` and, without it, from the BSS's TSF, and the scanner keeps
+only results newer than the scan's start (boot time). ath11k never set `boottime_ns` on the
+frames it passes up, so cfg80211 had no boot time for any BSS (`iw scan dump` printed no
+`[boottime]` line) and the TSF counted: the AP's own clock, which restarts with the AP and
+then stays below the tablet's uptime forever. Kernel patch 0280 stamps beacons and probe
+responses with `ktime_get_boottime_ns()`, as ath10k, iwlwifi, mt76 and rtw89 do. Checked
+on the running tablet with the patched `ath11k.ko` loaded by hand: `[boottime]` present,
+and after a hotspot restart the tablet rejoined 25 s after the AP came back, by itself.
+The same bug blocked auto-join after a Wi-Fi off/on whenever the tablet had been up longer
+than the AP.
+
+The ~8 s from the 4-way handshake to the DHCP lease after an AP restart is not the tablet:
+dnsmasq (create_ap's, leases in a new temp directory each start) stays silent on the
+INIT-REBOOT DHCPREQUESTs for an address it has no lease for, IpClient falls back to
+DHCPDISCOVER after ~5 s, and dnsmasq pings the address for ~3 s before offering it
+(`tcpdump` on the tablet: its ARP "who-has" for the offered address). The tablet received
+broadcast traffic all along. A join where DHCP never reached the AP at all (AP rx counter
+stuck at 10 for 18 s, seen once after ~7 h with suspend cycles) did not reproduce; see the
+open items.
+
 Open:
-- MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
-  `00:03:7f:xx:xx:xx` address that changes at every boot (Android's factory MAC with it;
-  connections use randomized MACs anyway). The tablet's own address is in
-  `efs:/wifi/.mac.info`; set it on wlan0 before the HAL starts, as the Bluetooth HAL does
-  with the efs Bluetooth address (§20).
+- DHCP never reaching the AP after a forced join (once, after ~7 h uptime with suspend
+  cycles; the tablet's TX after EAPOL looked stalled). If it comes back, before rebooting:
+  `tc -s qdisc show dev wlan0`, `iw dev wlan0 station dump` (tx packets/failed),
+  `cat /sys/class/net/wlan0/statistics/tx_*`, `dmesg | grep -i ath11k`, and `tcpdump -i
+  wlan0` on the tablet during a forced join, to tell a stopped netdev queue (EAPOL goes
+  around the qdisc through the nl80211 control port) from frames lost on the air.
 - Connecting to a WPA2 network (needs a password from the user), then SoftAP/hotspot through
   hostapd and P2P (`wifi.direct` feature, `p2p_supplicant.conf`).
 - The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
