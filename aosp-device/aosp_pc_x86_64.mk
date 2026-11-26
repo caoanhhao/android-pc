@@ -6,8 +6,13 @@ PC_DEVICE_DIR := device/android-pc/pc_x86_64
 # hals/<name>/hal-pc.mk, where present, switches off the Cuttlefish HAL it replaces
 # (LOCAL_ENABLE_* ?= switches in device/google/cuttlefish) or adds PC-only files. The HAL
 # makefiles are read before the Cuttlefish product. Other products pick their own list
-# (gts7l/hals.list).
-$(foreach hal_dir,$(sort $(dir $(wildcard $(PC_DEVICE_DIR)/hals/*/hal.mk))),\
+# (gts7l/hals.list). PC_SKIP_HALS are for other products only: usb (gts7l's IUsb/IUsbGadget)
+# would declare IUsb/default a second time next to Cuttlefish's com.android.hardware.usb APEX,
+# and that VINTF conflict stops keystore2 and gatekeeper from registering (Waydroid boot loop,
+# 2026-11-26).
+PC_SKIP_HALS := usb
+$(foreach hal_dir,$(sort $(filter-out $(foreach h,$(PC_SKIP_HALS),%/hals/$(h)/),\
+        $(dir $(wildcard $(PC_DEVICE_DIR)/hals/*/hal.mk)))),\
     $(eval include $(hal_dir)hal.mk)\
     $(if $(wildcard $(hal_dir)hal-pc.mk),$(eval include $(hal_dir)hal-pc.mk)))
 
