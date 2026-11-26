@@ -3,3 +3,8 @@
 allow hal_pc_wifi vendor_efs_file:dir search;
 allow hal_pc_wifi vendor_efs_file:file r_file_perms;
 get_prop(hal_pc_wifi, vendor_default_prop)
+# Reaching efs under /mnt/vendor.
+allow hal_pc_wifi mnt_vendor_file:dir search;
+# SIOCGIFHWADDR on its own socket: reads wlan0's address before setting the efs one
+# (hal_wifi grants the ioctl permission, but its xperm list has only the setters).
+allowxperm hal_pc_wifi self:udp_socket ioctl SIOCGIFHWADDR;

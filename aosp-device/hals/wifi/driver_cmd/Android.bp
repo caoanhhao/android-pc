@@ -1,0 +1,21 @@
+package {
+    default_visibility: ["//visibility:public"],
+}
+
+// wpa_supplicant's private driver command library (BOARD_WPA_SUPPLICANT_PRIVATE_LIB), linked
+// into the wpa_supplicant of the com.android.hardware.wpa_supplicant APEX. The wpa_supplicant
+// cflags keep the nl80211 driver structs laid out as in wpa_supplicant itself.
+cc_library_static {
+    name: "lib_driver_cmd_pc",
+    srcs: ["driver_cmd_nl80211.c"],
+    defaults: ["wpa_supplicant_cflags_default"],
+    cflags: ["-Wno-unused-parameter"],
+    header_libs: ["wpa_supplicant_headers"],
+    shared_libs: [
+        "libc",
+        "libcutils",
+        "liblog",
+        "libnl",
+    ],
+    soc_specific: true,
+}
