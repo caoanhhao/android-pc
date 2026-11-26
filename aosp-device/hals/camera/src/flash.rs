@@ -174,8 +174,13 @@ impl FlashControl {
         let lit = fire || torch || armed || self.precapture.is_some();
         let settle = fire && !armed;
         if fire {
-            // The still capture uses up the precapture sequence.
+            // The still capture uses up the precapture sequence, also one still running
+            // (the client did not wait for it): the capture settles under the LED itself.
+            // Left running, the sequence would arm the LED for ARMED_FRAMES after the photo.
             self.armed = None;
+            if self.precapture.take().is_some() {
+                ae_state = CONTROL_AE_STATE_CONVERGED;
+            }
         }
         if ae_state == CONTROL_AE_STATE_CONVERGED && wants_flash && !armed && !fire {
             ae_state = CONTROL_AE_STATE_FLASH_REQUIRED;
@@ -257,6 +262,22 @@ mod tests {
         assert!(frame.lit && !frame.settle);
         assert_eq!(frame.flash_state, FLASH_STATE_FIRED);
         assert!(!flash.plan(&preview, BRIGHT).lit);
+    }
+
+    #[test]
+    fn still_during_precapture_ends_it() {
+        let mut flash = FlashControl::default();
+        let preview = settings(CONTROL_AE_MODE_ON_ALWAYS_FLASH, 0, PREVIEW, 0);
+        let start = settings(CONTROL_AE_MODE_ON_ALWAYS_FLASH, 0, PREVIEW, CONTROL_AE_PRECAPTURE_TRIGGER_START);
+        assert!(flash.plan(&start, BRIGHT).lit);
+        assert_eq!(flash.plan(&preview, BRIGHT).ae_state, CONTROL_AE_STATE_PRECAPTURE);
+        // The still comes before the sequence has settled: it settles under the LED itself.
+        let frame = flash.plan(&settings(CONTROL_AE_MODE_ON_ALWAYS_FLASH, 0, STILL, 0), BRIGHT);
+        assert!(frame.lit && frame.settle);
+        assert_eq!(frame.ae_state, CONTROL_AE_STATE_CONVERGED);
+        let frame = flash.plan(&preview, BRIGHT);
+        assert!(!frame.lit, "the LED goes off right after the still capture");
+        assert_eq!(frame.ae_state, CONTROL_AE_STATE_FLASH_REQUIRED);
     }
 
     #[test]

@@ -187,8 +187,8 @@ until tested") from the gts7xl-mainline import, and `leds-qcom-flash`/`led-class
 built as modules; they were just never loaded (the node is in the running DT,
 `/sys/bus/spmi/devices/0-05/c440000.spmi:pmic@5:led-controller@d300`, without a driver).
 `kernel/modules.bp` now loads both. No kernel rebuild. Torch brightness is
-`/sys/class/leds/white:flash/brightness` (0..`max_brightness`, 10 mA steps over both
-channels: 10 levels at 100 mA).
+`/sys/class/leds/white:flash/brightness` (0..`max_brightness`, which is 255:
+`leds-qcom-flash` scales the 255 levels to the DT's torch current, 100 mA over both channels).
 
 **Device.** `ueventd.gts7l.rc`: `brightness` of `/sys/class/leds/*:flash` 0664
 system:camera. `genfs_contexts` labels the LED class directory under the PMIC node
@@ -212,7 +212,9 @@ system:camera. `genfs_contexts` labels the LED class directory under the PMIC no
   only ever used at torch current: a precapture trigger lights it and reports
   `AE_STATE_PRECAPTURE` until the software AE has settled under it (10-30 frames), and the
   LED stays lit for the still capture that follows (at most 90 frames). A flash capture
-  without a precapture sequence waits for the exposure under the LED itself. A real strobe
+  without a precapture sequence waits for the exposure under the LED itself; so does one
+  sent while the sequence still runs (the client did not wait for it), which ends the
+  sequence, so the LED goes off right after the photo. A real strobe
   (500 mA for 400 ms) would need pre-flash metering scaled to the strobe current, which the
   software AE cannot do in time. `FLASH_STATE` is READY/FIRED on camera 0, UNAVAILABLE
   elsewhere; AUTO_FLASH reports `AE_STATE_FLASH_REQUIRED` in dark scenes.
@@ -228,7 +230,48 @@ Host checks: `libpccamera_test` covers the flash state machine (torch, auto flas
 without precapture, forced flash, cancel and timeout), finding the LED in a fake
 `/sys/class/leds`, the new characteristics/templates and the AF states.
 
-Device checks after the integrated build: see "Cần bạn tự kiểm tra" below (flash part).
+### Checked on the tablet (2026-11-26)
+
+On build `eng.caoanh.20261126.0021` (no flash yet) with the flash parts applied by hand: the
+two modules `insmod`ed, `brightness` chown'd system:camera 0664, the HAL built from
+1fa547c bind-mounted over `/vendor/bin/hw/android.hardware.camera.provider-service.pc`,
+then the provider, cameraserver and SystemUI restarted. SELinux is permissive on that build,
+so the `sysfs_leds` policy was not exercised.
+
+- `white:flash` appears, `max_brightness` 255; the HAL logs `flash LED white:flash (255
+  torch levels)`. `dumpsys media.camera`: camera 0 `Has a flash unit: true`,
+  `flash.info.available` TRUE, strength max/default 255, `aeAvailableModes` [1 2 3];
+  cameras 1 and 2 FALSE.
+- Torch through `CameraManager` (a small Camera2 test app): `setTorchMode` on/off sets
+  `brightness` 255/0 with `onTorchModeChanged`; `turnOnTorchWithStrengthLevel(40)` sets 40.
+  The Quick Settings flashlight tile turns it on and off (255/0).
+- Captures of camera 0 (preview + JPEG at 4128x3096, `brightness` sampled every 50 ms):
+
+  | Request | LED | Result | JPEG mean luma |
+  |---|---|---|---|
+  | AE ON, flash OFF | never | FLASH_STATE READY | 39 |
+  | AE ON_ALWAYS_FLASH + precapture | 255 from the trigger to the still | FIRED | 81 |
+  | AE ON_AUTO_FLASH (dim room) + precapture | same; FLASH_REQUIRED before | FIRED | 81 |
+  | FLASH_MODE_SINGLE | 255 for the still only | FIRED, flash mode SINGLE | 80 |
+  | FLASH_MODE_TORCH (repeating) | 255 all along | FIRED | 80 |
+
+  The photo is twice as bright under the LED, so it really lights the scene.
+- Found and fixed: a still sent while the precapture sequence was running (the test app did
+  not wait for it) left the sequence running, so the LED stayed lit after the photo until
+  the session closed (up to 90 frames). The still now ends the sequence.
+
+Quirks seen while swapping the HAL at run time (not with a full image):
+
+- cameraserver caches which cameras have a flash (`CameraFlashlight::findFlashUnits`) once
+  per process, so `setTorchMode` failed with "does not have a flash unit" until cameraserver
+  restarted.
+- SystemUI drops the flashlight tile from `sysui_qs_tiles` when it starts on a device
+  without flash, and writes its own list back over `settings put`. A tablet that booted the
+  old image (with its data kept) therefore has no flashlight tile after the update: add it
+  back in Quick Settings, Edit (it was added back this way on R52R504WFTK).
+- At start the framework turns the torch off on every flash camera before it lists them, so
+  cameraserver logs "says an unknown camera ... now has torch status 1. Curious." once;
+  harmless.
 
 ## Not tested yet (needs the full image)
 
@@ -248,8 +291,8 @@ These need the next full build flashed:
 - Longer exposures in the dark: lengthen VBLANK when the FPS range allows (now capped at the
   mode's frame time, ~1/30 s).
 - AF: touch regions; AF on the binned preview; tune the continuous re-sweep on the tablet.
-- Flash: raise the DT currents toward stock (torch 2x300 mA, flash 2x1000 mA) once the LED
-  is checked on the tablet; a real strobe for stills with pre-flash metering.
+- Flash: raise the DT currents toward stock (torch 2x300 mA, flash 2x1000 mA; the LED works
+  at 100 mA); a real strobe for stills with pre-flash metering.
 - GPU ISP (the CPU ISP limits preview to ~20-25 fps at the largest size).
 - `LIMITED` hardware level: manual sensor controls, exposure/sensitivity in results.
 - The second front module (`cam-sensor@12`) has no driver; identify it if a tablet has it.
@@ -266,7 +309,7 @@ After the main session flashes the full image:
 3. If the preview stays black: `adb logcat -s android.hardware.camera.provider-service.pc`
    and `adb shell ls -l /dev/media0 /dev/video0`.
 4. Flash (branch `claude/gts7l-camera-flash-9761ab`): `adb shell ls -lZ /sys/class/leds/`
-   shows `white:flash` (`sysfs_leds`), `cat .../white:flash/max_brightness` is 10. The Quick
+   shows `white:flash` (`sysfs_leds`), `cat .../white:flash/max_brightness` is 255. The Quick
    Settings flashlight tile lights the rear LED and turns it off; with the torch on, opening
    the Camera app turns it off. In the Camera app, flash "on" lights the LED briefly before
    the photo and the photo is lit; flash "auto" in a dark room does the same, in a bright
