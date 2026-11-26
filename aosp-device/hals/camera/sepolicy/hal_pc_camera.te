@@ -12,3 +12,8 @@ allow hal_pc_camera gpu_device:dir { open read search };
 allow hal_pc_camera gpu_device:chr_file { getattr ioctl map open read write };
 allow hal_pc_camera graphics_device:chr_file getattr;
 allow hal_pc_camera sysfs_gpu:file { getattr open read };
+
+# A camera's flash LED (/sys/class/leds/*:flash, labelled sysfs_leds by the device's
+# genfs_contexts): torch and flash captures.
+r_dir_file(hal_pc_camera, sysfs_leds)
+allow hal_pc_camera sysfs_leds:file w_file_perms;

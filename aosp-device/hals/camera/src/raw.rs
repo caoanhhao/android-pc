@@ -35,6 +35,14 @@ const AF_SETTLE_FRAMES: u32 = 2;
 const AF_FIRST_FRAME: u32 = 20;
 /// Positions of the coarse focus sweep, over the whole lens range.
 const AF_COARSE_STEPS: i32 = 10;
+/// Continuous focus scans again when sharpness stays below this share of what it was
+/// when the lens settled...
+const AF_RESCAN_SHARPNESS: f32 = 0.6;
+/// ...for this many frames in a row (a moving camera or subject blurs single frames).
+const AF_RESCAN_FRAMES: u32 = 15;
+/// Analogue gain (times unity) at the longest exposure from which a scene counts as dark
+/// enough for auto flash.
+const DARK_GAIN: i32 = 4;
 
 /// Where a camera points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -312,6 +320,20 @@ impl RawPipeline {
         self.af.as_ref().is_some_and(AutoFocus::scanning)
     }
 
+    /// Lets the lens scan again on its own when the image blurs (continuous auto focus),
+    /// or keeps it where it is.
+    pub fn set_continuous_focus(&mut self, continuous: bool) {
+        if let Some(af) = &mut self.af {
+            af.continuous = continuous;
+        }
+    }
+
+    /// Whether the scene needs the longest exposure and high gain: auto flash fires.
+    pub fn dark(&self) -> bool {
+        let (exposure, limits) = (self.ae.exposure(), self.ae.limits());
+        exposure.lines >= limits.max_lines && exposure.gain >= limits.min_gain.max(1) * DARK_GAIN
+    }
+
     /// The size of the processed frames.
     pub fn output_size(&self) -> Size {
         self.layout.output_size()
@@ -398,6 +420,12 @@ struct AutoFocus {
     fine: bool,
     /// Frames to skip before the next measurement.
     wait: u32,
+    /// Scan again when the image blurs.
+    continuous: bool,
+    /// Sharpness at the chosen position once the lens settled there.
+    reference: Option<f32>,
+    /// Frames in a row well below `reference`.
+    blurred: u32,
 }
 
 impl AutoFocus {
@@ -405,7 +433,17 @@ impl AutoFocus {
     fn open(path: &Path) -> io::Result<Option<Self>> {
         let lens = Subdev::open(path)?;
         let Some(range) = lens.control_range(CID_FOCUS_ABSOLUTE)? else { return Ok(None) };
-        let mut af = Self { lens, range, pending: Vec::new(), measured: Vec::new(), fine: false, wait: 0 };
+        let mut af = Self {
+            lens,
+            range,
+            pending: Vec::new(),
+            measured: Vec::new(),
+            fine: false,
+            wait: 0,
+            continuous: false,
+            reference: None,
+            blurred: 0,
+        };
         af.start();
         Ok(Some(af))
     }
@@ -419,6 +457,8 @@ impl AutoFocus {
         self.pending = (0..=AF_COARSE_STEPS).map(|step| self.range.min + span * step / AF_COARSE_STEPS).collect();
         self.measured.clear();
         self.fine = false;
+        self.reference = None;
+        self.blurred = 0;
         self.move_to(self.pending[0]);
     }
 
@@ -430,11 +470,12 @@ impl AutoFocus {
     }
 
     fn update(&mut self, stats: &Stats) {
-        if self.pending.is_empty() {
-            return;
-        }
         if self.wait > 0 {
             self.wait -= 1;
+            return;
+        }
+        if self.pending.is_empty() {
+            self.watch(stats.sharpness);
             return;
         }
         let position = self.pending.remove(0);
@@ -457,6 +498,24 @@ impl AutoFocus {
             }
         }
         self.move_to(self.pending[0]);
+    }
+
+    /// After a sweep: remembers the sharpness at the chosen position and, in continuous
+    /// mode, starts a new sweep once the image stays blurred.
+    fn watch(&mut self, sharpness: f32) {
+        let Some(reference) = self.reference else {
+            self.reference = Some(sharpness);
+            return;
+        };
+        if !self.continuous || sharpness >= reference * AF_RESCAN_SHARPNESS {
+            self.blurred = 0;
+            return;
+        }
+        self.blurred += 1;
+        if self.blurred >= AF_RESCAN_FRAMES {
+            log::info!("focus: sharpness {sharpness:.4} down from {reference:.4}, scanning again");
+            self.start();
+        }
     }
 
     fn best(&self) -> i32 {

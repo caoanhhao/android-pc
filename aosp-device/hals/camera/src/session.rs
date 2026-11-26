@@ -3,7 +3,8 @@
 //! Binder calls validate requests, import new buffers and queue the requests. One worker
 //! thread per session owns the V4L2 stream: for each request it takes the next frame,
 //! converts it to YUV 4:2:0 once, fills every output buffer of the request from it, and
-//! sends the shutter notification and the capture result.
+//! sends the shutter notification and the capture result. On a camera with a flash LED it
+//! also lights the LED for the frames that ask for it (torch, precapture, flash captures).
 
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsFd, OwnedFd};
@@ -11,7 +12,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use android_hardware_camera_common::aidl::android::hardware::camera::common::Status::Status;
+use android_hardware_camera_common::aidl::android::hardware::camera::common::{
+    Status::Status, TorchModeStatus::TorchModeStatus,
+};
 use android_hardware_camera_device::aidl::android::hardware::camera::device::{
     BufferCache::BufferCache, BufferStatus::BufferStatus, CameraBlobId::CameraBlobId,
     CameraMetadata::CameraMetadata, CameraOfflineSessionInfo::CameraOfflineSessionInfo,
@@ -33,6 +36,7 @@ use android_hardware_graphics_common::aidl::android::hardware::graphics::common:
 };
 use binder::{Interface, ParcelFileDescriptor, Strong};
 use log::{error, info, warn};
+use pccamera::flash::{FlashControl, FlashFrame, Metering, MAX_LIT_FRAMES, MIN_LIT_FRAMES};
 use pccamera::image::{Size, Yuv420};
 use pccamera::jpeg;
 use pccamera::metadata::Metadata;
@@ -41,13 +45,12 @@ use pccamera::sensor::{
     MAX_STALL_STREAMS, PIPELINE_DEPTH,
 };
 use pccamera::raw::RawPipeline;
-use pccamera::tags::{
-    CONTROL_AF_STATE_ACTIVE_SCAN, CONTROL_AF_STATE_FOCUSED_LOCKED, CONTROL_AF_STATE_INACTIVE,
-};
+use pccamera::tags::{CONTROL_AE_STATE, FLASH_STATE};
 use pccamera::v4l2::{self, FourCc, Interval, Mode};
 
 use crate::camera::Camera;
 use crate::gralloc::Buffer;
+use crate::provider::ProviderCallback;
 use crate::service_error;
 
 /// How long one wait for a frame may take before trying again.
@@ -111,6 +114,8 @@ struct State {
 struct Shared {
     camera: Arc<Camera>,
     callback: Strong<dyn ICameraDeviceCallback>,
+    /// For the torch status once the session closes.
+    provider: ProviderCallback,
     state: Mutex<State>,
     /// Signalled when the worker has something to do.
     work: Condvar,
@@ -142,6 +147,7 @@ impl Session {
     pub fn open(
         camera: Arc<Camera>,
         callback: Strong<dyn ICameraDeviceCallback>,
+        provider: ProviderCallback,
     ) -> binder::Result<Self> {
         let device = v4l2::Device::open(camera.path()).map_err(|err| {
             error!("{}: {err}", camera.path().display());
@@ -150,6 +156,7 @@ impl Session {
         let shared = Arc::new(Shared {
             camera,
             callback,
+            provider,
             state: Mutex::default(),
             work: Condvar::new(),
             done: Condvar::new(),
@@ -308,6 +315,10 @@ impl Session {
         self.shared.lock().buffers.clear();
         self.shared.camera.end_session();
         info!("{}: session closed", self.shared.camera.id());
+        if self.shared.camera.flash().is_some() {
+            let name = self.shared.camera.device_name();
+            self.shared.provider.torch_status(&name, TorchModeStatus::AVAILABLE_OFF);
+        }
     }
 }
 
@@ -501,6 +512,10 @@ struct Worker {
     raw: Option<RawPipeline>,
     /// Whether an AF trigger "locked" focus (reported in results until cancelled).
     af_locked: bool,
+    /// The flash state machine, on a camera with a flash LED.
+    flash: Option<FlashControl>,
+    /// Whether the flash LED is lit.
+    lit: bool,
 }
 
 /// Why a request produced no frame.
@@ -513,10 +528,48 @@ enum CaptureFailure {
 
 impl Worker {
     fn new(shared: Arc<Shared>, device: v4l2::Device) -> Self {
-        Self { shared, device, stream: None, raw: None, af_locked: false }
+        let flash = shared.camera.flash().map(|_| FlashControl::default());
+        Self { shared, device, stream: None, raw: None, af_locked: false, flash, lit: false }
     }
 
     fn run(mut self) {
+        self.serve();
+        self.light(false);
+    }
+
+    /// Lights the flash LED (at full torch brightness) or turns it off.
+    fn light(&mut self, lit: bool) {
+        let Some(flash) = self.shared.camera.flash() else { return };
+        if lit == self.lit {
+            return;
+        }
+        let led = flash.led();
+        match led.set(if lit { led.levels() } else { 0 }) {
+            Ok(()) => self.lit = lit,
+            Err(err) => warn!("{}: {err}", led.name()),
+        }
+    }
+
+    /// What auto exposure knows from the frames so far.
+    fn metering(&self) -> Metering {
+        self.raw.as_ref().map_or(Metering { converged: true, dark: false }, |pipeline| Metering {
+            converged: pipeline.converged(),
+            dark: pipeline.dark(),
+        })
+    }
+
+    /// Takes frames under the LED until the exposure has settled (or the wait is over).
+    fn settle(&mut self) -> Result<(), CaptureFailure> {
+        for frame in 1..=MAX_LIT_FRAMES {
+            self.next_frame()?;
+            if frame >= MIN_LIT_FRAMES && self.metering().converged {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn serve(&mut self) {
         loop {
             let (request, capture, flushing) = {
                 let mut state = self.shared.lock();
@@ -598,9 +651,15 @@ impl Worker {
             interval: Sensor::interval_for(&capture.mode, &request.settings),
             mode: capture.mode.clone(),
         };
+        let metering = self.metering();
+        let flash: Option<FlashFrame> =
+            self.flash.as_mut().map(|flash| flash.plan(&request.settings, metering));
+        self.light(flash.is_some_and(|flash| flash.lit));
+        let settle = flash.is_some_and(|flash| flash.settle);
         let (frame, timestamp) = match self
             .start(&capture)
             .map_err(CaptureFailure::Request)
+            .and_then(|()| if settle { self.settle() } else { Ok(()) })
             .and_then(|()| self.next_frame())
         {
             Ok(frame) => frame,
@@ -646,21 +705,27 @@ impl Worker {
             buffers.push(returned(output, status, None));
         }
 
-        if sensor::af_triggered(&request.settings) {
+        // Continuous focus scans on its own and a trigger only locks it; otherwise a
+        // trigger starts a scan.
+        let continuous = sensor::af_continuous(&request.settings)
+            && self.raw.as_ref().is_some_and(RawPipeline::has_focus);
+        if sensor::af_triggered(&request.settings) && !continuous {
             if let Some(pipeline) = self.raw.as_mut() {
                 pipeline.trigger_focus();
             }
         }
         self.af_locked = sensor::af_locked_after(&request.settings, self.af_locked);
+        if let Some(pipeline) = self.raw.as_mut() {
+            pipeline.set_continuous_focus(continuous && !self.af_locked);
+        }
         // A focus motor reports its sweep; a webcam focuses on its own and "locks" at once.
-        let af_state = if self.raw.as_ref().is_some_and(RawPipeline::focusing) {
-            CONTROL_AF_STATE_ACTIVE_SCAN
-        } else if self.af_locked {
-            CONTROL_AF_STATE_FOCUSED_LOCKED
-        } else {
-            CONTROL_AF_STATE_INACTIVE
-        };
-        let result = self.shared.camera.sensor().result(&request.settings, timestamp, af_state);
+        let scanning = self.raw.as_ref().is_some_and(RawPipeline::focusing);
+        let af_state = sensor::af_state(continuous, scanning, self.af_locked);
+        let mut result = self.shared.camera.sensor().result(&request.settings, timestamp, af_state);
+        if let Some(flash) = flash {
+            result.set(CONTROL_AE_STATE, &[flash.ae_state]);
+            result.set(FLASH_STATE, &[flash.flash_state]);
+        }
         self.send(CaptureResult {
             frameNumber: request.frame_number,
             result: CameraMetadata { metadata: result.to_bytes() },

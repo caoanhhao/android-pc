@@ -85,5 +85,9 @@ prebuilt_kernel_modules {
         "s5k3m5.ko",
         "s5k-tab.ko",
         "dw9807-vcm.ko",
+        // Rear flash LED (PM8150L flash, `white:flash` on both channels, DT from
+        // gts7xl-mainline) for the camera HAL's torch and flash captures.
+        "led-class-flash.ko",
+        "leds-qcom-flash.ko",
     ],
 }

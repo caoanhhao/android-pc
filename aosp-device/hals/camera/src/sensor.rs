@@ -111,6 +111,10 @@ pub struct Sensor {
     facing: Facing,
     /// `ANDROID_SENSOR_ORIENTATION`.
     orientation: i32,
+    /// Torch levels of the camera's flash LED, if it has one.
+    flash_levels: Option<u32>,
+    /// Whether a focus motor runs contrast auto focus (continuous modes too).
+    focus: bool,
 }
 
 impl Sensor {
@@ -142,7 +146,14 @@ impl Sensor {
             return None;
         }
         modes.sort_by_key(|mode| (mode.size.area(), mode.size.width));
-        Some(Self { modes, binning: 1, facing: Facing::External, orientation: 0 })
+        Some(Self {
+            modes,
+            binning: 1,
+            facing: Facing::External,
+            orientation: 0,
+            flash_levels: None,
+            focus: false,
+        })
     }
 
     /// A raw Bayer sensor built into the device: its RAW10 `modes`, where it faces and
@@ -158,7 +169,31 @@ impl Sensor {
         }
         modes.sort_by_key(|mode| (mode.size.area(), mode.size.width));
         modes.dedup_by_key(|mode| mode.size);
-        Some(Self { modes, binning: 2, facing, orientation: orientation.rem_euclid(360) })
+        Some(Self {
+            modes,
+            binning: 2,
+            facing,
+            orientation: orientation.rem_euclid(360),
+            flash_levels: None,
+            focus: false,
+        })
+    }
+
+    /// The same camera with a flash LED of `levels` torch levels.
+    pub fn with_flash(mut self, levels: u32) -> Self {
+        self.flash_levels = Some(levels.max(1));
+        self
+    }
+
+    /// The same camera with a focus motor.
+    pub fn with_focus(mut self) -> Self {
+        self.focus = true;
+        self
+    }
+
+    /// Whether the camera has a flash LED.
+    pub fn has_flash(&self) -> bool {
+        self.flash_levels.is_some()
     }
 
     /// The size of the frames `mode` turns into: the capture size, or for raw sensors one
@@ -233,11 +268,30 @@ impl Sensor {
         // 3A: the camera runs its own; the HAL offers only automatic modes.
         md.set(COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES, &[OFF]);
         md.set(CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, &[CONTROL_AE_ANTIBANDING_MODE_AUTO]);
-        md.set(CONTROL_AE_AVAILABLE_MODES, &[CONTROL_AE_MODE_ON]);
+        if self.has_flash() {
+            md.set(
+                CONTROL_AE_AVAILABLE_MODES,
+                &[CONTROL_AE_MODE_ON, CONTROL_AE_MODE_ON_AUTO_FLASH, CONTROL_AE_MODE_ON_ALWAYS_FLASH],
+            );
+        } else {
+            md.set(CONTROL_AE_AVAILABLE_MODES, &[CONTROL_AE_MODE_ON]);
+        }
         md.set(CONTROL_AE_COMPENSATION_RANGE, &[0, 0]);
         md.set(CONTROL_AE_COMPENSATION_STEP, &[Rational { numerator: 0, denominator: 1 }]);
         md.set(CONTROL_AE_LOCK_AVAILABLE, &[OFF]);
-        md.set(CONTROL_AF_AVAILABLE_MODES, &[OFF, CONTROL_AF_MODE_AUTO]);
+        if self.focus {
+            md.set(
+                CONTROL_AF_AVAILABLE_MODES,
+                &[
+                    OFF,
+                    CONTROL_AF_MODE_AUTO,
+                    CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+                    CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+                ],
+            );
+        } else {
+            md.set(CONTROL_AF_AVAILABLE_MODES, &[OFF, CONTROL_AF_MODE_AUTO]);
+        }
         md.set(CONTROL_AVAILABLE_EFFECTS, &[OFF]);
         md.set(CONTROL_AVAILABLE_MODES, &[OFF, CONTROL_MODE_AUTO]);
         md.set(CONTROL_AVAILABLE_SCENE_MODES, &[CONTROL_SCENE_MODE_DISABLED]);
@@ -250,7 +304,18 @@ impl Sensor {
         md.set(CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, &fps_ranges);
 
         md.set(EDGE_AVAILABLE_EDGE_MODES, &[OFF]);
-        md.set(FLASH_INFO_AVAILABLE, &[OFF]);
+        match self.flash_levels {
+            Some(levels) => {
+                md.set(FLASH_INFO_AVAILABLE, &[FLASH_INFO_AVAILABLE_TRUE]);
+                // Torch strength control (turnOnTorchWithStrengthLevel) needs more than one level.
+                if levels > 1 {
+                    let levels = i32::try_from(levels).unwrap_or(i32::MAX);
+                    md.set(FLASH_INFO_STRENGTH_MAXIMUM_LEVEL, &[levels]);
+                    md.set(FLASH_INFO_STRENGTH_DEFAULT_LEVEL, &[levels]);
+                }
+            }
+            None => md.set(FLASH_INFO_AVAILABLE, &[OFF]),
+        }
         md.set(HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES, &[OFF]);
         md.set(JPEG_AVAILABLE_THUMBNAIL_SIZES, &[0, 0]);
         md.set(JPEG_MAX_SIZE, &[i32::try_from(self.jpeg_max_size()).unwrap_or(i32::MAX)]);
@@ -262,6 +327,10 @@ impl Sensor {
         md.set(LENS_FACING, &[facing]);
         md.set(LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, &[OFF]);
         md.set(LENS_INFO_FOCUS_DISTANCE_CALIBRATION, &[OFF]);
+        if self.focus {
+            // Uncalibrated diopters: about 10 cm.
+            md.set(LENS_INFO_MINIMUM_FOCUS_DISTANCE, &[MIN_FOCUS_DIOPTERS]);
+        }
         md.set(NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES, &[OFF]);
 
         md.set(REQUEST_PARTIAL_RESULT_COUNT, &[1]);
@@ -347,7 +416,12 @@ impl Sensor {
             rates.last().copied().unwrap_or(DEFAULT_FPS)
         };
         md.set(CONTROL_AE_TARGET_FPS_RANGE, &[(fps / 2).max(1), fps]);
-        md.set(CONTROL_AF_MODE, &[CONTROL_AF_MODE_AUTO]);
+        let af_mode = match template {
+            _ if !self.focus => CONTROL_AF_MODE_AUTO,
+            Template::VideoRecord | Template::VideoSnapshot => CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+            Template::Preview | Template::StillCapture => CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+        };
+        md.set(CONTROL_AF_MODE, &[af_mode]);
         md.set(CONTROL_AF_TRIGGER, &[CONTROL_AF_TRIGGER_IDLE]);
         md.set(CONTROL_AWB_LOCK, &[OFF]);
         md.set(CONTROL_AWB_MODE, &[CONTROL_AWB_MODE_AUTO]);
@@ -396,7 +470,8 @@ impl Sensor {
         md.set(CONTROL_AE_LOCK, &[OFF]);
         md.set(CONTROL_AWB_STATE, &[CONTROL_AWB_STATE_CONVERGED]);
         md.set(CONTROL_AWB_LOCK, &[OFF]);
-        md.set(FLASH_STATE, &[FLASH_STATE_UNAVAILABLE]);
+        let flash_state = if self.has_flash() { FLASH_STATE_READY } else { FLASH_STATE_UNAVAILABLE };
+        md.set(FLASH_STATE, &[flash_state]);
         md.set(REQUEST_PIPELINE_DEPTH, &[PIPELINE_DEPTH]);
         let max = self.max_size();
         md.set(SCALER_CROP_REGION, &[0, 0, max.width as i32, max.height as i32]);
@@ -420,13 +495,36 @@ pub const MAX_PROCESSED_STREAMS: i32 = 2;
 pub const MAX_STALL_STREAMS: i32 = 1;
 /// JPEG quality of the templates.
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
+/// `LENS_INFO_MINIMUM_FOCUS_DISTANCE` of cameras with a focus motor.
+const MIN_FOCUS_DIOPTERS: f32 = 10.0;
 
 /// Whether `settings` start an AF sweep.
 pub fn af_triggered(settings: &Metadata) -> bool {
     settings.first(CONTROL_AF_TRIGGER) == Some(CONTROL_AF_TRIGGER_START)
 }
 
-/// The AF state a capture reports, from the AF trigger of its settings: a webcam
+/// Whether `settings` ask for continuous auto focus.
+pub fn af_continuous(settings: &Metadata) -> bool {
+    matches!(
+        settings.first(CONTROL_AF_MODE),
+        Some(CONTROL_AF_MODE_CONTINUOUS_VIDEO | CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+    )
+}
+
+/// `CONTROL_AF_STATE` of a capture: in continuous mode the lens scans on its own
+/// (passive) and a trigger locks it once a scan in progress ends; otherwise a trigger
+/// starts a scan (active) and locks after it.
+pub fn af_state(continuous: bool, scanning: bool, locked: bool) -> u8 {
+    match (continuous, scanning, locked) {
+        (true, true, _) => CONTROL_AF_STATE_PASSIVE_SCAN,
+        (true, false, false) => CONTROL_AF_STATE_PASSIVE_FOCUSED,
+        (false, true, _) => CONTROL_AF_STATE_ACTIVE_SCAN,
+        (_, false, true) => CONTROL_AF_STATE_FOCUSED_LOCKED,
+        (false, false, false) => CONTROL_AF_STATE_INACTIVE,
+    }
+}
+
+/// Whether focus is locked after a capture with `settings`, from its AF trigger: a webcam
 /// focuses on its own, so a trigger "locks" at once and a cancel unlocks.
 pub fn af_locked_after(settings: &Metadata, locked: bool) -> bool {
     match settings.first(CONTROL_AF_TRIGGER) {
@@ -617,6 +715,45 @@ mod tests {
         let md = sensor.characteristics();
         assert_eq!(md.first(LENS_FACING), Some(LENS_FACING_BACK));
         assert_eq!(md.first(SENSOR_ORIENTATION), Some(90));
+        assert_eq!(md.first(FLASH_INFO_AVAILABLE), Some(OFF));
+        assert_eq!(md.get(CONTROL_AE_AVAILABLE_MODES).unwrap(), [CONTROL_AE_MODE_ON]);
+        assert_eq!(md.get(LENS_INFO_MINIMUM_FOCUS_DISTANCE), None);
+    }
+
+    #[test]
+    fn flash_and_focus_motor() {
+        let raw = FourCc(u32::from_le_bytes(*b"pGAA"));
+        let sensor = Sensor::raw(&[mode(raw, 4128, 3096, &[30])], Facing::Back, 90)
+            .unwrap()
+            .with_flash(10)
+            .with_focus();
+        let md = sensor.characteristics();
+        assert_eq!(md.first(FLASH_INFO_AVAILABLE), Some(FLASH_INFO_AVAILABLE_TRUE));
+        assert_eq!(md.first(FLASH_INFO_STRENGTH_MAXIMUM_LEVEL), Some(10));
+        assert_eq!(md.get(CONTROL_AE_AVAILABLE_MODES).unwrap().len(), 3);
+        assert!(md.get(CONTROL_AF_AVAILABLE_MODES).unwrap().contains(&CONTROL_AF_MODE_CONTINUOUS_PICTURE));
+        assert_eq!(md.first(LENS_INFO_MINIMUM_FOCUS_DISTANCE), Some(MIN_FOCUS_DIOPTERS));
+        let keys = md.get(REQUEST_AVAILABLE_CHARACTERISTICS_KEYS).unwrap();
+        assert!(md.tags().all(|tag| keys.contains(&as_key(tag))));
+
+        let preview = sensor.default_request(Template::Preview);
+        assert_eq!(preview.first(CONTROL_AF_MODE), Some(CONTROL_AF_MODE_CONTINUOUS_PICTURE));
+        assert!(af_continuous(&preview));
+        let video = sensor.default_request(Template::VideoRecord);
+        assert_eq!(video.first(CONTROL_AF_MODE), Some(CONTROL_AF_MODE_CONTINUOUS_VIDEO));
+        let result = sensor.result(&preview, 1, CONTROL_AF_STATE_PASSIVE_SCAN);
+        assert_eq!(result.first(FLASH_STATE), Some(FLASH_STATE_READY));
+        assert_eq!(webcam().default_request(Template::Preview).first(CONTROL_AF_MODE), Some(CONTROL_AF_MODE_AUTO));
+    }
+
+    #[test]
+    fn af_states() {
+        assert_eq!(af_state(true, true, true), CONTROL_AF_STATE_PASSIVE_SCAN);
+        assert_eq!(af_state(true, false, false), CONTROL_AF_STATE_PASSIVE_FOCUSED);
+        assert_eq!(af_state(true, false, true), CONTROL_AF_STATE_FOCUSED_LOCKED);
+        assert_eq!(af_state(false, true, true), CONTROL_AF_STATE_ACTIVE_SCAN);
+        assert_eq!(af_state(false, false, true), CONTROL_AF_STATE_FOCUSED_LOCKED);
+        assert_eq!(af_state(false, false, false), CONTROL_AF_STATE_INACTIVE);
     }
 
     #[test]

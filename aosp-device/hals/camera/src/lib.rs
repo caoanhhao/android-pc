@@ -4,6 +4,7 @@
 //! Everything here builds and is unit-tested on the host; the binder side (provider,
 //! device, session) and gralloc live in the HAL binary.
 
+pub mod flash;
 pub mod image;
 pub mod isp;
 pub mod jpeg;
