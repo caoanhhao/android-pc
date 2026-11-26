@@ -6,4 +6,10 @@
          Lockdown keeps locking the screen, hiding notifications and turning off trust agents;
          a fingerprint unlock ends it. -->
     <bool name="config_biometricUnlockInLockdown">true</bool>
+
+    <!-- An enrolled fingerprint unlocks right after Android starts, without the PIN first
+         (docs/lockdown-biometric.md, "Fingerprint right after boot").
+         tools/patches/aosp17-boot-biometric-unlock.patch then unlocks the user's
+         credential-encrypted storage with the PIN remembered at the last unlock. -->
+    <bool name="config_strongAuthRequiredOnBoot">false</bool>
 </resources>

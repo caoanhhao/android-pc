@@ -87,6 +87,9 @@ resets that project. The `nvidia-open-*` patches are applied by `tools/nvidia-bu
 | `aosp17-bionic-static-tls-surplus.patch` | `bionic` | static TLS room for NVIDIA's glibc libraries (nvglibc) |
 | `aosp17-microg-signature-spoofing.patch` | `frameworks/base` | lets microG stand in for Google Play services |
 | `aosp17-credman-empty-ui.patch` | `frameworks/base` | Credential Manager answers when all entries are dropped (TikTok sign-in) |
+| `aosp17-lockdown-biometric.patch` | `frameworks/base` | a strong fingerprint still unlocks after the power menu's Lockdown ([docs/lockdown-biometric.md](docs/lockdown-biometric.md)) |
+| `aosp17-boot-biometric-unlock.patch` | `frameworks/base` | a fingerprint unlocks right after boot, storage included, with the PIN remembered at the last unlock ([docs/lockdown-biometric.md](docs/lockdown-biometric.md)) |
+| `aosp17-settings-udfps-enroll-landscape.patch` | `packages/apps/Settings` | fingerprint enrollment no longer crashes Settings on a landscape screen |
 | `aosp17-wm-pinned-focus.patch` | `frameworks/base` | a pinned window (Hyprland's `pin`, always-on-top inside a desk) does not keep the key focus (Phase E1) |
 | `aosp17-input-mouse-as-touch.patch` | `frameworks/native` | mouse clicks reach touch-only games |
 | `aosp17-launcher3-recents-only.patch`, `aosp17-launcher3-taskbar-npe.patch` | `packages/apps/Launcher3` | superseded by HyprLauncher (Phase D4): Launcher3 is no longer in the image; kept for older builds |
@@ -241,7 +244,7 @@ stick in use: that wipes `userdata`.
 | [docs/hypr-ipc.md](docs/hypr-ipc.md) | Phase E12: Hyprland's request and event sockets and `hyprctl` |
 | [docs/nvidia-proprietary.md](docs/nvidia-proprietary.md), [docs/nvidia-native.md](docs/nvidia-native.md), [docs/gpu-identity.md](docs/gpu-identity.md) | NVIDIA kernel modules; NVIDIA's userspace driver on Android (nvglibc, `vulkan.nvidia`); how that driver fits Android's games: apps see an Adreno 850 by default (changing it, root over adb, the Where Winds Meet example) |
 | [tools/waydroid/README.md](tools/waydroid/README.md), [docs/waydroid-nvidia.md](docs/waydroid-nvidia.md) | The same NVIDIA driver in the host's Waydroid: install guide and design notes |
-| [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint still unlocks after the power menu's Lockdown; the security tradeoff |
+| [docs/lockdown-biometric.md](docs/lockdown-biometric.md) | Fingerprint unlocks after the power menu's Lockdown and right after boot (`tools/fp.sh` drives the sensor over adb); the security tradeoffs |
 
 ## Licensing note
 

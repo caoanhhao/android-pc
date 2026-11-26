@@ -1,0 +1,291 @@
+diff --git a/services/core/java/com/android/server/locksettings/BootUnlockCredentialCrypto.java b/services/core/java/com/android/server/locksettings/BootUnlockCredentialCrypto.java
+new file mode 100644
+index 000000000..f445b7e0d
+--- /dev/null
++++ b/services/core/java/com/android/server/locksettings/BootUnlockCredentialCrypto.java
+@@ -0,0 +1,123 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.locksettings;
++
++import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PASSWORD;
++import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PATTERN;
++import static com.android.internal.widget.LockPatternUtils.CREDENTIAL_TYPE_PIN;
++
++import android.security.keystore.KeyProperties;
++import android.security.keystore.KeyProtection;
++
++import com.android.internal.util.ArrayUtils;
++import com.android.internal.widget.LockPatternUtils;
++import com.android.internal.widget.LockscreenCredential;
++
++import java.nio.charset.StandardCharsets;
++import java.security.GeneralSecurityException;
++import java.security.KeyStore;
++import java.security.SecureRandom;
++import java.util.Arrays;
++
++import javax.crypto.Cipher;
++import javax.crypto.KeyGenerator;
++import javax.crypto.SecretKey;
++import javax.crypto.spec.GCMParameterSpec;
++
++/**
++ * Wraps the user's lock screen credential with a keystore key, so that a strong biometric can
++ * unlock credential-encrypted storage after boot when {@code config_strongAuthRequiredOnBoot} is
++ * false (android-pc, docs/lockdown-biometric.md). The key needs no user authentication: whoever
++ * can use system_server's keystore keys can read the credential.
++ *
++ * <p>Blob format: credential type (1 byte), GCM IV (12 bytes), ciphertext.</p>
++ */
++class BootUnlockCredentialCrypto {
++
++    private static final String KEY_ALIAS = "boot_unlock_credential_";
++    private static final String TRANSFORMATION = KeyProperties.KEY_ALGORITHM_AES + "/"
++            + KeyProperties.BLOCK_MODE_GCM + "/" + KeyProperties.ENCRYPTION_PADDING_NONE;
++    private static final int IV_SIZE = 12;
++
++    private BootUnlockCredentialCrypto() {
++    }
++
++    static byte[] encrypt(KeyStore keyStore, int userId, LockscreenCredential credential)
++            throws GeneralSecurityException {
++        KeyGenerator keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES);
++        keyGenerator.init(256, new SecureRandom());
++        SecretKey secretKey = keyGenerator.generateKey();
++        keyStore.setEntry(
++                alias(userId),
++                new KeyStore.SecretKeyEntry(secretKey),
++                new KeyProtection.Builder(KeyProperties.PURPOSE_ENCRYPT
++                        | KeyProperties.PURPOSE_DECRYPT)
++                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
++                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
++                        .build());
++        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
++        cipher.init(Cipher.ENCRYPT_MODE, (SecretKey) keyStore.getKey(alias(userId), null));
++        byte[] ciphertext = cipher.doFinal(credential.getCredential());
++        byte[] iv = cipher.getIV();
++        if (iv.length != IV_SIZE) {
++            throw new GeneralSecurityException("Invalid iv length: " + iv.length);
++        }
++        return ArrayUtils.concat(new byte[] {(byte) credential.getType()}, iv, ciphertext);
++    }
++
++    static LockscreenCredential decrypt(KeyStore keyStore, int userId, byte[] blob)
++            throws GeneralSecurityException {
++        if (blob.length <= 1 + IV_SIZE) {
++            throw new GeneralSecurityException("Blob too short");
++        }
++        SecretKey key = (SecretKey) keyStore.getKey(alias(userId), null);
++        if (key == null) {
++            throw new GeneralSecurityException("No key");
++        }
++        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
++        cipher.init(Cipher.DECRYPT_MODE, key,
++                new GCMParameterSpec(128, Arrays.copyOfRange(blob, 1, 1 + IV_SIZE)));
++        byte[] secret = cipher.doFinal(blob, 1 + IV_SIZE, blob.length - 1 - IV_SIZE);
++        try {
++            switch (blob[0]) {
++                case CREDENTIAL_TYPE_PIN:
++                    return LockscreenCredential.createPin(
++                            new String(secret, StandardCharsets.ISO_8859_1));
++                case CREDENTIAL_TYPE_PASSWORD:
++                    return LockscreenCredential.createPassword(
++                            new String(secret, StandardCharsets.ISO_8859_1));
++                case CREDENTIAL_TYPE_PATTERN:
++                    return LockscreenCredential.createPattern(
++                            LockPatternUtils.byteArrayToPattern(secret));
++                default:
++                    throw new GeneralSecurityException("Unknown credential type " + blob[0]);
++            }
++        } finally {
++            ArrayUtils.zeroize(secret);
++        }
++    }
++
++    static void removeKey(KeyStore keyStore, int userId) throws GeneralSecurityException {
++        if (keyStore.containsAlias(alias(userId))) {
++            keyStore.deleteEntry(alias(userId));
++        }
++    }
++
++    private static String alias(int userId) {
++        return KEY_ALIAS + userId;
++    }
++}
+diff --git a/services/core/java/com/android/server/locksettings/LockSettingsService.java b/services/core/java/com/android/server/locksettings/LockSettingsService.java
+index e5054ea40..03d18193b 100644
+--- a/services/core/java/com/android/server/locksettings/LockSettingsService.java
++++ b/services/core/java/com/android/server/locksettings/LockSettingsService.java
+@@ -138,6 +138,7 @@ import com.android.internal.annotations.GuardedBy;
+ import com.android.internal.annotations.VisibleForTesting;
+ import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
+ import com.android.internal.notification.SystemNotificationChannels;
++import com.android.internal.os.BackgroundThread;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.DumpUtils;
+ import com.android.internal.util.IndentingPrintWriter;
+@@ -2220,6 +2221,7 @@ public class LockSettingsService extends ILockSettings.Stub {
+     }
+ 
+     private void onPostLockCredentialChanged(LockscreenCredential newCredential, int userId) {
++        rememberBootUnlockCredential(newCredential, userId);
+         if (android.security.Flags.moveNotifyLockCredentialCalls()) {
+             LocalServices.getService(WindowManagerInternal.class).reportPasswordChanged(userId);
+             if (android.security.Flags.appLockApis()) {
+@@ -2693,6 +2695,7 @@ public class LockSettingsService extends ILockSettings.Stub {
+                         authResult.syntheticPassword,
+                         PasswordMetrics.computeForCredential(credential),
+                         userId);
++                rememberBootUnlockCredential(credential, userId);
+                 if ((flags & VERIFY_FLAG_REQUEST_GK_PW_HANDLE) != 0) {
+                     final long gkHandle =
+                             storeGatekeeperPasswordTemporarily(
+@@ -2958,6 +2961,9 @@ public class LockSettingsService extends ILockSettings.Stub {
+     public void reportSuccessfulBiometricUnlock(boolean isStrongBiometric, int userId) {
+         checkBiometricPermission();
+         mStrongAuth.reportSuccessfulBiometricUnlock(isStrongBiometric, userId);
++        if (isStrongBiometric) {
++            BackgroundThread.getHandler().post(() -> unlockUserWithBootUnlockCredential(userId));
++        }
+     }
+ 
+     @Override
+@@ -3411,6 +3417,77 @@ public class LockSettingsService extends ILockSettings.Stub {
+         onSyntheticPasswordUnlocked(userId, sp);
+     }
+ 
++    /**
++     * Whether a strong biometric may unlock the user after boot (android-pc,
++     * docs/lockdown-biometric.md). {@code config_strongAuthRequiredOnBoot} false lets the
++     * biometric dismiss the keyguard, but the user stays RUNNING_LOCKED until the synthetic
++     * password unlocks its credential-encrypted storage, with file-based encryption or without.
++     */
++    private boolean isBootUnlockCredentialEnabled() {
++        return !mContext.getResources().getBoolean(
++                com.android.internal.R.bool.config_strongAuthRequiredOnBoot);
++    }
++
++    /** Keeps the user's credential, wrapped by keystore, for {@link
++     * #unlockUserWithBootUnlockCredential}; removes it when the feature is off. */
++    private void rememberBootUnlockCredential(LockscreenCredential credential, int userId) {
++        if (!isBootUnlockCredentialEnabled() || credential.isNone()
++                || isCredentialShareableWithParent(userId)) {
++            forgetBootUnlockCredential(userId);
++            return;
++        }
++        try {
++            mStorage.writeBootUnlockCredential(userId,
++                    BootUnlockCredentialCrypto.encrypt(mKeyStore, userId, credential));
++        } catch (GeneralSecurityException | RuntimeException e) {
++            Slog.e(TAG, "Failed to remember the credential for boot unlock", e);
++            forgetBootUnlockCredential(userId);
++        }
++    }
++
++    private void forgetBootUnlockCredential(int userId) {
++        if (!mStorage.hasBootUnlockCredential(userId)) {
++            return;
++        }
++        mStorage.removeBootUnlockCredential(userId);
++        try {
++            BootUnlockCredentialCrypto.removeKey(mKeyStore, userId);
++        } catch (GeneralSecurityException e) {
++            Slog.w(TAG, "Failed to remove the boot unlock key", e);
++        }
++    }
++
++    /**
++     * After a strong biometric unlock, unlocks a user whose credential-encrypted storage is still
++     * locked since boot with the credential remembered at its last unlock.
++     */
++    private void unlockUserWithBootUnlockCredential(int userId) {
++        if (!isBootUnlockCredentialEnabled() || mUserManager.isUserUnlockingOrUnlocked(userId)) {
++            return;
++        }
++        byte[] blob = mStorage.readBootUnlockCredential(userId);
++        if (blob == null) {
++            Slogf.i(TAG, "No boot unlock credential for user %d; the credential is needed once",
++                    userId);
++            return;
++        }
++        LockscreenCredential credential;
++        try {
++            credential = BootUnlockCredentialCrypto.decrypt(mKeyStore, userId, blob);
++        } catch (GeneralSecurityException | RuntimeException e) {
++            Slog.e(TAG, "Failed to read the boot unlock credential", e);
++            forgetBootUnlockCredential(userId);
++            return;
++        }
++        try (credential) {
++            Slogf.i(TAG, "Unlocking user %d after a strong biometric unlock", userId);
++            if (!doVerifyCredential(credential, userId, null, 0).isMatched()) {
++                Slogf.w(TAG, "Boot unlock credential of user %d no longer matches", userId);
++                forgetBootUnlockCredential(userId);
++            }
++        }
++    }
++
+     private void setDeviceUnlockedForUser(int userId) {
+         final TrustManager trustManager = mContext.getSystemService(TrustManager.class);
+         trustManager.setDeviceLockedForUser(userId, false);
+diff --git a/services/core/java/com/android/server/locksettings/LockSettingsStorage.java b/services/core/java/com/android/server/locksettings/LockSettingsStorage.java
+index b6c04071f..176e8a804 100644
+--- a/services/core/java/com/android/server/locksettings/LockSettingsStorage.java
++++ b/services/core/java/com/android/server/locksettings/LockSettingsStorage.java
+@@ -87,6 +87,7 @@ class LockSettingsStorage {
+     private static final String CHILD_PROFILE_LOCK_FILE = "gatekeeper.profile.key";
+ 
+     private static final String REBOOT_ESCROW_FILE = "reboot.escrow.key";
++    private static final String BOOT_UNLOCK_CREDENTIAL_FILE = "boot.unlock.credential";
+     private static final String REBOOT_ESCROW_SERVER_BLOB_FILE = "reboot.escrow.server.blob.key";
+ 
+     private static final String SYNTHETIC_PASSWORD_DIRECTORY = "spblob/";
+@@ -262,6 +263,22 @@ class LockSettingsStorage {
+         deleteFile(getRebootEscrowFile(userId));
+     }
+ 
++    public void writeBootUnlockCredential(int userId, byte[] blob) {
++        writeFile(getBootUnlockCredentialFile(userId), blob);
++    }
++
++    public byte[] readBootUnlockCredential(int userId) {
++        return readFile(getBootUnlockCredentialFile(userId));
++    }
++
++    public boolean hasBootUnlockCredential(int userId) {
++        return hasFile(getBootUnlockCredentialFile(userId));
++    }
++
++    public void removeBootUnlockCredential(int userId) {
++        deleteFile(getBootUnlockCredentialFile(userId));
++    }
++
+     public void writeRebootEscrowServerBlob(byte[] serverBlob) {
+         writeFile(getRebootEscrowServerBlobFile(), serverBlob);
+     }
+@@ -378,6 +395,10 @@ class LockSettingsStorage {
+         return getLockCredentialFileForUser(userId, REBOOT_ESCROW_FILE);
+     }
+ 
++    File getBootUnlockCredentialFile(int userId) {
++        return getLockCredentialFileForUser(userId, BOOT_UNLOCK_CREDENTIAL_FILE);
++    }
++
+     @VisibleForTesting
+     File getRebootEscrowServerBlobFile() {
+         // There is a single copy of server blob for all users.
