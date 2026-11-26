@@ -28,6 +28,8 @@ $ AudioCheck play 6            -> end head=288000 written=288000 underruns=1
 $ AudioCheck rec1 3            -> frames=144000 in 3.07s nonzero=143100 rms=121.9 peak=4887
 ```
 
+The user heard the speakers on the tablet in this state (2026-11-26).
+
 Also: the logcat buffers are 256 KiB, so the HAL's start-up lines are gone within a minute of
 boot; read them with `logcat -G 16M` and a HAL restart.
 
