@@ -376,7 +376,8 @@ adb shell 'setprop bluetooth.profile.a2dp.source.enabled true
 - `AudioCheck play 10` (§3): the track is routed to `bt_a2dp` "EDIFIER X2s", the playback
   head advances at 48 kHz for 10 s (`end head=480000 written=480000`), underruns 1 (start).
 
-Not proven by a listener yet (below), nor HFP voice: SCO goes over HCI (the HAL passes SCO
+The user heard the 1 kHz tone in the headset (2026-11-26, runtime setprop on build
+`eng.caoanh.20261126.2024`). Not proven yet: HFP voice: SCO goes over HCI (the HAL passes SCO
 packets, `hals/bluetooth/src/hci.rs`), untested on the QCA6390.
 
 SELinux: the FMQ memfd is labelled `tmpfs`, so `hal_audio_default` and `bluetooth` log
