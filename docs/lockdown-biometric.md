@@ -9,7 +9,8 @@ in lockdown, and **right after Android starts**, without the PIN first ("Fingerp
 after boot" below). Everything else lockdown does stays. The fingerprint here is AOSP's virtual
 fingerprint HAL (`com.android.hardware.biometrics.fingerprint.virtual`, an under-display sensor
 configured by the `persist.vendor.fingerprint.virtual.*` properties in Waydroid's
-`waydroid.cfg`); it reports itself as `STRONG`.
+`waydroid.cfg`); it reports itself as `STRONG`. `aosp_gts7l` (the Galaxy Tab S7) has the same
+setup ("gts7l" below).
 
 ## What changes
 
@@ -212,6 +213,24 @@ Unlock") and, on landscape screens, needs `tools/patches/aosp17-settings-udfps-e
 (`packages/apps/Settings`): `UdfpsEnrollEnrollingView.adjustUdfpsVieWithFooterBar` cast
 `suc_layout_status`, a `LinearLayout` in the landscape layout, to `FrameLayout`, and Settings
 crashed on the enrolling screen.
+
+### gts7l
+
+`aosp_gts7l` is built from the same tree, so it carries the same three patches, and is set up
+the same way so both products behave alike:
+
+- `gts7l_overlay_frameworks_base_core` (`aosp-device/gts7l/rro`) sets
+  `config_biometricUnlockInLockdown` to `true` and `config_strongAuthRequiredOnBoot` to `false`.
+- The tablet's side-key sensor is TrustZone's and out of reach (docs/gts7l.md), so
+  `aosp_gts7l.mk` adds the virtual HAL as Cuttlefish does
+  (`com.android.hardware.biometrics.fingerprint.virtual`,
+  `android.hardware.biometrics.fingerprint-service.default`, `android.hardware.fingerprint.xml`),
+  an under-display sensor at `800:2240:100` (natural orientation of the 1600x2560 panel), and
+  `sepolicy-system_ext/platform_app.te` lets SystemUI reach it (Cuttlefish's system_ext rule).
+- No `enrollment_hit` is preset, as on the real PC: a press on the spot matches only after
+  `tools/fp.sh touch` set it. Over adb: `ANDROID_SERIAL=<serial> tools/fp.sh ...`.
+- `/data` on the tablet is not encrypted (fstab.gts7l), so the security tradeoff above applies:
+  adb (on, without key confirmation, also on TCP 5555) is enough to unlock after a reboot.
 
 ### Test (2026-11-26)
 

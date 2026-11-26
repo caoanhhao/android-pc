@@ -92,7 +92,7 @@ gets split so each target picks its HAL list without Cuttlefish switches.
 | camera | V4L2 / CAMSS raw sensors + soft ISP | android-pc `hals/camera` design, later phase |
 | radio (LTE) | MHI + QMI to the X55 modem | **new**, later phase |
 | gnss | BCM47531 (closed protocol) | last, may stay out |
-| fingerprint | TrustZone only | out of scope |
+| fingerprint | TrustZone only | the side-key sensor stays out of scope; AOSP's virtual HAL stands in, as on the PC (docs/lockdown-biometric.md, "gts7l") |
 
 ## 6. Phases
 

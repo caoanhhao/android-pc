@@ -122,5 +122,6 @@ BOARD_VENDOR_SEPOLICY_DIRS += \
     $(GTS7L_DEVICE_DIR)/sensors/sepolicy \
     $(foreach hal,$(GTS7L_HALS),$(wildcard $(PC_DEVICE_DIR)/hals/$(hal)/sepolicy))
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
+    $(GTS7L_DEVICE_DIR)/sepolicy-system_ext \
     $(PC_DEVICE_DIR)/hypr/sepolicy \
     $(PC_DEVICE_DIR)/hypr/HyprTop/sepolicy
