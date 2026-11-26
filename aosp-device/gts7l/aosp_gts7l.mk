@@ -225,6 +225,7 @@ PRODUCT_PRODUCT_PROPERTIES += \
 # Hardware the framework may rely on. The rear camera has autofocus and a flash, as stock
 # declares: Play hides apps that list camera.autofocus/camera.flash (Where Winds Meet) without them.
 PRODUCT_COPY_FILES += \
+    $(GTS7L_DEVICE_DIR)/media_profiles_V1_0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_profiles_V1_0.xml \
     frameworks/native/data/etc/android.hardware.camera.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.camera.xml \
     frameworks/native/data/etc/android.hardware.camera.front.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.camera.front.xml \
     frameworks/native/data/etc/android.hardware.camera.flash-autofocus.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.camera.flash-autofocus.xml \

@@ -275,6 +275,30 @@ Quirks seen while swapping the HAL at run time (not with a full image):
   cameraserver logs "says an unknown camera ... now has torch status 1. Curious." once;
   harmless.
 
+## Camera app crash on open (fixed 2026-11-26)
+
+The AOSP Camera app (`com.android.camera2`) closed at once on build 20261126. Two causes,
+one after the other:
+
+1. cameraserver refused the API1 client: `Camera2-Parameters: generated preview size list
+   is empty!!`, then `Failed to initialize camera "0": No such device (-19)`. API1 keeps only
+   preview/video sizes between the video encoder limits of `MediaProfiles`; with no
+   `media_profiles` file those are H.263/MPEG-4 at 176x144-352x288, and the HAL offered only
+   its mode sizes (rear 2064x1548 and 504x378, front 1632x1224 and 400x300, ultrawide
+   1288x966 and 648x486), none of them that small. Fix: raw cameras also offer the common
+   sizes that fit in their largest output (1920x1080, 1280x720, 640x480, 352x288, 320x240,
+   176x144, ..., `STANDARD_SIZES` in `sensor.rs`), cropped and scaled like every output.
+2. The app then crashed itself: `IllegalArgumentException: Could not find supported video
+   qualities` (`SettingsUtil.getNextSupportedVideoQualityIndex`): the default profiles have
+   camcorder profiles for camera 0 only. Fix: `aosp-device/gts7l/media_profiles_V1_0.xml` in
+   `/vendor/etc`, H.264/AAC profiles (QVGA, 480p, 720p, rear also 1080p) for cameras 0, 1, 2.
+
+Checked on the tablet without flashing: the new HAL bind-mounted over
+`/vendor/bin/hw/android.hardware.camera.provider-service.pc`, the profiles in a tmpfs over
+`/odm/etc` (also searched by `MediaProfiles`), and the framework restarted (`stop; start`:
+zygote reads the profiles at boot). The app opened, showed the rear preview upright, and the
+shutter saved `Pictures/IMG_20261126_203532.jpg`, 2064x1548, the room in focus.
+
 ## Not tested yet (needs the full image)
 
 These need the next full build flashed:

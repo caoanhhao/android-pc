@@ -98,6 +98,25 @@ impl Template {
     }
 }
 
+/// Common sizes a raw camera also offers, cropped and scaled from its modes. Camera API1
+/// clients (the AOSP Camera app) need preview sizes within the video encoder limits:
+/// without `media_profiles` those are 176x144 to 352x288, so the mode sizes alone
+/// (504x378 and up) leave none and the client fails to open the camera.
+const STANDARD_SIZES: [Size; 12] = [
+    Size { width: 1920, height: 1080 },
+    Size { width: 1600, height: 1200 },
+    Size { width: 1280, height: 960 },
+    Size { width: 1280, height: 720 },
+    Size { width: 1024, height: 768 },
+    Size { width: 800, height: 600 },
+    Size { width: 720, height: 480 },
+    Size { width: 640, height: 480 },
+    Size { width: 640, height: 360 },
+    Size { width: 352, height: 288 },
+    Size { width: 320, height: 240 },
+    Size { width: 176, height: 144 },
+];
+
 /// The value of every `*_OFF`, `*_FALSE` and `*_IDLE` enum constant used here.
 const OFF: u8 = 0;
 
@@ -208,9 +227,22 @@ impl Sensor {
         }
     }
 
-    /// Output sizes, smallest first.
+    /// Output sizes, smallest first: each mode's, and for raw cameras the
+    /// [`STANDARD_SIZES`] that fit in the largest.
     pub fn sizes(&self) -> impl Iterator<Item = Size> + '_ {
-        self.modes.iter().map(|mode| self.output(mode))
+        let mut sizes: Vec<Size> = self.modes.iter().map(|mode| self.output(mode)).collect();
+        if self.binning > 1 {
+            let max = self.max_size();
+            sizes.extend(
+                STANDARD_SIZES
+                    .iter()
+                    .copied()
+                    .filter(|size| size.width <= max.width && size.height <= max.height),
+            );
+        }
+        sizes.sort_by_key(|size| (size.area(), size.width));
+        sizes.dedup();
+        sizes.into_iter()
     }
 
     /// The largest size, which is also the active pixel array.
@@ -376,8 +408,9 @@ impl Sensor {
         let mut configurations = Vec::new();
         let mut durations = Vec::new();
         let mut stalls = Vec::new();
-        for mode in self.modes.iter().rev() {
-            let output = self.output(mode);
+        let sizes: Vec<Size> = self.sizes().collect();
+        for output in sizes.into_iter().rev() {
+            let mode = self.mode_for(&[output]);
             let (width, height) = (output.width as i32, output.height as i32);
             let frame = mode.intervals.first().map_or(0, |interval| interval.nanos());
             for format in STREAM_FORMATS {
@@ -709,7 +742,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sensor.max_size(), Size { width: 2064, height: 1548 });
-        assert_eq!(sensor.sizes().collect::<Vec<_>>()[0], Size { width: 1032, height: 774 });
+        let sizes: Vec<Size> = sensor.sizes().collect();
+        assert_eq!(sizes[0], Size { width: 176, height: 144 });
+        assert!(sizes.contains(&Size { width: 1032, height: 774 }));
+        assert!(sizes.contains(&Size { width: 1920, height: 1080 }));
+        assert!(!sizes.contains(&Size { width: 2560, height: 1440 }));
+        assert!(sensor.supports(Size { width: 352, height: 288 }));
+        assert_eq!(sensor.mode_for(&[Size { width: 352, height: 288 }]).size.width, 2064);
         assert_eq!(sensor.mode_for(&[Size { width: 1920, height: 1080 }]).size.width, 4128);
         assert_eq!(sensor.mode_for(&[Size { width: 640, height: 480 }]).size.width, 2064);
         let md = sensor.characteristics();
