@@ -1271,6 +1271,39 @@ broadcast traffic all along. A join where DHCP never reached the AP at all (AP r
 stuck at 10 for 18 s, seen once after ~7 h with suspend cycles) did not reproduce; see the
 open items.
 
+Speed and 5 GHz (2026-11-26, build 20261126.2024): "the 2.4 GHz hotspot gives ~6 MB/s and
+5 GHz does not work" was the host's hotspot, not the tablet. iperf3 (server on the tablet,
+the host's ufw drops inbound 5201) on 2.4 GHz channel 1: 71 Mbit/s host to tablet, 87 Mbit/s
+back. create_ap asks for HT40+, but hostapd's 20/40 coexistence scan finds overlapping
+networks ("20/40 MHz operation not permitted ... based on overlapping BSSes") and stays at
+20 MHz, as 802.11 requires; at 20 MHz, MCS 15 (130 Mbit/s PHY) is the ceiling. 5 GHz never
+came up because the default 5 GHz channel is 36: the host's AX211 (iwlwifi, self-managed
+regulatory domain VN from its firmware) marks 36-48 "no IR" (an AP there only next to a
+station link on the same channel), while 149-161 allow an AP. The host now runs
+`/etc/create_ap.conf` with `COUNTRY=VN`, `FREQ_BAND=5`, `CHANNEL=149`, `VHT_CHWIDTH=80`
+(backup: `/etc/create_ap.conf.bak-20261126`): channel 149, 80 MHz (centre 5775 MHz,
+channels 149-161, 5735-5815 MHz), inside Vietnam's 5725-5850 MHz band and the VN rules of
+both radios, at the radios' default power (22 dBm on the AX211). The tablet joined it with
+no change: VHT-MCS 9, 2 streams, 780 Mbit/s PHY; iperf3 538 Mbit/s host to tablet, 502
+Mbit/s back (~65 MB/s), 562/566 Mbit/s with 4 streams. The 6.0 Mbit/s tx bitrate `iw dev
+wlan0 link` sometimes shows is the rate of the last frame sent while idle (management or
+null frames at the basic rate), not a stuck rate control: under load it reads MCS 13-15 on
+2.4 GHz and VHT-MCS 9 on 5 GHz.
+
+The tablet's own gap was the Wi-Fi country code: `cmd wifi get-country-code` said null. With
+no SIM there is no telephony country, and setting one (`cmd wifi force-country-code enabled
+VN`) failed in `ISupplicantStaIface.setCountryCode` (ServiceSpecificException, code 1):
+without `BOARD_WPA_SUPPLICANT_PRIVATE_LIB` wpa_supplicant is built with `ANDROID_LIB_STUB` and
+has no `driver_cmd`, so its "COUNTRY VN" fails. `hals/wifi/driver_cmd` (`lib_driver_cmd_pc`)
+is that library for upstream drivers: COUNTRY becomes the nl80211 regulatory hint
+(`NL80211_CMD_REQ_SET_REG`, through wpa_supplicant's own nl80211 code), MACADDR reads the
+interface address, anything else stays unsupported as with the stub. `aosp_gts7l.mk` sets
+`ro.boot.wificountrycode=VN` (`wifi_config_prop`, a vendor config property) as the default
+country. ath11k already runs the firmware's VN domain (self-managed: 2.4 GHz 1-13, 5 GHz
+36-165), so channels do not change; the framework, SoftAP and the scan channel lists now agree
+with it. `hal_pc_wifi.te` adds the two denials the efs MAC code hit: `search` on
+`mnt_vendor_file` and `SIOCGIFHWADDR` on its own UDP socket.
+
 Open:
 - DHCP never reaching the AP after a forced join (once, after ~7 h uptime with suspend
   cycles; the tablet's TX after EAPOL looked stalled). If it comes back, before rebooting:

@@ -212,6 +212,10 @@ PRODUCT_VENDOR_PROPERTIES += \
 # gives wlan0 the tablet's own address from efs instead (docs/gts7l.md §23).
 PRODUCT_VENDOR_PROPERTIES += \
     ro.vendor.wifi.factory_mac_file=/mnt/vendor/efs/wifi/.mac.info
+# Default Wi-Fi country code, used while telephony offers none (no SIM): Vietnam, where the
+# tablet is used. ath11k already runs the firmware's VN regulatory domain (self-managed); this
+# makes the framework agree, so SoftAP and the channel lists follow VN rules too.
+PRODUCT_VENDOR_PROPERTIES += ro.boot.wificountrycode=VN
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.wifi.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.wifi.xml
 
