@@ -149,6 +149,9 @@ only), active when `config_strongAuthRequiredOnBoot` is `false`:
   `Unlocked CE storage for secured user 0`). A copy that no longer matches is deleted.
 - Profiles with a unified lock are unlocked by their parent as usual; nothing is kept for them.
 
+Until that first PIN entry, a touch on the sensor after a boot still hides the keyguard and
+leaves the user at FallbackHome, `RUNNING_LOCKED`; lock the screen again and type the PIN.
+
 So the PIN is needed once on a new install or after the screen lock was first set up with a
 build without the patch; from then on the fingerprint alone opens Android after every boot. A
 fingerprint lockout (5 failed touches) still asks for the PIN.
@@ -214,7 +217,7 @@ crashed on the enrolling screen.
 
 Waydroid, system and vendor `eng.caoanh.20261126.0922` (built with the patch and the RRO),
 fresh test data (`XDG_DATA_HOME=~/.local/share/waydroid-test-fp`, test PIN set with
-`locksettings set-pin`; the finger came from the user's `settings_fingerprint_5.xml` copied in,
+`locksettings set-pin`; finger 1 came from the user's `settings_fingerprint_5.xml` copied in,
 because enrolling crashed Settings before the Settings patch):
 
 - After a reboot: keyguard shown, strong-auth flags `0x0`, user 0 `RUNNING_LOCKED`, keyguard's
@@ -225,6 +228,9 @@ because enrolling crashed Settings before the Settings patch):
 - `lock`, `bad` (rejected), `touch` (unlocked) while running.
 - PIN changed with `locksettings set-pin --old`, reboot, `bad` rejected, `touch` unlocked: the
   stored copy follows a PIN change.
+- System_ext and vendor rebuilt with the Settings patch: `FP_PIN=... tools/fp.sh enroll` enrolled
+  finger 2 through Settings (no crash); `lock`, `touch 2` unlocked; after a reboot `bad` was
+  rejected and `touch 2` unlocked the user.
 - Without a stored copy (the older `waydroid-test` data, whose PIN was set before the patch):
   `touch` hides the keyguard and the user stays `RUNNING_LOCKED` at FallbackHome, as described
   above, until the PIN is typed once.

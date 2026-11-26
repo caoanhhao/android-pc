@@ -161,6 +161,9 @@ cmd_touch() {
     [[ -n $id ]] || { echo "no finger is enrolled; run: $0 enroll" >&2; exit 1; }
     sh_ setprop $P.enrollment_hit "$id"
     press
+    # a press right after other input on the lock screen can miss the sensor: press once more
+    sleep 1
+    [[ $(keyguard) != true ]] || press
     # After a boot, the remembered PIN unlocks the user's storage next
     # (tools/patches/aosp17-boot-biometric-unlock.patch); that takes a moment.
     state=$(user_state)
