@@ -322,9 +322,67 @@ instantiates effects and processes audio in the playback path.
 ## 6. Bluetooth module
 
 `IModule/bluetooth` is registered and its ports are in the policy (§2); Bluetooth is on
-(`dumpsys bluetooth_manager`: `State: ON`, `A2dpOffloadEnabled: false`, A2DP
-`Connected count: 0`). No headset or speaker was paired, so no Bluetooth stream was opened.
-Partial: needs a manual test (below).
+(`dumpsys bluetooth_manager`: `State: ON`, `A2dpOffloadEnabled: false`).
+
+### Update 2026-11-26: headset connected, dropped, no sound
+
+**Symptom.** A Bluetooth headset (EDIFIER X2s, bonded over BR/EDR, class 0x2404 headset)
+connected, disconnected again after a few seconds, over and over, and never played sound.
+
+**Cause.** The Bluetooth app starts only the profiles whose `bluetooth.profile.*.enabled`
+property is set, and `aosp_gts7l.mk` set only `gatt` and `hid.host` (docs/gts7l.md §20,
+written before the audio HAL existed). On build `eng.caoanh.20261126.2024`:
+
+```
+Profile: GattService
+Profile: HearingAidService
+Profile: HidHostService
+A2DP Source State: Disabled
+AVRCP Target Service not started
+```
+
+With no A2DP source, AVRCP target or HFP AG there was no SDP record and no profile for the
+headset to connect: the ACL link came up, the headset found nothing to talk to and dropped
+it. Nothing was wrong below the stack: the audio HAL's `IBluetoothAudioProviderFactory`
+(AOSP's default AIDL audio service, `com.android.hardware.audio`) was registered, the
+controller and UART were fine (the HID mouse and keyboard work over the same link).
+
+**Fix.** `aosp_gts7l.mk` also sets `bluetooth.profile.a2dp.source.enabled`,
+`bluetooth.profile.avrcp.target.enabled` and `bluetooth.profile.hfp.ag.enabled` (product
+properties, as Cuttlefish's phone and goldfish do). A2DP stays on software encoding:
+`ro.bluetooth.a2dp_offload.supported` is unset, so the stack opens the provider's
+`A2DP_SOFTWARE_ENCODING_DATAPATH` session (encoding in the Bluetooth app, PCM from the audio
+HAL over an FMQ). LE audio profiles stay off (untested on the QCA6390).
+
+**Proof without flashing** (the properties are not read-only, the app reads them when the
+adapter starts):
+
+```
+adb shell 'setprop bluetooth.profile.a2dp.source.enabled true
+  setprop bluetooth.profile.avrcp.target.enabled true
+  setprop bluetooth.profile.hfp.ag.enabled true
+  cmd bluetooth_manager disable; cmd bluetooth_manager wait-for-state:STATE_OFF
+  am force-stop com.android.bluetooth
+  cmd bluetooth_manager enable; cmd bluetooth_manager wait-for-state:STATE_ON'
+```
+
+- `A2dpService`, `AvrcpTargetService`, `HeadsetService` start; `A2DP Source State: Enabled`.
+- Connecting the headset from Settings: A2DP and HEADSET `STATE_CONNECTED` (one A2DP
+  connect/connect collision retried at once), `active_a2dp_devices` and
+  `active_hfp_devices` set, codec SBC 44.1 kHz 16-bit stereo (the headset offers no
+  optional codec), still connected a minute later with no new state change.
+- Audio policy opens the `bluetooth` module's `a2dp output` on `BT A2DP Out`; the HAL logs
+  `updateSourceMetadata: session_type=A2DP_SOFTWARE_ENCODING_DATAPATH ... state=STARTED`.
+- `AudioCheck play 10` (§3): the track is routed to `bt_a2dp` "EDIFIER X2s", the playback
+  head advances at 48 kHz for 10 s (`end head=480000 written=480000`), underruns 1 (start).
+
+Not proven by a listener yet (below), nor HFP voice: SCO goes over HCI (the HAL passes SCO
+packets, `hals/bluetooth/src/hci.rs`), untested on the QCA6390.
+
+SELinux: the FMQ memfd is labelled `tmpfs`, so `hal_audio_default` and `bluetooth` log
+`read write map` denials on `tmpfs:file`. The tablet boots with
+`androidboot.selinux=permissive`, so they do not block anything today; an enforcing build
+needs them looked at.
 
 ## Follow-ups (not done: check only)
 
@@ -353,4 +411,10 @@ Sau khi phiên chính gộp mọi nhánh và flash một lần (nhánh này khô
    tiếng to/nhỏ theo nút.
 3. **Mic.** Chạy `AudioCheck rec1 3` rồi nói to gần tablet trong 3 giây; gửi dòng
    `frames=... rms=...` (rms phải lớn hơn rõ rệt so với khi im lặng, khoảng vài chục trở lên).
-4. **Bluetooth (A2DP)**: như bước 2 của lần kiểm tra trước (ghép tai nghe, `AudioCheck play 10`).
+4. **Tai nghe Bluetooth (A2DP)** (§6): bật tai nghe EDIFIER X2s, kết nối trong Settings →
+   Connected devices, rồi chạy
+   ```
+   adb -s R52R504WFTK shell CLASSPATH=/data/local/tmp/audiocheck.dex app_process /system/bin AudioCheck play 10
+   ```
+   Mong đợi: tai nghe không tự ngắt, nghe tiếng bíp 1 kHz đều trong 10 giây ở cả hai bên, loa
+   tablet im lặng. Sau đó mở YouTube/nhạc và nghe thử vài phút; ghi lại nếu bị ngắt/rè/giật.
