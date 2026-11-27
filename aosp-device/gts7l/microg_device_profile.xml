@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- microG's device profile (/system/etc/microg_device_profile.xml, picked by its default "auto"
+     setting): this tablet's last stock build, SM-T875 T875XXS8DXH1 (Android 13, 2024-08-01), as
+     Samsung's firmware gives it (gts7l-stock: build_fingerprint.txt, misc_info.txt,
+     RECOVERY/RAMDISK/prop.default; init builds the fingerprint from the vendor's ro.product.*).
+     microG checks in and runs DroidGuard with these values, so Google sees a certified device
+     instead of aosp_gts7l userdebug/test-keys and Play Protect reports it as certified. -->
+<profile name="Samsung Galaxy Tab S7 SM-T875 (stock Android 13)" product="gts7lxx" sdk="33"
+    id="gts7lxx_33" auto="true">
+    <data key="Build.BOARD" value="kona" />
+    <data key="Build.BOOTLOADER" value="T875XXS8DXH1" />
+    <data key="Build.BRAND" value="samsung" />
+    <data key="Build.CPU_ABI" value="arm64-v8a" />
+    <data key="Build.CPU_ABI2" value="" />
+    <data key="Build.DEVICE" value="gts7l" />
+    <data key="Build.DISPLAY" value="TP1A.220624.014.T875XXS8DXH1" />
+    <data key="Build.FINGERPRINT" value="samsung/gts7lxx/gts7l:13/TP1A.220624.014/T875XXS8DXH1:user/release-keys" />
+    <data key="Build.HARDWARE" value="qcom" />
+    <data key="Build.HOST" value="21DK7B23" />
+    <data key="Build.ID" value="TP1A.220624.014" />
+    <data key="Build.MANUFACTURER" value="samsung" />
+    <data key="Build.MODEL" value="SM-T875" />
+    <data key="Build.PRODUCT" value="gts7lxx" />
+    <data key="Build.RADIO" value="T875XXS8DXH1" />
+    <data key="Build.TAGS" value="release-keys" />
+    <data key="Build.TIME" value="1722591310000" />
+    <data key="Build.TYPE" value="user" />
+    <data key="Build.USER" value="dpi" />
+    <data key="Build.VERSION.CODENAME" value="REL" />
+    <data key="Build.VERSION.INCREMENTAL" value="T875XXS8DXH1" />
+    <data key="Build.VERSION.RELEASE" value="13" />
+    <data key="Build.VERSION.SECURITY_PATCH" value="2024-08-01" />
+    <data key="Build.VERSION.SDK" value="33" />
+    <data key="Build.VERSION.SDK_INT" value="33" />
+    <data key="Build.VERSION.DEVICE_INITIAL_SDK_INT" value="30" />
+    <data key="Build.SUPPORTED_ABIS" value="arm64-v8a,armeabi-v7a,armeabi" />
+</profile>
