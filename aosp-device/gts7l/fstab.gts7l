@@ -41,4 +41,4 @@ gts7l_fw    /mnt/vendor/firmware  ext4  ro,nosuid,nodev,noexec,context=u:object_
 # Compressed swap in RAM, as stock (fstab.ramplus, 2 GiB): big games such as Where Winds Meet
 # keep ~3 GB resident while loading and lmkd kills everything else without it. Enabled by
 # init.gts7l.rc's swapon_all once boot completes.
-/dev/block/zram0  none  swap  defaults  zramsize=3221225472,max_comp_streams=8
+/dev/block/zram0  none  swap  defaults  zramsize=3221225472
