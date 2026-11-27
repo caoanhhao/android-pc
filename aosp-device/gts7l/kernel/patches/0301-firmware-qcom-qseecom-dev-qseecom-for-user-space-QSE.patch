@@ -1,4 +1,4 @@
-From 91a5617a86e962f10d511d679f2df41f2327a556 Mon Sep 17 00:00:00 2001
+From f9db60a6da900a6cfb65e6a9bbd588bf4a80e632 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] firmware: qcom: qseecom: /dev/qseecom for user-space QSEE
@@ -18,18 +18,19 @@ mainline does not have. Add a small one of its own, on an auxiliary
   to one TZ buffer, the response right after the request, as the apps'
   shared buffer is laid out downstream; the secure world refuses a
   request and a response from two separate allocations.
-- QSEECOM_IOC_APP_UNLOAD or close drops the client; apps the driver
-  started are shut down with their last client, apps found running are
-  left alone.
+- QSEECOM_IOC_APP_UNLOAD or close drops the client. Apps are never shut
+  down: on the Galaxy Tab S7 LTE starting an app again after shutting it
+  down reset the SoC, so an app keeps running until reboot and a
+  restarted client binds to it again.
 
 caoanhhao used AI to code
 ---
  drivers/firmware/qcom/Kconfig             |  12 +
  drivers/firmware/qcom/Makefile            |   1 +
  drivers/firmware/qcom/qcom_qseecom.c      |  17 +-
- drivers/firmware/qcom/qcom_qseecom_user.c | 369 ++++++++++++++++++++++
- include/uapi/misc/qcom_qseecom.h          |  86 +++++
- 5 files changed, 480 insertions(+), 5 deletions(-)
+ drivers/firmware/qcom/qcom_qseecom_user.c | 356 ++++++++++++++++++++++
+ include/uapi/misc/qcom_qseecom.h          |  85 ++++++
+ 5 files changed, 466 insertions(+), 5 deletions(-)
  create mode 100644 drivers/firmware/qcom/qcom_qseecom_user.c
  create mode 100644 include/uapi/misc/qcom_qseecom.h
 
@@ -108,15 +109,17 @@ index 320ec2a77..a8fb4c946 100644
  static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
 diff --git a/drivers/firmware/qcom/qcom_qseecom_user.c b/drivers/firmware/qcom/qcom_qseecom_user.c
 new file mode 100644
-index 000000000..fb50ca364
+index 000000000..0b531afa7
 --- /dev/null
 +++ b/drivers/firmware/qcom/qcom_qseecom_user.c
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,356 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * /dev/qseecom: user-space access to Qualcomm Secure Execution Environment
 + * (QSEE) apps. Loads an app from the split image user space passes, calls it
-+ * with request/response buffers and unloads it when its last client is gone.
++ * with request/response buffers. Apps stay up until reboot: starting an app
++ * again after shutting it down can reset the SoC (Galaxy Tab S7 LTE), and a
++ * restarted client simply binds to the running app.
 + * The ABI is in include/uapi/misc/qcom_qseecom.h.
 + */
 +#include <linux/auxiliary_bus.h>
@@ -136,20 +139,18 @@ index 000000000..fb50ca364
 +
 +#include <uapi/misc/qcom_qseecom.h>
 +
-+/* An app bound by one or more clients */
++/* An app a client bound to, known until reboot */
 +struct qseecom_user_app {
 +	struct list_head node;
 +	char name[QSEECOM_APP_NAME_SIZE];
 +	u32 app_id;
-+	unsigned int clients;
-+	bool started;		/* started by us, so shut down by us */
 +};
 +
 +struct qseecom_user {
 +	struct device *dev;
 +	struct miscdevice misc;
 +	struct qcom_tzmem_pool *pool;	/* request and response buffers */
-+	struct mutex lock;		/* apps, and app start/shutdown */
++	struct mutex lock;		/* apps, and app start */
 +	struct list_head apps;
 +};
 +
@@ -247,7 +248,7 @@ index 000000000..fb50ca364
 +	guard(mutex)(&qu->lock);
 +	app = qseecom_user_find(qu, load.name);
 +	if (app) {
-+		load.flags = app->started ? 0 : QSEECOM_APP_ALREADY_LOADED;
++		load.flags = QSEECOM_APP_ALREADY_LOADED;
 +		goto bind;
 +	}
 +
@@ -261,7 +262,6 @@ index 000000000..fb50ca364
 +		load.flags = QSEECOM_APP_ALREADY_LOADED;
 +	} else if (ret == -ENOENT && load.image) {
 +		ret = qseecom_user_start(qu, &load, &app_id);
-+		app->started = !ret;
 +		load.flags = 0;
 +	}
 +	if (ret) {
@@ -272,7 +272,6 @@ index 000000000..fb50ca364
 +	app->app_id = app_id;
 +	list_add(&app->node, &qu->apps);
 +bind:
-+	app->clients++;
 +	client->app = app;
 +	load.app_id = app->app_id;
 +
@@ -282,34 +281,14 @@ index 000000000..fb50ca364
 +	return 0;
 +}
 +
-+static void qseecom_user_put(struct qseecom_user_client *client)
-+{
-+	struct qseecom_user *qu = client->qu;
-+	struct qseecom_user_app *app = client->app;
-+	int ret;
-+
-+	client->app = NULL;
-+
-+	guard(mutex)(&qu->lock);
-+	if (--app->clients)
-+		return;
-+
-+	if (app->started) {
-+		ret = qcom_scm_qseecom_app_shutdown(app->app_id);
-+		dev_info(qu->dev, "shutdown of %s (app id %u): %d\n",
-+			 app->name, app->app_id, ret);
-+	}
-+	list_del(&app->node);
-+	kfree(app);
-+}
-+
++/* Unbinds only: the app keeps running (see the top of the file) */
 +static int qseecom_user_unload(struct qseecom_user_client *client)
 +{
 +	guard(mutex)(&client->lock);
 +	if (!client->app)
 +		return -ENODEV;
 +
-+	qseecom_user_put(client);
++	client->app = NULL;
 +	return 0;
 +}
 +
@@ -400,9 +379,6 @@ index 000000000..fb50ca364
 +{
 +	struct qseecom_user_client *client = file->private_data;
 +
-+	if (client->app)
-+		qseecom_user_put(client);
-+
 +	mutex_destroy(&client->lock);
 +	kfree(client);
 +
@@ -422,6 +398,15 @@ index 000000000..fb50ca364
 +	misc_deregister(data);
 +}
 +
++static void qseecom_user_free_apps(void *data)
++{
++	struct qseecom_user *qu = data;
++	struct qseecom_user_app *app, *tmp;
++
++	list_for_each_entry_safe(app, tmp, &qu->apps, node)
++		kfree(app);
++}
++
 +static int qseecom_user_setup(struct device *dev)
 +{
 +	struct qcom_tzmem_pool_config config = {
@@ -438,6 +423,9 @@ index 000000000..fb50ca364
 +	qu->dev = dev;
 +	INIT_LIST_HEAD(&qu->apps);
 +	ret = devm_mutex_init(dev, &qu->lock);
++	if (ret)
++		return ret;
++	ret = devm_add_action(dev, qseecom_user_free_apps, qu);
 +	if (ret)
 +		return ret;
 +
@@ -483,10 +471,10 @@ index 000000000..fb50ca364
 +MODULE_LICENSE("GPL");
 diff --git a/include/uapi/misc/qcom_qseecom.h b/include/uapi/misc/qcom_qseecom.h
 new file mode 100644
-index 000000000..8c172175e
+index 000000000..88e544bb2
 --- /dev/null
 +++ b/include/uapi/misc/qcom_qseecom.h
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,85 @@
 +/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 +/*
 + * /dev/qseecom: load apps into the Qualcomm Secure Execution Environment (QSEE,
@@ -497,9 +485,8 @@ index 000000000..8c172175e
 + * world does not run it yet and the caller passed an image, starts it from that
 + * image. QSEECOM_IOC_APP_SEND then calls the app with a request buffer and
 + * copies its response back. QSEECOM_IOC_APP_UNLOAD, or closing the file, drops
-+ * the client; an app this driver started is shut down when its last client is
-+ * gone. Apps the secure world already ran (loaded by the bootloader or by an
-+ * earlier user) are never shut down by the driver.
++ * the client. Apps are never shut down: one started here keeps running until
++ * reboot, and later clients bind to it (QSEECOM_APP_ALREADY_LOADED).
 + *
 + * The image is the app's split firmware as found in the modem partition's
 + * image/ directory: the .mdt file followed by .b00, .b01, ... in order (one

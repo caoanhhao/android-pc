@@ -1802,9 +1802,9 @@ One open file = one client of one app. Mode 0600 (root); `ueventd.gts7l.rc` make
 
 | ioctl | argument | |
 |---|---|---|
-| `QSEECOM_IOC_APP_LOAD` `_IOWR(0xF7, 1)` | `struct qseecom_app_load { char name[64]; u64 image; u32 image_size, mdt_size; u32 app_id /*out*/, flags /*out*/; }` | binds the file to app `name`: looked up first; if not running and `image` is set, started from the image (`.mdt` then `.b00`..`.bNN` concatenated, `mdt_size` = size of the `.mdt`, at most 32 MiB). `flags & QSEECOM_APP_ALREADY_LOADED`: was running already (never shut down by us) |
+| `QSEECOM_IOC_APP_LOAD` `_IOWR(0xF7, 1)` | `struct qseecom_app_load { char name[64]; u64 image; u32 image_size, mdt_size; u32 app_id /*out*/, flags /*out*/; }` | binds the file to app `name`: looked up first; if not running and `image` is set, started from the image (`.mdt` then `.b00`..`.bNN` concatenated, `mdt_size` = size of the `.mdt`, at most 32 MiB). `flags & QSEECOM_APP_ALREADY_LOADED`: was running already (also when an earlier client of this boot started it) |
 | `QSEECOM_IOC_APP_SEND` `_IOW(0xF7, 2)` | `struct qseecom_app_send { u64 req, rsp; u32 req_size, rsp_size; }` | calls the app; both buffers 1 byte to 1 MiB, both copied in (preset response fields reach the app) to one TZ buffer with the response right after the request; the whole response buffer is copied back |
-| `QSEECOM_IOC_APP_UNLOAD` `_IO(0xF7, 3)` | - | drops the binding (as close does); an app we started is shut down with its last client |
+| `QSEECOM_IOC_APP_UNLOAD` `_IO(0xF7, 3)` | - | drops the binding (as close does). Apps are never shut down: a second start in one boot reset the SoC, so an app runs until reboot and a restarted HAL binds to it again |
 
 Errors: `EBUSY` already bound, `ENODEV` not bound, `ENOENT` not running and no image, `EPERM`
 TZ refused the start (result in dmesg), `EIO` TZ failed the call, `EINVAL`, `ENOMEM`.
