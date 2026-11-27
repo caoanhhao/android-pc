@@ -92,7 +92,7 @@ gets split so each target picks its HAL list without Cuttlefish switches.
 | camera | V4L2 / CAMSS raw sensors + soft ISP | android-pc `hals/camera` design, later phase |
 | radio (LTE) | MHI + QMI to the X55 modem | **new**, later phase |
 | gnss | BCM47531 (closed protocol) | last, may stay out |
-| fingerprint | TrustZone only | the side-key sensor stays out of scope; AOSP's virtual HAL stands in, as on the PC (docs/lockdown-biometric.md, "gts7l") |
+| fingerprint | Goodix GW36T1 side-key sensor, SPI owned by TrustZone | none: real drivers only, so no HAL and no feature; Settings offers no fingerprint (§25) |
 
 ## 6. Phases
 
@@ -1477,3 +1477,52 @@ Google sign-in, checkin, push or Play Store need. Account authenticator (`com.go
 reads no `/product/etc/microg.xml`, so checkin and cloud messaging start off (turn them on as
 above), and SafetyNet/DroidGuard too (turn them on in microG settings if an app needs Play
 Integrity).
+
+## 25. Fingerprint: not possible, so not offered (2026-11-27)
+
+Reported: Settings > Security > Fingerprint could not enroll a finger. The build carried AOSP's
+virtual HAL (`com.android.hardware.biometrics.fingerprint.virtual`, an under-display sensor at
+`800:2240:100`, for the lockdown tests of docs/lockdown-biometric.md), so Settings showed a
+target on the screen that only `tools/fp.sh touch` over adb can satisfy; the real side-key
+sensor was never involved.
+
+### Hardware (stock DTBO `gts7l-stock/ap/dtbo/08_id0_rev0.dts`, stock kernel strings)
+
+| | |
+|---|---|
+| sensor | Goodix **GW36T1**, capacitive, in the power key (`goodix,chip_id = "GW36T1"`) |
+| bus | SPI on QUP **SE7** (`qupv3_se7_spi`, `0x99c000`, pins gpio20-23, function `qup7`), 9.6 MHz |
+| GPIOs | reset gpio127, IRQ gpio63, LDO enable gpio117 |
+| stock driver | Samsung `goodix_fp` (`/dev/goodix_fp`), `gfspi@0` under `soc` with `tz: 1`: Linux only votes the SE7 clock and switches power/reset; the `gfspi-spi@0` child of the SPI controller is the factory-binary variant |
+| stock userspace | `vendor.samsung.hardware.biometrics.fingerprint@3.0-service` + Samsung `bauth` libraries, talking through `/dev/qseecom` to the TAs `fingerpr`/`securefp` (and `authhat`) in the modem partition's `image/` |
+
+The sibling Tab S7+ (gts7xl-mainline, `docs/fingerprint.md`) has the same split on the same
+SE7 pins: touching gpio20-23 from Linux resets the SoC (an XPU violation), which is why our
+DTS keeps `gpio-reserved-ranges = <20 4>`. Images, matching and templates exist only inside
+Samsung's TA.
+
+### Why there is no working path
+
+- **Direct SPI from Linux (a Rust HAL reading the sensor):** the SE7 registers and pins are
+  locked to TrustZone; any access resets the SoC. Even with access, GW36T1's protocol and the
+  image matcher are undocumented (Goodix ships them only inside the TA).
+- **Through Samsung's TA:** mainline `qcom_scm` finds QSEE (`qseecom: found qseecom with
+  version 0x1402000`) but offers no way to load an app (only lookups of the UEFI-variable
+  app), and there is no `/dev/qseecom`. Using the TA would need a port of the downstream
+  qseecom ABI (app loading from `.mdt`/`.bXX`, listeners, dma-buf for ION), `qseecomd`-style
+  storage listeners, the `goodix_fp` clock/power ioctls, and either Samsung's closed bionic
+  HAL stack or a reverse-engineered `bauth`/TA command protocol. Weeks, closed code at every
+  layer, and the TA may refuse on an orange (unlocked) boot state. Out of scope for now.
+- **Finger-detect only (IRQ gpio63):** the sensor raises it only after TrustZone configures
+  it over SPI, and detection is not identification: accepting any touch would let anyone
+  unlock. Not done.
+
+### What the build does
+
+gts7l is a real device, so it uses only real drivers: `aosp_gts7l.mk` no longer installs the
+virtual HAL, its properties or `android.hardware.fingerprint.xml`, and the SystemUI rule for
+it (`sepolicy-system_ext/platform_app.te`) is gone. Without the feature, Settings hides the
+Fingerprint entry, the "Fingerprint + PIN" choices and the lock screen's fingerprint hints;
+screen lock is PIN, pattern or password. The lockdown/boot-unlock patches and the RRO stay: with
+no strong biometric they change nothing.
+

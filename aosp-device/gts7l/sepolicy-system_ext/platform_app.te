@@ -1,5 +1,0 @@
-# SystemUI (keyguard, the under-display sensor overlay) talks to the virtual fingerprint HAL,
-# as in Cuttlefish's shared/sepolicy/system_ext/private/platform_app{,_36}.te (platform_app_36:
-# platform apps that target SDK 36 or lower).
-hal_client_domain(platform_app, hal_fingerprint)
-hal_client_domain(platform_app_36, hal_fingerprint)

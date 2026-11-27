@@ -178,19 +178,11 @@ PRODUCT_PRODUCT_PROPERTIES += \
     ro.adb.secure=0 \
     service.adb.tcp.port=5555
 
-# Fingerprint as on aosp_pc_x86_64 (docs/lockdown-biometric.md): the tablet's own side-key
-# sensor belongs to TrustZone, so AOSP's virtual HAL (an under-display sensor driven over adb,
-# tools/fp.sh) stands in, as Cuttlefish's biometrics_fingerprint/device_vendor.mk adds it. The
-# sensor sits low in the middle of the 1600x2560 panel (natural orientation). No
-# enrollment_hit: only tools/fp.sh touch makes a press on the spot match, as on the real PC.
-PRODUCT_COPY_FILES += \
-    frameworks/native/data/etc/android.hardware.fingerprint.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.fingerprint.xml
-PRODUCT_PACKAGES += \
-    com.android.hardware.biometrics.fingerprint.virtual \
-    android.hardware.biometrics.fingerprint-service.default
-PRODUCT_VENDOR_PROPERTIES += \
-    persist.vendor.fingerprint.virtual.type=udfps \
-    persist.vendor.fingerprint.virtual.sensor_location=800:2240:100
+# No fingerprint: gts7l is a real device and uses only real drivers, and its side-key sensor
+# (Goodix GW36T1 on QUP SE7) is TrustZone's, readable only by Samsung's TA (docs/gts7l.md §25).
+# With no HAL and no android.hardware.fingerprint feature, Settings and the lock screen offer
+# no fingerprint at all, instead of an enrollment no finger can finish. AOSP's virtual HAL
+# (docs/lockdown-biometric.md) stays on the PC product only.
 
 # Our 7.3 kernel has no ashmem (gone upstream), and libcutils uses memfd only for apps that
 # target SDK 37+: older apps (Play Store, targetSdk 36) fail every CursorWindow and crash.
