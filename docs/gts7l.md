@@ -1555,6 +1555,17 @@ own session and branch:
 
 ### Step 1: kernel side and the feasibility gate (2026-11-27)
 
+**State at the end of step 1** (details in the rounds below):
+
+| | |
+|---|---|
+| works | `goodix_fp_tz` (patches 0303-0305): power gpio117, reset gpio127, IRQ gpio63 (the sensor raises it after power-on and reset), SE7 + QUP wrapper clock and interconnect votes |
+| works | QTEE objects through mainline `qcomtee` (`/dev/tee0`, built in, patch 0306 for >4 MiB buffers): client env with `registerLegacy` + CBOR credentials, Samsung TAs load through the QSEECom compat loader, **`securefp` (the GW36T1's TA) loads and answers Type_Check** (status 0, value 6) |
+| blocks | the compat channel of QTEE 5.2 carries at most ~3.6 KiB of request + response per call (-95 `MAXDATA` from QTEE); `securefp`'s Prepare (0xA040) and capture commands, and its 2 MiB shared buffer, do not fit, so no capture, enroll or identify |
+| blocks | legacy QSEOS app start (which would allow the 2 MiB shared buffer) fails with -2 / -47 for every app; QTEE-loaded apps are invisible to the legacy interface |
+| not the cause of -47 | image buffer placement (bridged, unbridged, 4 MiB aligned, below/above 4 GiB), call form (SMC32/64, arginfo), image contents, common libs, app-region notification, Samsung's TIMA bridge, registered listener services; the stock DT gives the qseecom heaps no fixed address and its smcinvoke `secapp-region` (0x87900000) is not read by the 4.19 driver |
+
+
 Patches 0300-0305 (`aosp-device/gts7l/kernel/patches/`), fragment: `CONFIG_QCOM_QSEECOM_USER=y`,
 `CONFIG_GOODIX_FP_TZ=y`, `CONFIG_QCOM_QSEECOM_UEFISECAPP` off.
 
