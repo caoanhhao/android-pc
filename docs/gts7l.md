@@ -1565,7 +1565,7 @@ Patches 0300-0305 (`aosp-device/gts7l/kernel/patches/`), fragment: `CONFIG_QCOM_
 | 0302 | `samsung,gts7l` in the qseecom allowlist |
 | 0303-0305 | `goodix,gw36t1` binding, `goodix_fp_tz` driver (`/dev/goodix_fp`), the DT node |
 
-**Result: the gate fails at app start.** QSEE answers (`version 0x1402000`, QSEE 5.2); app lookup
+**Result of the first round: the legacy app start fails** (but see the second round below). QSEE answers (`version 0x1402000`, QSEE 5.2); app lookup
 works and shows what the bootloader started: `keymaster64` (app id 1), `qcom.tz.uefisecapp` (2),
 `tz_iccc` (6); `fingerpr`, `securefp`, `authhat`, `skm`, `smplap64` are not running. Every app
 start from Linux is refused the same way, for `smplap64`, `smplap32`, `authhat`, `skm`, `fingerpr`,
@@ -1612,6 +1612,46 @@ probe with 3 clocks and the gpio63 interrupt; `on` drives gpio117 high and relea
 (high), `off` the reverse; the SPI clock ioctl holds `gcc_qupv3_wrap0_s7_clk` (19.2 MHz) and
 the wrapper 0 m/s AHB clocks and releases them; after power-on and reset the sensor raises its
 interrupt twice (Goodix reset/boot), which `read()`/`poll()` return. gpio20-23 were never touched.
+
+#### Second round: QTEE object interface (smcinvoke), 2026-11-27
+
+Mainline's `qcomtee` (`drivers/tee/qcomtee`, `CONFIG_QCOMTEE=m`, already in our build as
+`/vendor/lib/modules/qcomtee.ko`, not loaded by default) works on this QTEE: `qcom_scm` creates
+the `qcomtee` device (the smcinvoke probe call succeeds), loading the module gives `/dev/tee0`.
+Tested with a copy of the driver with a test hook (session worktree `out/fptest/qtee/`, notes
+in the shared folder), on kernel #40:
+
+| step | result |
+|---|---|
+| root `registerWithCredentials` (op 5, what mainline and libqcomtee use) | result 2: not on QTEE 5.2; the driver's own version query fails the same way ("QTEE version 0.0.0") |
+| root `registerLegacy` (op 1) with CBOR credentials `{1: uid 1000, 6: time ms}` | **client env**; with zeroed credentials the loader later says 20 (`CLIENT_CRED_PARSING_FAILURE`) |
+| `open(3)` IAppLoader, `open(122)` CQSEEComCompatAppLoader | both exist (`open(99999)`, `open(0x97)` fail) |
+| IAppLoader `loadFromBuffer` | `authhat` 0 (loaded), `smplap64` 12 (`ELF_SIGNATURE_ERROR`: Qualcomm's sample is not signed for this device); over 4 MiB the driver refuses (`MAX_INBOUND_BUFFER_SIZE`, buddy allocator) |
+| compat `loadFromRegion` (op 0: memory object with the ELF, name) | **`authhat`, `securefp`, `skm`, `tz_hdm`, `sec_fr`, `engmode` load (0)**; `smplap64` 12; **`fingerpr` 1** (generic), also through IAppLoader `loadFromRegion`, also with the sensor powered and clocked |
+| compat `IQSEEComCompat.sendRequest` (op 0) | **`skm` answers** (64-byte reply); `securefp` -90 (`Object_ERROR_DEFUNCT`) at the first request, powered or not |
+| compat `lookupTA`/`loadFromBuffer` (ops 2/1) | result 2 (signature differs on this QTEE) |
+
+So the legacy -47 does not matter: TAs load and answer through QTEE objects, the same SMCs
+mainline already has. Image: one ELF rebuilt from `.mdt` + `.bXX` (each segment at its
+`p_offset`; tool `mkmbn`). Memory objects must be physically contiguous: the TEE shm pool uses
+the buddy allocator (4 MiB max), `fingerpr` is 8.4 MiB, so the test used CMA
+(`dma_alloc_coherent`) plus an SHM bridge; `alloc_contig_pages` instead reset the SoC (TZ).
+Holding QTEE objects keeps `tee_device_unregister` waiting (`rmmod` hangs until reboot).
+
+Still open for the fingerprint: why `fingerpr` fails to load (1) and `securefp` dies at the first
+command. Both are the TAs that drive the SPI sensor; candidates: their init needs the stock
+listener services (`qseecomd`: secure file system, RPMB) that the smcinvoke path delivers as
+callbacks, a correct first command (the stock HAL opens a session before anything else; the
+cancel command used here may simply crash `securefp`), or the SE7 bus state (gpio20-23 mux,
+which only TrustZone can see). The protocol session (step 2) has the command layouts.
+
+For the HAL: use `/dev/tee0` (generic TEE `TEE_IOC_OBJECT_INVOKE`), `registerLegacy` with CBOR
+credentials, compat loader 122 `loadFromRegion(memobj, name)` and `sendRequest(req, rsp,
+offsets, is64, req_out, rsp_out, 4 null objects)` (layout of `IQSEEComCompat.h`). Two kernel
+changes are needed first: a CMA-backed allocation for memory objects over 4 MiB (`fingerpr`),
+and loading `qcomtee` at boot (ueventd/modules.load) with a ueventd rule for `/dev/tee0`. The
+legacy `/dev/qseecom` below stays useful for apps the bootloader started (lookup works) but
+cannot start apps on this firmware.
 
 #### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
 
