@@ -26,3 +26,10 @@ firmware_directories /mnt/vendor/firmware/ /vendor/firmware/
 # (media/, user mediacodec in group camera).
 /dev/video*  0660  system  camera
 /dev/media*  0660  system  camera
+
+# Fingerprint (docs/gts7l.md §25): QTEE objects (/dev/tee0, qcomtee) to load and call
+# Samsung's securefp TA, the sensor's power/clock/IRQ (/dev/goodix_fp), and the legacy
+# qseecom interface for apps the bootloader started. The HAL runs as user system.
+/dev/tee0         0660  system  system
+/dev/goodix_fp    0660  system  system
+/dev/qseecom      0660  system  system

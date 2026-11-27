@@ -1,0 +1,218 @@
+From c92c29fcf1f217f9c7ca91d673e31f47a4e1b03d Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 14:32:38 +0700
+Subject: [PATCH] tee: qcomtee: shared buffers above 4 MiB from CMA
+
+The QTEE shared memory pool takes its pages from alloc_pages_exact(), so
+no buffer can be larger than the page allocator's maximum order (4 MiB).
+A trusted app image passed to the app loader as a memory object, or a
+message carrying a legacy app's 2 MiB shared buffer in and out, needs
+more: Samsung's fingerprint TA alone is 8.4 MiB. Allocate such buffers
+with dma_alloc_pages() on the qcomtee device, which takes them from CMA,
+keep the linear-map (cacheable) address like the small ones, and raise
+the inbound message limit to 8 MiB.
+
+caoanhhao used AI to code
+---
+ drivers/tee/qcomtee/call.c    |  8 ++-
+ drivers/tee/qcomtee/qcomtee.h |  2 +-
+ drivers/tee/qcomtee/shm.c     | 99 +++++++++++++++++++++++++++++++----
+ 3 files changed, 97 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/tee/qcomtee/call.c b/drivers/tee/qcomtee/call.c
+index 4a597eeaf..7f1bc3136 100644
+--- a/drivers/tee/qcomtee/call.c
++++ b/drivers/tee/qcomtee/call.c
+@@ -7,6 +7,7 @@
+ 
+ #include <linux/slab.h>
+ #include <linux/tee.h>
++#include <linux/dma-mapping.h>
+ #include <linux/platform_device.h>
+ #include <linux/xarray.h>
+ 
+@@ -709,7 +710,12 @@ static int qcomtee_probe(struct platform_device *pdev)
+ 	if (!qcomtee)
+ 		return -ENOMEM;
+ 
+-	pool = qcomtee_shm_pool_alloc();
++	/* Large shared buffers come from CMA, through this device. */
++	err = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
++	if (err)
++		goto err_free_qcomtee;
++
++	pool = qcomtee_shm_pool_alloc(&pdev->dev);
+ 	if (IS_ERR(pool)) {
+ 		err = PTR_ERR(pool);
+ 
+diff --git a/drivers/tee/qcomtee/qcomtee.h b/drivers/tee/qcomtee/qcomtee.h
+index f39bf63fd..5aadaade7 100644
+--- a/drivers/tee/qcomtee/qcomtee.h
++++ b/drivers/tee/qcomtee/qcomtee.h
+@@ -43,7 +43,7 @@ void qcomtee_fetch_async_reqs(struct qcomtee_object_invoke_ctx *oic);
+ struct qcomtee_object *qcomtee_idx_erase(struct qcomtee_object_invoke_ctx *oic,
+ 					 u32 idx);
+ 
+-struct tee_shm_pool *qcomtee_shm_pool_alloc(void);
++struct tee_shm_pool *qcomtee_shm_pool_alloc(struct device *dev);
+ void qcomtee_msg_buffers_free(struct qcomtee_object_invoke_ctx *oic);
+ int qcomtee_msg_buffers_alloc(struct qcomtee_object_invoke_ctx *oic,
+ 			      struct qcomtee_arg *u);
+diff --git a/drivers/tee/qcomtee/shm.c b/drivers/tee/qcomtee/shm.c
+index b67909ef3..f3fee4887 100644
+--- a/drivers/tee/qcomtee/shm.c
++++ b/drivers/tee/qcomtee/shm.c
+@@ -5,6 +5,7 @@
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/dma-mapping.h>
+ #include <linux/firmware/qcom/qcom_tzmem.h>
+ #include <linux/mm.h>
+ 
+@@ -23,9 +24,10 @@
+  * The size of the inbound buffer depends on the user's requests,
+  * specifically the number of IB and OB arguments. If an invocation
+  * requires a size larger than %MAX_INBOUND_BUFFER_SIZE, the user should
+- * consider using another form of shared memory with QTEE.
++ * consider using another form of shared memory with QTEE. Above what the
++ * page allocator can give (4 MiB), the buffer comes from CMA.
+  */
+-#define MAX_INBOUND_BUFFER_SIZE SZ_4M
++#define MAX_INBOUND_BUFFER_SIZE SZ_8M
+ 
+ /**
+  * qcomtee_msg_buffers_alloc() - Allocate inbound and outbound buffers.
+@@ -97,7 +99,18 @@ void qcomtee_msg_buffers_free(struct qcomtee_object_invoke_ctx *oic)
+ 	tee_shm_free(oic->out_shm);
+ }
+ 
+-/* Dynamic shared memory pool based on tee_dyn_shm_alloc_helper(). */
++/*
++ * Dynamic shared memory pool based on tee_dyn_shm_alloc_helper(); buffers
++ * larger than the page allocator's maximum order (e.g. a trusted app image
++ * passed as a memory object, or the 2 MiB shared buffers of legacy apps)
++ * come from the device's CMA area instead.
++ */
++struct qcomtee_shm_pool {
++	struct tee_shm_pool pool;
++	struct device *dev;
++};
++
++#define QCOMTEE_SHM_MAX_PAGES_SIZE	(PAGE_SIZE << MAX_PAGE_ORDER)
+ 
+ static int qcomtee_shm_register(struct tee_context *ctx, struct tee_shm *shm,
+ 				struct page **pages, size_t num_pages,
+@@ -114,20 +127,85 @@ static int qcomtee_shm_unregister(struct tee_context *ctx, struct tee_shm *shm)
+ 	return 0;
+ }
+ 
++static int qcomtee_shm_alloc_contig(struct device *dev, struct tee_shm *shm,
++				    size_t size)
++{
++	size_t nr_pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
++	struct page **pages;
++	struct page *page;
++	dma_addr_t dma;
++	size_t i;
++	int ret;
++
++	page = dma_alloc_pages(dev, nr_pages << PAGE_SHIFT, &dma,
++			       DMA_BIDIRECTIONAL, GFP_KERNEL);
++	if (!page)
++		return -ENOMEM;
++
++	pages = kzalloc_objs(*pages, nr_pages);
++	if (!pages) {
++		ret = -ENOMEM;
++		goto err_free;
++	}
++	for (i = 0; i < nr_pages; i++)
++		pages[i] = page + i;
++
++	shm->kaddr = page_address(page);
++	shm->paddr = page_to_phys(page);
++	shm->size = nr_pages << PAGE_SHIFT;
++	shm->pages = pages;
++	shm->num_pages = nr_pages;
++	memset(shm->kaddr, 0, shm->size);
++
++	ret = qcomtee_shm_register(shm->ctx, shm, pages, nr_pages,
++				   (unsigned long)shm->kaddr);
++	if (ret)
++		goto err_pages;
++
++	return 0;
++
++err_pages:
++	kfree(pages);
++	shm->pages = NULL;
++err_free:
++	dma_free_pages(dev, nr_pages << PAGE_SHIFT, page, dma,
++		       DMA_BIDIRECTIONAL);
++	shm->kaddr = NULL;
++	return ret;
++}
++
+ static int pool_op_alloc(struct tee_shm_pool *pool, struct tee_shm *shm,
+ 			 size_t size, size_t align)
+ {
++	struct qcomtee_shm_pool *qpool = container_of(pool, struct qcomtee_shm_pool, pool);
++
++	if (PAGE_ALIGN(size) > QCOMTEE_SHM_MAX_PAGES_SIZE)
++		return qcomtee_shm_alloc_contig(qpool->dev, shm, size);
++
+ 	return tee_dyn_shm_alloc_helper(shm, size, align, qcomtee_shm_register);
+ }
+ 
+ static void pool_op_free(struct tee_shm_pool *pool, struct tee_shm *shm)
+ {
++	struct qcomtee_shm_pool *qpool = container_of(pool, struct qcomtee_shm_pool, pool);
++
++	if (shm->size > QCOMTEE_SHM_MAX_PAGES_SIZE) {
++		qcomtee_shm_unregister(shm->ctx, shm);
++		dma_free_pages(qpool->dev, shm->size, virt_to_page(shm->kaddr),
++			       (dma_addr_t)shm->paddr, /* no IOMMU: dma == phys */
++			       DMA_BIDIRECTIONAL);
++		shm->kaddr = NULL;
++		kfree(shm->pages);
++		shm->pages = NULL;
++		return;
++	}
++
+ 	tee_dyn_shm_free_helper(shm, qcomtee_shm_unregister);
+ }
+ 
+ static void pool_op_destroy_pool(struct tee_shm_pool *pool)
+ {
+-	kfree(pool);
++	kfree(container_of(pool, struct qcomtee_shm_pool, pool));
+ }
+ 
+ static const struct tee_shm_pool_ops pool_ops = {
+@@ -136,15 +214,16 @@ static const struct tee_shm_pool_ops pool_ops = {
+ 	.destroy_pool = pool_op_destroy_pool,
+ };
+ 
+-struct tee_shm_pool *qcomtee_shm_pool_alloc(void)
++struct tee_shm_pool *qcomtee_shm_pool_alloc(struct device *dev)
+ {
+-	struct tee_shm_pool *pool;
++	struct qcomtee_shm_pool *qpool;
+ 
+-	pool = kzalloc_obj(*pool);
+-	if (!pool)
++	qpool = kzalloc_obj(*qpool);
++	if (!qpool)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	pool->ops = &pool_ops;
++	qpool->pool.ops = &pool_ops;
++	qpool->dev = dev;
+ 
+-	return pool;
++	return &qpool->pool;
+ }
+-- 
+2.56.1
+

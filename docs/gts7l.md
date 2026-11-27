@@ -1653,6 +1653,42 @@ and loading `qcomtee` at boot (ueventd/modules.load) with a ueventd rule for `/d
 legacy `/dev/qseecom` below stays useful for apps the bootloader started (lookup works) but
 cannot start apps on this firmware.
 
+#### Third round: `securefp`, the TA this sensor uses (2026-11-27)
+
+The protocol work (`docs/gts7l-fingerprint-tz.md` on branch `claude/gts7l-fp-protocol-11b9ce`)
+shows that the GW36T1 is served by **`securefp`** (tl_type 6), not `fingerpr`, so the `fingerpr`
+load failure does not matter. With the sensor powered and clocked through `goodix_fp_tz`:
+
+- `securefp` loads through the compat loader (`loadFromRegion`) every time, and reloads fine in
+  the same boot after the previous instance was released.
+- **It answers**: Type_Check (cmd `0x10`, request `{0x10, 18}`, 64-byte request and response)
+  returns status 0 and value 6, the tl_type of the GW36T. Request and response sizes other than
+  64/64 give status `0x33` (the TA checks the lengths). The earlier -90 (DEFUNCT) came from
+  sending Cancel (`0x0A`) first: Cancel with no operation running kills the TA instance.
+- **New blocker: the compat channel carries at most ~3-4 KiB per request.** QTEE answers
+  `sendRequest` with -95 (`Object_ERROR_MAXDATA`) once request + response exceed about 3.1 KiB
+  (64 + 3072 passes, 64 + 4096, 4096 + 64 and 1984 + 1984 fail). `securefp`'s other commands are
+  far larger (Prepare `0xA040` each way, the capture control op `0xFA140`/`0xFA040`, the stock
+  shared buffer is `0x1F4140`), so Prepare and a capture could not be sent; no finger test yet.
+  The compat object takes no shared-buffer size and its other loader ops (`loadFromBuffer`,
+  `lookupTA`) give result 2 whatever the argument shape on this QTEE.
+- Compat-loaded apps get no legacy app id (QSEOS lookup by name fails; sends to ids 10-256 fail
+  with -22), so the large-buffer legacy send cannot reach them either. Ids 6 and 9 belong to apps
+  the bootloader started (6 = `tz_iccc`); probing sent each one a Type_Check request, which they
+  answered with an error.
+
+Next options, in order: find how QTEE 5.2 sizes a compat app's shared buffer (the newer
+`IQSEEComCompatAppLoader` has no size argument; maybe it comes from the app's metadata or a
+newer loader), get the legacy QSEOS_APP_START past -47 (then the 2 MiB legacy send works), or
+look at the QTEE `IAppController` of an app loaded by `IAppLoader` for a way to its legacy
+command entry.
+
+Kernel pieces for the HAL, committed: patch 0306 (qcomtee shared buffers above 4 MiB from CMA,
+inbound messages up to 8 MiB), `CONFIG_QCOMTEE=y` (`/dev/tee0` at boot; the driver's own
+version query fails harmlessly with "QTEE version 0.0.0"), ueventd rules for `/dev/tee0`,
+`/dev/goodix_fp` and `/dev/qseecom` (0660 system). Not done: `/sys/class/fingerprint/fingerprint/name`
+(the HAL can hard-code tl_type 6), sepolicy, a full kernel build and flash.
+
 #### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
 
 One open file = one client of one app. Mode 0600 (root): the HAL needs a ueventd rule.
