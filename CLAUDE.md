@@ -26,14 +26,13 @@ earlier Rust kernel lives on the `aosp-16` branch).
 - **Only one VM at a time** on this host — one Cuttlefish instance *or* one QEMU,
   across all sessions. A session that needs a VM while another one runs **waits**
   for it to stop; never start a second one, never stop another session's VM.
-- Start VMs only through `aosp/cvd-launch.sh` or `tools/run-qemu-aosp17-usb.sh`;
-  both source `tools/vm-wait.sh`, which takes a lock and waits until no
+- Start VMs only through `tools/run-qemu-aosp17-usb.sh`; it sources
+  `tools/vm-wait.sh`, which takes a lock and waits until no
   `qemu-system`/`crosvm`/`run_cvd` process is left. A new launcher must source it too.
-- VMs run pinned to E-cores 12-15 with a memory cap (both launchers do it; keep it in
+- VMs run pinned to E-cores 12-15 with a memory cap (the launcher does it; keep it in
   any new launcher). Use at most 8 vCPUs and 4 GB guest RAM. More than 4 vCPUs need all
   8 E-cores (`CPUS=8 VM_CPUS=8-15`), so no build may run at the same time.
-- Stop your VM as soon as the test is done (`cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`,
-  or quit QEMU), so the next session can go.
+- Stop your VM as soon as the test is done (quit QEMU), so the next session can go.
 
 ## Waydroid rule (an AOSP 17 container froze the host)
 

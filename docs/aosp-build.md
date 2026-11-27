@@ -100,8 +100,9 @@ then `droid`.
 ## Running (no Debian cuttlefish-base, no sudo)
 
 The host package `out/host/linux-x86/cvd-host_package.tar.gz` is extracted into
-`aosp/cvd-home/`. Launch with `aosp/cvd-launch.sh` (gitignored, like everything under
-`aosp/`), stop with `cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`.
+`aosp/cvd-home/`. The local launcher (`aosp/cvd-launch.sh`) and its VNC window
+(`aosp/cvd-window.py`) were removed on 2026-11-27 as no longer needed; this section records
+how they worked. Stop a running instance with `cd aosp/cvd-home && HOME=$PWD ./bin/stop_cvd`.
 
 - `unshare --user --map-current-user --mount --keep-caps`, then make
   `/usr/lib/cuttlefish-common/bin/capability_query.py` (an `exit 0` stub from
