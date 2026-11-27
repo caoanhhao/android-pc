@@ -1,4 +1,4 @@
-From b550cedc2eba808a0d5e0d7f03e5c89213f15106 Mon Sep 17 00:00:00 2001
+From 6066826a0093b97c06ccb5396dcaf17c92d5d4aa Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] dt-bindings: misc: add the Goodix GW36T1 driven by TrustZone

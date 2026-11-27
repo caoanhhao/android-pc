@@ -1555,16 +1555,16 @@ own session and branch:
 
 ### Step 1: kernel side and the feasibility gate (2026-11-27)
 
-**State at the end of step 1** (details in the rounds below):
+**State at the end of step 1** (details in the rounds below; the fifth round superseded the
+blockers of the rounds before it):
 
 | | |
 |---|---|
 | works | `goodix_fp_tz` (patches 0303-0305): power gpio117, reset gpio127, IRQ gpio63 (the sensor raises it after power-on and reset), SE7 + QUP wrapper clock and interconnect votes |
-| works | QTEE objects through mainline `qcomtee` (`/dev/tee0`, built in, patch 0306 for >4 MiB buffers): client env with `registerLegacy` + CBOR credentials, Samsung TAs load through the QSEECom compat loader, **`securefp` (the GW36T1's TA) loads and answers Type_Check** (status 0, value 6) |
-| blocks | the compat channel of QTEE 5.2 carries at most ~3.6 KiB of request + response per call (-95 `MAXDATA` from QTEE); `securefp`'s Prepare (0xA040) and capture commands, and its 2 MiB shared buffer, do not fit, so no capture, enroll or identify |
-| blocks | legacy QSEOS app start (which would allow the 2 MiB shared buffer) fails with -2 / -47 for every app; QTEE-loaded apps are invisible to the legacy interface |
-| not the cause of -47 | image buffer placement (bridged, unbridged, 4 MiB aligned, below/above 4 GiB), call form (SMC32/64, arginfo), image contents, common libs, app-region notification, Samsung's TIMA bridge, registered listener services; the stock DT gives the qseecom heaps no fixed address and its smcinvoke `secapp-region` (0x87900000) is not read by the 4.19 driver |
-
+| works | **legacy QSEOS path** (`/dev/qseecom`, patches 0300-0302): `securefp` starts from Linux and answers Type_Check (status 0, value 6), Prepare (0xA040 each way, status 0), Enroll_Init (status 0), Enroll_Do (fpop 4: waiting for the finger) and takes the 1 MiB control op (TA status 0x33 for raw capture op 0x0C without further setup) |
+| works | QTEE objects through mainline `qcomtee` (`/dev/tee0`, built in, patch 0306): Samsung TAs load through the QSEECom compat loader; that channel carries only ~3.6 KiB per call, so the HAL uses `/dev/qseecom` instead |
+| open | no finger interrupt arrived while `Enroll_Do` waited (two windows, 45 s + 90 s + 10 min); it is not known whether the key was touched, so the first real capture is still to be done |
+| open | right after that 10-minute wait, the next app start hung the tablet hard (adb shell and `adb reboot` dead); needs a manual reset and a look at the shutdown of a TA left in `Enroll_Do` |
 
 Patches 0300-0305 (`aosp-device/gts7l/kernel/patches/`), fragment: `CONFIG_QCOM_QSEECOM_USER=y`,
 `CONFIG_GOODIX_FP_TZ=y`, `CONFIG_QCOM_QSEECOM_UEFISECAPP` off.
@@ -1726,14 +1726,54 @@ version query fails harmlessly with "QTEE version 0.0.0"), ueventd rules for `/d
   decoded. Next: decode devcfg (or read the stock kernel's `qseecom_ta` CMA base from a stock
   boot log, without booting stock) and place the image buffer there.
 
+**Fifth round: the legacy start and send work (2026-11-27).** The stock kernel (4.19,
+`vmlinux-to-elf` on `gts7l-stock/ap/boot-unpacked/kernel`) issues the same SMCs as ours:
+`qseecom_scm_call` maps APP_START to `0x32000101` with arginfo 3 (mdt_len, img_len, phys) and
+the send to `0x30000001` with arginfo `0x885`; probe only asks two feature versions and skips
+the region notification (`appsbl-qseecom-support`). No Samsung-only step, no hyp_assign, and
+`securefp`/`fingerpr` are 64-bit ELFs (so no 32-bit `cmnlib` is missing). The answer was in
+TrustZone itself (`tz.mbn` from the BL tar, segment at `0x1c03b000`): the SMC table entry for
+`0x32000101` points to a handler that first checks that `[phys, phys + mdt_len + img_len)` is
+readable normal-world memory (three attribute lookups) and returns **-47** if not. `img_len` is
+therefore the size of the segments *after* the mdt; we passed the total size, so the range ran
+`mdt_len` bytes past our page-aligned buffer. With `img_len = size - mdt_len` (`securefp`: mdt
+7464, image 4651192) the start succeeds at once (app ids 10, 11, ... per start). This also
+explains the old observations: a zeroed image still failed (the check is address based) and a
+truncated length gave -1 (the range fit, parsing failed).
+
+The send then failed with status -2 / result -1 while request and response were two separate
+`qcom_tzmem` allocations (both below 4 GiB); with both in one buffer, the response right after
+the request (the downstream shared-buffer layout), it works. The TZ send handler (`0x30000001`
+→ `0x9e3b4` in that segment) refuses with internal error 1 when it cannot map the buffers, and
+requires them below 4 GiB for apps without a 64-bit flag. The driver now copies the response
+buffer in as well (the HAL presets fields such as the control-op capacity at `rsp+0xFA00C`).
+
+Answers of `securefp` over the legacy path, sensor powered and clocked (`gfptest on clk`):
+
+| command | req / rsp | answer |
+|---|---|---|
+| Type_Check `{0x10, 18}` | 0x40 / 0x40 | status 0, value 6 |
+| Prepare `{1}` (op flag 0 or 1) | 0xA040 / 0xA040 | fpop 0, status 0, no out data |
+| Control op `0x0C` raw capture, capacity 0x3D400 | 0xFA140 / 0xFA040 | fpop 0, status 0x33 |
+| Enroll_Init user `"0"`, bio idx 1, type 7, `/data/vendor/biometrics` | 0x180 / 0x40 | status 0 |
+| Enroll_Do `{3, op 1}` | 0x40 / 0x47440 | **fpop 4** (wait for the finger interrupt), `rsp+8` = 0xffffffff |
+
+The test tool (`out/fptest/tool/qseetest -l SECS`) then enables the IRQ and waits; on fpop
+3/4 it waits for the interrupt and sends `Enroll_Do` again. In three windows (45 s, 90 s,
+10 min) no interrupt came after the TA's own sensor setup (gpio63 count stayed 1); whether the
+power key was touched during them is not known. The next app start after the 10-minute run
+hung the tablet (no shell, `adb reboot` timed out); a manual reset is needed. Likely cause to
+check: the app was shut down while parked in `Enroll_Do`'s wait; a HAL should send Cancel
+(`0x0A`) before shutdown.
+
 #### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
 
-One open file = one client of one app. Mode 0600 (root): the HAL needs a ueventd rule.
+One open file = one client of one app. Mode 0600 (root); `ueventd.gts7l.rc` makes it 0660 system.
 
 | ioctl | argument | |
 |---|---|---|
 | `QSEECOM_IOC_APP_LOAD` `_IOWR(0xF7, 1)` | `struct qseecom_app_load { char name[64]; u64 image; u32 image_size, mdt_size; u32 app_id /*out*/, flags /*out*/; }` | binds the file to app `name`: looked up first; if not running and `image` is set, started from the image (`.mdt` then `.b00`..`.bNN` concatenated, `mdt_size` = size of the `.mdt`, at most 32 MiB). `flags & QSEECOM_APP_ALREADY_LOADED`: was running already (never shut down by us) |
-| `QSEECOM_IOC_APP_SEND` `_IOW(0xF7, 2)` | `struct qseecom_app_send { u64 req, rsp; u32 req_size, rsp_size; }` | calls the app; both buffers 1 byte to 1 MiB, copied through TZ memory; the whole response buffer is copied back |
+| `QSEECOM_IOC_APP_SEND` `_IOW(0xF7, 2)` | `struct qseecom_app_send { u64 req, rsp; u32 req_size, rsp_size; }` | calls the app; both buffers 1 byte to 1 MiB, both copied in (preset response fields reach the app) to one TZ buffer with the response right after the request; the whole response buffer is copied back |
 | `QSEECOM_IOC_APP_UNLOAD` `_IO(0xF7, 3)` | - | drops the binding (as close does); an app we started is shut down with its last client |
 
 Errors: `EBUSY` already bound, `ENODEV` not bound, `ENOENT` not running and no image, `EPERM`

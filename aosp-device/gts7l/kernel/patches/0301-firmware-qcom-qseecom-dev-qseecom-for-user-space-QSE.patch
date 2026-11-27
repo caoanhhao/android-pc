@@ -1,4 +1,4 @@
-From 13516960101fc8f0d8e08e8c7ab90dc23bc420f3 Mon Sep 17 00:00:00 2001
+From 91a5617a86e962f10d511d679f2df41f2327a556 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] firmware: qcom: qseecom: /dev/qseecom for user-space QSEE
@@ -13,8 +13,11 @@ mainline does not have. Add a small one of its own, on an auxiliary
   world does not run it yet, the app is started from the split image the
   caller passes (.mdt + .bXX as read from the modem partition), copied
   into a TZ memory pool of its own for the call.
-- QSEECOM_IOC_APP_SEND calls the app with request/response buffers
-  (copied through a TZ memory pool, at most 1 MiB each).
+- QSEECOM_IOC_APP_SEND calls the app with request/response buffers of at
+  most 1 MiB each. Both are copied in (callers preset response fields)
+  to one TZ buffer, the response right after the request, as the apps'
+  shared buffer is laid out downstream; the secure world refuses a
+  request and a response from two separate allocations.
 - QSEECOM_IOC_APP_UNLOAD or close drops the client; apps the driver
   started are shut down with their last client, apps found running are
   left alone.
@@ -24,9 +27,9 @@ caoanhhao used AI to code
  drivers/firmware/qcom/Kconfig             |  12 +
  drivers/firmware/qcom/Makefile            |   1 +
  drivers/firmware/qcom/qcom_qseecom.c      |  17 +-
- drivers/firmware/qcom/qcom_qseecom_user.c | 365 ++++++++++++++++++++++
- include/uapi/misc/qcom_qseecom.h          |  84 +++++
- 5 files changed, 474 insertions(+), 5 deletions(-)
+ drivers/firmware/qcom/qcom_qseecom_user.c | 369 ++++++++++++++++++++++
+ include/uapi/misc/qcom_qseecom.h          |  86 +++++
+ 5 files changed, 480 insertions(+), 5 deletions(-)
  create mode 100644 drivers/firmware/qcom/qcom_qseecom_user.c
  create mode 100644 include/uapi/misc/qcom_qseecom.h
 
@@ -105,10 +108,10 @@ index 320ec2a77..a8fb4c946 100644
  static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
 diff --git a/drivers/firmware/qcom/qcom_qseecom_user.c b/drivers/firmware/qcom/qcom_qseecom_user.c
 new file mode 100644
-index 000000000..974aed487
+index 000000000..fb50ca364
 --- /dev/null
 +++ b/drivers/firmware/qcom/qcom_qseecom_user.c
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,369 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * /dev/qseecom: user-space access to Qualcomm Secure Execution Environment
@@ -324,19 +327,23 @@ index 000000000..974aed487
 +	    !send.rsp_size || send.rsp_size > QSEECOM_MAX_BUF_SIZE)
 +		return -EINVAL;
 +
-+	void *req __free(qcom_tzmem) = qcom_tzmem_alloc(qu->pool, send.req_size,
++	/*
++	 * One buffer, the response right after the request, as apps expect
++	 * their shared buffer: the secure world refuses (-1) a request and a
++	 * response from separate allocations.
++	 */
++	void *req __free(qcom_tzmem) = qcom_tzmem_alloc(qu->pool,
++							send.req_size + send.rsp_size,
 +							GFP_KERNEL);
 +	if (!req)
 +		return -ENOMEM;
 +
-+	void *rsp __free(qcom_tzmem) = qcom_tzmem_alloc(qu->pool, send.rsp_size,
-+							GFP_KERNEL);
-+	if (!rsp)
-+		return -ENOMEM;
++	void *rsp = req + send.req_size;
 +
-+	if (copy_from_user(req, u64_to_user_ptr(send.req), send.req_size))
++	/* The response goes in as well: callers preset fields of it */
++	if (copy_from_user(req, u64_to_user_ptr(send.req), send.req_size) ||
++	    copy_from_user(rsp, u64_to_user_ptr(send.rsp), send.rsp_size))
 +		return -EFAULT;
-+	memset(rsp, 0, send.rsp_size);
 +
 +	scoped_guard(mutex, &client->lock) {
 +		if (!client->app)
@@ -476,10 +483,10 @@ index 000000000..974aed487
 +MODULE_LICENSE("GPL");
 diff --git a/include/uapi/misc/qcom_qseecom.h b/include/uapi/misc/qcom_qseecom.h
 new file mode 100644
-index 000000000..dedd69f8b
+index 000000000..8c172175e
 --- /dev/null
 +++ b/include/uapi/misc/qcom_qseecom.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,86 @@
 +/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 +/*
 + * /dev/qseecom: load apps into the Qualcomm Secure Execution Environment (QSEE,
@@ -536,12 +543,14 @@ index 000000000..dedd69f8b
 +/**
 + * struct qseecom_app_send - argument of QSEECOM_IOC_APP_SEND
 + * @req:      in: user address of the request
-+ * @rsp:      in: user address of the response buffer, filled by the app
++ * @rsp:      in: user address of the response buffer, passed in as it is
++ *            (callers may preset fields) and filled by the app
 + * @req_size: in: request size, 1 to QSEECOM_MAX_BUF_SIZE
 + * @rsp_size: in: response buffer size, 1 to QSEECOM_MAX_BUF_SIZE
 + *
-+ * The app sees both buffers as given; their layout is the app's own. The whole
-+ * response buffer is copied back, whatever the app wrote.
++ * The app sees one shared buffer, the request followed directly by the
++ * response, as with Qualcomm's downstream driver; their layout is the app's
++ * own. The whole response buffer is copied back, whatever the app wrote.
 + */
 +struct qseecom_app_send {
 +	__u64 req;

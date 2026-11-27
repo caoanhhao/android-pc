@@ -1,4 +1,4 @@
-From c92c29fcf1f217f9c7ca91d673e31f47a4e1b03d Mon Sep 17 00:00:00 2001
+From 8d98ec67e576bc7fca614ca9e72ee56c57d39d33 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 14:32:38 +0700
 Subject: [PATCH] tee: qcomtee: shared buffers above 4 MiB from CMA

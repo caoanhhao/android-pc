@@ -1,4 +1,4 @@
-From 805c69e3af131c09d3291d93e9cd75862437c6ce Mon Sep 17 00:00:00 2001
+From 00fc0e58764d2d78bd127e7a841602a28379cb16 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] firmware: qcom: scm: start and shut down QSEE apps
@@ -8,7 +8,11 @@ not load one. Add the two calls of the QSEE OS app manager Qualcomm's
 downstream qseecom driver uses (TZ_OS_APP_START_ID, TZ_OS_APP_SHUTDOWN_ID,
 QSEE version >= 4.0): app start takes the split image (.mdt followed by
 .b00 ...) in one physically contiguous TZ buffer, the size of the .mdt
-part and the total size, and returns the new app ID.
+part and the size of the segments that follow it, and returns the new
+app ID. The secure world checks that the range [image, image + both
+sizes) is memory it may read; passing the total size as the second
+length makes the range reach past the buffer and the start fails with
+result 0xffffffd1 (-47) before the image is even parsed.
 
 An app may ask the normal world for a listener service (secure file
 system, RPMB, ...); the call then returns QSEECOM_RESULT_INCOMPLETE with
@@ -19,12 +23,12 @@ call lock and log it, instead of warning and leaving the app blocked.
 
 caoanhhao used AI to code
 ---
- drivers/firmware/qcom/qcom_scm.c       | 143 +++++++++++++++++++++++--
+ drivers/firmware/qcom/qcom_scm.c       | 148 +++++++++++++++++++++++--
  include/linux/firmware/qcom/qcom_scm.h |  14 +++
- 2 files changed, 148 insertions(+), 9 deletions(-)
+ 2 files changed, 153 insertions(+), 9 deletions(-)
 
 diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
-index 3eaa4c9cc..5b63ea559 100644
+index 3eaa4c9cc..0e7fbc10f 100644
 --- a/drivers/firmware/qcom/qcom_scm.c
 +++ b/drivers/firmware/qcom/qcom_scm.c
 @@ -111,14 +111,21 @@ enum qcom_scm_qseecom_tz_owner {
@@ -134,7 +138,7 @@ index 3eaa4c9cc..5b63ea559 100644
  	WARN_ON(res->result == QSEECOM_RESULT_BLOCKED_ON_LISTENER);
  
  	return 0;
-@@ -2295,6 +2336,90 @@ int qcom_scm_qseecom_app_send(u32 app_id, void *req, size_t req_size,
+@@ -2295,6 +2336,95 @@ int qcom_scm_qseecom_app_send(u32 app_id, void *req, size_t req_size,
  }
  EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_send);
  
@@ -167,8 +171,13 @@ index 3eaa4c9cc..5b63ea559 100644
 +	desc.svc = QSEECOM_TZ_SVC_APP_MGR;
 +	desc.cmd = QSEECOM_TZ_CMD_APP_START;
 +	desc.arginfo = QCOM_SCM_ARGS(3, QCOM_SCM_VAL, QCOM_SCM_VAL, QCOM_SCM_VAL);
++	/*
++	 * The second length is that of the segments alone: the secure world
++	 * checks [image, image + mdt_size + that) and refuses (-47) a range
++	 * reaching past the buffer.
++	 */
 +	desc.args[0] = mdt_size;
-+	desc.args[1] = size;
++	desc.args[1] = size - mdt_size;
 +	desc.args[2] = qcom_tzmem_to_phys(image);
 +
 +	status = qcom_scm_qseecom_call(&desc, &res);

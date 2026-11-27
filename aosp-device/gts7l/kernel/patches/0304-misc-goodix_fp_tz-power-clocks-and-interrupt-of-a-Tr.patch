@@ -1,4 +1,4 @@
-From bbe4f76f4efe712d6ad22680783e947f7ef9aac1 Mon Sep 17 00:00:00 2001
+From b0ffaa5a45c5bba9dbfe26927b301f3cfdbe2a77 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] misc: goodix_fp_tz: power, clocks and interrupt of a
