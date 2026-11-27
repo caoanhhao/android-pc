@@ -1778,11 +1778,16 @@ Prepare, Enroll_Init, then `Enroll_Do` in the fpop loop; gpio63 level sampled ev
   Status 0x27 is not decoded yet (candidates: no `Hat_OP`/key before enroll, or no
   calibration from a second `Prepare`); the QSEE log buffer stays empty (the TA does not log
   on this ship firmware).
-- **It is not reliable yet.** Other windows with the user touching gave no interrupt at all
-  (gpio63 stayed low). Not the cause: power cycling the sensor before each run, gpio63 without
-  pull while powered (stock `gfspi_drdypin_active`, now in the test overlay), the SE7 clock
-  rate (19.2 MHz before and after). Stock's `GF_IOC_ENABLE_SPI_CLK` only takes a wake lock
-  (`gw3x_platform.c`), it votes no clocks.
+- **No sign that it is unreliable.** Every window without an interrupt (gpio63 stayed low) was
+  one in which the user, asked afterwards, had not touched the key (18:47, a 5-minute window at
+  19:05); four windows before the 18:38 reboot are unconfirmed. Changed meanwhile, harmlessly:
+  the sensor is power cycled before each run, gpio63 has no pull while powered (stock
+  `gfspi_drdypin_active`, now in the test overlay); the SE7 clock stays at 19.2 MHz. Stock's
+  `GF_IOC_ENABLE_SPI_CLK` only takes a wake lock (`gw3x_platform.c`), it votes no clocks.
+- **Start securefp once per boot.** A second app start in the same boot, after a clean Cancel
+  and shutdown, reset the SoC (console log ends in the start call); before that, six restarts in
+  one boot had worked. The stock HAL keeps the TA loaded; the tests now keep one client holding it
+  (`qseetest -k`), and a HAL should do the same.
 - **Hazards found.** Calling `Enroll_Do` again right away while it keeps answering at once
   (a test loop that resent every 100 ms, 186 calls) **reset the SoC** (TZ crash, tablet
   rebooted by itself). Shutting the app down while `Enroll_Do` is parked in fpop 4 can hang the
