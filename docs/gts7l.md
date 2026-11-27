@@ -1825,3 +1825,56 @@ Hz, 0 = leave the rate; clocks + QUP interconnect votes + stay awake), `DISABLE_
 22 (`u32`). `read()` blocks until an interrupt came since the last read and returns the count
 (`u32`); `poll()` gives `POLLIN`; each interrupt is a 1 s wakeup event. Last close drops IRQ and
 clocks (power stays). Sysfs `state`: `power clocks irq count`. Mode 0600.
+
+### Step 3: the HAL (2026-11-27)
+
+`aosp-device/hals/fingerprint` (in `hals.list`): `android.hardware.biometrics.fingerprint-service.gts7l`,
+an AIDL `IFingerprint` V5 HAL in Rust, one sensor, `POWER_BUTTON`, `STRONG`, four fingers per
+user, plus `fpctl` (`/vendor/bin/fpctl enroll USER SLOT OUT | identify USER FILE...`), the same
+flows from a root shell. Layout: `qsee.rs` (`/dev/qseecom` client, image = `.mdt` + `.bNN`),
+`sensor.rs` (`/dev/goodix_fp`: power cycle with the IRQ off, clock vote, finger wait on
+`poll` + a cancel eventfd), `securefp.rs` (the commands of docs/gts7l-fingerprint-tz.md),
+`engine.rs` (enroll/identify driven by the fpops), `store.rs` (templates), `hal.rs`
+(`IFingerprint`/`ISession`). The hal.mk adds `android.hardware.fingerprint.xml`; the RRO sets
+`config_is_powerbutton_fps` and `config_sfps_sensor_props` (display 0, `1600,560`, radius 90:
+the right long edge near the top in the natural portrait orientation), which the HAL also
+reports.
+
+What the TA wants, found on the tablet with `fpctl` and in `securefp`'s code (`tz` addresses
+are the TA's, `bas` the stock HAL's):
+
+- **Start once per boot.** A second start of `securefp` in the same boot reset the SoC; the HAL
+  starts it on first use and holds it, and `/dev/qseecom` no longer shuts apps down (patch 0301,
+  step 1's a0f6714), so a restarted HAL binds to the running app.
+- **One capture per `Prepare` + `Enroll_Init`.** After a capture `Enroll_Do` answers fpop 0 with
+  the same progress again and again instead of waiting for a new touch. The stock
+  `FPBAuthService::enroll` goes back to its top after every capture (`bas 0x57930` →
+  `0x56dd4`); doing `Prepare` + `Enroll_Init` before each `Enroll_Do` round gives a fresh
+  capture, and the TA keeps the progress (`Enroll_Init` does not reset it; `Enroll_Final`
+  does). Control op `0x18` between captures answers fpop 0 at once and is not needed.
+- **`Enroll_Do` response:** `+0x0C` capture result (`0x88000000`: too little finger), `+0x10`
+  percentage, `+0x14` accepted captures, `+0x18` their total (`tz 0x45d0`). Twenty captures
+  make 100%.
+- **Status 0x27** is the Goodix library's "bad image" (`gf_enroll`, `tz 0x170c8`: base data
+  average ≤ 0x707, result `0x88000000`): a rejected capture, not an authentication failure; the
+  HAL reports `PARTIAL` and goes on.
+- **The template comes with the 100% `Enroll_Do`** (`rsp+0x1C`, length at `rsp+0x3D41C`,
+  95 KB); `Enroll_Final` returns no data (`final_enroll_stub`, `tz 0x8f80`, zeroes the
+  length). Stored as `/data/vendor/biometrics/fp/User_<user>/<user>_<slot>tmpl.dat`, with the
+  gatekeeper SID and the authenticator id next to it.
+- **Hat_OP is not needed.** Without the gatekeeper token check (which our software gatekeeper
+  cannot pass, docs/gts7l-fingerprint-tz.md §10.1) enroll and identify work; the TA stores
+  SID 0 and its own auth tokens carry user id 1. The HAL checks the enroll token's challenge
+  against its own `generateChallenge` and stores the token's user id; it signs the
+  `onAuthenticationSucceeded` token with nothing (zero MAC), so keystore keys bound to
+  fingerprint auth do not work, keyguard unlock does.
+- **`Identify_Do`:** `+0x10` score, `+0x14` matched slot (0 = none), status 0 on a match,
+  **0x20** on no match; a match also brings the TA's 69-byte token at `rsp+0x47440`.
+- **Never shut down while parked.** The HAL sends Cancel (`0x0A`) when it drops a capture that
+  waits for the finger; the sensor is powered off between operations.
+
+`fpctl` on the tablet (kernel #40 with step 1's test modules, a holder process keeping
+`securefp`): enroll of the index finger in 20 touches → 95 KB template; the same finger →
+match, score 75, slot 1; the thumb, three touches → status 0x20 each time, rejected. Once the
+tablet rebooted by itself in the middle of an enrollment (51%); a full press of the power key
+(screen off and suspend while the TA captured) is the suspect, not seen again.

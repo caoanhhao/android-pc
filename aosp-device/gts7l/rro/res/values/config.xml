@@ -10,4 +10,19 @@
          after boot, the user's storage included (aosp17-boot-biometric-unlock.patch). -->
     <bool name="config_biometricUnlockInLockdown">true</bool>
     <bool name="config_strongAuthRequiredOnBoot">false</bool>
+
+    <!-- The fingerprint sensor is the power key (Goodix GW36T1, hals/fingerprint): Settings
+         shows the side-key enroll animation and keyguard the power-button hints. Location in
+         pixels of the natural (portrait, 1600x2560) orientation, on the right long edge near
+         the top; the HAL reports the same (hal.rs SENSOR_X/Y/RADIUS). -->
+    <bool name="config_is_powerbutton_fps">true</bool>
+    <array name="config_sfps_sensor_props" translatable="false">
+        <item>@array/config_sfps_sensor_props_display0</item>
+    </array>
+    <array name="config_sfps_sensor_props_display0" translatable="false">
+        <item></item>
+        <item>1600</item>
+        <item>560</item>
+        <item>90</item>
+    </array>
 </resources>

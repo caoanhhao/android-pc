@@ -178,11 +178,9 @@ PRODUCT_PRODUCT_PROPERTIES += \
     ro.adb.secure=0 \
     service.adb.tcp.port=5555
 
-# No fingerprint: gts7l is a real device and uses only real drivers, and its side-key sensor
-# (Goodix GW36T1 on QUP SE7) is TrustZone's, readable only by Samsung's TA (docs/gts7l.md §25).
-# With no HAL and no android.hardware.fingerprint feature, Settings and the lock screen offer
-# no fingerprint at all, instead of an enrollment no finger can finish. AOSP's virtual HAL
-# (docs/lockdown-biometric.md) stays on the PC product only.
+# Fingerprint: the Goodix GW36T1 in the power key, read by Samsung's securefp TrustZone app;
+# our Rust HAL (hals/fingerprint, in hals.list) drives it and adds the
+# android.hardware.fingerprint feature (docs/gts7l.md §25).
 
 # Our 7.3 kernel has no ashmem (gone upstream), and libcutils uses memfd only for apps that
 # target SDK 37+: older apps (Play Store, targetSdk 36) fail every CursorWindow and crash.
