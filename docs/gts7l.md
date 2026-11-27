@@ -1766,6 +1766,31 @@ hung the tablet (no shell, `adb reboot` timed out); a manual reset is needed. Li
 check: the app was shut down while parked in `Enroll_Do`'s wait; a HAL should send Cancel
 (`0x0A`) before shutdown.
 
+**Sixth round: real touches (2026-11-27).** With the user touching the power key during
+60 s windows (`out/fptest` `cap.sh`: sensor power cycled, IRQ on, `securefp` started, Type_Check,
+Prepare, Enroll_Init, then `Enroll_Do` in the fpop loop; gpio63 level sampled every 50 ms):
+
+- **The finger interrupt works.** Twice a touch raised gpio63 interrupts while `Enroll_Do` was
+  parked in fpop 4 (once 49 s into a window, once three interrupts within 1 s). After them the
+  TA moved on by itself: fpop 4, 4, then **fpop 5** (finger down), **fpop 6**, and then fpop 0
+  with **status 0x27** and `rsp+0xC` = 0x88000000; no image data in the response. So the
+  sensor, its interrupt and the TA's SPI access to the sensor all work from our kernel.
+  Status 0x27 is not decoded yet (candidates: no `Hat_OP`/key before enroll, or no
+  calibration from a second `Prepare`); the QSEE log buffer stays empty (the TA does not log
+  on this ship firmware).
+- **It is not reliable yet.** Other windows with the user touching gave no interrupt at all
+  (gpio63 stayed low). Not the cause: power cycling the sensor before each run, gpio63 without
+  pull while powered (stock `gfspi_drdypin_active`, now in the test overlay), the SE7 clock
+  rate (19.2 MHz before and after). Stock's `GF_IOC_ENABLE_SPI_CLK` only takes a wake lock
+  (`gw3x_platform.c`), it votes no clocks.
+- **Hazards found.** Calling `Enroll_Do` again right away while it keeps answering at once
+  (a test loop that resent every 100 ms, 186 calls) **reset the SoC** (TZ crash, tablet
+  rebooted by itself). Shutting the app down while `Enroll_Do` is parked in fpop 4 can hang the
+  next app start (fifth round); Cancel (`0x0A`, 0x40/0x40) first returns fpop 0 status 0 and
+  the shutdown is then clean, every time. A HAL must: send Cancel before shutdown, never resend
+  `Enroll_Do` without an fpop that asks for it, and keep the sensor IRQ disabled while it switches
+  the sensor's power (856 spurious interrupts during one power cycle).
+
 #### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
 
 One open file = one client of one app. Mode 0600 (root); `ueventd.gts7l.rc` makes it 0660 system.
