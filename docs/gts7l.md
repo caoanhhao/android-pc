@@ -1552,3 +1552,93 @@ own session and branch:
    enroll and unlock tested on the tablet. The TA's auth tokens are HMAC'd with a TrustZone key
    our software KeyMint does not share: keyguard unlock does not need them verified, keys
    bound to biometric auth would not work.
+
+### Step 1: kernel side and the feasibility gate (2026-11-27)
+
+Patches 0300-0305 (`aosp-device/gts7l/kernel/patches/`), fragment: `CONFIG_QCOM_QSEECOM_USER=y`,
+`CONFIG_GOODIX_FP_TZ=y`, `CONFIG_QCOM_QSEECOM_UEFISECAPP` off.
+
+| patch | what |
+|---|---|
+| 0300 | `qcom_scm`: `qcom_scm_qseecom_app_start()` (QSEE OS app manager cmd 1, SMC `0x72000101`: mdt length, image length, physical address, all values) and `qcom_scm_qseecom_app_shutdown()` (cmd 2); a call that returns `QSEECOM_RESULT_INCOMPLETE` (an app asking for a listener service) is answered with a failure (listener service cmd 3) and logged instead of leaving the app blocked |
+| 0301 | `/dev/qseecom`, an ABI of our own (below), on an auxiliary device of `qcom_qseecom` |
+| 0302 | `samsung,gts7l` in the qseecom allowlist |
+| 0303-0305 | `goodix,gw36t1` binding, `goodix_fp_tz` driver (`/dev/goodix_fp`), the DT node |
+
+**Result: the gate fails at app start.** QSEE answers (`version 0x1402000`, QSEE 5.2); app lookup
+works and shows what the bootloader started: `keymaster64` (app id 1), `qcom.tz.uefisecapp` (2),
+`tz_iccc` (6); `fingerpr`, `securefp`, `authhat`, `skm`, `smplap64` are not running. Every app
+start from Linux is refused the same way, for `smplap64`, `smplap32`, `authhat`, `skm`, `fingerpr`,
+`securefp`: SMC status **-2** (`QCOM_SCM_EINVAL_ARG`) with result **`0xffffffd1` (-47)**, about
+0.1 ms after the call, so no TA ever ran and no command could be sent. Tested on kernel #40 with
+the same code built as a test module that issues the SMCs itself (`out/fptest/` in the session
+worktree, not committed); what was ruled out:
+
+- **Image buffer:** TZ memory with an SHM bridge (as mainline `qcom_tzmem` makes it), plain DMA
+  memory without a bridge, 4 MiB aligned, below 4 GiB (`0xfda00000`, `0xa8cb0000`) and above
+  (`0x18e560000`), image length exact or page aligned: always -47. The bridge encoding of
+  mainline equals Samsung's `qtee_shmbridge.c` (pfn|RW, ipfn|RW, size|1<<9, VMID_HLOS).
+- **Call form:** `IS_CALL_AVAIL` says 0x32000101/02/03/05 and the send call exist; SMC64 and
+  SMC32 give the same; arginfo with the address as buffer instead of value gives -10 (so the
+  three values are what TZ expects, as in Samsung's `qseecom.c`).
+- **Image contents:** -47 comes with a zeroed image too, and with a real `.mdt` whose `e_phnum`
+  is cleared; an image cut short (length = mdt only, or 8-64 KiB of `smplap64`) gives -1 after
+  ~2 ms instead. So TZ checks the layout first and -47 is a later step that does not depend on
+  the image: most likely the secure-app memory (allocation in, or protection of, the apps region)
+  or a policy check, not authentication.
+- **Common lib:** `cmnlib64`/`cmnlib` via LOAD_SERVICES_IMAGE (cmd 7) return success at once
+  (the bootloader loaded them; even a wrong image "succeeds"), the apps still fail.
+- **Apps region:** QSEOS_APP_REGION_NOTIFICATION with the stock `secapp-region`
+  (`0x82400000`, `0x3a00000`; it lies in our `removed_mem`) returns -8 (with value arginfo -10):
+  the bootloader set it already (stock DT: `qcom,appsbl-qseecom-support`, so stock Linux never
+  sends it either).
+- **Samsung's TIMA bridge:** Samsung's `qtee_shmbridge.c` also bridges 1 MiB at `0xB0100000`
+  (RAM on our kernel); taking those pages and bridging them changed nothing.
+- **QSEE log:** a log buffer registered with TZ_OS_REGISTER_LOG_BUFFER stays empty on a failed
+  start (it carries app output only).
+
+Crashes (both a TZ reset, no pstore record, tablet back after reboot): freeing a buffer
+registered as the QSEE log buffer (the module's `rmmod`), and reading the TZ diag area that
+IMEM `0x146bf720` points to (`0x14695000`, XPU protected). Neither belongs in a driver.
+
+Still open, in order of likelihood: what Samsung's TZ checks at -47 (the qseecom heaps and ION
+of the stock kernel, `qseecomd`'s listeners being registered before any app start, a
+Samsung-only SMC at boot, or a knox/warranty policy); a stock-kernel boot with `qseecom` debug
+logs (`/d/tzdbg/qsee_log`) would show the stock order of SMCs, which is the next thing to compare.
+Not tried: sending commands to the apps that do run (keymaster64, uefisecapp, tz_iccc).
+
+**Sensor side works** (same driver as a test module plus a DT overlay of the node on kernel #40):
+probe with 3 clocks and the gpio63 interrupt; `on` drives gpio117 high and releases gpio127
+(high), `off` the reverse; the SPI clock ioctl holds `gcc_qupv3_wrap0_s7_clk` (19.2 MHz) and
+the wrapper 0 m/s AHB clocks and releases them; after power-on and reset the sensor raises its
+interrupt twice (Goodix reset/boot), which `read()`/`poll()` return. gpio20-23 were never touched.
+
+#### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
+
+One open file = one client of one app. Mode 0600 (root): the HAL needs a ueventd rule.
+
+| ioctl | argument | |
+|---|---|---|
+| `QSEECOM_IOC_APP_LOAD` `_IOWR(0xF7, 1)` | `struct qseecom_app_load { char name[64]; u64 image; u32 image_size, mdt_size; u32 app_id /*out*/, flags /*out*/; }` | binds the file to app `name`: looked up first; if not running and `image` is set, started from the image (`.mdt` then `.b00`..`.bNN` concatenated, `mdt_size` = size of the `.mdt`, at most 32 MiB). `flags & QSEECOM_APP_ALREADY_LOADED`: was running already (never shut down by us) |
+| `QSEECOM_IOC_APP_SEND` `_IOW(0xF7, 2)` | `struct qseecom_app_send { u64 req, rsp; u32 req_size, rsp_size; }` | calls the app; both buffers 1 byte to 1 MiB, copied through TZ memory; the whole response buffer is copied back |
+| `QSEECOM_IOC_APP_UNLOAD` `_IO(0xF7, 3)` | - | drops the binding (as close does); an app we started is shut down with its last client |
+
+Errors: `EBUSY` already bound, `ENODEV` not bound, `ENOENT` not running and no image, `EPERM`
+TZ refused the start (result in dmesg), `EIO` TZ failed the call, `EINVAL`, `ENOMEM`.
+The user library reads `/mnt/vendor/apnhlos/image/<name>.mdt` and the `.bXX` files listed by the
+ELF's `e_phnum` itself (the firmware path of the kernel is `/mnt/vendor/firmware`). The stock HAL
+may instead load the APEX copy `/apex/com.samsung.android.biometrics.fingerprint/etc/ta/fpta`, a
+single ELF: its `.mdt` part is the ELF header + program headers + hash segment, the same layout.
+Missing compared with downstream: listeners (requests fail), `send_modified_cmd` (ION fds
+patched into the request as physical addresses), bandwidth votes (stock DT says
+`qcom,no-clock-support`).
+
+#### `/dev/goodix_fp` ABI (`drivers/misc/goodix_fp_tz.c`)
+
+Samsung's ioctl numbers (magic `'g'`): `GF_IOC_RESET` 2 (reset low 3 ms, wait 10 ms; needs
+power), `GF_IOC_ENABLE_IRQ` 3 / `DISABLE_IRQ` 4 (also IRQ wake), `GF_IOC_ENABLE_SPI_CLK` 5 (`u32`
+Hz, 0 = leave the rate; clocks + QUP interconnect votes + stay awake), `DISABLE_SPI_CLK` 6,
+`GF_IOC_ENABLE_POWER` 7 (LDO on, 11 ms, reset released) / `DISABLE_POWER` 8, `GF_IOC_GET_ORIENT`
+22 (`u32`). `read()` blocks until an interrupt came since the last read and returns the count
+(`u32`); `poll()` gives `POLLIN`; each interrupt is a 1 s wakeup event. Last close drops IRQ and
+clocks (power stays). Sysfs `state`: `power clocks irq count`. Mode 0600.

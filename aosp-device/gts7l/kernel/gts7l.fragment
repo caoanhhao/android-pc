@@ -324,3 +324,10 @@ CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_
 # 5170-5250 MHz, above Vietnam's limits).
 CONFIG_CFG80211_CERTIFICATION_ONUS=y
 CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS=y
+# Fingerprint (docs/gts7l.md §25): /dev/qseecom loads and calls QSEE apps (Samsung's
+# fingerpr/securefp/authhat), /dev/goodix_fp powers the TrustZone-driven sensor.
+CONFIG_QCOM_QSEECOM_USER=y
+CONFIG_GOODIX_FP_TZ=y
+# The bootloader runs qcom.tz.uefisecapp here too; with qseecom enabled its client would
+# install efivars ops on Android, untested: leave it out.
+# CONFIG_QCOM_QSEECOM_UEFISECAPP is not set

@@ -1,0 +1,262 @@
+From 805c69e3af131c09d3291d93e9cd75862437c6ce Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 13:17:23 +0700
+Subject: [PATCH] firmware: qcom: scm: start and shut down QSEE apps
+
+Mainline can look up QSEE apps the bootloader loaded and call them, but
+not load one. Add the two calls of the QSEE OS app manager Qualcomm's
+downstream qseecom driver uses (TZ_OS_APP_START_ID, TZ_OS_APP_SHUTDOWN_ID,
+QSEE version >= 4.0): app start takes the split image (.mdt followed by
+.b00 ...) in one physically contiguous TZ buffer, the size of the .mdt
+part and the total size, and returns the new app ID.
+
+An app may ask the normal world for a listener service (secure file
+system, RPMB, ...); the call then returns QSEECOM_RESULT_INCOMPLETE with
+the listener ID and the app stays blocked until the listener answers.
+No listener can be registered from Linux, so answer each such request
+with a failure (TZ_OS_LISTENER_RESPONSE_HANDLER_ID) under the qseecom
+call lock and log it, instead of warning and leaving the app blocked.
+
+caoanhhao used AI to code
+---
+ drivers/firmware/qcom/qcom_scm.c       | 143 +++++++++++++++++++++++--
+ include/linux/firmware/qcom/qcom_scm.h |  14 +++
+ 2 files changed, 148 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
+index 3eaa4c9cc..5b63ea559 100644
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -111,14 +111,21 @@ enum qcom_scm_qseecom_tz_owner {
+ enum qcom_scm_qseecom_tz_svc {
+ 	QSEECOM_TZ_SVC_APP_ID_PLACEHOLDER	= 0,
+ 	QSEECOM_TZ_SVC_APP_MGR			= 1,
++	QSEECOM_TZ_SVC_LISTENER			= 2,
+ 	QSEECOM_TZ_SVC_INFO			= 6,
+ };
+ 
+ enum qcom_scm_qseecom_tz_cmd_app {
+ 	QSEECOM_TZ_CMD_APP_SEND			= 1,
++	QSEECOM_TZ_CMD_APP_START		= 1,
++	QSEECOM_TZ_CMD_APP_SHUTDOWN		= 2,
+ 	QSEECOM_TZ_CMD_APP_LOOKUP		= 3,
+ };
+ 
++enum qcom_scm_qseecom_tz_cmd_listener {
++	QSEECOM_TZ_CMD_LISTENER_RESPONSE	= 3,
++};
++
+ enum qcom_scm_qseecom_tz_cmd_info {
+ 	QSEECOM_TZ_CMD_INFO_VERSION		= 3,
+ };
+@@ -126,6 +133,7 @@ enum qcom_scm_qseecom_tz_cmd_info {
+ #define RSCTABLE_BUFFER_NOT_SUFFICIENT		20
+ 
+ #define QSEECOM_MAX_APP_NAME_SIZE		64
++#define QSEECOM_MAX_LISTENER_REQUESTS		64
+ #define SHMBRIDGE_RESULT_NOTSUPP		4
+ 
+ /* Each bit configures cold/warm boot address for one of the 4 CPUs */
+@@ -2108,6 +2116,42 @@ static int __qcom_scm_qseecom_call(const struct qcom_scm_desc *desc,
+ 	return 0;
+ }
+ 
++/*
++ * No listener service (secure file system, RPMB, ...) is registered from
++ * Linux. An app that asks for one gets QSEECOM_RESULT_INCOMPLETE with the
++ * listener ID in @data and stays blocked in the secure world until the
++ * listener answers, so answer each such request with a failure and let the
++ * app go on.
++ */
++static int __qcom_scm_qseecom_fail_listeners(struct qcom_scm_qseecom_resp *res)
++{
++	struct qcom_scm_desc desc = {};
++	int status;
++	int i;
++
++	for (i = 0; res->result == QSEECOM_RESULT_INCOMPLETE; i++) {
++		if (i == QSEECOM_MAX_LISTENER_REQUESTS)
++			return -ELOOP;
++
++		dev_warn(__scm->dev,
++			 "qseecom: request for listener %llu (type %#llx) failed, no listener registered\n",
++			 res->data, res->resp_type);
++
++		desc.owner = QSEECOM_TZ_OWNER_QSEE_OS;
++		desc.svc = QSEECOM_TZ_SVC_LISTENER;
++		desc.cmd = QSEECOM_TZ_CMD_LISTENER_RESPONSE;
++		desc.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_VAL, QCOM_SCM_VAL);
++		desc.args[0] = res->data;
++		desc.args[1] = QSEECOM_RESULT_FAILURE;
++
++		status = __qcom_scm_qseecom_call(&desc, res);
++		if (status)
++			return status;
++	}
++
++	return 0;
++}
++
+ /**
+  * qcom_scm_qseecom_call() - Perform a QSEECOM SCM call.
+  * @desc: SCM call descriptor.
+@@ -2125,12 +2169,13 @@ static int qcom_scm_qseecom_call(const struct qcom_scm_desc *desc,
+ 
+ 	/*
+ 	 * Note: Multiple QSEECOM SCM calls should not be executed same time,
+-	 * so lock things here. This needs to be extended to callback/listener
+-	 * handling when support for that is implemented.
++	 * so lock things here, including the answers to listener requests.
+ 	 */
+ 
+ 	mutex_lock(&qcom_scm_qseecom_call_lock);
+ 	status = __qcom_scm_qseecom_call(desc, res);
++	if (!status)
++		status = __qcom_scm_qseecom_fail_listeners(res);
+ 	mutex_unlock(&qcom_scm_qseecom_call_lock);
+ 
+ 	dev_dbg(__scm->dev, "%s: owner=%x, svc=%x, cmd=%x, result=%lld, type=%llx, data=%llx\n",
+@@ -2143,14 +2188,10 @@ static int qcom_scm_qseecom_call(const struct qcom_scm_desc *desc,
+ 	}
+ 
+ 	/*
+-	 * TODO: Handle incomplete and blocked calls:
+-	 *
+-	 * Incomplete and blocked calls are not supported yet. Some devices
+-	 * and/or commands require those, some don't. Let's warn about them
+-	 * prominently in case someone attempts to try these commands with a
+-	 * device/command combination that isn't supported yet.
++	 * TODO: Handle blocked calls. An app is blocked on a listener only
++	 * while another app uses that listener, which cannot happen without
++	 * registered listeners.
+ 	 */
+-	WARN_ON(res->result == QSEECOM_RESULT_INCOMPLETE);
+ 	WARN_ON(res->result == QSEECOM_RESULT_BLOCKED_ON_LISTENER);
+ 
+ 	return 0;
+@@ -2295,6 +2336,90 @@ int qcom_scm_qseecom_app_send(u32 app_id, void *req, size_t req_size,
+ }
+ EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_send);
+ 
++/**
++ * qcom_scm_qseecom_app_start() - Load and start a QSEE app.
++ * @image:    The app image (must be TZ memory): its .mdt file followed by its
++ *            segment files .b00, .b01, ... in order.
++ * @mdt_size: Size of the .mdt part of @image.
++ * @size:     Size of @image.
++ * @app_id:   The returned app ID.
++ *
++ * Hands the split image of a QSEE app to the secure world, which authenticates
++ * it, copies it to the secure apps region and starts it. The image buffer can
++ * be freed once this returns.
++ *
++ * Return: Zero on success, -EPERM if the secure world refused the app (see the
++ * kernel log for its result), nonzero on other failures.
++ */
++int qcom_scm_qseecom_app_start(void *image, size_t mdt_size, size_t size,
++			       u32 *app_id)
++{
++	struct qcom_scm_qseecom_resp res = {};
++	struct qcom_scm_desc desc = {};
++	int status;
++
++	if (mdt_size > size || size > U32_MAX)
++		return -EINVAL;
++
++	desc.owner = QSEECOM_TZ_OWNER_QSEE_OS;
++	desc.svc = QSEECOM_TZ_SVC_APP_MGR;
++	desc.cmd = QSEECOM_TZ_CMD_APP_START;
++	desc.arginfo = QCOM_SCM_ARGS(3, QCOM_SCM_VAL, QCOM_SCM_VAL, QCOM_SCM_VAL);
++	desc.args[0] = mdt_size;
++	desc.args[1] = size;
++	desc.args[2] = qcom_tzmem_to_phys(image);
++
++	status = qcom_scm_qseecom_call(&desc, &res);
++	if (status)
++		return status;
++
++	if (res.result != QSEECOM_RESULT_SUCCESS ||
++	    res.resp_type != QSEECOM_SCM_RES_APP_ID) {
++		dev_err(__scm->dev,
++			"qseecom: app start failed: result %#llx, type %#llx, data %#llx\n",
++			res.result, res.resp_type, res.data);
++		return -EPERM;
++	}
++
++	*app_id = res.data;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_start);
++
++/**
++ * qcom_scm_qseecom_app_shutdown() - Stop and unload a QSEE app.
++ * @app_id: The ID of the app, from qcom_scm_qseecom_app_start().
++ *
++ * Return: Zero on success, -EPERM if the secure world refused, nonzero on other
++ * failures.
++ */
++int qcom_scm_qseecom_app_shutdown(u32 app_id)
++{
++	struct qcom_scm_qseecom_resp res = {};
++	struct qcom_scm_desc desc = {};
++	int status;
++
++	desc.owner = QSEECOM_TZ_OWNER_QSEE_OS;
++	desc.svc = QSEECOM_TZ_SVC_APP_MGR;
++	desc.cmd = QSEECOM_TZ_CMD_APP_SHUTDOWN;
++	desc.arginfo = QCOM_SCM_ARGS(1, QCOM_SCM_VAL);
++	desc.args[0] = app_id;
++
++	status = qcom_scm_qseecom_call(&desc, &res);
++	if (status)
++		return status;
++
++	if (res.result != QSEECOM_RESULT_SUCCESS) {
++		dev_err(__scm->dev,
++			"qseecom: shutdown of app %u failed: result %#llx, type %#llx, data %#llx\n",
++			app_id, res.result, res.resp_type, res.data);
++		return -EPERM;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_shutdown);
++
+ /*
+  * We do not yet support re-entrant calls via the qseecom interface. To prevent
+  + any potential issues with this, only allow validated machines for now.
+diff --git a/include/linux/firmware/qcom/qcom_scm.h b/include/linux/firmware/qcom/qcom_scm.h
+index 5747bd191..025814669 100644
+--- a/include/linux/firmware/qcom/qcom_scm.h
++++ b/include/linux/firmware/qcom/qcom_scm.h
+@@ -172,6 +172,9 @@ int qcom_scm_shm_bridge_delete(u64 handle);
+ int qcom_scm_qseecom_app_get_id(const char *app_name, u32 *app_id);
+ int qcom_scm_qseecom_app_send(u32 app_id, void *req, size_t req_size,
+ 			      void *rsp, size_t rsp_size);
++int qcom_scm_qseecom_app_start(void *image, size_t mdt_size, size_t size,
++			       u32 *app_id);
++int qcom_scm_qseecom_app_shutdown(u32 app_id);
+ 
+ #else /* CONFIG_QCOM_QSEECOM */
+ 
+@@ -187,6 +190,17 @@ static inline int qcom_scm_qseecom_app_send(u32 app_id,
+ 	return -EINVAL;
+ }
+ 
++static inline int qcom_scm_qseecom_app_start(void *image, size_t mdt_size,
++					     size_t size, u32 *app_id)
++{
++	return -EINVAL;
++}
++
++static inline int qcom_scm_qseecom_app_shutdown(u32 app_id)
++{
++	return -EINVAL;
++}
++
+ #endif /* CONFIG_QCOM_QSEECOM */
+ 
+ int qcom_scm_qtee_invoke_smc(phys_addr_t inbuf, size_t inbuf_size,
+-- 
+2.56.1
+

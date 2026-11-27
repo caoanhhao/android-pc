@@ -1,0 +1,514 @@
+From bbe4f76f4efe712d6ad22680783e947f7ef9aac1 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 13:17:23 +0700
+Subject: [PATCH] misc: goodix_fp_tz: power, clocks and interrupt of a
+ TrustZone-driven sensor
+
+Samsung's goodix_fp driver in TrustZone mode ("tz: 1") does no SPI: the
+fingerprint trusted app reads the sensor, Linux switches the LDO and
+reset, keeps the system awake while the app uses the bus and forwards
+the sensor's interrupt. Add that as /dev/goodix_fp with the same ioctl
+numbers as Samsung's driver (reset, enable/disable irq, spi clock,
+power, orientation); read()/poll() wait for the interrupt and return
+the interrupt count. The SPI clock ioctls also vote the serial engine
+and QUP wrapper clocks and the QUP interconnect paths given in the DT.
+
+caoanhhao used AI to code
+---
+ drivers/misc/Kconfig        |  13 ++
+ drivers/misc/Makefile       |   1 +
+ drivers/misc/goodix_fp_tz.c | 446 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 460 insertions(+)
+ create mode 100644 drivers/misc/goodix_fp_tz.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 602f4608d..8f1dd8d0a 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -390,6 +390,19 @@ config LATTICE_ECP3_CONFIG
+ 
+ 	  If unsure, say N.
+ 
++config GOODIX_FP_TZ
++	tristate "Goodix fingerprint sensor driven by TrustZone"
++	depends on OF && GPIOLIB
++	help
++	  Power, reset, bus clocks and interrupt of a Goodix fingerprint
++	  sensor whose SPI bus belongs to the secure world, such as the GW36T1
++	  in the power key of the Samsung Galaxy Tab S7 LTE. The secure world's
++	  fingerprint app reads the sensor; /dev/goodix_fp lets the HAL switch
++	  it on and wait for its interrupt.
++
++	  To compile this driver as a module, choose M here: the module will
++	  be called goodix_fp_tz.
++
+ config SRAM
+ 	bool "Generic on-chip SRAM driver"
+ 	depends on HAS_IOMEM
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 80e6d5af0..4be34f4e7 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -42,6 +42,7 @@ obj-$(CONFIG_ALTERA_STAPL)	+=altera-stapl/
+ obj-$(CONFIG_INTEL_MEI)		+= mei/
+ obj-$(CONFIG_VMWARE_VMCI)	+= vmw_vmci/
+ obj-$(CONFIG_LATTICE_ECP3_CONFIG)	+= lattice-ecp3-config.o
++obj-$(CONFIG_GOODIX_FP_TZ)	+= goodix_fp_tz.o
+ obj-$(CONFIG_SRAM)		+= sram.o
+ obj-$(CONFIG_SRAM_EXEC)		+= sram-exec.o
+ obj-$(CONFIG_GENWQE)		+= genwqe/
+diff --git a/drivers/misc/goodix_fp_tz.c b/drivers/misc/goodix_fp_tz.c
+new file mode 100644
+index 000000000..c4daa157c
+--- /dev/null
++++ b/drivers/misc/goodix_fp_tz.c
+@@ -0,0 +1,446 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Goodix fingerprint sensor whose SPI bus belongs to TrustZone (Samsung's
++ * "goodix_fp" with tz: 1, e.g. the GW36T1 in the power key of the Galaxy Tab S7
++ * LTE). The secure world talks to the sensor; Linux only switches its supply
++ * and reset, votes the bus clocks the secure world needs while it drives the
++ * SPI controller, keeps the system awake meanwhile and reports the sensor's
++ * interrupt.
++ *
++ * /dev/goodix_fp takes the ioctl numbers of Samsung's driver for the same
++ * operations, so a HAL written against it needs no other ABI:
++ *
++ *   GF_IOC_RESET            pulse reset (low 3 ms, then wait 10 ms)
++ *   GF_IOC_ENABLE_IRQ       enable the interrupt (and wakeup by it)
++ *   GF_IOC_DISABLE_IRQ      disable it
++ *   GF_IOC_ENABLE_SPI_CLK   (u32 Hz) enable the bus clocks and stay awake; a
++ *                           non-zero rate is set on the serial engine clock
++ *   GF_IOC_DISABLE_SPI_CLK  release both
++ *   GF_IOC_ENABLE_POWER     supply on, then reset released after 11 ms
++ *   GF_IOC_DISABLE_POWER    reset asserted, 11 ms, supply off
++ *   GF_IOC_GET_ORIENT       (u32) the "goodix,orient" property (0 if absent)
++ *
++ * read() blocks until the interrupt fired since the last read (or since the
++ * file was opened) and returns the number of interrupts so far as a u32; poll()
++ * reports POLLIN for the same condition. Every interrupt is also a wakeup event
++ * of one second. Closing the last file releases the clocks and the interrupt;
++ * power stays as it is.
++ */
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/fs.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interconnect.h>
++#include <linux/interrupt.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/platform_device.h>
++#include <linux/pm_wakeup.h>
++#include <linux/poll.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++#define GF_IOC_MAGIC		'g'
++#define GF_IOC_RESET		_IO(GF_IOC_MAGIC, 2)
++#define GF_IOC_ENABLE_IRQ	_IO(GF_IOC_MAGIC, 3)
++#define GF_IOC_DISABLE_IRQ	_IO(GF_IOC_MAGIC, 4)
++#define GF_IOC_ENABLE_SPI_CLK	_IOW(GF_IOC_MAGIC, 5, u32)
++#define GF_IOC_DISABLE_SPI_CLK	_IO(GF_IOC_MAGIC, 6)
++#define GF_IOC_ENABLE_POWER	_IO(GF_IOC_MAGIC, 7)
++#define GF_IOC_DISABLE_POWER	_IO(GF_IOC_MAGIC, 8)
++#define GF_IOC_GET_ORIENT	_IOR(GF_IOC_MAGIC, 22, u32)
++
++/* Bandwidth of the QUP paths while the secure world drives the bus, as geni-se */
++#define GOODIX_FP_ICC_CORE_KBPS	76800
++#define GOODIX_FP_ICC_CFG_KBPS	76800
++
++struct goodix_fp {
++	struct device *dev;
++	struct miscdevice misc;
++	struct gpio_desc *power_gpio;
++	struct gpio_desc *reset_gpio;
++	struct clk_bulk_data *clks;
++	int num_clks;
++	struct icc_path *icc_core;
++	struct icc_path *icc_cfg;
++	struct pinctrl *pinctrl;
++	struct pinctrl_state *pins_default;
++	struct pinctrl_state *pins_active;
++	int irq;
++	u32 orient;
++
++	struct mutex lock;		/* the state below */
++	bool powered;
++	bool clocked;
++	bool irq_enabled;
++	unsigned int users;
++
++	wait_queue_head_t wait;
++	atomic_t irq_count;
++};
++
++struct goodix_fp_file {
++	struct goodix_fp *fp;
++	u32 seen;
++};
++
++static irqreturn_t goodix_fp_irq(int irq, void *data)
++{
++	struct goodix_fp *fp = data;
++
++	atomic_inc(&fp->irq_count);
++	pm_wakeup_dev_event(fp->dev, 1000, true);
++	wake_up_interruptible(&fp->wait);
++
++	return IRQ_HANDLED;
++}
++
++static void goodix_fp_power(struct goodix_fp *fp, bool on)
++{
++	if (on == fp->powered)
++		return;
++
++	if (on) {
++		if (fp->pins_active)
++			pinctrl_select_state(fp->pinctrl, fp->pins_active);
++		gpiod_set_value_cansleep(fp->power_gpio, 1);
++		usleep_range(11000, 11050);
++		gpiod_set_value_cansleep(fp->reset_gpio, 0);
++	} else {
++		gpiod_set_value_cansleep(fp->reset_gpio, 1);
++		usleep_range(11000, 11050);
++		gpiod_set_value_cansleep(fp->power_gpio, 0);
++		if (fp->pins_active)
++			pinctrl_select_state(fp->pinctrl, fp->pins_default);
++	}
++	fp->powered = on;
++}
++
++static void goodix_fp_reset(struct goodix_fp *fp)
++{
++	gpiod_set_value_cansleep(fp->reset_gpio, 1);
++	usleep_range(3000, 3050);
++	gpiod_set_value_cansleep(fp->reset_gpio, 0);
++	usleep_range(10000, 10050);
++}
++
++static int goodix_fp_clocks(struct goodix_fp *fp, bool on, u32 rate)
++{
++	int ret;
++
++	if (!on) {
++		if (!fp->clocked)
++			return 0;
++		clk_bulk_disable_unprepare(fp->num_clks, fp->clks);
++		icc_set_bw(fp->icc_cfg, 0, 0);
++		icc_set_bw(fp->icc_core, 0, 0);
++		pm_relax(fp->dev);
++		fp->clocked = false;
++		return 0;
++	}
++
++	if (fp->clocked)
++		return 0;
++
++	/* The first clock is the serial engine's */
++	if (rate && fp->num_clks) {
++		ret = clk_set_rate(fp->clks[0].clk, rate);
++		if (ret)
++			return ret;
++	}
++
++	ret = icc_set_bw(fp->icc_core, GOODIX_FP_ICC_CORE_KBPS,
++			 GOODIX_FP_ICC_CORE_KBPS);
++	if (ret)
++		return ret;
++	ret = icc_set_bw(fp->icc_cfg, GOODIX_FP_ICC_CFG_KBPS,
++			 GOODIX_FP_ICC_CFG_KBPS);
++	if (ret)
++		goto err_core;
++	ret = clk_bulk_prepare_enable(fp->num_clks, fp->clks);
++	if (ret)
++		goto err_cfg;
++
++	pm_stay_awake(fp->dev);
++	fp->clocked = true;
++	return 0;
++
++err_cfg:
++	icc_set_bw(fp->icc_cfg, 0, 0);
++err_core:
++	icc_set_bw(fp->icc_core, 0, 0);
++	return ret;
++}
++
++static void goodix_fp_irq_enable(struct goodix_fp *fp, bool on)
++{
++	if (on == fp->irq_enabled)
++		return;
++
++	if (on) {
++		enable_irq(fp->irq);
++		if (device_may_wakeup(fp->dev))
++			enable_irq_wake(fp->irq);
++	} else {
++		if (device_may_wakeup(fp->dev))
++			disable_irq_wake(fp->irq);
++		disable_irq(fp->irq);
++	}
++	fp->irq_enabled = on;
++}
++
++static long goodix_fp_ioctl(struct file *file, unsigned int cmd,
++			    unsigned long arg)
++{
++	struct goodix_fp *fp = ((struct goodix_fp_file *)file->private_data)->fp;
++	u32 __user *argp = (u32 __user *)arg;
++	u32 rate;
++
++	guard(mutex)(&fp->lock);
++
++	switch (cmd) {
++	case GF_IOC_RESET:
++		if (!fp->powered)
++			return -EIO;
++		goodix_fp_reset(fp);
++		return 0;
++	case GF_IOC_ENABLE_IRQ:
++		goodix_fp_irq_enable(fp, true);
++		return 0;
++	case GF_IOC_DISABLE_IRQ:
++		goodix_fp_irq_enable(fp, false);
++		return 0;
++	case GF_IOC_ENABLE_SPI_CLK:
++		if (get_user(rate, argp))
++			return -EFAULT;
++		return goodix_fp_clocks(fp, true, rate);
++	case GF_IOC_DISABLE_SPI_CLK:
++		return goodix_fp_clocks(fp, false, 0);
++	case GF_IOC_ENABLE_POWER:
++		goodix_fp_power(fp, true);
++		return 0;
++	case GF_IOC_DISABLE_POWER:
++		goodix_fp_power(fp, false);
++		return 0;
++	case GF_IOC_GET_ORIENT:
++		return put_user(fp->orient, argp);
++	default:
++		return -ENOTTY;
++	}
++}
++
++static ssize_t goodix_fp_read(struct file *file, char __user *buf,
++			      size_t count, loff_t *ppos)
++{
++	struct goodix_fp_file *ff = file->private_data;
++	struct goodix_fp *fp = ff->fp;
++	u32 n;
++	int ret;
++
++	if (count < sizeof(n))
++		return -EINVAL;
++
++	if (file->f_flags & O_NONBLOCK) {
++		if (atomic_read(&fp->irq_count) == ff->seen)
++			return -EAGAIN;
++	} else {
++		ret = wait_event_interruptible(fp->wait,
++				atomic_read(&fp->irq_count) != ff->seen);
++		if (ret)
++			return ret;
++	}
++
++	n = atomic_read(&fp->irq_count);
++	ff->seen = n;
++	if (copy_to_user(buf, &n, sizeof(n)))
++		return -EFAULT;
++
++	return sizeof(n);
++}
++
++static __poll_t goodix_fp_poll(struct file *file, poll_table *wait)
++{
++	struct goodix_fp_file *ff = file->private_data;
++
++	poll_wait(file, &ff->fp->wait, wait);
++
++	return atomic_read(&ff->fp->irq_count) != ff->seen ? EPOLLIN | EPOLLRDNORM : 0;
++}
++
++static int goodix_fp_open(struct inode *inode, struct file *file)
++{
++	struct goodix_fp *fp = container_of(file->private_data,
++					    struct goodix_fp, misc);
++	struct goodix_fp_file *ff;
++
++	ff = kzalloc_obj(*ff);
++	if (!ff)
++		return -ENOMEM;
++
++	ff->fp = fp;
++	ff->seen = atomic_read(&fp->irq_count);
++	file->private_data = ff;
++
++	guard(mutex)(&fp->lock);
++	fp->users++;
++
++	return 0;
++}
++
++static int goodix_fp_release(struct inode *inode, struct file *file)
++{
++	struct goodix_fp_file *ff = file->private_data;
++	struct goodix_fp *fp = ff->fp;
++
++	scoped_guard(mutex, &fp->lock) {
++		if (!--fp->users) {
++			goodix_fp_irq_enable(fp, false);
++			goodix_fp_clocks(fp, false, 0);
++		}
++	}
++	kfree(ff);
++
++	return 0;
++}
++
++static const struct file_operations goodix_fp_fops = {
++	.owner = THIS_MODULE,
++	.open = goodix_fp_open,
++	.release = goodix_fp_release,
++	.read = goodix_fp_read,
++	.poll = goodix_fp_poll,
++	.unlocked_ioctl = goodix_fp_ioctl,
++	.compat_ioctl = compat_ptr_ioctl,
++};
++
++static ssize_t state_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
++{
++	struct goodix_fp *fp = dev_get_drvdata(dev);
++
++	guard(mutex)(&fp->lock);
++	return sysfs_emit(buf, "power %d clocks %d irq %d count %u\n",
++			  fp->powered, fp->clocked, fp->irq_enabled,
++			  atomic_read(&fp->irq_count));
++}
++static DEVICE_ATTR_RO(state);
++
++static struct attribute *goodix_fp_attrs[] = {
++	&dev_attr_state.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(goodix_fp);
++
++static void goodix_fp_deregister(void *data)
++{
++	misc_deregister(data);
++}
++
++static int goodix_fp_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct goodix_fp *fp;
++	int ret;
++
++	fp = devm_kzalloc(dev, sizeof(*fp), GFP_KERNEL);
++	if (!fp)
++		return -ENOMEM;
++
++	fp->dev = dev;
++	init_waitqueue_head(&fp->wait);
++	ret = devm_mutex_init(dev, &fp->lock);
++	if (ret)
++		return ret;
++	platform_set_drvdata(pdev, fp);
++	of_property_read_u32(dev->of_node, "goodix,orient", &fp->orient);
++
++	/* Off at probe: supply low, reset asserted */
++	fp->power_gpio = devm_gpiod_get(dev, "power", GPIOD_OUT_LOW);
++	if (IS_ERR(fp->power_gpio))
++		return dev_err_probe(dev, PTR_ERR(fp->power_gpio), "power gpio\n");
++	fp->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(fp->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(fp->reset_gpio), "reset gpio\n");
++
++	/* Optional "active" pin state while powered, "default" otherwise */
++	fp->pinctrl = devm_pinctrl_get(dev);
++	if (!IS_ERR(fp->pinctrl)) {
++		fp->pins_default = pinctrl_lookup_state(fp->pinctrl,
++							PINCTRL_STATE_DEFAULT);
++		fp->pins_active = pinctrl_lookup_state(fp->pinctrl, "active");
++		if (IS_ERR(fp->pins_default) || IS_ERR(fp->pins_active))
++			fp->pins_active = NULL;
++	}
++
++	ret = devm_clk_bulk_get_all(dev, &fp->clks);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "clocks\n");
++	fp->num_clks = ret;
++
++	fp->icc_core = devm_of_icc_get(dev, "qup-core");
++	if (IS_ERR(fp->icc_core))
++		return dev_err_probe(dev, PTR_ERR(fp->icc_core), "qup-core path\n");
++	fp->icc_cfg = devm_of_icc_get(dev, "qup-config");
++	if (IS_ERR(fp->icc_cfg))
++		return dev_err_probe(dev, PTR_ERR(fp->icc_cfg), "qup-config path\n");
++
++	fp->irq = platform_get_irq(pdev, 0);
++	if (fp->irq < 0)
++		return fp->irq;
++	ret = devm_request_threaded_irq(dev, fp->irq, NULL, goodix_fp_irq,
++					IRQF_ONESHOT | IRQF_NO_AUTOEN,
++					"goodix_fp", fp);
++	if (ret)
++		return dev_err_probe(dev, ret, "irq\n");
++
++	device_init_wakeup(dev, true);
++
++	fp->misc.minor = MISC_DYNAMIC_MINOR;
++	fp->misc.name = "goodix_fp";
++	fp->misc.fops = &goodix_fp_fops;
++	fp->misc.parent = dev;
++	fp->misc.mode = 0600;
++	ret = misc_register(&fp->misc);
++	if (ret)
++		return ret;
++
++	ret = devm_add_action_or_reset(dev, goodix_fp_deregister, &fp->misc);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "%d clocks, irq %d\n", fp->num_clks, fp->irq);
++	return 0;
++}
++
++static void goodix_fp_remove(struct platform_device *pdev)
++{
++	struct goodix_fp *fp = platform_get_drvdata(pdev);
++
++	guard(mutex)(&fp->lock);
++	goodix_fp_irq_enable(fp, false);
++	goodix_fp_clocks(fp, false, 0);
++	goodix_fp_power(fp, false);
++}
++
++static const struct of_device_id goodix_fp_of_match[] = {
++	{ .compatible = "goodix,gw36t1" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, goodix_fp_of_match);
++
++static struct platform_driver goodix_fp_driver = {
++	.probe = goodix_fp_probe,
++	.remove = goodix_fp_remove,
++	.driver = {
++		.name = "goodix_fp",
++		.of_match_table = goodix_fp_of_match,
++		.dev_groups = goodix_fp_groups,
++	},
++};
++module_platform_driver(goodix_fp_driver);
++
++MODULE_DESCRIPTION("Goodix fingerprint sensor driven by TrustZone: power, clocks, interrupt");
++MODULE_LICENSE("GPL");
+-- 
+2.56.1
+
