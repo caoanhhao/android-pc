@@ -1,5 +1,5 @@
 diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
-index 2233fc581..68cf8d112 100644
+index 2233fc581..30a1e8b2b 100644
 --- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
 +++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/DefaultWindowDecoration.kt
 @@ -349,7 +349,9 @@ constructor(
@@ -13,7 +13,7 @@ index 2233fc581..68cf8d112 100644
          relayout(
              taskInfo,
              t,
-@@ -489,6 +491,9 @@ constructor(
+@@ -489,8 +491,13 @@ constructor(
              when {
                  !shouldCreateCaption -> CaptionController.CaptionType.NO_CAPTION
                  isPinnedLayer -> CaptionController.CaptionType.APP_PINNED
@@ -22,13 +22,17 @@ index 2233fc581..68cf8d112 100644
 +                    CaptionController.CaptionType.NO_CAPTION
                  taskInfo.isFreeform -> CaptionController.CaptionType.APP_HEADER
                  isFullscreenDesktop(taskInfo) -> CaptionController.CaptionType.FULLSCREEN_HEADER
++                WindowDecorStyle.instance?.hidesAppHandle(taskInfo) == true ->
++                    CaptionController.CaptionType.NO_CAPTION
                  else -> CaptionController.CaptionType.APP_HANDLE
+             }
+         val isAppHeader = captionType == CaptionController.CaptionType.APP_HEADER
 diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt
 new file mode 100644
-index 000000000..d42d49bd2
+index 000000000..e1746292e
 --- /dev/null
 +++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/WindowDecorStyle.kt
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,62 @@
 +/*
 + * Copyright (C) 2026 The Android Open Source Project
 + *
@@ -59,6 +63,13 @@ index 000000000..d42d49bd2
 +interface WindowDecorStyle {
 +    /** Whether the freeform [taskInfo] gets no caption (no app header). */
 +    fun hidesCaption(taskInfo: RunningTaskInfo): Boolean = false
++
++    /**
++     * Whether the fullscreen [taskInfo] gets no app handle. The variant's own bar and gestures
++     * replace it; a handle with no status bar to sit in is invisible but its spy window still
++     * takes every touch on the task and steals each press as a handle drag.
++     */
++    fun hidesAppHandle(taskInfo: RunningTaskInfo): Boolean = false
 +
 +    /**
 +     * Called at the end of every surface update of a decoration, after Shell set the task
