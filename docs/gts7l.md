@@ -1569,3 +1569,27 @@ own session and branch:
   on this firmware. No capture, enroll or identify, so no HAL (step 3 not started). Open lead:
   the legacy loader may want the image inside a TrustZone-configured region (`devcfg.img`
   `OEM_pil_secure_app_load_region_*`), see the kernel branch's §25.
+
+### Enroll screen in the hypr desktop (2026-11-27)
+
+With the real HAL (build `eng.caoanh.20261127.1953`), Settings' side-key enrollment could not be
+used on the tablet:
+
+- In a tile of the hypr desktop, Settings refused with "Exit split screen to set up Fingerprint
+  Unlock": `BiometricUtils.isSplitScreenEnrollmentDisabled()` treats any multi-window mode as
+  split screen and skips the check only on `FEATURE_PC`.
+  `tools/patches/aosp17-settings-sfps-enroll-desktop.patch` also skips it in freeform windows:
+  only udfps needs the whole screen for its overlay.
+- The way out, `fullscreen` (ALT+F), moved Settings out of the desk, where Shell gave it an app
+  handle. With HyprBar in place of the status bar the handle is never shown, yet its spy window
+  (`Embedded{Caption of Task=N}`) covered the whole task and stole every press longer than a tap
+  (`InputDispatcher: ... is stealing input gesture`); the enroll card was also laid out shrunk.
+  This hit every app in hypr fullscreen. `WindowDecorStyle.hidesAppHandle`
+  (`tools/patches/aosp17-shell-decor-style.patch`, `HyprDecorations`) drops the handle
+  (docs/hypr-desktop.md).
+
+Build `eng.caoanh.20261127.2051` (the HAL work plus these fixes, flashed with `--keep-data`):
+Settings in hypr fullscreen has no caption window and a 300 ms press is no longer stolen; Add
+fingerprint opens the enroll screen inside the tile and its buttons work. Every touch of the key
+during that enrollment came back as acquired PARTIAL ("Press firmly on the sensor"), so no step
+counted: a HAL/TA matter, not the UI.
