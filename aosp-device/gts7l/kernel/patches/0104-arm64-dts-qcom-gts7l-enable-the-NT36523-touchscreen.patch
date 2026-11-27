@@ -1,5 +1,5 @@
 From f447945fd7c576453c22889c73bdf6ea0ec9719b Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 20:03:41 +0700
 Subject: [PATCH 104/107] arm64: dts: qcom: gts7l: enable the NT36523
  touchscreen

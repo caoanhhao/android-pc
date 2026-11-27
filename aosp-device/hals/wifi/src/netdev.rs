@@ -92,6 +92,9 @@ pub fn index(name: &str) -> Option<u32> {
 #[derive(Debug)]
 pub struct Netdev {
     fd: OwnedFd,
+    /// An interface's factory MAC address from the device's own data, which its driver
+    /// does not know (`with_factory_mac`).
+    factory: Option<(String, MacAddress)>,
 }
 
 impl Netdev {
@@ -107,7 +110,16 @@ impl Netdev {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: `raw` is a socket this function just opened and nothing else owns.
-        Ok(Self { fd: unsafe { OwnedFd::from_raw_fd(raw) } })
+        Ok(Self { fd: unsafe { OwnedFd::from_raw_fd(raw) }, factory: None })
+    }
+
+    /// Reports `mac` as the factory address of interface `name`, for a chip that has no
+    /// address of its own and whose real one is kept elsewhere (the Galaxy Tab S7's
+    /// QCA6390: ath11k makes one up at every boot, the tablet's is in efs).
+    #[must_use]
+    pub fn with_factory_mac(mut self, name: &str, mac: MacAddress) -> Self {
+        self.factory = Some((name.to_owned(), mac));
+        self
     }
 
     /// The administrative state of interface `name`.
@@ -167,13 +179,19 @@ impl Netdev {
         result
     }
 
-    /// The permanent (factory) MAC address of interface `name`, or its current one if the
-    /// driver reports none.
+    /// The permanent (factory) MAC address of interface `name`: the one given to
+    /// `with_factory_mac`, else the driver's, else its current one if the driver reports
+    /// none.
     ///
     /// # Errors
     ///
     /// Fails if the interface does not exist.
     pub fn permanent_mac(&self, name: &str) -> io::Result<MacAddress> {
+        if let Some((factory_name, mac)) = &self.factory {
+            if factory_name == name {
+                return Ok(*mac);
+            }
+        }
         let mut perm = EthtoolPermAddr {
             cmd: ETHTOOL_GPERMADDR,
             size: MAX_ADDR_LEN as u32,
@@ -205,7 +223,12 @@ impl Netdev {
         Ok(DriverInfo { driver, firmware: c_string(&info.fw_version) })
     }
 
-    fn current_mac(&self, name: &str) -> io::Result<MacAddress> {
+    /// The current MAC address of interface `name`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the interface does not exist.
+    pub fn current_mac(&self, name: &str) -> io::Result<MacAddress> {
         let mut req = request(name)?;
         self.ioctl(libc::SIOCGIFHWADDR, &mut req)?;
         // SAFETY: SIOCGIFHWADDR filled in the hwaddr member.
@@ -263,6 +286,22 @@ pub fn format_mac(mac: MacAddress) -> String {
     mac.map(|byte| format!("{byte:02x}")).join(":")
 }
 
+/// Parses `aa:bb:cc:dd:ee:ff` (either case, surrounding whitespace allowed), accepting
+/// only a unicast address that is not all zeroes.
+pub fn parse_mac(text: &str) -> Option<MacAddress> {
+    let mut mac = [0; 6];
+    let mut parts = text.trim().split(':');
+    for byte in &mut mac {
+        let part = parts.next()?;
+        if part.len() != 2 {
+            return None;
+        }
+        *byte = u8::from_str_radix(part, 16).ok()?;
+    }
+    let unicast = mac[0] & 1 == 0;
+    (parts.next().is_none() && unicast && mac != [0; 6]).then_some(mac)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +326,27 @@ mod tests {
         assert_eq!(c_string(b"iwlwifi\0\0junk"), "iwlwifi");
         assert_eq!(c_string(b"full"), "full");
         assert_eq!(format_mac([0x02, 0, 0xab, 1, 2, 0xff]), "02:00:ab:01:02:ff");
+    }
+
+    #[test]
+    fn parses_factory_macs() {
+        assert_eq!(parse_mac("1C:2B:3A:4D:5E:E0\n"), Some([0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xe0]));
+        assert_eq!(parse_mac("02:00:ab:01:02:ff"), Some([0x02, 0, 0xab, 1, 2, 0xff]));
+        assert_eq!(parse_mac("00:00:00:00:00:00"), None);
+        assert_eq!(parse_mac("01:00:5e:00:00:01"), None, "multicast");
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:e0:00"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:e"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:gg"), None);
+        assert_eq!(parse_mac(""), None);
+    }
+
+    #[test]
+    fn factory_mac_overrides_one_interface() {
+        let mac = [0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xe0];
+        let netdev = Netdev::open().expect("socket").with_factory_mac("wlan0", mac);
+        assert_eq!(netdev.permanent_mac("wlan0").expect("factory MAC"), mac);
+        assert!(netdev.permanent_mac("no-such-if0").is_err());
     }
 
     #[test]

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The radio does 5 GHz; without this the framework refuses a 5 GHz hotspot ("band
+         5Ghz not supported") and offers no 5 GHz channels for it. -->
+    <bool name="config_wifi5ghzSupport">true</bool>
+    <!-- ath11k runs an AP with VHT and HE. -->
+    <bool name="config_wifi_softap_ieee80211ac_supported">true</bool>
+    <bool name="config_wifiSoftapIeee80211axSupported">true</bool>
+    <!-- Set the country (VN, ro.boot.wificountrycode) while connected too. Otherwise the
+         framework waits until every client interface is idle, which never happens at boot
+         when Wi-Fi auto-connects, and ath11k stays on its board default (US: 30 dBm on 2.4
+         GHz and 5170-5250 MHz). ath11k applies a new country without dropping the link. -->
+    <bool name="config_wifiStaDynamicCountryCodeUpdateSupported">true</bool>
+</resources>

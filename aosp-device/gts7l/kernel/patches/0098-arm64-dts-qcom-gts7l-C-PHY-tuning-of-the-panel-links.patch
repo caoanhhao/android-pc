@@ -1,5 +1,5 @@
 From 9fbccc47d3f29953997bab63f26277e34b5653de Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 00:16:09 +0700
 Subject: [PATCH 098/107] arm64: dts: qcom: gts7l: C-PHY tuning of the panel
  links

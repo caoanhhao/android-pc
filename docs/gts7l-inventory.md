@@ -1,6 +1,6 @@
 # gts7l inventory (step S1, phase T0)
 
-Read-only inventory of the SM-T875 on the desk (serial `R52R504WFTK`, board revision 7) and
+Read-only inventory of the SM-T875 on the desk (serial `<serial>`, board revision 7) and
 its stock firmware. Nothing was written to the tablet. Source data lives in `gts7l-stock/`
 of the `gts7l` worktree (gitignored); regenerate it with the commands in "How it was made".
 

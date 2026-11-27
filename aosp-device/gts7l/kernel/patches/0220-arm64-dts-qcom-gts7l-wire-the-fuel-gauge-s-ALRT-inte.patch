@@ -1,5 +1,5 @@
 From 2ea40b2789827c9830f5ba43d403302ee5ca1809 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 07:58:51 +0700
 Subject: [PATCH 220/221] arm64: dts: qcom: gts7l: wire the fuel gauge's ALRT
  interrupt

@@ -3,3 +3,5 @@ genfscon sysfs /module/firmware_class/parameters/path u:object_r:sysfs_gts7l_fir
 # Type-C port (the USB HAL's port status).
 genfscon sysfs /devices/platform/soc@0/a6f8800.usb/a600000.usb/udc u:object_r:sysfs_udc:s0
 genfscon sysfs /devices/platform/soc@0/9c0000.geniqup/980000.i2c/i2c-0/0-0025/typec u:object_r:sysfs_typec:s0
+# Rear flash LED (PM8150L flash, /sys/class/leds/white:flash) for the camera HAL.
+genfscon sysfs /devices/platform/soc@0/c440000.spmi/spmi-0/0-05/c440000.spmi:pmic@5:led-controller@d300/leds u:object_r:sysfs_leds:s0

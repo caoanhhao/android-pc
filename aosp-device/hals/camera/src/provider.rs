@@ -8,7 +8,8 @@ use std::thread;
 use std::time::Duration;
 
 use android_hardware_camera_common::aidl::android::hardware::camera::common::{
-    CameraDeviceStatus::CameraDeviceStatus, Status::Status, VendorTagSection::VendorTagSection,
+    CameraDeviceStatus::CameraDeviceStatus, Status::Status, TorchModeStatus::TorchModeStatus,
+    VendorTagSection::VendorTagSection,
 };
 use android_hardware_camera_device::aidl::android::hardware::camera::device::ICameraDevice::{
     BnCameraDevice, ICameraDevice,
@@ -34,13 +35,38 @@ const RESCAN_DELAYS: [Duration; 2] = [Duration::from_millis(300), Duration::from
 struct State {
     /// Present cameras by device name.
     cameras: BTreeMap<String, Arc<Camera>>,
-    callback: Option<Strong<dyn ICameraProviderCallback>>,
+}
+
+/// The framework's provider callback, once it has set one. Devices and sessions hold it
+/// too, to report torch status changes.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderCallback(Arc<Mutex<Option<Strong<dyn ICameraProviderCallback>>>>);
+
+impl ProviderCallback {
+    fn set(&self, callback: Strong<dyn ICameraProviderCallback>) {
+        *self.0.lock().expect("provider callback lock poisoned") = Some(callback);
+    }
+
+    fn get(&self) -> Option<Strong<dyn ICameraProviderCallback>> {
+        self.0.lock().expect("provider callback lock poisoned").clone()
+    }
+
+    /// Reports the torch of device `name` as `status`.
+    pub fn torch_status(&self, name: &str, status: TorchModeStatus) {
+        info!("{name}: torch {status:?}");
+        if let Some(callback) = self.get() {
+            if let Err(err) = callback.torchModeStatusChange(name, status) {
+                warn!("torchModeStatusChange({name}): {err}");
+            }
+        }
+    }
 }
 
 /// The camera provider. Cloning shares the same state, so the hotplug thread can hold one.
 #[derive(Debug, Clone, Default)]
 pub struct Provider {
     state: Arc<Mutex<State>>,
+    callback: ProviderCallback,
 }
 
 impl Interface for Provider {}
@@ -102,7 +128,7 @@ impl Provider {
         let callback = {
             let mut state = self.lock();
             state.cameras = cameras;
-            state.callback.clone()
+            self.callback.get()
         };
         for (names, status) in
             [(gone, CameraDeviceStatus::NOT_PRESENT), (added, CameraDeviceStatus::PRESENT)]
@@ -159,9 +185,10 @@ fn video_nodes() -> Vec<u32> {
 
 impl ICameraProvider for Provider {
     fn setCallback(&self, callback: &Strong<dyn ICameraProviderCallback>) -> binder::Result<()> {
+        // Under the state lock, so a rescan cannot report a camera before or after it.
         let names: Vec<String> = {
-            let mut state = self.lock();
-            state.callback = Some(callback.clone());
+            let state = self.lock();
+            self.callback.set(callback.clone());
             state.cameras.keys().cloned().collect()
         };
         // Clients learn of hot-pluggable cameras from the callback, during this call.
@@ -201,7 +228,7 @@ impl ICameraProvider for Provider {
             };
             (camera, conflicting)
         };
-        let device = CameraDevice::new(camera, conflicting);
+        let device = CameraDevice::new(camera, conflicting, self.callback.clone());
         Ok(BnCameraDevice::new_binder(device, BinderFeatures::default()))
     }
 

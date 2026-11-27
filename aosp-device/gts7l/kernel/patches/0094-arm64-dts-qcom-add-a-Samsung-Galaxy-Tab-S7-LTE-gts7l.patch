@@ -1,5 +1,5 @@
 From 1e4e528e2d1c31a391c7875cc32c1288f916f61a Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Mon, 23 Nov 2026 15:07:52 +0700
 Subject: [PATCH] arm64: dts: qcom: add a Samsung Galaxy Tab S7 LTE (gts7l)
  stub

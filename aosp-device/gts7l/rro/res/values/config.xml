@@ -4,4 +4,10 @@
          Linux has no android_usb device sending USB_STATE uevents (kernel patch 0270 only
          adds the empty class UsbService looks for). -->
     <bool name="config_enableUdcSysfsUsbStateUpdate">true</bool>
+
+    <!-- Fingerprint as on aosp_pc_x86_64 (docs/lockdown-biometric.md): a strong fingerprint
+         still unlocks after Lockdown (tools/patches/aosp17-lockdown-biometric.patch) and right
+         after boot, the user's storage included (aosp17-boot-biometric-unlock.patch). -->
+    <bool name="config_biometricUnlockInLockdown">true</bool>
+    <bool name="config_strongAuthRequiredOnBoot">false</bool>
 </resources>

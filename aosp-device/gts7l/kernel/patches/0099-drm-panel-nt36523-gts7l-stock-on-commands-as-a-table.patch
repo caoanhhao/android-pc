@@ -1,5 +1,5 @@
 From e5bc592fdbc7133cd446e264fe92ecfd3895c28c Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 23:47:25 +0700
 Subject: [PATCH 099/107] drm/panel: nt36523: gts7l: stock on-commands as a
  table, backlight on both links

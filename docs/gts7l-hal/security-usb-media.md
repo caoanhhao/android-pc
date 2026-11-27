@@ -1,6 +1,6 @@
 # gts7l HAL check: security, USB, media, camera, CAS
 
-Checked on the tablet (SM-T875, serial `R52R504WFTK`) on 2026-11-25, build
+Checked on the tablet (SM-T875, serial `<serial>`) on 2026-11-25, build
 `Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys`,
 security patch 2026-06-05, a minute after boot. All checks were read-only or undone at the
 end (test keys deleted, the PIN cleared). SELinux is **Permissive** on this build
@@ -162,7 +162,7 @@ Bus 001 Device 014: ID 18d1:4ee7 Google Inc. Nexus/Pixel Device (charging + debu
 Negotiated speed: High Speed (480Mbps)
   iManufacturer  android-pc
   iProduct       android-pc Galaxy Tab S7 LTE
-  iSerial        R52R504WFTK
+  iSerial        <serial>
   bNumInterfaces 5      MaxPower 500mA
   If 0  class 2/2/1   CDC Abstract Control Model (ACM)
   If 1  class 10      CDC ACM Data
@@ -174,7 +174,7 @@ $ lsusb -t
 ```
 
 ### adb — Works
-`adb -s R52R504WFTK` works for this whole check (`adb root`, shell, logcat).
+`adb -s $SERIAL` works for this whole check (`adb root`, shell, logcat).
 
 ### ACM — Works
 The host has `/dev/ttyACM0`; on the device a root `sh` (domain `gts7l_usb`) sits on
@@ -183,7 +183,7 @@ The host has `/dev/ttyACM0`; on the device a root `sh` (domain `gts7l_usb`) sits
 ```
 echo ACM_OK; getprop ro.serialno; id -u; cat /proc/self/attr/current
 ACM_OK
-R52R504WFTK
+<serial>
 0
 u:r:gts7l_usb:s0
 :/ #
@@ -500,7 +500,7 @@ system; nothing on the tablet needs one. State only, not tested.
    khi không có session nào đang dùng máy: đặt PIN như bước 1, khởi động lại máy, nhập PIN ở màn
    hình khoá đầu tiên. Báo lại: máy có vào được màn hình chính không. Xong thì bỏ PIN (None).
 3. **Cổng serial ACM bằng tay.** Trên PC: `picocom -b 115200 /dev/ttyACM0` (hoặc
-   `screen /dev/ttyACM0`), gõ `getprop ro.serialno` rồi Enter → phải in ra `R52R504WFTK`.
+   `screen /dev/ttyACM0`), gõ `getprop ro.serialno` rồi Enter → phải in ra `<serial>`.
    Thoát picocom bằng Ctrl-A Ctrl-X.
 4. **Cài đặt USB (sau khi bản gộp có USB HAL được flash).** Cắm cáp vào PC, kéo thanh thông báo
    xuống: phải có thông báo "Charging this device via USB". Chạm vào → Settings → Connected
@@ -511,7 +511,7 @@ system; nothing on the tablet needs one. State only, not tested.
    phải vẫn chạy (`adb devices`). Báo lại: mục nào không chọn được, báo lỗi hay làm mất adb.
 5. **Phát video có tiếng (sau khi bản gộp có sửa media được flash).** Chép file thử 1080p
    H.264 + AAC (20 s, hình test có đồng hồ, tiếng bíp) vào máy:
-   `adb -s R52R504WFTK push gts7l-test-1080p.mp4 /sdcard/Movies/` (tạo bằng
+   `adb -s $SERIAL push gts7l-test-1080p.mp4 /sdcard/Movies/` (tạo bằng
    `docs/gts7l-hal/codec-check/make-clips.sh`, hoặc bất kỳ MP4 nào của bạn). Mở bằng app Files hoặc Photos/Gallery. Báo lại: có hình
    không, hình có mượt không, có méo/sọc xanh lá không (nếu có là lỗi bộ giải mã phần cứng),
    có tiếng không (tiếng phụ thuộc vào việc sửa âm thanh của phiên audio). Thử thêm một video

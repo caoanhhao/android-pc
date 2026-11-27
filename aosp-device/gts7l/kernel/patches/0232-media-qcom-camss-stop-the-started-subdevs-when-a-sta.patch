@@ -1,5 +1,5 @@
 From e542b88cfe6f9330bad014d2c4c6fef9f1749fb6 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 09:53:11 +0700
 Subject: [PATCH] media: qcom: camss: stop the started subdevs when a
  start fails

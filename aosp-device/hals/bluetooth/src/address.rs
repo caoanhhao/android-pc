@@ -7,8 +7,8 @@ use std::path::Path;
 
 use log::{info, warn};
 
-/// A Bluetooth device address in display order (`18:ce:94:0d:d5:df` is
-/// `[0x18, 0xce, 0x94, 0x0d, 0xd5, 0xdf]`).
+/// A Bluetooth device address in display order (`1c:2b:3a:4d:5e:df` is
+/// `[0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xdf]`).
 pub type BdAddr = [u8; 6];
 
 /// Parses `xx:xx:xx:xx:xx:xx` (Samsung's efs/bluetooth/bt_addr), ignoring surrounding
@@ -64,19 +64,19 @@ mod tests {
 
     #[test]
     fn parses_bt_addr() {
-        assert_eq!(parse("18:CE:94:0D:D5:DF\n"), Some([0x18, 0xce, 0x94, 0x0d, 0xd5, 0xdf]));
-        assert_eq!(parse("18:CE:94:0D:D5"), None);
-        assert_eq!(parse("18:CE:94:0D:D5:DF:00"), None);
-        assert_eq!(parse("18:CE:94:0D:D5:XX"), None);
+        assert_eq!(parse("1C:2B:3A:4D:5E:DF\n"), Some([0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xdf]));
+        assert_eq!(parse("1C:2B:3A:4D:5E"), None);
+        assert_eq!(parse("1C:2B:3A:4D:5E:DF:00"), None);
+        assert_eq!(parse("1C:2B:3A:4D:5E:XX"), None);
         assert_eq!(parse("1:CE:94:0D:D5:DF0"), None);
         assert_eq!(parse("00:00:00:00:00:00"), None);
     }
 
     #[test]
     fn derives_a_stable_address() {
-        assert_eq!(derive("R52R504WFTK"), derive("R52R504WFTK"));
-        assert_ne!(derive("R52R504WFTK"), derive("R52R504WFTL"));
-        assert_eq!(derive("R52R504WFTK")[0] & 0xc0, 0);
+        assert_eq!(derive("R00A000ABCD"), derive("R00A000ABCD"));
+        assert_ne!(derive("R00A000ABCD"), derive("R00A000ABCE"));
+        assert_eq!(derive("R00A000ABCD")[0] & 0xc0, 0);
     }
 
     #[test]

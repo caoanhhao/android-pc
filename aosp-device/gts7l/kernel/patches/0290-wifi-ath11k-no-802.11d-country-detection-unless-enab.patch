@@ -1,0 +1,46 @@
+From d6e6b6d8372cac43b8ebea81d042f4b13b8c055b Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 00:46:36 +0700
+Subject: [PATCH] wifi: ath11k: no 802.11d country detection unless enable_11d
+ is set
+
+The firmware's 11d scan takes the country from nearby access points and
+replaces the board's regulatory domain with it. On the Galaxy Tab S7 in
+Vietnam, routers that advertise US moved the radio to the US rules (30 dBm
+on 2.4 GHz and 5170-5250 MHz, above Vietnam's limits), and kept it there
+until userspace set a country. Keep the board's domain (or the user's) by
+default; ath11k.enable_11d=1 brings the scan back.
+
+caoanhhao used AI to code
+---
+ drivers/net/wireless/ath/ath11k/mac.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/ath/ath11k/mac.c b/drivers/net/wireless/ath/ath11k/mac.c
+index c1fa42edd..837136e5f 100644
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6944,6 +6944,11 @@ static bool ath11k_mac_vif_ap_active_any(struct ath11k_base *ab)
+ 	return false;
+ }
+ 
++static bool ath11k_enable_11d;
++module_param_named(enable_11d, ath11k_enable_11d, bool, 0644);
++MODULE_PARM_DESC(enable_11d,
++		 "Let the firmware take the country from nearby beacons (802.11d)");
++
+ void ath11k_mac_11d_scan_start(struct ath11k *ar, u32 vdev_id)
+ {
+ 	struct wmi_11d_scan_start_params param;
+@@ -6954,7 +6959,7 @@ void ath11k_mac_11d_scan_start(struct ath11k *ar, u32 vdev_id)
+ 	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "vdev id for 11d scan %d\n",
+ 		   ar->vdev_id_11d_scan);
+ 
+-	if (ar->regdom_set_by_user)
++	if (!ath11k_enable_11d || ar->regdom_set_by_user)
+ 		goto fin;
+ 
+ 	if (ar->vdev_id_11d_scan != ATH11K_11D_INVALID_VDEV_ID)
+-- 
+2.56.1
+

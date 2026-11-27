@@ -11,7 +11,7 @@ OUT=${CODECCHECK_OUT:-$(mktemp -d)}
     -cp "$A/prebuilts/sdk/current/public/android.jar" "$HERE/CodecCheck.java"
 "$A/out/host/linux-x86/bin/d8" --min-api 30 --output "$OUT" "$OUT"/CodecCheck*.class
 mv "$OUT/classes.dex" "$OUT/codeccheck.dex"
-ADB="adb -s ${SERIAL:-R52R504WFTK}"
+ADB="adb -s ${SERIAL:?set SERIAL to the adb serial of the tablet}"
 $ADB push "$OUT/codeccheck.dex" /data/local/tmp/ >/dev/null
 [[ $# -eq 0 ]] && exit 0
 $ADB shell CLASSPATH=/data/local/tmp/codeccheck.dex app_process /system/bin CodecCheck "$@"

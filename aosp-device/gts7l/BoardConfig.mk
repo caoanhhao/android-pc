@@ -72,9 +72,12 @@ BOARD_KERNEL_CMDLINE += androidboot.selinux=permissive
 endif
 
 # Wi-Fi: QCA6390 on ath11k (nl80211). wpa_supplicant and hostapd come from AOSP's generic
-# com.android.hardware.wpa_supplicant APEX, which BOARD_HOSTAPD_DRIVER enables; no private
-# driver command library (the stub), as ath11k needs no vendor commands for STA/AP.
+# com.android.hardware.wpa_supplicant APEX, which BOARD_HOSTAPD_DRIVER enables. ath11k needs
+# no vendor commands, but wpa_supplicant built with the stub library has no driver_cmd, so
+# "COUNTRY xx" failed and the framework never got a Wi-Fi country code; lib_driver_cmd_pc
+# (hals/wifi/driver_cmd) turns it into the nl80211 regulatory hint (docs/gts7l.md §23).
 BOARD_WPA_SUPPLICANT_DRIVER := NL80211
+BOARD_WPA_SUPPLICANT_PRIVATE_LIB := lib_driver_cmd_pc
 BOARD_HOSTAPD_DRIVER := NL80211
 WPA_SUPPLICANT_VERSION := VER_0_8_X
 WIFI_FEATURE_SUPPLICANT_11AX := true
@@ -122,5 +125,6 @@ BOARD_VENDOR_SEPOLICY_DIRS += \
     $(GTS7L_DEVICE_DIR)/sensors/sepolicy \
     $(foreach hal,$(GTS7L_HALS),$(wildcard $(PC_DEVICE_DIR)/hals/$(hal)/sepolicy))
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
+    $(GTS7L_DEVICE_DIR)/sepolicy-system_ext \
     $(PC_DEVICE_DIR)/hypr/sepolicy \
     $(PC_DEVICE_DIR)/hypr/HyprTop/sepolicy

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use android_hardware_camera_common::aidl::android::hardware::camera::common::{
-    CameraResourceCost::CameraResourceCost, Status::Status,
+    CameraResourceCost::CameraResourceCost, Status::Status, TorchModeStatus::TorchModeStatus,
 };
 use android_hardware_camera_device::aidl::android::hardware::camera::device::{
     CameraMetadata::CameraMetadata,
@@ -15,9 +15,11 @@ use android_hardware_camera_device::aidl::android::hardware::camera::device::{
     StreamConfiguration::StreamConfiguration,
 };
 use binder::{BinderFeatures, Interface, Strong};
+use log::error;
 use pccamera::sensor::Sensor;
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Flash};
+use crate::provider::ProviderCallback;
 use crate::service_error;
 use crate::session::{self, Session};
 
@@ -27,12 +29,35 @@ pub struct CameraDevice {
     camera: Arc<Camera>,
     /// Device names that cannot stream at the same time as this one.
     conflicting: Vec<String>,
+    /// For torch status changes.
+    callback: ProviderCallback,
 }
 
 impl CameraDevice {
     /// Serves `camera`, which excludes the `conflicting` devices.
-    pub fn new(camera: Arc<Camera>, conflicting: Vec<String>) -> Self {
-        Self { camera, conflicting }
+    pub fn new(camera: Arc<Camera>, conflicting: Vec<String>, callback: ProviderCallback) -> Self {
+        Self { camera, conflicting, callback }
+    }
+
+    /// The flash for torch calls: `OPERATION_NOT_SUPPORTED` without one, `CAMERA_IN_USE`
+    /// while a session owns it.
+    fn torch_flash(&self) -> binder::Result<&Flash> {
+        let flash = self.camera.flash().ok_or_else(|| service_error(Status::OPERATION_NOT_SUPPORTED))?;
+        if self.camera.in_session() {
+            return Err(service_error(Status::CAMERA_IN_USE));
+        }
+        Ok(flash)
+    }
+
+    fn set_torch(&self, on: bool, level: Option<u32>) -> binder::Result<()> {
+        let flash = self.torch_flash()?;
+        flash.set_torch(on, level).map_err(|err| {
+            error!("{}: torch: {err}", self.camera.id());
+            service_error(Status::INTERNAL_ERROR)
+        })?;
+        let status = if on { TorchModeStatus::AVAILABLE_ON } else { TorchModeStatus::AVAILABLE_OFF };
+        self.callback.torch_status(&self.camera.device_name(), status);
+        Ok(())
     }
 }
 
@@ -75,12 +100,23 @@ impl ICameraDevice for CameraDevice {
         if !self.camera.begin_session() {
             return Err(service_error(Status::CAMERA_IN_USE));
         }
-        match Session::open(Arc::clone(&self.camera), callback.clone()) {
+        // The session owns the flash LED now.
+        if let Some(flash) = self.camera.flash() {
+            if let Err(err) = flash.set_torch(false, None) {
+                error!("{}: torch off: {err}", self.camera.id());
+            }
+            self.callback.torch_status(&self.camera.device_name(), TorchModeStatus::NOT_AVAILABLE);
+        }
+        match Session::open(Arc::clone(&self.camera), callback.clone(), self.callback.clone()) {
             Ok(session) => {
                 Ok(BnCameraDeviceSession::new_binder(session, BinderFeatures::default()))
             }
             Err(err) => {
                 self.camera.end_session();
+                if self.camera.flash().is_some() {
+                    self.callback
+                        .torch_status(&self.camera.device_name(), TorchModeStatus::AVAILABLE_OFF);
+                }
                 Err(err)
             }
         }
@@ -93,16 +129,22 @@ impl ICameraDevice for CameraDevice {
         unsupported()
     }
 
-    fn setTorchMode(&self, _on: bool) -> binder::Result<()> {
-        unsupported()
+    fn setTorchMode(&self, on: bool) -> binder::Result<()> {
+        self.set_torch(on, None)
     }
 
-    fn turnOnTorchWithStrengthLevel(&self, _level: i32) -> binder::Result<()> {
-        unsupported()
+    fn turnOnTorchWithStrengthLevel(&self, level: i32) -> binder::Result<()> {
+        let flash = self.torch_flash()?;
+        let level = u32::try_from(level)
+            .ok()
+            .filter(|level| (1..=flash.led().levels()).contains(level))
+            .ok_or_else(|| service_error(Status::ILLEGAL_ARGUMENT))?;
+        self.set_torch(true, Some(level))
     }
 
     fn getTorchStrengthLevel(&self) -> binder::Result<i32> {
-        unsupported()
+        let flash = self.camera.flash().ok_or_else(|| service_error(Status::OPERATION_NOT_SUPPORTED))?;
+        Ok(i32::try_from(flash.torch().level).unwrap_or(i32::MAX))
     }
 
     fn constructDefaultRequestSettings(

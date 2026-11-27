@@ -1,5 +1,5 @@
 From cbc92a2db7384f042456fc318321c2ed493edb6a Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 09:53:00 +0700
 Subject: [PATCH] media: s5k-tab: take the Bayer order from the board
 

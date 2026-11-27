@@ -1,6 +1,6 @@
 # gts7l: power, health, thermal and light HALs on the tablet
 
-Checked on 2026-11-25 on the SM-T875 (`adb -s R52R504WFTK`, root, SELinux permissive),
+Checked on 2026-11-25 on the SM-T875 (`adb -s $SERIAL`, root, SELinux permissive),
 build `aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug`, a few
 minutes after a boot. USB stayed plugged in the whole time (adb), so nothing here saw
 the tablet on battery.
@@ -488,9 +488,9 @@ mới, ba HAL mới):
 
 1. **Rút/cắm USB (IHealth).** Rút cáp USB, đợi khoảng 1 phút, cắm lại, rồi chạy:
    ```
-   adb -s R52R504WFTK shell dumpsys battery
-   adb -s R52R504WFTK shell logcat -d -b events | grep battery_
-   adb -s R52R504WFTK shell cat /sys/class/power_supply/max170xx_battery/current_now
+   adb -s $SERIAL shell dumpsys battery
+   adb -s $SERIAL shell logcat -d -b events | grep battery_
+   adb -s $SERIAL shell cat /sys/class/power_supply/max170xx_battery/current_now
    ```
    Kỳ vọng: trong `battery_status` có `[3,...]` (DISCHARGING, plugged 0) khi rút và `[2,...]`
    khi cắm lại; `current_now` âm khi rút, dương khi đang sạc; `level` và `voltage` là giá
@@ -503,7 +503,7 @@ mới, ba HAL mới):
    đèn nền về 0 (màn hình tối hẳn). Hãy xác nhận màn hình có tắt đèn nền hay chỉ rất tối,
    rồi trả thanh trượt về mức cũ.
 4. **Tác dụng của thermal.** Chạy một game hoặc ứng dụng nặng 5-10 phút, rồi
-   `adb -s R52R504WFTK shell dumpsys thermalservice | grep -E "Thermal Status|blkt|batt-thermal"`.
+   `adb -s $SERIAL shell dumpsys thermalservice | grep -E "Thermal Status|blkt|batt-thermal"`.
    Sensor SKIN là `blkt-thermal` (đèn nền, sau mặt kính): ghi lại nhiệt độ của nó và cảm giác
    tay khi chạm mặt trước. Từ 39 °C `Thermal Status` lên 1 (LIGHT), 43 °C lên 2. Nếu mặt kính
    vẫn mát mà status đã lên 2-3, ngưỡng cần nâng; báo lại số đo.

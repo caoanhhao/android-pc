@@ -317,3 +317,10 @@ CONFIG_LOCALVERSION="-gts7l"
 # Dropped from gts7xl's: panel_samsung_s6tuum3.prefer_120hz (the S7+ AMOLED panel driver).
 # TODO(S1/S6): the LCD panel driver's parameters once the panel is known.
 CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_bypass=0 panic=30 fw_devlink.sync_state=timeout firmware_class.path=/vendor/firmware androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.usbcontroller=a600000.usb androidboot.init_fatal_reboot_target=recovery printk.devkmsg=on msm.r8q_zap_dyn=1 msm.r8q_zap_secvid=0 deferred_probe_timeout=30 logo.nologo"
+# Wi-Fi country: let the framework's country code (ro.boot.wificountrycode=VN, sent by
+# wpa_supplicant's driver_cmd as an nl80211 user hint) reach ath11k's firmware. Without
+# these, ath11k_reg_notifier drops user hints ("Country Setting is not allowed") and the
+# firmware's 11d scan picks the country of nearby beacons (US: 30 dBm on 2.4 GHz and
+# 5170-5250 MHz, above Vietnam's limits).
+CONFIG_CFG80211_CERTIFICATION_ONUS=y
+CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS=y

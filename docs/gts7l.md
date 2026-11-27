@@ -5,7 +5,7 @@ Work happens on branch `gts7l` (worktree `../android-pc-gts7l`). Builds use the 
 build at a time, through `tools/limited-build.sh` (see `CLAUDE.md`).
 
 A new **android-pc** target for exactly one device: the Samsung Galaxy Tab S7 LTE (SM-T875,
-`gts7l`) on the desk, serial `R52R504WFTK`. It shares android-pc's AOSP 17 tree, PcSystemUI,
+`gts7l`) on the desk, serial `<serial>`. It shares android-pc's AOSP 17 tree, PcSystemUI,
 HyprLauncher, hyprtile and `libpchal`, the way the Waydroid target shares them. No LineageOS,
 no Samsung or Qualcomm userspace: every program that runs on the application processor is
 built from source we own, and the vendor HALs are written in Rust. Other models or devices
@@ -92,7 +92,7 @@ gets split so each target picks its HAL list without Cuttlefish switches.
 | camera | V4L2 / CAMSS raw sensors + soft ISP | android-pc `hals/camera` design, later phase |
 | radio (LTE) | MHI + QMI to the X55 modem | **new**, later phase |
 | gnss | BCM47531 (closed protocol) | last, may stay out |
-| fingerprint | TrustZone only | out of scope |
+| fingerprint | TrustZone only | the side-key sensor stays out of scope; AOSP's virtual HAL stands in, as on the PC (docs/lockdown-biometric.md, "gts7l") |
 
 ## 6. Phases
 
@@ -694,7 +694,7 @@ Kernel with patch 0106; vendor with attempt 1's fixes. After the person's reset 
 tablet came up in the bring-up shell twice (a second reset a minute later). Both boots had an
 empty `/sys/fs/pstore`, so attempt 1's hang left no record.
 
-Flash: all checks and read-backs OK. **adb came up over USB** (`R52R504WFTK device`) about 40 s
+Flash: all checks and read-backs OK. **adb came up over USB** (`<serial> device`) about 40 s
 after the reboot, so the FunctionFS fix works. `sys.boot_completed` was still unset:
 
 | Problem | Cause | Fix |
@@ -789,7 +789,7 @@ Properties (`getprop`):
 ```
 ro.build.fingerprint     Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys
 ro.build.version         17 (SDK 37), security patch 2026-06-05, userdebug
-ro.product.model         android-pc Galaxy Tab S7 LTE (device gts7l, serial R52R504WFTK)
+ro.product.model         android-pc Galaxy Tab S7 LTE (device gts7l, serial <serial>)
 ro.kernel.version        7.3 (Linux 7.3.0-gts7l, clang 22.0.2)
 ro.boot.selinux          permissive; verifiedbootstate orange
 ro.hardware.egl/vulkan   mesa / freedreno; ro.hardware.gralloc minigbm
@@ -1237,12 +1237,111 @@ mode manager on wlan0 and starts wpa_supplicant from the APEX, and `cmd wifi sta
 `list-scan-results` list the 2.4 and 5 GHz networks around. No SELinux denials from the
 Wi-Fi stack (permissive boot, `dmesg`).
 
+MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
+`00:03:7f:xx:xx:xx` address at every boot. Connected MAC randomization is off
+(`config_wifi_connected_mac_randomization_supported` false), so the framework connects with
+that address and the AP sees a new device after each boot (new DHCP lease). The tablet's own
+address is in `efs:/wifi/.mac.info` (`.mac.cob` holds the same one). `aosp_gts7l.mk` sets
+`ro.vendor.wifi.factory_mac_file` to it; the HAL gives wlan0 that address when it starts
+(`IWifi::start`) and reports it as the factory MAC (`getFactoryMacAddress`), as the
+Bluetooth HAL does with the efs Bluetooth address (§20). `sepolicy/hal_pc_wifi.te` lets it
+read efs and the property.
+
+No rejoin after the AP restarts (2026-11-26, build 0021): when the host's hotspot went down
+and came back, the tablet never joined it again on its own until it rebooted. The scanner
+saw the AP, but `WificondScannerImpl` dropped it ("Filtering out 1 scan results") and network
+selection found no candidate. Android 17's `Nl80211Utils` takes a result's timestamp from
+`NL80211_BSS_LAST_SEEN_BOOTTIME` and, without it, from the BSS's TSF, and the scanner keeps
+only results newer than the scan's start (boot time). ath11k never set `boottime_ns` on the
+frames it passes up, so cfg80211 had no boot time for any BSS (`iw scan dump` printed no
+`[boottime]` line) and the TSF counted: the AP's own clock, which restarts with the AP and
+then stays below the tablet's uptime forever. Kernel patch 0280 stamps beacons and probe
+responses with `ktime_get_boottime_ns()`, as ath10k, iwlwifi, mt76 and rtw89 do. Checked
+on the running tablet with the patched `ath11k.ko` loaded by hand: `[boottime]` present,
+and after a hotspot restart the tablet rejoined 25 s after the AP came back, by itself.
+The same bug blocked auto-join after a Wi-Fi off/on whenever the tablet had been up longer
+than the AP.
+
+The ~8 s from the 4-way handshake to the DHCP lease after an AP restart is not the tablet:
+dnsmasq (create_ap's, leases in a new temp directory each start) stays silent on the
+INIT-REBOOT DHCPREQUESTs for an address it has no lease for, IpClient falls back to
+DHCPDISCOVER after ~5 s, and dnsmasq pings the address for ~3 s before offering it
+(`tcpdump` on the tablet: its ARP "who-has" for the offered address). The tablet received
+broadcast traffic all along. A join where DHCP never reached the AP at all (AP rx counter
+stuck at 10 for 18 s, seen once after ~7 h with suspend cycles) did not reproduce; see the
+open items.
+
+Speed and 5 GHz (2026-11-26, build 20261126.2024): "the 2.4 GHz hotspot gives ~6 MB/s and
+5 GHz does not work" was the host's hotspot, not the tablet. iperf3 (server on the tablet,
+the host's ufw drops inbound 5201) on 2.4 GHz channel 1: 71 Mbit/s host to tablet, 87 Mbit/s
+back. create_ap asks for HT40+, but hostapd's 20/40 coexistence scan finds overlapping
+networks ("20/40 MHz operation not permitted ... based on overlapping BSSes") and stays at
+20 MHz, as 802.11 requires; at 20 MHz, MCS 15 (130 Mbit/s PHY) is the ceiling. 5 GHz never
+came up because the default 5 GHz channel is 36: the host's AX211 (iwlwifi, self-managed
+regulatory domain VN from its firmware) marks 36-48 "no IR" (an AP there only next to a
+station link on the same channel), while 149-161 allow an AP. The host now runs
+`/etc/create_ap.conf` with `COUNTRY=VN`, `FREQ_BAND=5`, `CHANNEL=149`, `VHT_CHWIDTH=80`
+(backup: `/etc/create_ap.conf.bak-20261126`): channel 149, 80 MHz (centre 5775 MHz,
+channels 149-161, 5735-5815 MHz), inside Vietnam's 5725-5850 MHz band and the VN rules of
+both radios, at the radios' default power (22 dBm on the AX211). The tablet joined it with
+no change: VHT-MCS 9, 2 streams, 780 Mbit/s PHY; iperf3 538 Mbit/s host to tablet, 502
+Mbit/s back (~65 MB/s), 562/566 Mbit/s with 4 streams. The 6.0 Mbit/s tx bitrate `iw dev
+wlan0 link` sometimes shows is the rate of the last frame sent while idle (management or
+null frames at the basic rate), not a stuck rate control: under load it reads MCS 13-15 on
+2.4 GHz and VHT-MCS 9 on 5 GHz.
+
+The tablet's own gap was the Wi-Fi country code: `cmd wifi get-country-code` said null. With
+no SIM there is no telephony country, and setting one (`cmd wifi force-country-code enabled
+VN`) failed in `ISupplicantStaIface.setCountryCode` (ServiceSpecificException, code 1):
+without `BOARD_WPA_SUPPLICANT_PRIVATE_LIB` wpa_supplicant is built with `ANDROID_LIB_STUB` and
+has no `driver_cmd`, so its "COUNTRY VN" fails. `hals/wifi/driver_cmd` (`lib_driver_cmd_pc`)
+is that library for upstream drivers: COUNTRY becomes the nl80211 regulatory hint
+(`NL80211_CMD_REQ_SET_REG`, through wpa_supplicant's own nl80211 code), MACADDR reads the
+interface address, anything else stays unsupported as with the stub. `aosp_gts7l.mk` sets
+`ro.boot.wificountrycode=VN` (`wifi_config_prop`, a vendor config property) as the default
+country. ath11k already runs the firmware's VN domain (self-managed: 2.4 GHz 1-13, 5 GHz
+36-165), so channels do not change; the framework, SoftAP and the scan channel lists now agree
+with it. `hal_pc_wifi.te` adds the two denials the efs MAC code hit: `search` on
+`mnt_vendor_file` and `SIOCGIFHWADDR` on its own UDP socket.
+
+Tablet hotspot (2026-11-27, builds 20261126.2334 to 20261127.0102). `cmd wifi start-softap
+NAME wpa2 PASS -b 2|5` (as root) and a host laptop joining it with `nmcli`:
+- 2.4 GHz worked from the start: channel 8, 20 MHz, 802.11n; DHCP from the tablet,
+  iperf3 70 Mbit/s host to tablet, 85 Mbit/s back.
+- 5 GHz failed with "Can not start softAp with band 5Ghz not supported": the Wi-Fi
+  service's `config_wifi5ghzSupport` defaults to false and gts7l had no overlay for it.
+  `rro-wifi/` (`gts7l_overlay_wifi`, target `com.android.wifi.resources`) sets it, plus
+  VHT and HE for the AP. With it: channel 153 (149-161 are the 5 GHz channels VN allows
+  an AP on without DFS), 802.11ax, 20 MHz while the station link sits on the host's
+  80 MHz channel 149 (40/80 MHz only without overlapping networks), iperf3 204 Mbit/s
+  host to tablet, 121 Mbit/s back. With no overlapping network it comes up at 80 MHz.
+
+Regulatory domain, still open: right after boot `iw reg get` shows phy0 on `US` (the
+board's default: 30 dBm on 2.4 GHz and 5170-5250 MHz) and it stays there, hotspot
+included, until Wi-Fi is turned off and on; then the framework's
+`setCountryCodeNative(VN)` goes through `driver_cmd` and phy0 switches to `VN`.
+At boot the framework skips it (its stored driver country is already VN and the client
+interface is never idle, since it auto-connects). The radio's actual power is 20 dBm
+(`iw dev wlan0 info`), within Vietnam's 2.4 GHz limit. Tried without fixing the boot case:
+- `CONFIG_CFG80211_CERTIFICATION_ONUS` + `CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS`
+  (gts7l.fragment). Needed: without them ath11k drops every user hint ("Country Setting
+  is not allowed"), so neither `driver_cmd` nor `iw reg set VN` did anything. With them
+  `iw reg set VN` and the framework's set work at runtime.
+- Kernel patch 0290: ath11k starts no 802.11d scan unless `ath11k.enable_11d=1`, so
+  nearby access points cannot pick the country. It did not change the boot case (no 11d
+  event and no regulatory change event appear after boot; the radio is US from the start).
+- `config_wifiStaDynamicCountryCodeUpdateSupported` (rro-wifi): no visible effect at boot.
+- `country=VN` in the supplicant config: no effect at boot either.
+Next step: an `CONFIG_ATH11K_DEBUG` kernel with `debug_mask` for REG/WMI to see the order
+of the firmware's default domain and the first user hint at boot.
+
 Open:
-- MAC address: the chip has no MAC in OTP (`board_id 0xff`), so ath11k makes up a
-  `00:03:7f:xx:xx:xx` address that changes at every boot (Android's factory MAC with it;
-  connections use randomized MACs anyway). The tablet's own address is in
-  `efs:/wifi/.mac.info`; set it on wlan0 before the HAL starts, as the Bluetooth HAL does
-  with the efs Bluetooth address (§20).
+- DHCP never reaching the AP after a forced join (once, after ~7 h uptime with suspend
+  cycles; the tablet's TX after EAPOL looked stalled). If it comes back, before rebooting:
+  `tc -s qdisc show dev wlan0`, `iw dev wlan0 station dump` (tx packets/failed),
+  `cat /sys/class/net/wlan0/statistics/tx_*`, `dmesg | grep -i ath11k`, and `tcpdump -i
+  wlan0` on the tablet during a forced join, to tell a stopped netdev queue (EAPOL goes
+  around the qdisc through the nl80211 control port) from frames lost on the air.
 - Connecting to a WPA2 network (needs a password from the user), then SoftAP/hotspot through
   hostapd and P2P (`wifi.direct` feature, `p2p_supplicant.conf`).
 - The Rust HAL's clippy failed only on arm64 (`c_char` is `u8` there): `netdev.rs` reads
@@ -1332,7 +1431,11 @@ names `com.android.vending`. Google's own Play services do not work as a user ap
 permissions), so microG stays the GmsCore.
 
 After installing: open microG settings, turn on device registration (checkin) and cloud
-messaging, add the Google account, then open Play Store.
+messaging, add the Google account, then open Play Store. With device registration off, Play
+signs in but shows "Error retrieving information from server. DF-DFERH-01" (logcat: Finsky
+`Unexpected android-id = 0`, HTTP 400 from `fdfe/toc`); turn it on, wait for microG's
+`GmsCheckinSvc: Checked in as …`, then `adb shell am force-stop com.android.vending` and reopen
+Play (verified 2026-11-25: store pages load).
 
 **Sign-in from other apps needs microG 0.3.18.** With 0.3.16.1 and 0.3.17, signing in to Aurora
 Store with its "microG" option spins forever: logcat shows `Permission Denial: starting Intent {

@@ -67,10 +67,10 @@ Changes to the HAL, none of them visible on the PC (no setup file there):
 ### Reproduce on the running build (no flash)
 
 ```
-adb -s R52R504WFTK root
-adb -s R52R504WFTK shell 'for m in apr q6core q6afe q6asm q6adm q6routing q6afe-clocks q6afe-dai q6asm-dai pinctrl-sm8250-lpass-lpi lpass-gfm-sm8250 snd-soc-lpass-va-macro snd-soc-cs35l41-i2c snd-soc-hdmi-codec snd-soc-sm8250; do /vendor/bin/modprobe -d /vendor/lib/modules $m; done'
-adb -s R52R504WFTK shell 'stop audioserver; tinymix -D 0 "PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1" 1; tinyplay /data/local/tmp/tone12.wav -D 0 -d 0'
-adb -s R52R504WFTK shell 'tinymix -D 0 "MultiMedia2 Mixer VA_CODEC_DMA_TX_0" 1; tinymix -D 0 "VA_AIF1_CAP Mixer DEC0" 1; tinymix -D 0 "VA DMIC MUX0" DMIC1; tinycap /data/local/tmp/mic.wav -D 0 -d 1 -c 1 -r 48000 -b 16 -T 3; start audioserver'
+adb -s $SERIAL root
+adb -s $SERIAL shell 'for m in apr q6core q6afe q6asm q6adm q6routing q6afe-clocks q6afe-dai q6asm-dai pinctrl-sm8250-lpass-lpi lpass-gfm-sm8250 snd-soc-lpass-va-macro snd-soc-cs35l41-i2c snd-soc-hdmi-codec snd-soc-sm8250; do /vendor/bin/modprobe -d /vendor/lib/modules $m; done'
+adb -s $SERIAL shell 'stop audioserver; tinymix -D 0 "PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1" 1; tinyplay /data/local/tmp/tone12.wav -D 0 -d 0'
+adb -s $SERIAL shell 'tinymix -D 0 "MultiMedia2 Mixer VA_CODEC_DMA_TX_0" 1; tinymix -D 0 "VA_AIF1_CAP Mixer DEC0" 1; tinymix -D 0 "VA DMIC MUX0" DMIC1; tinycap /data/local/tmp/mic.wav -D 0 -d 1 -c 1 -r 48000 -b 16 -T 3; start audioserver'
 ```
 
 ### Still to test after the merged flash
@@ -91,7 +91,7 @@ suppression); DisplayPort audio (MultiMedia3, `DISPLAY_PORT_RX`); headset is abs
 ---
 
 
-Build `eng.caoanh.20261124.1208` (userdebug), tablet `R52R504WFTK`, checked 2026-11-25.
+Build `eng.caoanh.20261124.1208` (userdebug), tablet `<serial>`, checked 2026-11-25.
 Check only: nothing in the image was changed. The tablet rebooted twice during the check
 (other sessions); every result below was seen after a full boot (`sys.boot_completed=1`).
 
@@ -343,7 +343,7 @@ Sau khi phiên chính gộp mọi nhánh và flash một lần (nhánh này khô
 
 1. **Nghe loa.** Ở thư mục gốc repo, build và chạy chương trình thử như ở §3:
    ```
-   adb -s R52R504WFTK shell CLASSPATH=/data/local/tmp/audiocheck.dex app_process /system/bin AudioCheck play 4
+   adb -s $SERIAL shell CLASSPATH=/data/local/tmp/audiocheck.dex app_process /system/bin AudioCheck play 4
    ```
    Áp tai gần bốn loa (hai cạnh ngắn của tablet) trong 4 giây. Mong đợi: tiếng bíp 1 kHz đều,
    không rè, không ngắt, nghe được từ cả hai cạnh. Ghi lại: có tiếng / không / rè / chỉ một bên.

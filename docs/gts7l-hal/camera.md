@@ -169,6 +169,136 @@ I servicemanager: ... Could not find android.hardware.camera.provider.ICameraPro
 The registration fails only because the running image's vendor manifest does not declare
 the instance yet; the full image has the HAL's VINTF fragment.
 
+## Flash LED, torch and continuous AF
+
+Branch `claude/gts7l-camera-flash-9761ab` (2026-11-26). Build `eng.caoanh.20261126.0021`
+declared `android.hardware.camera.flash`/`.autofocus` (c60bf86) while the HAL reported
+`android.flash.info.available = FALSE` on all three cameras.
+
+**Hardware.** The stock DT (`02_id0_rev0.dts`, `qcom,camera-flash0`) drives the rear LED
+from the PM8150L flash module (`qcom,leds@d300`, SID 5) on channels 0 and 1 together
+(`flash-source = <&pm8150l_flash0>, <&pm8150l_flash1>`, switch mask 0x3): flash 1000 mA
+per channel (max 1500), torch 300 mA per channel (max 500), 1280 ms flash timeout. No
+front flash.
+
+**Kernel.** `sm8250-samsung-gts7l.dts` already has `&pm8150l_flash` with `led-0`
+(`white:flash`, `led-sources = <1>, <2>`, torch 100 mA, flash 500 mA, 400 ms, "kept low
+until tested") from the gts7xl-mainline import, and `leds-qcom-flash`/`led-class-flash` are
+built as modules; they were just never loaded (the node is in the running DT,
+`/sys/bus/spmi/devices/0-05/c440000.spmi:pmic@5:led-controller@d300`, without a driver).
+`kernel/modules.bp` now loads both. No kernel rebuild. Torch brightness is
+`/sys/class/leds/white:flash/brightness` (0..`max_brightness`, which is 255:
+`leds-qcom-flash` scales the 255 levels to the DT's torch current, 100 mA over both channels).
+
+**Device.** `ueventd.gts7l.rc`: `brightness` of `/sys/class/leds/*:flash` 0664
+system:camera. `genfs_contexts` labels the LED class directory under the PMIC node
+`sysfs_leds`; `hal_pc_camera.te` may read and write `sysfs_leds`. The lights HAL ignores
+`*:flash` LEDs (no light type for them).
+
+**HAL** (`src/flash.rs`, `camera.rs`, `device.rs`, `session.rs`):
+
+- The first `*:flash`/`*:torch` LED under `/sys/class/leds` goes with the main back camera
+  (id `0`) only; the ultrawide shares the LED physically but reports no flash, so the
+  framework sees one torch.
+- Characteristics of camera 0: `flash.info.available` TRUE,
+  `flash.info.strengthMaximumLevel`/`DefaultLevel` = `max_brightness`, AE modes ON,
+  ON_AUTO_FLASH, ON_ALWAYS_FLASH.
+- `setTorchMode`, `turnOnTorchWithStrengthLevel`, `getTorchStrengthLevel`, with
+  `torchModeStatusChange` (AVAILABLE_ON/OFF; NOT_AVAILABLE while a session owns the
+  camera, CAMERA_IN_USE from torch calls then).
+- Capture requests: `FLASH_MODE_TORCH` lights the LED while requests carry it;
+  `FLASH_MODE_SINGLE` and AE ON_ALWAYS_FLASH / ON_AUTO_FLASH (when the scene is dark: the
+  longest exposure at 4x analogue gain or more) light it for still captures. The LED is
+  only ever used at torch current: a precapture trigger lights it and reports
+  `AE_STATE_PRECAPTURE` until the software AE has settled under it (10-30 frames), and the
+  LED stays lit for the still capture that follows (at most 90 frames). A flash capture
+  without a precapture sequence waits for the exposure under the LED itself; so does one
+  sent while the sequence still runs (the client did not wait for it), which ends the
+  sequence, so the LED goes off right after the photo. A real strobe
+  (500 mA for 400 ms) would need pre-flash metering scaled to the strobe current, which the
+  software AE cannot do in time. `FLASH_STATE` is READY/FIRED on camera 0, UNAVAILABLE
+  elsewhere; AUTO_FLASH reports `AE_STATE_FLASH_REQUIRED` in dark scenes.
+- Continuous AF on cameras with a focus motor (camera 0): AF modes add
+  CONTINUOUS_VIDEO/CONTINUOUS_PICTURE (and `lens.info.minimumFocusDistance` 10, i.e.
+  uncalibrated), the preview/still templates use CONTINUOUS_PICTURE and the video ones
+  CONTINUOUS_VIDEO. After a sweep the lens remembers the sharpness at its position and
+  sweeps again when the image stays below 60 % of it for 15 frames; states PASSIVE_SCAN /
+  PASSIVE_FOCUSED, and a trigger locks (FOCUSED_LOCKED once a running sweep ends) until a
+  cancel. The front camera and ultrawide are fixed focus and keep OFF/AUTO.
+
+Host checks: `libpccamera_test` covers the flash state machine (torch, auto flash with and
+without precapture, forced flash, cancel and timeout), finding the LED in a fake
+`/sys/class/leds`, the new characteristics/templates and the AF states.
+
+### Checked on the tablet (2026-11-26)
+
+On build `eng.caoanh.20261126.0021` (no flash yet) with the flash parts applied by hand: the
+two modules `insmod`ed, `brightness` chown'd system:camera 0664, the HAL built from
+1fa547c bind-mounted over `/vendor/bin/hw/android.hardware.camera.provider-service.pc`,
+then the provider, cameraserver and SystemUI restarted. SELinux is permissive on that build,
+so the `sysfs_leds` policy was not exercised.
+
+- `white:flash` appears, `max_brightness` 255; the HAL logs `flash LED white:flash (255
+  torch levels)`. `dumpsys media.camera`: camera 0 `Has a flash unit: true`,
+  `flash.info.available` TRUE, strength max/default 255, `aeAvailableModes` [1 2 3];
+  cameras 1 and 2 FALSE.
+- Torch through `CameraManager` (a small Camera2 test app): `setTorchMode` on/off sets
+  `brightness` 255/0 with `onTorchModeChanged`; `turnOnTorchWithStrengthLevel(40)` sets 40.
+  The Quick Settings flashlight tile turns it on and off (255/0).
+- Captures of camera 0 (preview + JPEG at 4128x3096, `brightness` sampled every 50 ms):
+
+  | Request | LED | Result | JPEG mean luma |
+  |---|---|---|---|
+  | AE ON, flash OFF | never | FLASH_STATE READY | 39 |
+  | AE ON_ALWAYS_FLASH + precapture | 255 from the trigger to the still | FIRED | 81 |
+  | AE ON_AUTO_FLASH (dim room) + precapture | same; FLASH_REQUIRED before | FIRED | 81 |
+  | FLASH_MODE_SINGLE | 255 for the still only | FIRED, flash mode SINGLE | 80 |
+  | FLASH_MODE_TORCH (repeating) | 255 all along | FIRED | 80 |
+
+  The photo is twice as bright under the LED, so it really lights the scene.
+- Found and fixed: a still sent while the precapture sequence was running (the test app did
+  not wait for it) left the sequence running, so the LED stayed lit after the photo until
+  the session closed (up to 90 frames). The still now ends the sequence.
+  Checked on the tablet with the fixed HAL: the still came 200 ms into the sequence, the
+  LED went off as the JPEG arrived and the next frame reported FLASH_REQUIRED again.
+
+Quirks seen while swapping the HAL at run time (not with a full image):
+
+- cameraserver caches which cameras have a flash (`CameraFlashlight::findFlashUnits`) once
+  per process, so `setTorchMode` failed with "does not have a flash unit" until cameraserver
+  restarted.
+- SystemUI drops the flashlight tile from `sysui_qs_tiles` when it starts on a device
+  without flash, and writes its own list back over `settings put`. A tablet that booted the
+  old image (with its data kept) therefore has no flashlight tile after the update: add it
+  back in Quick Settings, Edit (it was added back this way on <serial>).
+- At start the framework turns the torch off on every flash camera before it lists them, so
+  cameraserver logs "says an unknown camera ... now has torch status 1. Curious." once;
+  harmless.
+
+## Camera app crash on open (fixed 2026-11-26)
+
+The AOSP Camera app (`com.android.camera2`) closed at once on build 20261126. Two causes,
+one after the other:
+
+1. cameraserver refused the API1 client: `Camera2-Parameters: generated preview size list
+   is empty!!`, then `Failed to initialize camera "0": No such device (-19)`. API1 keeps only
+   preview/video sizes between the video encoder limits of `MediaProfiles`; with no
+   `media_profiles` file those are H.263/MPEG-4 at 176x144-352x288, and the HAL offered only
+   its mode sizes (rear 2064x1548 and 504x378, front 1632x1224 and 400x300, ultrawide
+   1288x966 and 648x486), none of them that small. Fix: raw cameras also offer the common
+   sizes that fit in their largest output (1920x1080, 1280x720, 640x480, 352x288, 320x240,
+   176x144, ..., `STANDARD_SIZES` in `sensor.rs`), cropped and scaled like every output.
+2. The app then crashed itself: `IllegalArgumentException: Could not find supported video
+   qualities` (`SettingsUtil.getNextSupportedVideoQualityIndex`): the default profiles have
+   camcorder profiles for camera 0 only. Fix: `aosp-device/gts7l/media_profiles_V1_0.xml` in
+   `/vendor/etc`, H.264/AAC profiles (QVGA, 480p, 720p, rear also 1080p) for cameras 0, 1, 2.
+
+Checked on the tablet without flashing: the new HAL bind-mounted over
+`/vendor/bin/hw/android.hardware.camera.provider-service.pc`, the profiles in a tmpfs over
+`/odm/etc` (also searched by `MediaProfiles`), and the framework restarted (`stop; start`:
+zygote reads the profiles at boot). The app opened, showed the rear preview upright, and the
+shutter saved `Pictures/IMG_20261126_203532.jpg`, 2064x1548, the room in focus.
+
 ## Not tested yet (needs the full image)
 
 These need the next full build flashed:
@@ -186,7 +316,9 @@ These need the next full build flashed:
 - Full-resolution demosaic for stills (now half size: 2064x1548 for 13 MP).
 - Longer exposures in the dark: lengthen VBLANK when the FPS range allows (now capped at the
   mode's frame time, ~1/30 s).
-- AF: continuous mode (re-sweep on scene change), touch regions; AF on the binned preview.
+- AF: touch regions; AF on the binned preview; tune the continuous re-sweep on the tablet.
+- Flash: raise the DT currents toward stock (torch 2x300 mA, flash 2x1000 mA; the LED works
+  at 100 mA); a real strobe for stills with pre-flash metering.
 - GPU ISP (the CPU ISP limits preview to ~20-25 fps at the largest size).
 - `LIMITED` hardware level: manual sensor controls, exposure/sensitivity in results.
 - The second front module (`cam-sensor@12`) has no driver; identify it if a tablet has it.
@@ -202,3 +334,12 @@ After the main session flashes the full image:
    ultrawide if the app offers it).
 3. If the preview stays black: `adb logcat -s android.hardware.camera.provider-service.pc`
    and `adb shell ls -l /dev/media0 /dev/video0`.
+4. Flash (branch `claude/gts7l-camera-flash-9761ab`): `adb shell ls -lZ /sys/class/leds/`
+   shows `white:flash` (`sysfs_leds`), `cat .../white:flash/max_brightness` is 255. The Quick
+   Settings flashlight tile lights the rear LED and turns it off; with the torch on, opening
+   the Camera app turns it off. In the Camera app, flash "on" lights the LED briefly before
+   the photo and the photo is lit; flash "auto" in a dark room does the same, in a bright
+   room it does not. `dumpsys media.camera | grep -iE 'flash|afAvailableModes'` for camera 0:
+   flash available TRUE, AF modes with CONTINUOUS_PICTURE. Logcat
+   `-s android.hardware.camera.provider-service.pc` shows `flash LED white:flash` at start
+   and `torch AVAILABLE_ON/OFF`.
