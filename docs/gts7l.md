@@ -1552,3 +1552,20 @@ own session and branch:
    enroll and unlock tested on the tablet. The TA's auth tokens are HMAC'd with a TrustZone key
    our software KeyMint does not share: keyguard unlock does not need them verified, keys
    bound to biometric auth would not work.
+
+### Result (2026-11-27)
+
+- Build `eng.caoanh.20261127.1529` (this branch: no virtual HAL, no feature, no SystemUI rule)
+  flashed with `tools/gts7l-android-flash.sh --yes --keep-data`: no fingerprint feature,
+  service or process; Settings > Security & privacy shows "Device unlock: Screen lock" only;
+  `android.settings.FINGERPRINT_ENROLL` closes at once. Before, on `eng.caoanh.20261127.1052`,
+  the virtual HAL's enroll intro opened as a clipped dialog that touch could not drive.
+- The real sensor, steps 1 and 2 (branches `claude/gts7l-fp-kernel-f03b30`,
+  `claude/gts7l-fp-protocol-11b9ce`, not merged): `goodix_fp_tz` powers, resets and clocks the
+  GW36T1 and gets its IRQ; `securefp` (the GW36T1's TA) loads through mainline `qcomtee` and
+  answers Type_Check. **Blocked:** QTEE 5.2's compat channel carries at most about one 4 KiB
+  page of request + response per call, and `securefp` needs 0xA040-byte Prepare buffers and a
+  2 MiB shared buffer; the legacy QSEOS app start (which has the large buffer) fails with -47
+  on this firmware. No capture, enroll or identify, so no HAL (step 3 not started). Open lead:
+  the legacy loader may want the image inside a TrustZone-configured region (`devcfg.img`
+  `OEM_pil_secure_app_load_region_*`), see the kernel branch's §25.
