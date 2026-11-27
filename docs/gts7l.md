@@ -1526,3 +1526,29 @@ Fingerprint entry, the "Fingerprint + PIN" choices and the lock screen's fingerp
 screen lock is PIN, pattern or password. The lockdown/boot-unlock patches and the RRO stay: with
 no strong biometric they change nothing.
 
+
+### The real sensor: plan (2026-11-27)
+
+The user wants the real sensor, so the TrustZone path is the plan, in three steps, each in its
+own session and branch:
+
+1. **Kernel (feasibility gate):** `qcom_scm` QSEE app loading on mainline (QSEOS app start from
+   the `.mdt`/`.bXX` split images in a DMA buffer, send command with request/response buffers,
+   shutdown, listener requests if a TA raises them), a small char device for userspace, and a
+   `goodix_fp` platform driver: LDO gpio117, reset gpio127, IRQ gpio63, and the SE7 clock vote
+   (`GCC_QUPV3_WRAP0_S7_CLK` + wrapper AHB clocks, interconnect) that TrustZone needs while it
+   drives the bus. gpio20-23 stay reserved. Test order: Qualcomm's sample TA `smplap64`, then
+   `fingerpr`/`authhat`, all already on the tablet in `/mnt/vendor/apnhlos/image/`.
+2. **TA protocol:** the stock HAL (`vendor.samsung.hardware.biometrics.fingerprint@3.0-service`)
+   reaches the TAs only through `libbauthtzcommon.so` (`QSEECom_start_app[_V2]`,
+   `QSEECom_send_cmd`, `QSEECom_set_bandwidth`, `QSEECom_shutdown_app`; TA `fingerpr` or the
+   APEX copy `/apex/com.samsung.android.biometrics.fingerprint/etc/ta/fpta`, `securefp`,
+   `authhat`, `skm`) and keeps encrypted templates in `/data/vendor/biometrics` and
+   `/efs/biometrics`. The command buffers (session open, sensor power, enroll, identify,
+   enumerate, remove, template load/save, auth token) are recovered from `libbauthserver.so`
+   and `libbauthtzcommon.so` of the stock vendor image.
+3. **HAL:** an AIDL `IFingerprint` HAL in Rust (side-key sensor, `POWER_BUTTON` type, `STRONG`)
+   on top of 1 and 2, the `android.hardware.fingerprint.xml` feature back, sepolicy, then
+   enroll and unlock tested on the tablet. The TA's auth tokens are HMAC'd with a TrustZone key
+   our software KeyMint does not share: keyguard unlock does not need them verified, keys
+   bound to biometric auth would not work.
