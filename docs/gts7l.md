@@ -1689,6 +1689,32 @@ version query fails harmlessly with "QTEE version 0.0.0"), ueventd rules for `/d
 `/dev/goodix_fp` and `/dev/qseecom` (0660 system). Not done: `/sys/class/fingerprint/fingerprint/name`
 (the HAL can hard-code tl_type 6), sepolicy, a full kernel build and flash.
 
+#### Fourth round: where the compat limit lives (2026-11-27)
+
+- **The ~3.6 KiB limit is QTEE's, not ours.** With patch 0306 in the tested module (8-16 MiB
+  inbound messages, logged per call) the message reaches QTEE whole and QTEE itself answers
+  -95 (`QCOMTEE_MSG_ERROR_MAXDATA`, "buffers too large"): a 7400-byte message (request 64 +
+  response 3584, each sent in and out) passes, 7912 bytes fails. Output buffers alone may be
+  large (request/response in 64 + 64, out 4096: OK); a large input with small output buffers gives
+  4 (`SIZE_OUT`). So request + response of one `sendRequest` must fit about one 4 KiB page:
+  QTEE 5.2 bounces a compat app's request and response through a page-sized buffer. The other
+  loader entry points give 2 for every argument shape tried (also `loadFromBuffer` with an extra
+  shared-buffer-size argument), and Qualcomm's own compat clients
+  (`smcinvoke_kernel.c` of securemsm-kernel) pass the buffers inline with no other mechanism
+  (the four memory objects and `embeddedBufOffsets` are for pointers embedded in a request,
+  not for the request itself). `securefp` needs 0xA040-byte Prepare buffers and a 2 MiB shared
+  buffer, so **the compat channel cannot carry its protocol on this firmware**.
+- **Legacy start, more ruled out:** registering eight listener services first (ids 10-13,
+  `0x2000`-`0x5000`, as `qseecomd` would; TZ accepted all) does not change the -47. The app's
+  metadata name is `securefp` (`m=x;n=securefp;p=8:...`), and QSEOS lookup does not see apps that
+  QTEE loaded, so the legacy 2 MiB send cannot reach them.
+- Still open for -47: TrustZone's device config (`devcfg.img`) has
+  `OEM_pil_secure_app_load_region_size` / `OEM_pil_subsys_load_region_*`, which suggests the
+  legacy loader wants the image inside a configured physical region (on stock, the
+  `qseecom_ta_region` CMA lands at a fixed address); the property table's encoding was not
+  decoded. Next: decode devcfg (or read the stock kernel's `qseecom_ta` CMA base from a stock
+  boot log, without booting stock) and place the image buffer there.
+
 #### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
 
 One open file = one client of one app. Mode 0600 (root): the HAL needs a ueventd rule.
