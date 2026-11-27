@@ -1919,3 +1919,29 @@ Settings in hypr fullscreen has no caption window and a 300 ms press is no longe
 fingerprint opens the enroll screen inside the tile and its buttons work. Every touch of the key
 during that enrollment came back as acquired PARTIAL ("Press firmly on the sensor"), so no step
 counted: a HAL/TA matter, not the UI.
+
+### Settings enroll and unlock work (2026-11-27)
+
+The PARTIAL storm was the HAL, not the sensor. A finger resting on the key keeps raising
+interrupts, so the HAL started the next `Prepare` + `Enroll_Init` + `Enroll_Do` round at once
+and captured the finger while it was half lifted: status 0x27 with result 0x88000000 (too little
+finger), sometimes 0x80000002 or 0x80000008, after nearly every good capture. The good captures
+did count in the TA, only the UI kept showing "Press firmly". The HAL now waits until the sensor
+stays without interrupts for 700 ms (`Sensor::wait_lift`) before the next enroll round and after
+a failed identify, and logs every `Enroll_Do` result.
+
+**The TA keeps the captures of a cancelled enrollment.** The next enrollment, of any user or
+slot, goes on from them (it started at 85% once) until one reaches 100%, which resets the
+count. Nothing tried drops them: `Enroll_Final` before 100% (alone or after `Enroll_Init`),
+`Cancel`, control ops 0x16 (`SET_ENROLL_SESSION`, 0 or 1) and 0x1E (`CLEAN_UP`), another user
+or slot, an identify run. So after a cancelled enrollment the next one may finish early, with
+some captures from the earlier attempt. Open.
+
+Build `eng.caoanh.20261127.2229` (flashed with `--keep-data`, enrolled fingers kept):
+
+- Settings > Add fingerprint in a hypr tile: 23 touches, 20 counted, 3 rejected as too little
+  finger (shown as "Press firmly" once each), 5% per capture up to 100% → slot 3, 80 KB
+  template; `dumpsys fingerprint` count 3.
+- Lock screen: SystemUI's keyguard authentication matched finger 1 (score 50) and unlocked.
+- Earlier on `eng.caoanh.20261127.1953`: Settings enroll in a full-screen window (slots 1 and
+  2); a Firefox `BiometricPrompt` matched finger 1 (score 53).
