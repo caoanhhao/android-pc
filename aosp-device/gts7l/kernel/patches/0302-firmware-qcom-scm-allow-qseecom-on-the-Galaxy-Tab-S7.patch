@@ -1,4 +1,4 @@
-From c60d270759d23c64ebafd440d7ce1ab8f1828fca Mon Sep 17 00:00:00 2001
+From 66f708a86d67edf686acfbbbad22a53d3d86be08 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] firmware: qcom: scm: allow qseecom on the Galaxy Tab S7 LTE

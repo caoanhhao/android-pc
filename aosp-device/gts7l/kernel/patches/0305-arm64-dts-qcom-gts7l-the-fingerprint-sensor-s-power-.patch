@@ -1,4 +1,4 @@
-From a691da776de7f9e38116b21699812eee88463036 Mon Sep 17 00:00:00 2001
+From 11eef307dd6e0d767553a8ee61e0587b81bd4345 Mon Sep 17 00:00:00 2001
 From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 13:17:23 +0700
 Subject: [PATCH] arm64: dts: qcom: gts7l: the fingerprint sensor's power,
