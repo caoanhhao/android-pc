@@ -159,6 +159,44 @@ impl Sensor {
         Ok(wake)
     }
 
+    /// Waits until the finger has left: no interrupt for `quiet`. A finger resting on the
+    /// sensor keeps raising interrupts, and a capture started then sees a finger that is half
+    /// lifted (`Enroll_Do` status 0x27, result 0x88000000, too little finger).
+    pub fn wait_lift(&self, quiet: Duration) -> io::Result<Wake> {
+        self.drain_irq_only();
+        self.io(GF_IOC_ENABLE_IRQ)?;
+        self.io(GF_IOC_DISABLE_SPI_CLK)?;
+        let mut fds = [
+            libc::pollfd { fd: self.file.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: self.cancel.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        ];
+        let ms = quiet.as_millis().min(i32::MAX as u128) as i32;
+        let wake = loop {
+            // SAFETY: two valid pollfds.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                self.clock_on()?;
+                return Err(e);
+            }
+            if n == 0 {
+                break Wake::Timeout;
+            }
+            if fds[1].revents != 0 {
+                self.clear_cancel();
+                break Wake::Cancelled;
+            }
+            let mut count = [0u8; 4];
+            (&self.file).read_exact(&mut count)?;
+        };
+        self.io(GF_IOC_DISABLE_IRQ)?;
+        self.clock_on()?;
+        Ok(wake)
+    }
+
     fn drain_irq_only(&self) {
         let mut pfd = libc::pollfd { fd: self.file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one valid pollfd, no wait.

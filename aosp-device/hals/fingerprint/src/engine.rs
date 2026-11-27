@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use log::{debug, info, warn};
 
@@ -15,6 +16,9 @@ pub const STOREPATH: &str = "/data/vendor/biometrics";
 /// TA answers in a row that ask for no finger wait before we give up. A TA that keeps
 /// answering at once once reset the SoC when called back in a tight loop.
 const MAX_IMMEDIATE: u32 = 16;
+
+/// How long the sensor must stay without interrupts before the finger counts as lifted.
+const LIFT_QUIET: Duration = Duration::from_millis(700);
 
 #[derive(Debug, thiserror::Error)]
 /// Why an operation failed.
@@ -94,6 +98,14 @@ impl Device {
         &self.ta
     }
 
+    /// Waits for the finger to leave the sensor before the next capture.
+    fn wait_lift(&self) -> Result<()> {
+        match self.sensor.wait_lift(LIFT_QUIET)? {
+            Wake::Cancelled => Err(Error::Cancelled),
+            _ => self.check_cancel(),
+        }
+    }
+
     fn check_cancel(&self) -> Result<()> {
         if self.cancelled.load(Ordering::SeqCst) { Err(Error::Cancelled) } else { Ok(()) }
     }
@@ -146,7 +158,15 @@ impl Device {
     pub fn enroll(&mut self, user: &str, bio_idx: u32, on_event: &mut dyn FnMut(Event)) -> Result<Vec<u8>> {
         let mut idle = 0;
         let mut template = Vec::new();
+        // The TA keeps the captures of a cancelled enrollment until one reaches 100%, so the
+        // next enrollment goes on from them. Nothing tried drops them (`Enroll_Final` before
+        // 100%, `Cancel`, control ops 0x16 and 0x1E, another user or slot, an identify).
+        let mut first = true;
         let last = loop {
+            if !first {
+                self.wait_lift()?;
+            }
+            first = false;
             self.ta().prepare()?;
             self.ta().enroll_init(user, bio_idx, STOREPATH)?;
             let mut waited = 0;
@@ -166,6 +186,7 @@ impl Device {
                 return Err(securefp::Error::Protocol("Enroll_Do finished captures without a finger").into());
             }
             let p = EnrollProgress::from(&s);
+            info!("enroll: status {:#x} result {:#x} {}% ({} captures)", s.status, p.result, p.percentage, p.count);
             match s.status {
                 0 if p.percentage >= 100 => break p,
                 0 => on_event(Event::Progress(p)),
@@ -229,6 +250,7 @@ impl Device {
             if stop() {
                 return Err(Error::Cancelled);
             }
+            self.wait_lift()?;
         }
     }
 }
