@@ -1,3 +1,66 @@
+diff --git a/apex/jobscheduler/service/java/com/android/server/DeviceIdleController.java b/apex/jobscheduler/service/java/com/android/server/DeviceIdleController.java
+index 9c185ff9e..10e0cfe3b 100644
+--- a/apex/jobscheduler/service/java/com/android/server/DeviceIdleController.java
++++ b/apex/jobscheduler/service/java/com/android/server/DeviceIdleController.java
+@@ -110,6 +110,7 @@ import com.android.internal.app.IBatteryStats;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.DumpUtils;
+ import com.android.internal.util.FastXmlSerializer;
++import com.android.internal.util.HexDump;
+ import com.android.internal.util.XmlUtils;
+ import com.android.modules.expresslog.Counter;
+ import com.android.server.am.BatteryStatsService;
+@@ -2666,6 +2667,40 @@ public class DeviceIdleController extends SystemService
+         return new File(Environment.getDataDirectory(), "system");
+     }
+ 
++    // Local (android-pc): Google Play Store and microG installed as ordinary apps in userdata get
++    // the allow-in-power-save the ROM's sysconfig lists for them, as preinstalled ones get from
++    // google.xml on GMS devices. Play's systemExempted foreground services (VpaService at boot,
++    // DownloadService) crash without it, and `cmd deviceidle whitelist` does not survive Play
++    // reinstalling itself. Only with their own signing certificates (past ones count, Play rotates
++    // its key), so another app with the same package name gets nothing. Same certificates as
++    // AppIdPermissionPolicy.PLAY_STORE_CERT_SHA256 and ComputerEngine's microG ones.
++    private static final ArrayMap<String, String[]> USER_APP_CERTS_SHA256 = new ArrayMap<>();
++    static {
++        USER_APP_CERTS_SHA256.put("com.android.vending", new String[] {
++                "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"});
++        USER_APP_CERTS_SHA256.put("com.google.android.gms", new String[] {
++                "9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165",
++                "a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc"});
++    }
++
++    private ApplicationInfo getAllowInPowerSaveAppInfo(String pkg)
++            throws PackageManager.NameNotFoundException {
++        try {
++            return mPackageManager.getApplicationInfo(pkg,
++                    PackageManager.MATCH_ANY_USER | PackageManager.MATCH_SYSTEM_ONLY);
++        } catch (PackageManager.NameNotFoundException e) {
++            String[] certs = USER_APP_CERTS_SHA256.get(pkg);
++            for (int i = 0; certs != null && i < certs.length; i++) {
++                if (mPackageManager.hasSigningCertificate(pkg,
++                        HexDump.hexStringToByteArray(certs[i]),
++                        PackageManager.CERT_INPUT_SHA256)) {
++                    return mPackageManager.getApplicationInfo(pkg, PackageManager.MATCH_ANY_USER);
++                }
++            }
++            throw e;
++        }
++    }
++
+     @Override
+     public void onStart() {
+         mPackageManager = getContext().getPackageManager();
+@@ -2700,8 +2735,7 @@ public class DeviceIdleController extends SystemService
+                     // pre-installed on FULL users. Look for pre-installed system
+                     // apps across all users to make sure they're properly
+                     // allowlisted.
+-                    ApplicationInfo ai = mPackageManager.getApplicationInfo(pkg,
+-                            PackageManager.MATCH_ANY_USER | PackageManager.MATCH_SYSTEM_ONLY);
++                    ApplicationInfo ai = getAllowInPowerSaveAppInfo(pkg);
+                     int appid = UserHandle.getAppId(ai.uid);
+                     // These apps are on both the whitelist-except-idle as well
+                     // as the full whitelist, so they apply in all cases.
 diff --git a/services/core/java/com/android/server/pm/AppsFilterImpl.java b/services/core/java/com/android/server/pm/AppsFilterImpl.java
 index 319e09216..f25b26b4f 100644
 --- a/services/core/java/com/android/server/pm/AppsFilterImpl.java

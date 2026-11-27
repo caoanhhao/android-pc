@@ -104,7 +104,8 @@ for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION 
 done
 # Play's systemExempted services need the Doze allowlist; without it downloads crash
 # com.android.vending:background (docs/arm-translation.md, F9d). The ROM's
-# gts7l_sysconfig_google.xml has both; the user allowlist here is for older builds.
+# gts7l_sysconfig_google.xml has both (applied to user apps by aosp17-play-store-user-app.patch,
+# from the next boot); the user allowlist here covers the boot they are installed in.
 for p in com.google.android.gms com.android.vending; do
     "${adb[@]}" shell cmd deviceidle whitelist +$p >/dev/null
 done

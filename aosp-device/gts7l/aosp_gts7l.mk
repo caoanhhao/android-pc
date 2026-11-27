@@ -275,6 +275,13 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
     $(GTS7L_DEVICE_DIR)/gts7l_sysconfig_google.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/sysconfig/gts7l_sysconfig_google.xml
 
+# microG's defaults (/product/etc/microg.xml: checkin, push, SafetyNet and DroidGuard on, which a
+# fresh microG has off) and its device profile: it checks in and runs DroidGuard as this tablet's
+# stock build, not as aosp_gts7l userdebug/test-keys, which Play reports as not certified.
+PRODUCT_PACKAGES += microg.xml
+PRODUCT_COPY_FILES += \
+    $(GTS7L_DEVICE_DIR)/microg_device_profile.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/microg_device_profile.xml
+
 # The 11" 2560x1600 panel. TODO(T5): density and orientation from the first boot (the
 # panel may scan out in portrait, docs/gts7l.md §6/T5).
 PRODUCT_AAPT_CONFIG := normal large xlarge
