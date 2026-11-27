@@ -1395,8 +1395,18 @@ Two framework patches in `tools/patches/` make the first two work without being 
     `<queries>` entry (billing, licensing, `market://` checks) still see it.
   - `DomainVerificationService.java`: its verified app links (`play.google.com`) are approved
     like google.xml's `<app-link>` (also honoured for system apps only).
+  - `DeviceIdleController.java`: the `allow-in-power-save` of `gts7l_sysconfig_google.xml`
+    applies to it and to microG (signed with microG's release key or testkey) although they
+    are not system apps. `DeviceIdleController` reads sysconfig allowlists with
+    `MATCH_SYSTEM_ONLY`, so without this only the script's `cmd deviceidle whitelist` exempted
+    Play, and that entry went missing after Play updated itself (50.7 to 54.4, 2026-11-26):
+    from then on every boot crashed Play ("Google Play Store keeps stopping") in
+    `VpaService.startForeground` with `SecurityException: Starting FGS with type
+    systemExempted ... requires permissions ... or System exempted`. Play rotates its key
+    (54.4 is signed with `7ce83c1b…`, lineage from `f0fd6c5b…`); `hasSigningCertificate`
+    accepts past certificates, as `hasSha256Certificate` does in the other three files.
 
-Both are keyed on the signing certificate, so another app with the same package name gets
+All four are keyed on the signing certificate, so another app with the same package name gets
 nothing.
 
 What stays different from a preinstalled Play Store, on purpose:
@@ -1406,8 +1416,9 @@ What stays different from a preinstalled Play Store, on purpose:
 - google.xml's `allow-in-power-save-except-idle` becomes the full `allow-in-power-save` in
   `aosp-device/gts7l/gts7l_sysconfig_google.xml` (with microG's Doze and Data Saver entries):
   `-except-idle` does not exempt Play's `systemExempted` foreground services, and
-  `VpaService`/`DownloadService` crash `com.android.vending` without it. The script's
-  `cmd deviceidle whitelist` alone is lost when Play reinstalls itself.
+  `VpaService`/`DownloadService` crash `com.android.vending` without it. The patch's
+  `DeviceIdleController` change makes it count for these user apps; it is read at boot, so a
+  Play installed after boot needs the script's `cmd deviceidle whitelist` until the next one.
 - The kernel has no `/dev/ashmem`, and libcutils uses memfd only for apps targeting SDK 37+:
   `sys.use_memfd=true` (product properties) makes Play's (SDK 36) `CursorWindow`s work.
 - `whitelisted-staged-installer` (Mainline/APEX trains), `rollback-whitelisted-app` and

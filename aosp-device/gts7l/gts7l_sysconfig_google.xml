@@ -3,7 +3,8 @@
      microG and Play Store: they keep network access in Doze and Data Saver, and their
      systemExempted foreground services may start (Play's DownloadService crashes without it).
      Play needs the full allow-in-power-save: -except-idle does not exempt its systemExempted
-     services. The user allowlist gts7l-google-apps.sh sets is lost when Play reinstalls itself. -->
+     services. DeviceIdleController honours allow-in-power-save for system apps only;
+     aosp17-play-store-user-app.patch extends it to these two, checked by signing certificate. -->
 <config>
     <allow-in-power-save package="com.google.android.gms"/>
     <allow-in-data-usage-save package="com.google.android.gms"/>
