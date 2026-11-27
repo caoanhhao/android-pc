@@ -1,0 +1,18 @@
+diff --git a/src/com/android/settings/biometrics/BiometricUtils.java b/src/com/android/settings/biometrics/BiometricUtils.java
+index 10547ec..727deb9 100644
+--- a/src/com/android/settings/biometrics/BiometricUtils.java
++++ b/src/com/android/settings/biometrics/BiometricUtils.java
+@@ -587,6 +587,13 @@ public class BiometricUtils {
+         if (hostActivity.getPackageManager().hasSystemFeature(FEATURE_PC)) {
+             return false;
+         }
++        // android-pc: a desktop window (freeform, e.g. a tile of the hypr desktop on the
++        // gts7l tablet) is no split screen. Only udfps needs the whole screen for its sensor
++        // overlay; a side-key or rear sensor enrolls fine in a window.
++        if (hostActivity.getResources().getConfiguration().windowConfiguration
++                .getWindowingMode() == android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM) {
++            return false;
++        }
+ 
+         return hostActivity.isInMultiWindowMode() &&
+                 !ActivityEmbeddingUtils.isActivityEmbedded(hostActivity);

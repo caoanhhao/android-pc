@@ -129,6 +129,13 @@ class HyprDecorations(
     override fun hidesCaption(taskInfo: RunningTaskInfo): Boolean =
         enabled() && !config.hasCaption(floating = !isTiled(taskInfo.taskId))
 
+    /**
+     * A fullscreen window (`fullscreen` dispatcher) has no app handle: HyprBar replaces the
+     * status bar the handle sits in, so it is never shown, yet its spy window covered the
+     * whole task and stole every press (the fingerprint enroll screen could not be touched).
+     */
+    override fun hidesAppHandle(taskInfo: RunningTaskInfo): Boolean = enabled()
+
     override fun onRelayout(
         taskInfo: RunningTaskInfo,
         taskSurface: SurfaceControl,

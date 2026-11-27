@@ -1878,3 +1878,44 @@ are the TA's, `bas` the stock HAL's):
 match, score 75, slot 1; the thumb, three touches → status 0x20 each time, rejected. Once the
 tablet rebooted by itself in the middle of an enrollment (51%); a full press of the power key
 (screen off and suspend while the TA captured) is the suspect, not seen again.
+
+### Result (2026-11-27)
+
+- Build `eng.caoanh.20261127.1529` (this branch: no virtual HAL, no feature, no SystemUI rule)
+  flashed with `tools/gts7l-android-flash.sh --yes --keep-data`: no fingerprint feature,
+  service or process; Settings > Security & privacy shows "Device unlock: Screen lock" only;
+  `android.settings.FINGERPRINT_ENROLL` closes at once. Before, on `eng.caoanh.20261127.1052`,
+  the virtual HAL's enroll intro opened as a clipped dialog that touch could not drive.
+- The real sensor, steps 1 and 2 (branches `claude/gts7l-fp-kernel-f03b30`,
+  `claude/gts7l-fp-protocol-11b9ce`, not merged): `goodix_fp_tz` powers, resets and clocks the
+  GW36T1 and gets its IRQ; `securefp` (the GW36T1's TA) loads through mainline `qcomtee` and
+  answers Type_Check. **Blocked:** QTEE 5.2's compat channel carries at most about one 4 KiB
+  page of request + response per call, and `securefp` needs 0xA040-byte Prepare buffers and a
+  2 MiB shared buffer; the legacy QSEOS app start (which has the large buffer) fails with -47
+  on this firmware. No capture, enroll or identify, so no HAL (step 3 not started). Open lead:
+  the legacy loader may want the image inside a TrustZone-configured region (`devcfg.img`
+  `OEM_pil_secure_app_load_region_*`), see the kernel branch's §25.
+
+### Enroll screen in the hypr desktop (2026-11-27)
+
+With the real HAL (build `eng.caoanh.20261127.1953`), Settings' side-key enrollment could not be
+used on the tablet:
+
+- In a tile of the hypr desktop, Settings refused with "Exit split screen to set up Fingerprint
+  Unlock": `BiometricUtils.isSplitScreenEnrollmentDisabled()` treats any multi-window mode as
+  split screen and skips the check only on `FEATURE_PC`.
+  `tools/patches/aosp17-settings-sfps-enroll-desktop.patch` also skips it in freeform windows:
+  only udfps needs the whole screen for its overlay.
+- The way out, `fullscreen` (ALT+F), moved Settings out of the desk, where Shell gave it an app
+  handle. With HyprBar in place of the status bar the handle is never shown, yet its spy window
+  (`Embedded{Caption of Task=N}`) covered the whole task and stole every press longer than a tap
+  (`InputDispatcher: ... is stealing input gesture`); the enroll card was also laid out shrunk.
+  This hit every app in hypr fullscreen. `WindowDecorStyle.hidesAppHandle`
+  (`tools/patches/aosp17-shell-decor-style.patch`, `HyprDecorations`) drops the handle
+  (docs/hypr-desktop.md).
+
+Build `eng.caoanh.20261127.2051` (the HAL work plus these fixes, flashed with `--keep-data`):
+Settings in hypr fullscreen has no caption window and a 300 ms press is no longer stolen; Add
+fingerprint opens the enroll screen inside the tile and its buttons work. Every touch of the key
+during that enrollment came back as acquired PARTIAL ("Press firmly on the sensor"), so no step
+counted: a HAL/TA matter, not the UI.
