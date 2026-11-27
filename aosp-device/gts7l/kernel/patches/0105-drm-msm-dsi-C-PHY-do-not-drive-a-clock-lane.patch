@@ -1,5 +1,5 @@
 From c8a679bd30b1e496da9aa4606f6bebd947fc2cb7 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 23:47:38 +0700
 Subject: [PATCH 105/107] drm/msm/dsi: C-PHY: do not drive a clock lane
 

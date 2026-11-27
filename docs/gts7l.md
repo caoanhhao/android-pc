@@ -5,7 +5,7 @@ Work happens on branch `gts7l` (worktree `../android-pc-gts7l`). Builds use the 
 build at a time, through `tools/limited-build.sh` (see `CLAUDE.md`).
 
 A new **android-pc** target for exactly one device: the Samsung Galaxy Tab S7 LTE (SM-T875,
-`gts7l`) on the desk, serial `R52R504WFTK`. It shares android-pc's AOSP 17 tree, PcSystemUI,
+`gts7l`) on the desk, serial `<serial>`. It shares android-pc's AOSP 17 tree, PcSystemUI,
 HyprLauncher, hyprtile and `libpchal`, the way the Waydroid target shares them. No LineageOS,
 no Samsung or Qualcomm userspace: every program that runs on the application processor is
 built from source we own, and the vendor HALs are written in Rust. Other models or devices
@@ -694,7 +694,7 @@ Kernel with patch 0106; vendor with attempt 1's fixes. After the person's reset 
 tablet came up in the bring-up shell twice (a second reset a minute later). Both boots had an
 empty `/sys/fs/pstore`, so attempt 1's hang left no record.
 
-Flash: all checks and read-backs OK. **adb came up over USB** (`R52R504WFTK device`) about 40 s
+Flash: all checks and read-backs OK. **adb came up over USB** (`<serial> device`) about 40 s
 after the reboot, so the FunctionFS fix works. `sys.boot_completed` was still unset:
 
 | Problem | Cause | Fix |
@@ -789,7 +789,7 @@ Properties (`getprop`):
 ```
 ro.build.fingerprint     Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys
 ro.build.version         17 (SDK 37), security patch 2026-06-05, userdebug
-ro.product.model         android-pc Galaxy Tab S7 LTE (device gts7l, serial R52R504WFTK)
+ro.product.model         android-pc Galaxy Tab S7 LTE (device gts7l, serial <serial>)
 ro.kernel.version        7.3 (Linux 7.3.0-gts7l, clang 22.0.2)
 ro.boot.selinux          permissive; verifiedbootstate orange
 ro.hardware.egl/vulkan   mesa / freedreno; ro.hardware.gralloc minigbm

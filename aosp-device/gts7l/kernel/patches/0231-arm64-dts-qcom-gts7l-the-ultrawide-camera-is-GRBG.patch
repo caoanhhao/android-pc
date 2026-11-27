@@ -1,5 +1,5 @@
 From 5e92560d6ae473a83b8720fce5dfa15ae6dddd45 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 09:53:01 +0700
 Subject: [PATCH] arm64: dts: qcom: gts7l: the ultrawide camera is GRBG
 

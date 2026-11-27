@@ -330,20 +330,20 @@ mod tests {
 
     #[test]
     fn parses_factory_macs() {
-        assert_eq!(parse_mac("18:CE:94:0D:D5:E0\n"), Some([0x18, 0xce, 0x94, 0x0d, 0xd5, 0xe0]));
+        assert_eq!(parse_mac("1C:2B:3A:4D:5E:E0\n"), Some([0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xe0]));
         assert_eq!(parse_mac("02:00:ab:01:02:ff"), Some([0x02, 0, 0xab, 1, 2, 0xff]));
         assert_eq!(parse_mac("00:00:00:00:00:00"), None);
         assert_eq!(parse_mac("01:00:5e:00:00:01"), None, "multicast");
-        assert_eq!(parse_mac("18:ce:94:0d:d5"), None);
-        assert_eq!(parse_mac("18:ce:94:0d:d5:e0:00"), None);
-        assert_eq!(parse_mac("18:ce:94:0d:d5:e"), None);
-        assert_eq!(parse_mac("18:ce:94:0d:d5:gg"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:e0:00"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:e"), None);
+        assert_eq!(parse_mac("1c:2b:3a:4d:5e:gg"), None);
         assert_eq!(parse_mac(""), None);
     }
 
     #[test]
     fn factory_mac_overrides_one_interface() {
-        let mac = [0x18, 0xce, 0x94, 0x0d, 0xd5, 0xe0];
+        let mac = [0x1c, 0x2b, 0x3a, 0x4d, 0x5e, 0xe0];
         let netdev = Netdev::open().expect("socket").with_factory_mac("wlan0", mac);
         assert_eq!(netdev.permanent_mac("wlan0").expect("factory MAC"), mac);
         assert!(netdev.permanent_mac("no-such-if0").is_err());

@@ -270,7 +270,7 @@ Quirks seen while swapping the HAL at run time (not with a full image):
 - SystemUI drops the flashlight tile from `sysui_qs_tiles` when it starts on a device
   without flash, and writes its own list back over `settings put`. A tablet that booted the
   old image (with its data kept) therefore has no flashlight tile after the update: add it
-  back in Quick Settings, Edit (it was added back this way on R52R504WFTK).
+  back in Quick Settings, Edit (it was added back this way on <serial>).
 - At start the framework turns the torch off on every flash camera before it lists them, so
   cameraserver logs "says an unknown camera ... now has torch status 1. Curious." once;
   harmless.

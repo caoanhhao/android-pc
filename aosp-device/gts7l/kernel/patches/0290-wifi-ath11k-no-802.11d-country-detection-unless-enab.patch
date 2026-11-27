@@ -1,5 +1,5 @@
 From d6e6b6d8372cac43b8ebea81d042f4b13b8c055b Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 00:46:36 +0700
 Subject: [PATCH] wifi: ath11k: no 802.11d country detection unless enable_11d
  is set

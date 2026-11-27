@@ -1,6 +1,6 @@
 # gts7l graphics HALs: check with evidence
 
-Device: Galaxy Tab S7 LTE (SM-T875), `adb -s R52R504WFTK`, adbd as root.
+Device: Galaxy Tab S7 LTE (SM-T875), `adb -s $SERIAL`, adbd as root.
 Build: `Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys`.
 Checked on 2026-11-25, right after a reboot (uptime 1-5 min). All checks were read-only,
 except a small Vulkan test binary pushed to `/data/local/tmp`.
@@ -263,7 +263,7 @@ máy mà phiên chia sẻ tablet không được phép làm):
 
 1. **Hình trên màn hình thật khớp với screencap.** Panel hiện chỉ hiện khoảng 160 dòng của
    DSI0 (lỗi DSI/C-PHY của kernel). Khi các phiên panel sửa xong, hãy so ảnh panel với
-   `adb -s R52R504WFTK exec-out screencap -p > s.png`: cùng cửa sổ, đúng màu (không đảo
+   `adb -s $SERIAL exec-out screencap -p > s.png`: cùng cửa sổ, đúng màu (không đảo
    đỏ/xanh), không bị xoay, không xé hình khi kéo cửa sổ.
 2. **Vì sao drm_hwcomposer không đặt được layer nào lên plane DPU** (2290/2397 test commit
    thất bại). Cần mount debugfs (thay đổi hệ thống, nên mình không làm):

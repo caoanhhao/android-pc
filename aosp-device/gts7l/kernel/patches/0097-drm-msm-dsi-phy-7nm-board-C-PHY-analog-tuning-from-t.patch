@@ -1,5 +1,5 @@
 From 9f70f83c8b2a411353acae640340e8626ca3c75a Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 00:16:03 +0700
 Subject: [PATCH 097/107] drm/msm/dsi/phy: 7nm: board C-PHY analog tuning from
  the device tree

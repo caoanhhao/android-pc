@@ -253,7 +253,7 @@ Signature spoofing, permissions and the GSF provider were not the problem.
   (`-netdev user,id=pcnet -device virtio-net-pci,netdev=pcnet`). Cuttlefish renames that
   NIC to `buried_eth0`, so it was renamed back to `eth0` with `adb root` + `ip link`.
   Then, with no settings touched:
-  - microG checks in (`gservices.db` `android_id` 4333952229198825412) and logs in to
+  - microG checks in (`gservices.db` `android_id` set) and logs in to
     `mtalk.google.com:5228` (`GmsGcmMcsSvc: Logged in`);
   - the Play Store logs no `android-id = 0` at all;
   - Play Store "Sign in" leads to microG's "An app on your device is trying to sign in"

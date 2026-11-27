@@ -1,5 +1,5 @@
 From 20b595f384b7d6934c065bbd53e02ca023e82b08 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 07:58:51 +0700
 Subject: [PATCH 221/221] power: supply: max17042: optional platform IRQ, cycle
  count in cycles

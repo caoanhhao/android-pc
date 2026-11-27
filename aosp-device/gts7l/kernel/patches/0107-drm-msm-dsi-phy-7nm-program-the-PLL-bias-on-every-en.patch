@@ -1,5 +1,5 @@
 From a0e999203d55adae8de74e5fe73250220d0ced21 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 23:47:51 +0700
 Subject: [PATCH 107/107] drm/msm/dsi/phy: 7nm: program the PLL bias on every
  enable

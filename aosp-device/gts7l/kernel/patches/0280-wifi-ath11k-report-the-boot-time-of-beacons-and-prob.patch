@@ -1,5 +1,5 @@
 From be786fd47fd2875faa530f545797a847d029d161 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 09:21:01 +0700
 Subject: [PATCH] wifi: ath11k: report the boot time of beacons and probe
  responses

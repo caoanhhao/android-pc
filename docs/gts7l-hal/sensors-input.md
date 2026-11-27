@@ -1,7 +1,7 @@
 # gts7l: sensors and input, checked on the tablet (2026-11-25)
 
 Build `Android/aosp_gts7l/gts7l:17/CP2A.260605.016/eng.caoanh.20261124.1208:userdebug/test-keys`,
-`adb -s R52R504WFTK`, SELinux **Permissive**. The tablet had just rebooted (uptime 0-3 min
+`adb -s $SERIAL`, SELinux **Permissive**. The tablet had just rebooted (uptime 0-3 min
 during the checks) and stood still in landscape; Book Cover not attached. Someone was tapping
 the screen while the checks ran, which gave real touchscreen events.
 
@@ -228,39 +228,39 @@ turn the screen off; only the Book Cover can, which needs the cover attached to 
 Chạy các lệnh trên máy tính (tablet cắm USB). Tablet đang ở chế độ Permissive.
 
 1. **Gia tốc kế + tự xoay màn hình**
-   - Chạy `adb -s R52R504WFTK shell dumpsys sensorservice | grep -A5 "Recent Sensor events"`
+   - Chạy `adb -s $SERIAL shell dumpsys sensorservice | grep -A5 "Recent Sensor events"`
      ba lần: tablet đứng dọc (portrait), nằm ngang (landscape), nằm phẳng trên bàn.
    - Phải thấy: dọc → y ≈ +9.8; ngang → x ≈ ±9.8; nằm phẳng → z ≈ +9.8 (màn hình hướng lên).
    - Bật "Tự động xoay", xoay tablet 90°: giao diện phải xoay theo trong ~1 giây. Kiểm tra
-     `adb -s R52R504WFTK shell dumpsys window | grep mProposedRotation` đổi giá trị (0/1/2/3).
+     `adb -s $SERIAL shell dumpsys window | grep mProposedRotation` đổi giá trị (0/1/2/3).
 2. **Cảm ứng (Novatek)**
-   - Chạy `adb -s R52R504WFTK shell getevent -lt /dev/input/event4`, chạm 1 ngón ở góc trên
+   - Chạy `adb -s $SERIAL shell getevent -lt /dev/input/event4`, chạm 1 ngón ở góc trên
      trái rồi góc dưới phải (theo chiều dọc): phải thấy `BTN_TOUCH DOWN/UP`, `ABS_MT_POSITION_X/Y`
      gần 0/0 và gần 1599/2559.
    - Chạm bằng 5 ngón cùng lúc: phải thấy 5 `ABS_MT_TRACKING_ID` khác nhau (slot 0-4).
    - Bật Tuỳ chọn nhà phát triển → "Vị trí con trỏ": vạch phải nằm đúng dưới ngón tay ở cả 4
      hướng xoay.
 3. **S Pen (Wacom)**
-   - Chạy `adb -s R52R504WFTK shell getevent -lt /dev/input/event3`, đưa bút lại gần màn hình
+   - Chạy `adb -s $SERIAL shell getevent -lt /dev/input/event3`, đưa bút lại gần màn hình
      (chưa chạm): phải thấy `BTN_TOOL_PEN` và `ABS_DISTANCE`. Chạm và ấn mạnh dần: `BTN_TOUCH DOWN`
      và `ABS_PRESSURE` tăng tới ~4095. Nhấn nút bên bút: `BTN_STYLUS`. Lật đầu tẩy: `BTN_TOOL_RUBBER`.
    - Vẽ trong một ứng dụng ghi chú: nét phải nằm đúng dưới đầu bút.
 4. **Phím nguồn và âm lượng**
-   - Chạy `adb -s R52R504WFTK shell getevent -l`, nhấn lần lượt: nguồn → `KEY_POWER` trên
+   - Chạy `adb -s $SERIAL shell getevent -l`, nhấn lần lượt: nguồn → `KEY_POWER` trên
      event1; giảm âm → `KEY_VOLUMEDOWN` trên event2; tăng âm → `KEY_VOLUMEUP` trên event8.
    - Nhấn tăng/giảm âm lượng: thanh âm lượng phải hiện ra. Nhấn nguồn: màn hình tắt/bật.
 5. **Bàn phím Book Cover + touchpad**
    - Gắn bàn phím vào cổng pogo. Chạy
-     `adb -s R52R504WFTK shell getevent -l /dev/input/event7`: phải thấy `SW_TABLET_MODE 0`
+     `adb -s $SERIAL shell getevent -l /dev/input/event7`: phải thấy `SW_TABLET_MODE 0`
      (sau ~2 giây).
-   - Kiểm tra `adb -s R52R504WFTK shell grep pogo /proc/interrupts`: số ngắt `pogo-conn` và
+   - Kiểm tra `adb -s $SERIAL shell grep pogo /proc/interrupts`: số ngắt `pogo-conn` và
      `pogo-keyboard` phải tăng.
    - Gõ chữ vào một ô nhập liệu: chữ phải hiện đúng. Thử phím Fn + phím độ sáng/âm lượng.
    - Kéo một ngón trên touchpad: con trỏ chuột phải di chuyển đúng hướng; chạm 2 ngón để cuộn,
      nhấn xuống để click.
 6. **Cảm biến hall / nắp bàn phím**
    - Với Book Cover đã gắn, gập nắp lên màn hình trong khi chạy
-     `adb -s R52R504WFTK shell getevent -l /dev/input/event7`: phải thấy `SW_LID 1` và màn hình
+     `adb -s $SERIAL shell getevent -l /dev/input/event7`: phải thấy `SW_LID 1` và màn hình
      tắt; mở nắp → `SW_LID 0`, màn hình bật.
    - Bao da thường (không có bàn phím) sẽ **không** tắt màn hình: hall GPIO 157 không được khai
      báo trong DT gts7l (cố ý).

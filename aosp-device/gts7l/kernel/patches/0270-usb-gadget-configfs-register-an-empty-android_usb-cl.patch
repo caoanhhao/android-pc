@@ -1,5 +1,5 @@
 From 4f62613c27e4940986ed0203927a6e0cff775ffd Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Wed, 25 Nov 2026 07:59:38 +0700
 Subject: [PATCH] usb: gadget: configfs: register an empty android_usb class
 

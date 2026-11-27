@@ -6,7 +6,7 @@
 #
 #   tools/gts7l-backup.sh [DIR]     default DIR: gts7l-backup/<date> at the main checkout root
 set -euo pipefail
-SERIAL=${SERIAL:-R52R504WFTK}
+SERIAL=${SERIAL:?set SERIAL to the adb serial of the tablet}
 WT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT=$WT
 [[ -d $ROOT/aosp ]] || ROOT="$(cd "$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"

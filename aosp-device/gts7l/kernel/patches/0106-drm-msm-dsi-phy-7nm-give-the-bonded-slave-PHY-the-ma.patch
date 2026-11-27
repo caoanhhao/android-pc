@@ -1,5 +1,5 @@
 From 5fa92d9eab21ae69f0f9d310a473bbba65c63563 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 23:47:51 +0700
 Subject: [PATCH 106/107] drm/msm/dsi/phy: 7nm: give the bonded slave PHY the
  master's dividers

@@ -1,5 +1,5 @@
 From f915675ccb2c1ea338134b6bbfc139dfc1a02805 Mon Sep 17 00:00:00 2001
-From: caoanhhao <caoanhhao2@gmail.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 08:21:26 +0700
 Subject: [PATCH 101/107] drm/msm/a6xx: accept the Galaxy Tab S7's a650 SQE
  0.93 with a warning

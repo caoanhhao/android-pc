@@ -1,5 +1,5 @@
 From 975d3c9ec9776b4ea71a9fca4402f4bc92b94624 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao@users.noreply.github.com>
 Date: Tue, 24 Nov 2026 07:08:16 +0700
 Subject: [PATCH 100/107] arm64: dts: qcom: gts7l: write the normal reboot
  reason to IMEM
