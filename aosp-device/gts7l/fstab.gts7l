@@ -37,3 +37,8 @@ gts7l_fw    /mnt/vendor/firmware  ext4  ro,nosuid,nodev,noexec,context=u:object_
 /dev/block/by-name/efs      /mnt/vendor/efs      ext4  ro,nosuid,nodev,noatime,context=u:object_r:vendor_efs_file:s0  wait,nofail
 /dev/block/by-name/sec_efs  /mnt/vendor/sec_efs  ext4  ro,nosuid,nodev,noatime,context=u:object_r:vendor_efs_file:s0  wait,nofail
 /dev/block/by-name/persist  /mnt/vendor/persist  ext4  ro,nosuid,nodev,noatime,context=u:object_r:vendor_efs_file:s0  wait,nofail
+
+# Compressed swap in RAM, as stock (fstab.ramplus, 2 GiB): big games such as Where Winds Meet
+# keep ~3 GB resident while loading and lmkd kills everything else without it. Enabled by
+# init.gts7l.rc's swapon_all once boot completes.
+/dev/block/zram0  none  swap  defaults  zramsize=3221225472,max_comp_streams=8
