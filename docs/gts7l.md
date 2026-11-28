@@ -1945,3 +1945,44 @@ Build `eng.caoanh.20261127.2229` (flashed with `--keep-data`, enrolled fingers k
 - Lock screen: SystemUI's keyguard authentication matched finger 1 (score 50) and unlocked.
 - Earlier on `eng.caoanh.20261127.1953`: Settings enroll in a full-screen window (slots 1 and
   2); a Firefox `BiometricPrompt` matched finger 1 (score 53).
+
+## 26. Where Winds Meet: the SIGSEGV after Resume is not a GPU crash (2026-11-28)
+
+`com.netease.yyvn` (VN build 1.16.6.65751) logs in, reaches the main menu and dies with
+SIGSEGV a few seconds after Resume, at "Loading Data... 4%". The game's breakpad handler
+swallows the signal (no tombstone), so `tools/gts7l-wwm-catch.sh` freezes the process on the
+handler's log line and saves the rt_sigframe from the alternate signal stack.
+
+Three crashes caught (two on GLES, one on Vulkan), all the same:
+
+- `pc = 0`, `lr` = offset `0x1b1cc8` of an anonymous 6.7 MB `r-xp` mapping: the game's own
+  script runtime, loaded from memory (Lua 5.1, curl, mbedTLS, protobuf, the NetEase
+  `AntiCheatSDKv2`, `hexm/client/...` script names). The code at `lr` is a syscall stub
+  (`mov x8, #64` = `write`, then `blr` through a pointer that is NULL), called with
+  `x0 = 2`, `x1` = `"PANIC: unprotected error in call to Lua API ("`, `x2 = 45`.
+- The frame chain is libc `fputs` → that module's panic handler → a deep Lua VM call chain.
+  So a Lua error is raised outside any `pcall` in the game's scripts (the stack holds
+  `@hexm/client/entities/local/player_avatar_members/school_gameplay/...` while the world
+  loads); Lua's panic handler then tries to print it to stderr, and the module's `write`
+  wrapper calls a NULL function pointer. The error text itself was not found in the heap
+  regions the stack points to (it may not be a string).
+- dmesg has no msm/Adreno fault, hangcheck, IOMMU fault or GMU error at any crash.
+- Same `pc`/`lr` offset with GLES (freedreno gallium, `last_graphics_api.tag` = `es3`) and
+  with Vulkan (Turnip, `vlk`). On Vulkan the process had 886 `renderD128` mappings and 8247
+  mappings in all (on GLES ~7.5k and ~73k): the BO mappings are the GLES driver's and the map
+  count is not the limit.
+
+Renderer switch: like on the PC (docs/waydroid-nvidia.md), the game takes Vulkan only when
+`/sdcard/Android/data/com.netease.yyvn/files/LocalData/vulkan.tag` (empty, owned by the app)
+exists; without it, it runs GLES and never loads `vulkan.freedreno.so`. With the tag, Turnip
+loads, "Preparing shaders" runs to completion and the menu renders; the crash after Resume is
+unchanged. The tag was created on the tablet on 2026-11-28 (delete it to go back to GLES).
+
+During the first Vulkan shader preparation the tablet rebooted once: the last console log
+(pstore) ends with `rpmh_write_batch` `-110` (AMC request timeout from cpufreq's interconnect
+vote, `sugov:7`) after ath11k firmware-stat timeouts, CPU at ~80 °C, then the watchdog reset.
+No GPU message before it. The second shader run passed. Not followed up here.
+
+Conclusion: the crash is in the game's own Lua scripts, not in Mesa/Turnip/freedreno or the
+msm kernel driver; no GPU-side fix applies. What the script fails on is the next question
+(a missing Java/SDK result, device or account data, or memory; see the RAM investigation).
