@@ -1986,3 +1986,9 @@ No GPU message before it. The second shader run passed. Not followed up here.
 Conclusion: the crash is in the game's own Lua scripts, not in Mesa/Turnip/freedreno or the
 msm kernel driver; no GPU-side fix applies. What the script fails on is the next question
 (a missing Java/SDK result, device or account data, or memory; see the RAM investigation).
+
+Outcome (2026-11-28, same day): the Lua error came from the address space, not from the GPU.
+Our kernel had arm64 defconfig's `VA_BITS=52`, so the game's heap sat at `0xf69...`, above
+2^47; LuaJIT on arm64 refuses light userdata above 47 bits. With a `CONFIG_ARM64_VA_BITS_39`
+kernel (stock is 39 bits too; build `1007`, the wwm-crash-ram session's change) and
+`vulkan.tag` present, the game gets into the world (HUD, chat, quests) and Turnip renders it.
