@@ -92,7 +92,7 @@ gets split so each target picks its HAL list without Cuttlefish switches.
 | camera | V4L2 / CAMSS raw sensors + soft ISP | android-pc `hals/camera` design, later phase |
 | radio (LTE) | MHI + QMI to the X55 modem | **new**, later phase |
 | gnss | BCM47531 (closed protocol) | last, may stay out |
-| fingerprint | TrustZone only | the side-key sensor stays out of scope; AOSP's virtual HAL stands in, as on the PC (docs/lockdown-biometric.md, "gts7l") |
+| fingerprint | Goodix GW36T1 side-key sensor, SPI owned by TrustZone | none: real drivers only, so no HAL and no feature; Settings offers no fingerprint (§25) |
 
 ## 6. Phases
 
@@ -1477,3 +1477,471 @@ Google sign-in, checkin, push or Play Store need. Account authenticator (`com.go
 reads no `/product/etc/microg.xml`, so checkin and cloud messaging start off (turn them on as
 above), and SafetyNet/DroidGuard too (turn them on in microG settings if an app needs Play
 Integrity).
+
+## 25. Fingerprint: not possible, so not offered (2026-11-27)
+
+Reported: Settings > Security > Fingerprint could not enroll a finger. The build carried AOSP's
+virtual HAL (`com.android.hardware.biometrics.fingerprint.virtual`, an under-display sensor at
+`800:2240:100`, for the lockdown tests of docs/lockdown-biometric.md), so Settings showed a
+target on the screen that only `tools/fp.sh touch` over adb can satisfy; the real side-key
+sensor was never involved.
+
+### Hardware (stock DTBO `gts7l-stock/ap/dtbo/08_id0_rev0.dts`, stock kernel strings)
+
+| | |
+|---|---|
+| sensor | Goodix **GW36T1**, capacitive, in the power key (`goodix,chip_id = "GW36T1"`) |
+| bus | SPI on QUP **SE7** (`qupv3_se7_spi`, `0x99c000`, pins gpio20-23, function `qup7`), 9.6 MHz |
+| GPIOs | reset gpio127, IRQ gpio63, LDO enable gpio117 |
+| stock driver | Samsung `goodix_fp` (`/dev/goodix_fp`), `gfspi@0` under `soc` with `tz: 1`: Linux only votes the SE7 clock and switches power/reset; the `gfspi-spi@0` child of the SPI controller is the factory-binary variant |
+| stock userspace | `vendor.samsung.hardware.biometrics.fingerprint@3.0-service` + Samsung `bauth` libraries, talking through `/dev/qseecom` to the TAs `fingerpr`/`securefp` (and `authhat`) in the modem partition's `image/` |
+
+The sibling Tab S7+ (gts7xl-mainline, `docs/fingerprint.md`) has the same split on the same
+SE7 pins: touching gpio20-23 from Linux resets the SoC (an XPU violation), which is why our
+DTS keeps `gpio-reserved-ranges = <20 4>`. Images, matching and templates exist only inside
+Samsung's TA.
+
+### Why there is no working path
+
+- **Direct SPI from Linux (a Rust HAL reading the sensor):** the SE7 registers and pins are
+  locked to TrustZone; any access resets the SoC. Even with access, GW36T1's protocol and the
+  image matcher are undocumented (Goodix ships them only inside the TA).
+- **Through Samsung's TA:** mainline `qcom_scm` finds QSEE (`qseecom: found qseecom with
+  version 0x1402000`) but offers no way to load an app (only lookups of the UEFI-variable
+  app), and there is no `/dev/qseecom`. Using the TA would need a port of the downstream
+  qseecom ABI (app loading from `.mdt`/`.bXX`, listeners, dma-buf for ION), `qseecomd`-style
+  storage listeners, the `goodix_fp` clock/power ioctls, and either Samsung's closed bionic
+  HAL stack or a reverse-engineered `bauth`/TA command protocol. Weeks, closed code at every
+  layer, and the TA may refuse on an orange (unlocked) boot state. Out of scope for now.
+- **Finger-detect only (IRQ gpio63):** the sensor raises it only after TrustZone configures
+  it over SPI, and detection is not identification: accepting any touch would let anyone
+  unlock. Not done.
+
+### What the build does
+
+gts7l is a real device, so it uses only real drivers: `aosp_gts7l.mk` no longer installs the
+virtual HAL, its properties or `android.hardware.fingerprint.xml`, and the SystemUI rule for
+it (`sepolicy-system_ext/platform_app.te`) is gone. Without the feature, Settings hides the
+Fingerprint entry, the "Fingerprint + PIN" choices and the lock screen's fingerprint hints;
+screen lock is PIN, pattern or password. The lockdown/boot-unlock patches and the RRO stay: with
+no strong biometric they change nothing.
+
+
+### The real sensor: plan (2026-11-27)
+
+The user wants the real sensor, so the TrustZone path is the plan, in three steps, each in its
+own session and branch:
+
+1. **Kernel (feasibility gate):** `qcom_scm` QSEE app loading on mainline (QSEOS app start from
+   the `.mdt`/`.bXX` split images in a DMA buffer, send command with request/response buffers,
+   shutdown, listener requests if a TA raises them), a small char device for userspace, and a
+   `goodix_fp` platform driver: LDO gpio117, reset gpio127, IRQ gpio63, and the SE7 clock vote
+   (`GCC_QUPV3_WRAP0_S7_CLK` + wrapper AHB clocks, interconnect) that TrustZone needs while it
+   drives the bus. gpio20-23 stay reserved. Test order: Qualcomm's sample TA `smplap64`, then
+   `fingerpr`/`authhat`, all already on the tablet in `/mnt/vendor/apnhlos/image/`.
+2. **TA protocol:** the stock HAL (`vendor.samsung.hardware.biometrics.fingerprint@3.0-service`)
+   reaches the TAs only through `libbauthtzcommon.so` (`QSEECom_start_app[_V2]`,
+   `QSEECom_send_cmd`, `QSEECom_set_bandwidth`, `QSEECom_shutdown_app`; TA `fingerpr` or the
+   APEX copy `/apex/com.samsung.android.biometrics.fingerprint/etc/ta/fpta`, `securefp`,
+   `authhat`, `skm`) and keeps encrypted templates in `/data/vendor/biometrics` and
+   `/efs/biometrics`. The command buffers (session open, sensor power, enroll, identify,
+   enumerate, remove, template load/save, auth token) are recovered from `libbauthserver.so`
+   and `libbauthtzcommon.so` of the stock vendor image.
+3. **HAL:** an AIDL `IFingerprint` HAL in Rust (side-key sensor, `POWER_BUTTON` type, `STRONG`)
+   on top of 1 and 2, the `android.hardware.fingerprint.xml` feature back, sepolicy, then
+   enroll and unlock tested on the tablet. The TA's auth tokens are HMAC'd with a TrustZone key
+   our software KeyMint does not share: keyguard unlock does not need them verified, keys
+   bound to biometric auth would not work.
+
+### Step 1: kernel side and the feasibility gate (2026-11-27)
+
+**State at the end of step 1** (details in the rounds below; the fifth round superseded the
+blockers of the rounds before it):
+
+| | |
+|---|---|
+| works | `goodix_fp_tz` (patches 0303-0305): power gpio117, reset gpio127, IRQ gpio63 (the sensor raises it after power-on and reset), SE7 + QUP wrapper clock and interconnect votes |
+| works | **legacy QSEOS path** (`/dev/qseecom`, patches 0300-0302): `securefp` starts from Linux and answers Type_Check (status 0, value 6), Prepare (0xA040 each way, status 0), Enroll_Init (status 0), Enroll_Do (fpop 4: waiting for the finger) and takes the 1 MiB control op (TA status 0x33 for raw capture op 0x0C without further setup) |
+| works | QTEE objects through mainline `qcomtee` (`/dev/tee0`, built in, patch 0306): Samsung TAs load through the QSEECom compat loader; that channel carries only ~3.6 KiB per call, so the HAL uses `/dev/qseecom` instead |
+| open | no finger interrupt arrived while `Enroll_Do` waited (two windows, 45 s + 90 s + 10 min); it is not known whether the key was touched, so the first real capture is still to be done |
+| open | right after that 10-minute wait, the next app start hung the tablet hard (adb shell and `adb reboot` dead); needs a manual reset and a look at the shutdown of a TA left in `Enroll_Do` |
+
+Patches 0300-0305 (`aosp-device/gts7l/kernel/patches/`), fragment: `CONFIG_QCOM_QSEECOM_USER=y`,
+`CONFIG_GOODIX_FP_TZ=y`, `CONFIG_QCOM_QSEECOM_UEFISECAPP` off.
+
+| patch | what |
+|---|---|
+| 0300 | `qcom_scm`: `qcom_scm_qseecom_app_start()` (QSEE OS app manager cmd 1, SMC `0x72000101`: mdt length, image length, physical address, all values) and `qcom_scm_qseecom_app_shutdown()` (cmd 2); a call that returns `QSEECOM_RESULT_INCOMPLETE` (an app asking for a listener service) is answered with a failure (listener service cmd 3) and logged instead of leaving the app blocked |
+| 0301 | `/dev/qseecom`, an ABI of our own (below), on an auxiliary device of `qcom_qseecom` |
+| 0302 | `samsung,gts7l` in the qseecom allowlist |
+| 0303-0305 | `goodix,gw36t1` binding, `goodix_fp_tz` driver (`/dev/goodix_fp`), the DT node |
+
+**Result of the first round: the legacy app start fails** (but see the second round below). QSEE answers (`version 0x1402000`, QSEE 5.2); app lookup
+works and shows what the bootloader started: `keymaster64` (app id 1), `qcom.tz.uefisecapp` (2),
+`tz_iccc` (6); `fingerpr`, `securefp`, `authhat`, `skm`, `smplap64` are not running. Every app
+start from Linux is refused the same way, for `smplap64`, `smplap32`, `authhat`, `skm`, `fingerpr`,
+`securefp`: SMC status **-2** (`QCOM_SCM_EINVAL_ARG`) with result **`0xffffffd1` (-47)**, about
+0.1 ms after the call, so no TA ever ran and no command could be sent. Tested on kernel #40 with
+the same code built as a test module that issues the SMCs itself (`out/fptest/` in the session
+worktree, not committed); what was ruled out:
+
+- **Image buffer:** TZ memory with an SHM bridge (as mainline `qcom_tzmem` makes it), plain DMA
+  memory without a bridge, 4 MiB aligned, below 4 GiB (`0xfda00000`, `0xa8cb0000`) and above
+  (`0x18e560000`), image length exact or page aligned: always -47. The bridge encoding of
+  mainline equals Samsung's `qtee_shmbridge.c` (pfn|RW, ipfn|RW, size|1<<9, VMID_HLOS).
+- **Call form:** `IS_CALL_AVAIL` says 0x32000101/02/03/05 and the send call exist; SMC64 and
+  SMC32 give the same; arginfo with the address as buffer instead of value gives -10 (so the
+  three values are what TZ expects, as in Samsung's `qseecom.c`).
+- **Image contents:** -47 comes with a zeroed image too, and with a real `.mdt` whose `e_phnum`
+  is cleared; an image cut short (length = mdt only, or 8-64 KiB of `smplap64`) gives -1 after
+  ~2 ms instead. So TZ checks the layout first and -47 is a later step that does not depend on
+  the image: most likely the secure-app memory (allocation in, or protection of, the apps region)
+  or a policy check, not authentication.
+- **Common lib:** `cmnlib64`/`cmnlib` via LOAD_SERVICES_IMAGE (cmd 7) return success at once
+  (the bootloader loaded them; even a wrong image "succeeds"), the apps still fail.
+- **Apps region:** QSEOS_APP_REGION_NOTIFICATION with the stock `secapp-region`
+  (`0x82400000`, `0x3a00000`; it lies in our `removed_mem`) returns -8 (with value arginfo -10):
+  the bootloader set it already (stock DT: `qcom,appsbl-qseecom-support`, so stock Linux never
+  sends it either).
+- **Samsung's TIMA bridge:** Samsung's `qtee_shmbridge.c` also bridges 1 MiB at `0xB0100000`
+  (RAM on our kernel); taking those pages and bridging them changed nothing.
+- **QSEE log:** a log buffer registered with TZ_OS_REGISTER_LOG_BUFFER stays empty on a failed
+  start (it carries app output only).
+
+Crashes (both a TZ reset, no pstore record, tablet back after reboot): freeing a buffer
+registered as the QSEE log buffer (the module's `rmmod`), and reading the TZ diag area that
+IMEM `0x146bf720` points to (`0x14695000`, XPU protected). Neither belongs in a driver.
+
+Still open, in order of likelihood: what Samsung's TZ checks at -47 (the qseecom heaps and ION
+of the stock kernel, `qseecomd`'s listeners being registered before any app start, a
+Samsung-only SMC at boot, or a knox/warranty policy); a stock-kernel boot with `qseecom` debug
+logs (`/d/tzdbg/qsee_log`) would show the stock order of SMCs, which is the next thing to compare.
+Not tried: sending commands to the apps that do run (keymaster64, uefisecapp, tz_iccc).
+
+**Sensor side works** (same driver as a test module plus a DT overlay of the node on kernel #40):
+probe with 3 clocks and the gpio63 interrupt; `on` drives gpio117 high and releases gpio127
+(high), `off` the reverse; the SPI clock ioctl holds `gcc_qupv3_wrap0_s7_clk` (19.2 MHz) and
+the wrapper 0 m/s AHB clocks and releases them; after power-on and reset the sensor raises its
+interrupt twice (Goodix reset/boot), which `read()`/`poll()` return. gpio20-23 were never touched.
+
+#### Second round: QTEE object interface (smcinvoke), 2026-11-27
+
+Mainline's `qcomtee` (`drivers/tee/qcomtee`, `CONFIG_QCOMTEE=m`, already in our build as
+`/vendor/lib/modules/qcomtee.ko`, not loaded by default) works on this QTEE: `qcom_scm` creates
+the `qcomtee` device (the smcinvoke probe call succeeds), loading the module gives `/dev/tee0`.
+Tested with a copy of the driver with a test hook (session worktree `out/fptest/qtee/`, notes
+in the shared folder), on kernel #40:
+
+| step | result |
+|---|---|
+| root `registerWithCredentials` (op 5, what mainline and libqcomtee use) | result 2: not on QTEE 5.2; the driver's own version query fails the same way ("QTEE version 0.0.0") |
+| root `registerLegacy` (op 1) with CBOR credentials `{1: uid 1000, 6: time ms}` | **client env**; with zeroed credentials the loader later says 20 (`CLIENT_CRED_PARSING_FAILURE`) |
+| `open(3)` IAppLoader, `open(122)` CQSEEComCompatAppLoader | both exist (`open(99999)`, `open(0x97)` fail) |
+| IAppLoader `loadFromBuffer` | `authhat` 0 (loaded), `smplap64` 12 (`ELF_SIGNATURE_ERROR`: Qualcomm's sample is not signed for this device); over 4 MiB the driver refuses (`MAX_INBOUND_BUFFER_SIZE`, buddy allocator) |
+| compat `loadFromRegion` (op 0: memory object with the ELF, name) | **`authhat`, `securefp`, `skm`, `tz_hdm`, `sec_fr`, `engmode` load (0)**; `smplap64` 12; **`fingerpr` 1** (generic), also through IAppLoader `loadFromRegion`, also with the sensor powered and clocked |
+| compat `IQSEEComCompat.sendRequest` (op 0) | **`skm` answers** (64-byte reply); `securefp` -90 (`Object_ERROR_DEFUNCT`) at the first request, powered or not |
+| compat `lookupTA`/`loadFromBuffer` (ops 2/1) | result 2 (signature differs on this QTEE) |
+
+So the legacy -47 does not matter: TAs load and answer through QTEE objects, the same SMCs
+mainline already has. Image: one ELF rebuilt from `.mdt` + `.bXX` (each segment at its
+`p_offset`; tool `mkmbn`). Memory objects must be physically contiguous: the TEE shm pool uses
+the buddy allocator (4 MiB max), `fingerpr` is 8.4 MiB, so the test used CMA
+(`dma_alloc_coherent`) plus an SHM bridge; `alloc_contig_pages` instead reset the SoC (TZ).
+Holding QTEE objects keeps `tee_device_unregister` waiting (`rmmod` hangs until reboot).
+
+Still open for the fingerprint: why `fingerpr` fails to load (1) and `securefp` dies at the first
+command. Both are the TAs that drive the SPI sensor; candidates: their init needs the stock
+listener services (`qseecomd`: secure file system, RPMB) that the smcinvoke path delivers as
+callbacks, a correct first command (the stock HAL opens a session before anything else; the
+cancel command used here may simply crash `securefp`), or the SE7 bus state (gpio20-23 mux,
+which only TrustZone can see). The protocol session (step 2) has the command layouts.
+
+For the HAL: use `/dev/tee0` (generic TEE `TEE_IOC_OBJECT_INVOKE`), `registerLegacy` with CBOR
+credentials, compat loader 122 `loadFromRegion(memobj, name)` and `sendRequest(req, rsp,
+offsets, is64, req_out, rsp_out, 4 null objects)` (layout of `IQSEEComCompat.h`). Two kernel
+changes are needed first: a CMA-backed allocation for memory objects over 4 MiB (`fingerpr`),
+and loading `qcomtee` at boot (ueventd/modules.load) with a ueventd rule for `/dev/tee0`. The
+legacy `/dev/qseecom` below stays useful for apps the bootloader started (lookup works) but
+cannot start apps on this firmware.
+
+#### Third round: `securefp`, the TA this sensor uses (2026-11-27)
+
+The protocol work (`docs/gts7l-fingerprint-tz.md` on branch `claude/gts7l-fp-protocol-11b9ce`)
+shows that the GW36T1 is served by **`securefp`** (tl_type 6), not `fingerpr`, so the `fingerpr`
+load failure does not matter. With the sensor powered and clocked through `goodix_fp_tz`:
+
+- `securefp` loads through the compat loader (`loadFromRegion`) every time, and reloads fine in
+  the same boot after the previous instance was released.
+- **It answers**: Type_Check (cmd `0x10`, request `{0x10, 18}`, 64-byte request and response)
+  returns status 0 and value 6, the tl_type of the GW36T. Request and response sizes other than
+  64/64 give status `0x33` (the TA checks the lengths). The earlier -90 (DEFUNCT) came from
+  sending Cancel (`0x0A`) first: Cancel with no operation running kills the TA instance.
+- **New blocker: the compat channel carries at most ~3-4 KiB per request.** QTEE answers
+  `sendRequest` with -95 (`Object_ERROR_MAXDATA`) once request + response exceed about 3.1 KiB
+  (64 + 3072 passes, 64 + 4096, 4096 + 64 and 1984 + 1984 fail). `securefp`'s other commands are
+  far larger (Prepare `0xA040` each way, the capture control op `0xFA140`/`0xFA040`, the stock
+  shared buffer is `0x1F4140`), so Prepare and a capture could not be sent; no finger test yet.
+  The compat object takes no shared-buffer size and its other loader ops (`loadFromBuffer`,
+  `lookupTA`) give result 2 whatever the argument shape on this QTEE.
+- Compat-loaded apps get no legacy app id (QSEOS lookup by name fails; sends to ids 10-256 fail
+  with -22), so the large-buffer legacy send cannot reach them either. Ids 6 and 9 belong to apps
+  the bootloader started (6 = `tz_iccc`); probing sent each one a Type_Check request, which they
+  answered with an error.
+
+Next options, in order: find how QTEE 5.2 sizes a compat app's shared buffer (the newer
+`IQSEEComCompatAppLoader` has no size argument; maybe it comes from the app's metadata or a
+newer loader), get the legacy QSEOS_APP_START past -47 (then the 2 MiB legacy send works), or
+look at the QTEE `IAppController` of an app loaded by `IAppLoader` for a way to its legacy
+command entry.
+
+Kernel pieces for the HAL, committed: patch 0306 (qcomtee shared buffers above 4 MiB from CMA,
+inbound messages up to 8 MiB), `CONFIG_QCOMTEE=y` (`/dev/tee0` at boot; the driver's own
+version query fails harmlessly with "QTEE version 0.0.0"), ueventd rules for `/dev/tee0`,
+`/dev/goodix_fp` and `/dev/qseecom` (0660 system). Not done: `/sys/class/fingerprint/fingerprint/name`
+(the HAL can hard-code tl_type 6), sepolicy, a full kernel build and flash.
+
+#### Fourth round: where the compat limit lives (2026-11-27)
+
+- **The ~3.6 KiB limit is QTEE's, not ours.** With patch 0306 in the tested module (8-16 MiB
+  inbound messages, logged per call) the message reaches QTEE whole and QTEE itself answers
+  -95 (`QCOMTEE_MSG_ERROR_MAXDATA`, "buffers too large"): a 7400-byte message (request 64 +
+  response 3584, each sent in and out) passes, 7912 bytes fails. Output buffers alone may be
+  large (request/response in 64 + 64, out 4096: OK); a large input with small output buffers gives
+  4 (`SIZE_OUT`). So request + response of one `sendRequest` must fit about one 4 KiB page:
+  QTEE 5.2 bounces a compat app's request and response through a page-sized buffer. The other
+  loader entry points give 2 for every argument shape tried (also `loadFromBuffer` with an extra
+  shared-buffer-size argument), and Qualcomm's own compat clients
+  (`smcinvoke_kernel.c` of securemsm-kernel) pass the buffers inline with no other mechanism
+  (the four memory objects and `embeddedBufOffsets` are for pointers embedded in a request,
+  not for the request itself). `securefp` needs 0xA040-byte Prepare buffers and a 2 MiB shared
+  buffer, so **the compat channel cannot carry its protocol on this firmware**.
+- **Legacy start, more ruled out:** registering eight listener services first (ids 10-13,
+  `0x2000`-`0x5000`, as `qseecomd` would; TZ accepted all) does not change the -47. The app's
+  metadata name is `securefp` (`m=x;n=securefp;p=8:...`), and QSEOS lookup does not see apps that
+  QTEE loaded, so the legacy 2 MiB send cannot reach them.
+- Still open for -47: TrustZone's device config (`devcfg.img`) has
+  `OEM_pil_secure_app_load_region_size` / `OEM_pil_subsys_load_region_*`, which suggests the
+  legacy loader wants the image inside a configured physical region (on stock, the
+  `qseecom_ta_region` CMA lands at a fixed address); the property table's encoding was not
+  decoded. Next: decode devcfg (or read the stock kernel's `qseecom_ta` CMA base from a stock
+  boot log, without booting stock) and place the image buffer there.
+
+**Fifth round: the legacy start and send work (2026-11-27).** The stock kernel (4.19,
+`vmlinux-to-elf` on `gts7l-stock/ap/boot-unpacked/kernel`) issues the same SMCs as ours:
+`qseecom_scm_call` maps APP_START to `0x32000101` with arginfo 3 (mdt_len, img_len, phys) and
+the send to `0x30000001` with arginfo `0x885`; probe only asks two feature versions and skips
+the region notification (`appsbl-qseecom-support`). No Samsung-only step, no hyp_assign, and
+`securefp`/`fingerpr` are 64-bit ELFs (so no 32-bit `cmnlib` is missing). The answer was in
+TrustZone itself (`tz.mbn` from the BL tar, segment at `0x1c03b000`): the SMC table entry for
+`0x32000101` points to a handler that first checks that `[phys, phys + mdt_len + img_len)` is
+readable normal-world memory (three attribute lookups) and returns **-47** if not. `img_len` is
+therefore the size of the segments *after* the mdt; we passed the total size, so the range ran
+`mdt_len` bytes past our page-aligned buffer. With `img_len = size - mdt_len` (`securefp`: mdt
+7464, image 4651192) the start succeeds at once (app ids 10, 11, ... per start). This also
+explains the old observations: a zeroed image still failed (the check is address based) and a
+truncated length gave -1 (the range fit, parsing failed).
+
+The send then failed with status -2 / result -1 while request and response were two separate
+`qcom_tzmem` allocations (both below 4 GiB); with both in one buffer, the response right after
+the request (the downstream shared-buffer layout), it works. The TZ send handler (`0x30000001`
+→ `0x9e3b4` in that segment) refuses with internal error 1 when it cannot map the buffers, and
+requires them below 4 GiB for apps without a 64-bit flag. The driver now copies the response
+buffer in as well (the HAL presets fields such as the control-op capacity at `rsp+0xFA00C`).
+
+Answers of `securefp` over the legacy path, sensor powered and clocked (`gfptest on clk`):
+
+| command | req / rsp | answer |
+|---|---|---|
+| Type_Check `{0x10, 18}` | 0x40 / 0x40 | status 0, value 6 |
+| Prepare `{1}` (op flag 0 or 1) | 0xA040 / 0xA040 | fpop 0, status 0, no out data |
+| Control op `0x0C` raw capture, capacity 0x3D400 | 0xFA140 / 0xFA040 | fpop 0, status 0x33 |
+| Enroll_Init user `"0"`, bio idx 1, type 7, `/data/vendor/biometrics` | 0x180 / 0x40 | status 0 |
+| Enroll_Do `{3, op 1}` | 0x40 / 0x47440 | **fpop 4** (wait for the finger interrupt), `rsp+8` = 0xffffffff |
+
+The test tool (`out/fptest/tool/qseetest -l SECS`) then enables the IRQ and waits; on fpop
+3/4 it waits for the interrupt and sends `Enroll_Do` again. In three windows (45 s, 90 s,
+10 min) no interrupt came after the TA's own sensor setup (gpio63 count stayed 1); whether the
+power key was touched during them is not known. The next app start after the 10-minute run
+hung the tablet (no shell, `adb reboot` timed out); a manual reset is needed. Likely cause to
+check: the app was shut down while parked in `Enroll_Do`'s wait; a HAL should send Cancel
+(`0x0A`) before shutdown.
+
+**Sixth round: real touches (2026-11-27).** With the user touching the power key during
+60 s windows (`out/fptest` `cap.sh`: sensor power cycled, IRQ on, `securefp` started, Type_Check,
+Prepare, Enroll_Init, then `Enroll_Do` in the fpop loop; gpio63 level sampled every 50 ms):
+
+- **The finger interrupt works.** Twice a touch raised gpio63 interrupts while `Enroll_Do` was
+  parked in fpop 4 (once 49 s into a window, once three interrupts within 1 s). After them the
+  TA moved on by itself: fpop 4, 4, then **fpop 5** (finger down), **fpop 6**, and then fpop 0
+  with **status 0x27** and `rsp+0xC` = 0x88000000; no image data in the response. So the
+  sensor, its interrupt and the TA's SPI access to the sensor all work from our kernel.
+  Status 0x27 is not decoded yet (candidates: no `Hat_OP`/key before enroll, or no
+  calibration from a second `Prepare`); the QSEE log buffer stays empty (the TA does not log
+  on this ship firmware).
+- **No sign that it is unreliable.** Every window without an interrupt (gpio63 stayed low) was
+  one in which the user, asked afterwards, had not touched the key (18:47, a 5-minute window at
+  19:05); four windows before the 18:38 reboot are unconfirmed. Changed meanwhile, harmlessly:
+  the sensor is power cycled before each run, gpio63 has no pull while powered (stock
+  `gfspi_drdypin_active`, now in the test overlay); the SE7 clock stays at 19.2 MHz. Stock's
+  `GF_IOC_ENABLE_SPI_CLK` only takes a wake lock (`gw3x_platform.c`), it votes no clocks.
+- **Start securefp once per boot.** A second app start in the same boot, after a clean Cancel
+  and shutdown, reset the SoC (console log ends in the start call); before that, six restarts in
+  one boot had worked. The stock HAL keeps the TA loaded; the tests now keep one client holding it
+  (`qseetest -k`), and a HAL should do the same.
+- **Hazards found.** Calling `Enroll_Do` again right away while it keeps answering at once
+  (a test loop that resent every 100 ms, 186 calls) **reset the SoC** (TZ crash, tablet
+  rebooted by itself). Shutting the app down while `Enroll_Do` is parked in fpop 4 can hang the
+  next app start (fifth round); Cancel (`0x0A`, 0x40/0x40) first returns fpop 0 status 0 and
+  the shutdown is then clean, every time. A HAL must: send Cancel before shutdown, never resend
+  `Enroll_Do` without an fpop that asks for it, and keep the sensor IRQ disabled while it switches
+  the sensor's power (856 spurious interrupts during one power cycle).
+
+#### `/dev/qseecom` ABI (`include/uapi/misc/qcom_qseecom.h`, magic `0xF7`)
+
+One open file = one client of one app. Mode 0600 (root); `ueventd.gts7l.rc` makes it 0660 system.
+
+| ioctl | argument | |
+|---|---|---|
+| `QSEECOM_IOC_APP_LOAD` `_IOWR(0xF7, 1)` | `struct qseecom_app_load { char name[64]; u64 image; u32 image_size, mdt_size; u32 app_id /*out*/, flags /*out*/; }` | binds the file to app `name`: looked up first; if not running and `image` is set, started from the image (`.mdt` then `.b00`..`.bNN` concatenated, `mdt_size` = size of the `.mdt`, at most 32 MiB). `flags & QSEECOM_APP_ALREADY_LOADED`: was running already (also when an earlier client of this boot started it) |
+| `QSEECOM_IOC_APP_SEND` `_IOW(0xF7, 2)` | `struct qseecom_app_send { u64 req, rsp; u32 req_size, rsp_size; }` | calls the app; both buffers 1 byte to 1 MiB, both copied in (preset response fields reach the app) to one TZ buffer with the response right after the request; the whole response buffer is copied back |
+| `QSEECOM_IOC_APP_UNLOAD` `_IO(0xF7, 3)` | - | drops the binding (as close does). Apps are never shut down: a second start in one boot reset the SoC, so an app runs until reboot and a restarted HAL binds to it again |
+
+Errors: `EBUSY` already bound, `ENODEV` not bound, `ENOENT` not running and no image, `EPERM`
+TZ refused the start (result in dmesg), `EIO` TZ failed the call, `EINVAL`, `ENOMEM`.
+The user library reads `/mnt/vendor/apnhlos/image/<name>.mdt` and the `.bXX` files listed by the
+ELF's `e_phnum` itself (the firmware path of the kernel is `/mnt/vendor/firmware`). The stock HAL
+may instead load the APEX copy `/apex/com.samsung.android.biometrics.fingerprint/etc/ta/fpta`, a
+single ELF: its `.mdt` part is the ELF header + program headers + hash segment, the same layout.
+Missing compared with downstream: listeners (requests fail), `send_modified_cmd` (ION fds
+patched into the request as physical addresses), bandwidth votes (stock DT says
+`qcom,no-clock-support`).
+
+#### `/dev/goodix_fp` ABI (`drivers/misc/goodix_fp_tz.c`)
+
+Samsung's ioctl numbers (magic `'g'`): `GF_IOC_RESET` 2 (reset low 3 ms, wait 10 ms; needs
+power), `GF_IOC_ENABLE_IRQ` 3 / `DISABLE_IRQ` 4 (also IRQ wake), `GF_IOC_ENABLE_SPI_CLK` 5 (`u32`
+Hz, 0 = leave the rate; clocks + QUP interconnect votes + stay awake), `DISABLE_SPI_CLK` 6,
+`GF_IOC_ENABLE_POWER` 7 (LDO on, 11 ms, reset released) / `DISABLE_POWER` 8, `GF_IOC_GET_ORIENT`
+22 (`u32`). `read()` blocks until an interrupt came since the last read and returns the count
+(`u32`); `poll()` gives `POLLIN`; each interrupt is a 1 s wakeup event. Last close drops IRQ and
+clocks (power stays). Sysfs `state`: `power clocks irq count`. Mode 0600.
+
+### Step 3: the HAL (2026-11-27)
+
+`aosp-device/hals/fingerprint` (in `hals.list`): `android.hardware.biometrics.fingerprint-service.gts7l`,
+an AIDL `IFingerprint` V5 HAL in Rust, one sensor, `POWER_BUTTON`, `STRONG`, four fingers per
+user, plus `fpctl` (`/vendor/bin/fpctl enroll USER SLOT OUT | identify USER FILE...`), the same
+flows from a root shell. Layout: `qsee.rs` (`/dev/qseecom` client, image = `.mdt` + `.bNN`),
+`sensor.rs` (`/dev/goodix_fp`: power cycle with the IRQ off, clock vote, finger wait on
+`poll` + a cancel eventfd), `securefp.rs` (the commands of docs/gts7l-fingerprint-tz.md),
+`engine.rs` (enroll/identify driven by the fpops), `store.rs` (templates), `hal.rs`
+(`IFingerprint`/`ISession`). The hal.mk adds `android.hardware.fingerprint.xml`; the RRO sets
+`config_is_powerbutton_fps` and `config_sfps_sensor_props` (display 0, `1600,560`, radius 90:
+the right long edge near the top in the natural portrait orientation), which the HAL also
+reports.
+
+What the TA wants, found on the tablet with `fpctl` and in `securefp`'s code (`tz` addresses
+are the TA's, `bas` the stock HAL's):
+
+- **Start once per boot.** A second start of `securefp` in the same boot reset the SoC; the HAL
+  starts it on first use and holds it, and `/dev/qseecom` no longer shuts apps down (patch 0301,
+  step 1's a0f6714), so a restarted HAL binds to the running app.
+- **One capture per `Prepare` + `Enroll_Init`.** After a capture `Enroll_Do` answers fpop 0 with
+  the same progress again and again instead of waiting for a new touch. The stock
+  `FPBAuthService::enroll` goes back to its top after every capture (`bas 0x57930` →
+  `0x56dd4`); doing `Prepare` + `Enroll_Init` before each `Enroll_Do` round gives a fresh
+  capture, and the TA keeps the progress (`Enroll_Init` does not reset it; `Enroll_Final`
+  does). Control op `0x18` between captures answers fpop 0 at once and is not needed.
+- **`Enroll_Do` response:** `+0x0C` capture result (`0x88000000`: too little finger), `+0x10`
+  percentage, `+0x14` accepted captures, `+0x18` their total (`tz 0x45d0`). Twenty captures
+  make 100%.
+- **Status 0x27** is the Goodix library's "bad image" (`gf_enroll`, `tz 0x170c8`: base data
+  average ≤ 0x707, result `0x88000000`): a rejected capture, not an authentication failure; the
+  HAL reports `PARTIAL` and goes on.
+- **The template comes with the 100% `Enroll_Do`** (`rsp+0x1C`, length at `rsp+0x3D41C`,
+  95 KB); `Enroll_Final` returns no data (`final_enroll_stub`, `tz 0x8f80`, zeroes the
+  length). Stored as `/data/vendor/biometrics/fp/User_<user>/<user>_<slot>tmpl.dat`, with the
+  gatekeeper SID and the authenticator id next to it.
+- **Hat_OP is not needed.** Without the gatekeeper token check (which our software gatekeeper
+  cannot pass, docs/gts7l-fingerprint-tz.md §10.1) enroll and identify work; the TA stores
+  SID 0 and its own auth tokens carry user id 1. The HAL checks the enroll token's challenge
+  against its own `generateChallenge` and stores the token's user id; it signs the
+  `onAuthenticationSucceeded` token with nothing (zero MAC), so keystore keys bound to
+  fingerprint auth do not work, keyguard unlock does.
+- **`Identify_Do`:** `+0x10` score, `+0x14` matched slot (0 = none), status 0 on a match,
+  **0x20** on no match; a match also brings the TA's 69-byte token at `rsp+0x47440`.
+- **Never shut down while parked.** The HAL sends Cancel (`0x0A`) when it drops a capture that
+  waits for the finger; the sensor is powered off between operations.
+
+`fpctl` on the tablet (kernel #40 with step 1's test modules, a holder process keeping
+`securefp`): enroll of the index finger in 20 touches → 95 KB template; the same finger →
+match, score 75, slot 1; the thumb, three touches → status 0x20 each time, rejected. Once the
+tablet rebooted by itself in the middle of an enrollment (51%); a full press of the power key
+(screen off and suspend while the TA captured) is the suspect, not seen again.
+
+### Result (2026-11-27)
+
+- Build `eng.caoanh.20261127.1529` (this branch: no virtual HAL, no feature, no SystemUI rule)
+  flashed with `tools/gts7l-android-flash.sh --yes --keep-data`: no fingerprint feature,
+  service or process; Settings > Security & privacy shows "Device unlock: Screen lock" only;
+  `android.settings.FINGERPRINT_ENROLL` closes at once. Before, on `eng.caoanh.20261127.1052`,
+  the virtual HAL's enroll intro opened as a clipped dialog that touch could not drive.
+- The real sensor, steps 1 and 2 (branches `claude/gts7l-fp-kernel-f03b30`,
+  `claude/gts7l-fp-protocol-11b9ce`, not merged): `goodix_fp_tz` powers, resets and clocks the
+  GW36T1 and gets its IRQ; `securefp` (the GW36T1's TA) loads through mainline `qcomtee` and
+  answers Type_Check. **Blocked:** QTEE 5.2's compat channel carries at most about one 4 KiB
+  page of request + response per call, and `securefp` needs 0xA040-byte Prepare buffers and a
+  2 MiB shared buffer; the legacy QSEOS app start (which has the large buffer) fails with -47
+  on this firmware. No capture, enroll or identify, so no HAL (step 3 not started). Open lead:
+  the legacy loader may want the image inside a TrustZone-configured region (`devcfg.img`
+  `OEM_pil_secure_app_load_region_*`), see the kernel branch's §25.
+
+### Enroll screen in the hypr desktop (2026-11-27)
+
+With the real HAL (build `eng.caoanh.20261127.1953`), Settings' side-key enrollment could not be
+used on the tablet:
+
+- In a tile of the hypr desktop, Settings refused with "Exit split screen to set up Fingerprint
+  Unlock": `BiometricUtils.isSplitScreenEnrollmentDisabled()` treats any multi-window mode as
+  split screen and skips the check only on `FEATURE_PC`.
+  `tools/patches/aosp17-settings-sfps-enroll-desktop.patch` also skips it in freeform windows:
+  only udfps needs the whole screen for its overlay.
+- The way out, `fullscreen` (ALT+F), moved Settings out of the desk, where Shell gave it an app
+  handle. With HyprBar in place of the status bar the handle is never shown, yet its spy window
+  (`Embedded{Caption of Task=N}`) covered the whole task and stole every press longer than a tap
+  (`InputDispatcher: ... is stealing input gesture`); the enroll card was also laid out shrunk.
+  This hit every app in hypr fullscreen. `WindowDecorStyle.hidesAppHandle`
+  (`tools/patches/aosp17-shell-decor-style.patch`, `HyprDecorations`) drops the handle
+  (docs/hypr-desktop.md).
+
+Build `eng.caoanh.20261127.2051` (the HAL work plus these fixes, flashed with `--keep-data`):
+Settings in hypr fullscreen has no caption window and a 300 ms press is no longer stolen; Add
+fingerprint opens the enroll screen inside the tile and its buttons work. Every touch of the key
+during that enrollment came back as acquired PARTIAL ("Press firmly on the sensor"), so no step
+counted: a HAL/TA matter, not the UI.
+
+### Settings enroll and unlock work (2026-11-27)
+
+The PARTIAL storm was the HAL, not the sensor. A finger resting on the key keeps raising
+interrupts, so the HAL started the next `Prepare` + `Enroll_Init` + `Enroll_Do` round at once
+and captured the finger while it was half lifted: status 0x27 with result 0x88000000 (too little
+finger), sometimes 0x80000002 or 0x80000008, after nearly every good capture. The good captures
+did count in the TA, only the UI kept showing "Press firmly". The HAL now waits until the sensor
+stays without interrupts for 700 ms (`Sensor::wait_lift`) before the next enroll round and after
+a failed identify, and logs every `Enroll_Do` result.
+
+**The TA keeps the captures of a cancelled enrollment.** The next enrollment, of any user or
+slot, goes on from them (it started at 85% once) until one reaches 100%, which resets the
+count. Nothing tried drops them: `Enroll_Final` before 100% (alone or after `Enroll_Init`),
+`Cancel`, control ops 0x16 (`SET_ENROLL_SESSION`, 0 or 1) and 0x1E (`CLEAN_UP`), another user
+or slot, an identify run. So after a cancelled enrollment the next one may finish early, with
+some captures from the earlier attempt. Open.
+
+Build `eng.caoanh.20261127.2229` (flashed with `--keep-data`, enrolled fingers kept):
+
+- Settings > Add fingerprint in a hypr tile: 23 touches, 20 counted, 3 rejected as too little
+  finger (shown as "Press firmly" once each), 5% per capture up to 100% → slot 3, 80 KB
+  template; `dumpsys fingerprint` count 3.
+- Lock screen: SystemUI's keyguard authentication matched finger 1 (score 50) and unlocked.
+- Earlier on `eng.caoanh.20261127.1953`: Settings enroll in a full-screen window (slots 1 and
+  2); a Firefox `BiometricPrompt` matched finger 1 (score 53).

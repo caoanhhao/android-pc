@@ -1,0 +1,565 @@
+From f9db60a6da900a6cfb65e6a9bbd588bf4a80e632 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 13:17:23 +0700
+Subject: [PATCH] firmware: qcom: qseecom: /dev/qseecom for user-space QSEE
+ apps
+
+Device HALs reach their trusted apps (e.g. Samsung's fingerprint app on
+the Galaxy Tab S7) through Qualcomm's downstream /dev/qseecom, an ABI
+mainline does not have. Add a small one of its own, on an auxiliary
+"user" device the qseecom driver now always creates:
+
+- QSEECOM_IOC_APP_LOAD binds the file to an app by name. If the secure
+  world does not run it yet, the app is started from the split image the
+  caller passes (.mdt + .bXX as read from the modem partition), copied
+  into a TZ memory pool of its own for the call.
+- QSEECOM_IOC_APP_SEND calls the app with request/response buffers of at
+  most 1 MiB each. Both are copied in (callers preset response fields)
+  to one TZ buffer, the response right after the request, as the apps'
+  shared buffer is laid out downstream; the secure world refuses a
+  request and a response from two separate allocations.
+- QSEECOM_IOC_APP_UNLOAD or close drops the client. Apps are never shut
+  down: on the Galaxy Tab S7 LTE starting an app again after shutting it
+  down reset the SoC, so an app keeps running until reboot and a
+  restarted client binds to it again.
+
+caoanhhao used AI to code
+---
+ drivers/firmware/qcom/Kconfig             |  12 +
+ drivers/firmware/qcom/Makefile            |   1 +
+ drivers/firmware/qcom/qcom_qseecom.c      |  17 +-
+ drivers/firmware/qcom/qcom_qseecom_user.c | 356 ++++++++++++++++++++++
+ include/uapi/misc/qcom_qseecom.h          |  85 ++++++
+ 5 files changed, 466 insertions(+), 5 deletions(-)
+ create mode 100644 drivers/firmware/qcom/qcom_qseecom_user.c
+ create mode 100644 include/uapi/misc/qcom_qseecom.h
+
+diff --git a/drivers/firmware/qcom/Kconfig b/drivers/firmware/qcom/Kconfig
+index c7f8413ab..6dae1885c 100644
+--- a/drivers/firmware/qcom/Kconfig
++++ b/drivers/firmware/qcom/Kconfig
+@@ -78,6 +78,18 @@ config QCOM_QSEECOM
+ 
+ 	  Select Y here to enable the QSEECOM interface driver.
+ 
++config QCOM_QSEECOM_USER
++	tristate "Qualcomm SEE user-space app interface"
++	depends on QCOM_QSEECOM
++	help
++	  Provides /dev/qseecom, through which user space loads apps into the
++	  Qualcomm Secure Execution Environment (SEE) from their split images,
++	  calls them with request and response buffers and unloads them. Device
++	  HALs use it to reach their trusted apps, e.g. a fingerprint sensor
++	  driven by the secure world.
++
++	  Select M or Y here to provide the device.
++
+ config QCOM_QSEECOM_UEFISECAPP
+ 	bool "Qualcomm SEE UEFI Secure App client driver"
+ 	depends on QCOM_QSEECOM
+diff --git a/drivers/firmware/qcom/Makefile b/drivers/firmware/qcom/Makefile
+index 88ce74d74..aa26af7cc 100644
+--- a/drivers/firmware/qcom/Makefile
++++ b/drivers/firmware/qcom/Makefile
+@@ -9,5 +9,6 @@ CFLAGS_qcom_scm-smc.o := -I$(src)
+ obj-$(CONFIG_QCOM_TZMEM)	+= qcom_tzmem.o
+ obj-$(CONFIG_QCOM_QSEECOM)	+= qcom_qseecom.o
+ obj-$(CONFIG_QCOM_QSEECOM_UEFISECAPP) += qcom_qseecom_uefisecapp.o
++obj-$(CONFIG_QCOM_QSEECOM_USER)	+= qcom_qseecom_user.o
+ obj-$(CONFIG_QCOM_PAS)		+= qcom_pas.o
+ obj-$(CONFIG_QCOM_PAS_TEE)	+= qcom_pas_tee.o
+diff --git a/drivers/firmware/qcom/qcom_qseecom.c b/drivers/firmware/qcom/qcom_qseecom.c
+index 320ec2a77..a8fb4c946 100644
+--- a/drivers/firmware/qcom/qcom_qseecom.c
++++ b/drivers/firmware/qcom/qcom_qseecom.c
+@@ -43,11 +43,16 @@ static int qseecom_client_register(struct platform_device *qseecom_dev,
+ 	int ret;
+ 
+ 	/* Try to find the app ID, skip device if not found */
+-	ret = qcom_scm_qseecom_app_get_id(desc->app_name, &app_id);
+-	if (ret)
+-		return ret == -ENOENT ? 0 : ret;
++	if (desc->app_name) {
++		ret = qcom_scm_qseecom_app_get_id(desc->app_name, &app_id);
++		if (ret)
++			return ret == -ENOENT ? 0 : ret;
+ 
+-	dev_info(&qseecom_dev->dev, "setting up client for %s\n", desc->app_name);
++		dev_info(&qseecom_dev->dev, "setting up client for %s\n",
++			 desc->app_name);
++	} else {
++		app_id = 0;
++	}
+ 
+ 	/* Allocate and set-up the client device */
+ 	client = kzalloc_obj(*client);
+@@ -81,10 +86,12 @@ static int qseecom_client_register(struct platform_device *qseecom_dev,
+ /*
+  * List of supported applications. One client device will be created per entry,
+  * assuming the app has already been loaded (usually by firmware bootloaders)
+- * and its ID can be queried successfully.
++ * and its ID can be queried successfully. An entry without app name is created
++ * unconditionally: "user" gives user space access to any app (/dev/qseecom).
+  */
+ static const struct qseecom_app_desc qcom_qseecom_apps[] = {
+ 	{ "qcom.tz.uefisecapp", "uefisecapp" },
++	{ NULL, "user" },
+ };
+ 
+ static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
+diff --git a/drivers/firmware/qcom/qcom_qseecom_user.c b/drivers/firmware/qcom/qcom_qseecom_user.c
+new file mode 100644
+index 000000000..0b531afa7
+--- /dev/null
++++ b/drivers/firmware/qcom/qcom_qseecom_user.c
+@@ -0,0 +1,356 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * /dev/qseecom: user-space access to Qualcomm Secure Execution Environment
++ * (QSEE) apps. Loads an app from the split image user space passes, calls it
++ * with request/response buffers. Apps stay up until reboot: starting an app
++ * again after shutting it down can reset the SoC (Galaxy Tab S7 LTE), and a
++ * restarted client simply binds to the running app.
++ * The ABI is in include/uapi/misc/qcom_qseecom.h.
++ */
++#include <linux/auxiliary_bus.h>
++#include <linux/elf.h>
++#include <linux/fs.h>
++#include <linux/list.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++
++#include <linux/firmware/qcom/qcom_qseecom.h>
++#include <linux/firmware/qcom/qcom_scm.h>
++#include <linux/firmware/qcom/qcom_tzmem.h>
++
++#include <uapi/misc/qcom_qseecom.h>
++
++/* An app a client bound to, known until reboot */
++struct qseecom_user_app {
++	struct list_head node;
++	char name[QSEECOM_APP_NAME_SIZE];
++	u32 app_id;
++};
++
++struct qseecom_user {
++	struct device *dev;
++	struct miscdevice misc;
++	struct qcom_tzmem_pool *pool;	/* request and response buffers */
++	struct mutex lock;		/* apps, and app start */
++	struct list_head apps;
++};
++
++struct qseecom_user_client {
++	struct qseecom_user *qu;
++	struct mutex lock;		/* app */
++	struct qseecom_user_app *app;
++};
++
++static struct qseecom_user_app *qseecom_user_find(struct qseecom_user *qu,
++						  const char *name)
++{
++	struct qseecom_user_app *app;
++
++	list_for_each_entry(app, &qu->apps, node)
++		if (!strcmp(app->name, name))
++			return app;
++
++	return NULL;
++}
++
++/* Copy the image into one contiguous TZ buffer and start the app from it */
++static int qseecom_user_start(struct qseecom_user *qu,
++			      const struct qseecom_app_load *load, u32 *app_id)
++{
++	/* Page aligned: the pool's area holds only what it was created with */
++	struct qcom_tzmem_pool_config config = {
++		.initial_size = PAGE_ALIGN(load->image_size),
++		.policy = QCOM_TZMEM_POLICY_STATIC,
++	};
++	const struct elf32_hdr *ehdr;
++	struct qcom_tzmem_pool *pool;
++	void *image;
++	int ret;
++
++	if (load->mdt_size < sizeof(*ehdr) || load->mdt_size > load->image_size ||
++	    load->image_size > QSEECOM_MAX_IMAGE_SIZE)
++		return -EINVAL;
++
++	/* A pool of its own: the image is big and needed only for the call */
++	pool = qcom_tzmem_pool_new(&config);
++	if (IS_ERR(pool))
++		return PTR_ERR(pool);
++
++	image = qcom_tzmem_alloc(pool, load->image_size, GFP_KERNEL);
++	if (!image) {
++		ret = -ENOMEM;
++		goto out_pool;
++	}
++
++	if (copy_from_user(image, u64_to_user_ptr(load->image), load->image_size)) {
++		ret = -EFAULT;
++		goto out_image;
++	}
++
++	ehdr = image;
++	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG)) {
++		ret = -EINVAL;
++		goto out_image;
++	}
++
++	ret = qcom_scm_qseecom_app_start(image, load->mdt_size, load->image_size,
++					 app_id);
++	dev_info(qu->dev, "start of %s (%u bytes, %s): %d, app id %u\n",
++		 load->name, load->image_size,
++		 ehdr->e_ident[EI_CLASS] == ELFCLASS64 ? "64-bit" : "32-bit",
++		 ret, ret ? 0 : *app_id);
++
++out_image:
++	qcom_tzmem_free(image);
++out_pool:
++	qcom_tzmem_pool_free(pool);
++	return ret;
++}
++
++static int qseecom_user_load(struct qseecom_user_client *client,
++			     struct qseecom_app_load __user *uload)
++{
++	struct qseecom_user *qu = client->qu;
++	struct qseecom_user_app *app;
++	struct qseecom_app_load load;
++	u32 app_id;
++	int ret;
++
++	if (copy_from_user(&load, uload, sizeof(load)))
++		return -EFAULT;
++
++	if (!memchr(load.name, '\0', sizeof(load.name)) || !load.name[0])
++		return -EINVAL;
++
++	guard(mutex)(&client->lock);
++	if (client->app)
++		return -EBUSY;
++
++	guard(mutex)(&qu->lock);
++	app = qseecom_user_find(qu, load.name);
++	if (app) {
++		load.flags = QSEECOM_APP_ALREADY_LOADED;
++		goto bind;
++	}
++
++	app = kzalloc_obj(*app);
++	if (!app)
++		return -ENOMEM;
++	strscpy(app->name, load.name);
++
++	ret = qcom_scm_qseecom_app_get_id(load.name, &app_id);
++	if (!ret) {
++		load.flags = QSEECOM_APP_ALREADY_LOADED;
++	} else if (ret == -ENOENT && load.image) {
++		ret = qseecom_user_start(qu, &load, &app_id);
++		load.flags = 0;
++	}
++	if (ret) {
++		kfree(app);
++		return ret;
++	}
++
++	app->app_id = app_id;
++	list_add(&app->node, &qu->apps);
++bind:
++	client->app = app;
++	load.app_id = app->app_id;
++
++	if (copy_to_user(uload, &load, sizeof(load)))
++		return -EFAULT;	/* still bound: the app is up, only the copy failed */
++
++	return 0;
++}
++
++/* Unbinds only: the app keeps running (see the top of the file) */
++static int qseecom_user_unload(struct qseecom_user_client *client)
++{
++	guard(mutex)(&client->lock);
++	if (!client->app)
++		return -ENODEV;
++
++	client->app = NULL;
++	return 0;
++}
++
++static int qseecom_user_send(struct qseecom_user_client *client,
++			     struct qseecom_app_send __user *usend)
++{
++	struct qseecom_user *qu = client->qu;
++	struct qseecom_app_send send;
++	int ret;
++
++	if (copy_from_user(&send, usend, sizeof(send)))
++		return -EFAULT;
++
++	if (!send.req_size || send.req_size > QSEECOM_MAX_BUF_SIZE ||
++	    !send.rsp_size || send.rsp_size > QSEECOM_MAX_BUF_SIZE)
++		return -EINVAL;
++
++	/*
++	 * One buffer, the response right after the request, as apps expect
++	 * their shared buffer: the secure world refuses (-1) a request and a
++	 * response from separate allocations.
++	 */
++	void *req __free(qcom_tzmem) = qcom_tzmem_alloc(qu->pool,
++							send.req_size + send.rsp_size,
++							GFP_KERNEL);
++	if (!req)
++		return -ENOMEM;
++
++	void *rsp = req + send.req_size;
++
++	/* The response goes in as well: callers preset fields of it */
++	if (copy_from_user(req, u64_to_user_ptr(send.req), send.req_size) ||
++	    copy_from_user(rsp, u64_to_user_ptr(send.rsp), send.rsp_size))
++		return -EFAULT;
++
++	scoped_guard(mutex, &client->lock) {
++		if (!client->app)
++			return -ENODEV;
++
++		ret = qcom_scm_qseecom_app_send(client->app->app_id, req,
++						send.req_size, rsp, send.rsp_size);
++	}
++	if (ret)
++		return ret;
++
++	if (copy_to_user(u64_to_user_ptr(send.rsp), rsp, send.rsp_size))
++		return -EFAULT;
++
++	return 0;
++}
++
++static long qseecom_user_ioctl(struct file *file, unsigned int cmd,
++			       unsigned long arg)
++{
++	struct qseecom_user_client *client = file->private_data;
++	void __user *argp = (void __user *)arg;
++
++	switch (cmd) {
++	case QSEECOM_IOC_APP_LOAD:
++		return qseecom_user_load(client, argp);
++	case QSEECOM_IOC_APP_SEND:
++		return qseecom_user_send(client, argp);
++	case QSEECOM_IOC_APP_UNLOAD:
++		return qseecom_user_unload(client);
++	default:
++		return -ENOTTY;
++	}
++}
++
++static int qseecom_user_open(struct inode *inode, struct file *file)
++{
++	struct qseecom_user *qu = container_of(file->private_data,
++					       struct qseecom_user, misc);
++	struct qseecom_user_client *client;
++
++	client = kzalloc_obj(*client);
++	if (!client)
++		return -ENOMEM;
++
++	client->qu = qu;
++	mutex_init(&client->lock);
++	file->private_data = client;
++
++	return 0;
++}
++
++static int qseecom_user_release(struct inode *inode, struct file *file)
++{
++	struct qseecom_user_client *client = file->private_data;
++
++	mutex_destroy(&client->lock);
++	kfree(client);
++
++	return 0;
++}
++
++static const struct file_operations qseecom_user_fops = {
++	.owner = THIS_MODULE,
++	.open = qseecom_user_open,
++	.release = qseecom_user_release,
++	.unlocked_ioctl = qseecom_user_ioctl,
++	.compat_ioctl = compat_ptr_ioctl,
++};
++
++static void qseecom_user_deregister(void *data)
++{
++	misc_deregister(data);
++}
++
++static void qseecom_user_free_apps(void *data)
++{
++	struct qseecom_user *qu = data;
++	struct qseecom_user_app *app, *tmp;
++
++	list_for_each_entry_safe(app, tmp, &qu->apps, node)
++		kfree(app);
++}
++
++static int qseecom_user_setup(struct device *dev)
++{
++	struct qcom_tzmem_pool_config config = {
++		.policy = QCOM_TZMEM_POLICY_ON_DEMAND,
++		.max_size = 4 * QSEECOM_MAX_BUF_SIZE,
++	};
++	struct qseecom_user *qu;
++	int ret;
++
++	qu = devm_kzalloc(dev, sizeof(*qu), GFP_KERNEL);
++	if (!qu)
++		return -ENOMEM;
++
++	qu->dev = dev;
++	INIT_LIST_HEAD(&qu->apps);
++	ret = devm_mutex_init(dev, &qu->lock);
++	if (ret)
++		return ret;
++	ret = devm_add_action(dev, qseecom_user_free_apps, qu);
++	if (ret)
++		return ret;
++
++	qu->pool = devm_qcom_tzmem_pool_new(dev, &config);
++	if (IS_ERR(qu->pool))
++		return PTR_ERR(qu->pool);
++
++	qu->misc.minor = MISC_DYNAMIC_MINOR;
++	qu->misc.name = "qseecom";
++	qu->misc.fops = &qseecom_user_fops;
++	qu->misc.parent = dev;
++	qu->misc.mode = 0600;
++
++	ret = misc_register(&qu->misc);
++	if (ret)
++		return ret;
++
++	return devm_add_action_or_reset(dev, qseecom_user_deregister, &qu->misc);
++}
++
++static int qseecom_user_probe(struct auxiliary_device *aux_dev,
++			      const struct auxiliary_device_id *aux_dev_id)
++{
++	return qseecom_user_setup(&aux_dev->dev);
++}
++
++static const struct auxiliary_device_id qseecom_user_id_table[] = {
++	{ .name = "qcom_qseecom.user", },
++	{}
++};
++MODULE_DEVICE_TABLE(auxiliary, qseecom_user_id_table);
++
++static struct auxiliary_driver qseecom_user_driver = {
++	.probe = qseecom_user_probe,
++	.id_table = qseecom_user_id_table,
++	.driver = {
++		.name = "qcom_qseecom_user",
++	},
++};
++module_auxiliary_driver(qseecom_user_driver);
++
++MODULE_DESCRIPTION("User-space access to Qualcomm SEE apps");
++MODULE_LICENSE("GPL");
+diff --git a/include/uapi/misc/qcom_qseecom.h b/include/uapi/misc/qcom_qseecom.h
+new file mode 100644
+index 000000000..88e544bb2
+--- /dev/null
++++ b/include/uapi/misc/qcom_qseecom.h
+@@ -0,0 +1,85 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++/*
++ * /dev/qseecom: load apps into the Qualcomm Secure Execution Environment (QSEE,
++ * the TrustZone OS) and call them.
++ *
++ * Every open file is one client of one app. QSEECOM_IOC_APP_LOAD binds the
++ * client to an app: the driver looks the app up by name and, when the secure
++ * world does not run it yet and the caller passed an image, starts it from that
++ * image. QSEECOM_IOC_APP_SEND then calls the app with a request buffer and
++ * copies its response back. QSEECOM_IOC_APP_UNLOAD, or closing the file, drops
++ * the client. Apps are never shut down: one started here keeps running until
++ * reboot, and later clients bind to it (QSEECOM_APP_ALREADY_LOADED).
++ *
++ * The image is the app's split firmware as found in the modem partition's
++ * image/ directory: the .mdt file followed by .b00, .b01, ... in order (one
++ * segment file per program header of the .mdt ELF), concatenated.
++ *
++ * Requests for listener services (secure file system, RPMB, ...) raised by an
++ * app are answered with a failure and logged; no listener can be registered.
++ */
++#ifndef _UAPI_MISC_QCOM_QSEECOM_H
++#define _UAPI_MISC_QCOM_QSEECOM_H
++
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++#define QSEECOM_APP_NAME_SIZE		64
++#define QSEECOM_MAX_IMAGE_SIZE		(32 << 20)
++#define QSEECOM_MAX_BUF_SIZE		(1 << 20)
++
++/* qseecom_app_load.flags (out): the secure world ran the app already */
++#define QSEECOM_APP_ALREADY_LOADED	(1 << 0)
++
++/**
++ * struct qseecom_app_load - argument of QSEECOM_IOC_APP_LOAD
++ * @name:       in: NUL-terminated app name, e.g. "fingerpr"
++ * @image:      in: user address of the image, or 0 to only bind to an app the
++ *              secure world runs already (-ENOENT if it does not)
++ * @image_size: in: size of the image, at most QSEECOM_MAX_IMAGE_SIZE
++ * @mdt_size:   in: size of the .mdt part at the start of the image
++ * @app_id:     out: the secure world's ID of the app
++ * @flags:      out: QSEECOM_APP_ALREADY_LOADED
++ */
++struct qseecom_app_load {
++	char name[QSEECOM_APP_NAME_SIZE];
++	__u64 image;
++	__u32 image_size;
++	__u32 mdt_size;
++	__u32 app_id;
++	__u32 flags;
++};
++
++/**
++ * struct qseecom_app_send - argument of QSEECOM_IOC_APP_SEND
++ * @req:      in: user address of the request
++ * @rsp:      in: user address of the response buffer, passed in as it is
++ *            (callers may preset fields) and filled by the app
++ * @req_size: in: request size, 1 to QSEECOM_MAX_BUF_SIZE
++ * @rsp_size: in: response buffer size, 1 to QSEECOM_MAX_BUF_SIZE
++ *
++ * The app sees one shared buffer, the request followed directly by the
++ * response, as with Qualcomm's downstream driver; their layout is the app's
++ * own. The whole response buffer is copied back, whatever the app wrote.
++ */
++struct qseecom_app_send {
++	__u64 req;
++	__u64 rsp;
++	__u32 req_size;
++	__u32 rsp_size;
++};
++
++#define QSEECOM_IOC_MAGIC	0xF7
++
++/*
++ * Errors: EBUSY the file is bound already (APP_LOAD); ENODEV the file is not
++ * bound (APP_SEND, APP_UNLOAD); ENOENT no such app and no image; EPERM the
++ * secure world refused to start the app (its result is in the kernel log);
++ * EIO the secure world failed the call to the app; EINVAL bad sizes or name;
++ * ENOMEM no contiguous memory.
++ */
++#define QSEECOM_IOC_APP_LOAD	_IOWR(QSEECOM_IOC_MAGIC, 1, struct qseecom_app_load)
++#define QSEECOM_IOC_APP_SEND	_IOW(QSEECOM_IOC_MAGIC, 2, struct qseecom_app_send)
++#define QSEECOM_IOC_APP_UNLOAD	_IO(QSEECOM_IOC_MAGIC, 3)
++
++#endif /* _UAPI_MISC_QCOM_QSEECOM_H */
+-- 
+2.56.1
+

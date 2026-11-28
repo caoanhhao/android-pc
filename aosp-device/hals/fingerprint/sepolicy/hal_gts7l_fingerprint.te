@@ -1,0 +1,17 @@
+# Fingerprint HAL: android.hardware.biometrics.fingerprint-service.gts7l
+pc_hal_service(hal_gts7l_fingerprint, hal_fingerprint)
+
+type gts7l_qseecom_device, dev_type;
+type gts7l_goodix_fp_device, dev_type;
+type gts7l_fingerprint_data_file, file_type, data_file_type;
+
+# Samsung's securefp TA through our /dev/qseecom, its image from the apnhlos partition.
+allow hal_gts7l_fingerprint gts7l_qseecom_device:chr_file rw_file_perms;
+r_dir_file(hal_gts7l_fingerprint, firmware_file)
+
+# Sensor power, reset, bus clock vote and finger interrupt.
+allow hal_gts7l_fingerprint gts7l_goodix_fp_device:chr_file rw_file_perms;
+
+# Templates and ids (/data/vendor/biometrics, made by the service's rc).
+allow hal_gts7l_fingerprint gts7l_fingerprint_data_file:dir create_dir_perms;
+allow hal_gts7l_fingerprint gts7l_fingerprint_data_file:file create_file_perms;

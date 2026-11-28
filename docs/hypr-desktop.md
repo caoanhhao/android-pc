@@ -632,6 +632,7 @@ outside fights Shell's relayouts. So D3 adds one extension point instead, `Windo
 | Hook | Called from | Used for |
 |---|---|---|
 | `hidesCaption(taskInfo)` | `DefaultWindowDecoration.getRelayoutParams()` (freeform tasks) and its non-transition `relayout()` | caption type `NO_CAPTION` for tiled windows |
+| `hidesAppHandle(taskInfo)` | `DefaultWindowDecoration.getRelayoutParams()` (fullscreen tasks outside a desk) | caption type `NO_CAPTION` instead of `APP_HANDLE`: HyprBar replaces the status bar the handle sits in, so the handle was never shown, yet its spy window covered the whole task and stole every press as a handle drag (the `fullscreen` dispatcher made any app untouchable) |
 | `onRelayout(taskInfo, taskSurface, hasGlobalFocus, inSyncWithTransition, startT, finishT)` | `WindowDecoration2.relayout()`, right after Shell set the task surface's outline | corner radius, opacity, border layers, turning Shell's border off |
 | `onClosed(taskId)` | `WindowDecoration2.close()` | releasing the border layers |
 

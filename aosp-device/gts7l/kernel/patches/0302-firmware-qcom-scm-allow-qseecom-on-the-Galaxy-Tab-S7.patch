@@ -1,0 +1,31 @@
+From 66f708a86d67edf686acfbbbad22a53d3d86be08 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 13:17:23 +0700
+Subject: [PATCH] firmware: qcom: scm: allow qseecom on the Galaxy Tab S7 LTE
+
+QSEE 0x1402000 on the SM-T875 answers app lookups (keymaster64,
+qcom.tz.uefisecapp and tz_iccc run from the bootloader), app starts and
+app calls. Enable the interface there so /dev/qseecom exists: Samsung's
+fingerprint app securefp starts from Linux and answers commands with
+buffers far larger than the QTEE compat channel carries.
+
+caoanhhao used AI to code
+---
+ drivers/firmware/qcom/qcom_scm.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
+index 0e7fbc10f..008d83d24 100644
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -2465,6 +2465,7 @@ static const struct of_device_id qcom_scm_qseecom_allowlist[] __maybe_unused = {
+ 	{ .compatible = "qcom,x1e80100-crd" },
+ 	{ .compatible = "qcom,x1e80100-qcp" },
+ 	{ .compatible = "qcom,x1p42100-crd" },
++	{ .compatible = "samsung,gts7l" },
+ 	{ }
+ };
+ 
+-- 
+2.56.1
+

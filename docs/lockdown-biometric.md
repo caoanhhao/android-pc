@@ -10,7 +10,7 @@ after boot" below). Everything else lockdown does stays. The fingerprint here is
 fingerprint HAL (`com.android.hardware.biometrics.fingerprint.virtual`, an under-display sensor
 configured by the `persist.vendor.fingerprint.virtual.*` properties in Waydroid's
 `waydroid.cfg`); it reports itself as `STRONG`. `aosp_gts7l` (the Galaxy Tab S7) has the same
-setup ("gts7l" below).
+setup until 2026-11-27 ("gts7l" below); it now has no fingerprint at all.
 
 ## What changes
 
@@ -221,8 +221,10 @@ the same way so both products behave alike:
 
 - `gts7l_overlay_frameworks_base_core` (`aosp-device/gts7l/rro`) sets
   `config_biometricUnlockInLockdown` to `true` and `config_strongAuthRequiredOnBoot` to `false`.
-- The tablet's side-key sensor is TrustZone's and out of reach (docs/gts7l.md), so
-  `aosp_gts7l.mk` adds the virtual HAL as Cuttlefish does
+- Since 2026-11-27 the tablet has no fingerprint: it is a real device and uses only real
+  drivers, and its side-key sensor is TrustZone's and out of reach (docs/gts7l.md §25). The
+  RRO above and the patches stay and change nothing without a strong biometric. Before that,
+  `aosp_gts7l.mk` added the virtual HAL as Cuttlefish does
   (`com.android.hardware.biometrics.fingerprint.virtual`,
   `android.hardware.biometrics.fingerprint-service.default`, `android.hardware.fingerprint.xml`),
   an under-display sensor at `800:2240:100` (natural orientation of the 1600x2560 panel), and

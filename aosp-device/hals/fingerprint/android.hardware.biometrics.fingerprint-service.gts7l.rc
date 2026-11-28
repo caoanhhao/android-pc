@@ -1,0 +1,9 @@
+service vendor.fingerprint-gts7l /vendor/bin/hw/android.hardware.biometrics.fingerprint-service.gts7l
+    class late_start
+    user system
+    group system
+    shutdown critical
+
+# Templates, as the stock HAL keeps them (fp/User_<n>/...).
+on post-fs-data
+    mkdir /data/vendor/biometrics 0770 system system

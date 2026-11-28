@@ -1,0 +1,85 @@
+From 11eef307dd6e0d767553a8ee61e0587b81bd4345 Mon Sep 17 00:00:00 2001
+From: caoanhhao <caoanhhao@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 13:17:23 +0700
+Subject: [PATCH] arm64: dts: qcom: gts7l: the fingerprint sensor's power,
+ reset and interrupt
+
+Goodix GW36T1 in the power key (stock DTBO gfspi@0, tz: 1): LDO enable
+gpio117, reset gpio127, interrupt gpio63, and the SE7 serial engine and
+QUP wrapper 0 clocks and interconnect paths TrustZone needs while its
+fingerprint app drives the SPI bus. gpio20-23, the bus itself, stay
+reserved.
+
+caoanhhao used AI to code
+---
+ .../boot/dts/qcom/sm8250-samsung-gts7l.dts    | 57 +++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index b907e0a07..b6438e392 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -1792,3 +1792,60 @@ &mdss_dp_out {
+  * MHI node, its power/reset/status GPIOs (stock "mdm" nodes, mdm1m9kefs* partitions),
+  * the SIM detect line and its reserved memory. Not present on the S7+ Wi-Fi.
+  */
++
++/*
++ * Fingerprint: Goodix GW36T1 in the power key on SPI SE7 (gpio20-23), a bus that
++ * belongs to TrustZone: Samsung's fingerprint app reads the sensor, Linux only
++ * powers it, votes the SE7 clocks while the app runs and reports its interrupt
++ * (stock DTBO gfspi@0, tz: 1). gpio20-23 stay reserved.
++ */
++/ {
++	fingerprint {
++		compatible = "goodix,gw36t1";
++		power-gpios = <&tlmm 117 GPIO_ACTIVE_HIGH>;
++		reset-gpios = <&tlmm 127 GPIO_ACTIVE_LOW>;
++		interrupts-extended = <&tlmm 63 IRQ_TYPE_EDGE_RISING>;
++		clocks = <&gcc GCC_QUPV3_WRAP0_S7_CLK>,
++			 <&gcc GCC_QUPV3_WRAP_0_M_AHB_CLK>,
++			 <&gcc GCC_QUPV3_WRAP_0_S_AHB_CLK>;
++		interconnects = <&qup_virt MASTER_QUP_CORE_0 0 &qup_virt SLAVE_QUP_CORE_0 0>,
++				<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_QUP_0 0>;
++		interconnect-names = "qup-core", "qup-config";
++		pinctrl-0 = <&fp_default>;
++		pinctrl-1 = <&fp_active>;
++		pinctrl-names = "default", "active";
++		goodix,orient = <0>;
++	};
++};
++
++&tlmm {
++	fp_default: fp-default-state {
++		ctrl-pins {
++			pins = "gpio117", "gpio127";
++			function = "gpio";
++			bias-pull-down;
++		};
++
++		irq-pins {
++			pins = "gpio63";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-pull-down;
++		};
++	};
++
++	fp_active: fp-active-state {
++		ctrl-pins {
++			pins = "gpio117", "gpio127";
++			function = "gpio";
++			bias-pull-down;
++		};
++
++		irq-pins {
++			pins = "gpio63";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++};
+-- 
+2.56.1
+
