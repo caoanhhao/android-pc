@@ -312,6 +312,11 @@ CONFIG_PHY_QCOM_QMP_UFS=y
 
 # 3. gts7l
 CONFIG_LOCALVERSION="-gts7l"
+# 39-bit user address space (3-level page tables), as stock's 4.19 kernel and GKI. arm64
+# defconfig's 52-bit VA puts every user mapping near 0xffff_xxxx_xxxx, above 2^47: engines
+# that tag or NaN-box pointers in the upper bits (Where Winds Meet's) then crash.
+CONFIG_ARM64_VA_BITS_39=y
+# CONFIG_ARM64_VA_BITS_52 is not set
 # Samsung's bootloader passes its own command line; ours is built in and forced, as on
 # gts7xl. androidboot.hardware matches the product's init.gts7l.rc / ueventd.gts7l.rc.
 # Dropped from gts7xl's: panel_samsung_s6tuum3.prefer_120hz (the S7+ AMOLED panel driver).
