@@ -1945,3 +1945,22 @@ Build `eng.caoanh.20261127.2229` (flashed with `--keep-data`, enrolled fingers k
 - Lock screen: SystemUI's keyguard authentication matched finger 1 (score 50) and unlocked.
 - Earlier on `eng.caoanh.20261127.1953`: Settings enroll in a full-screen window (slots 1 and
   2); a Firefox `BiometricPrompt` matched finger 1 (score 53).
+
+## 27. Where Winds Meet: 39-bit user address space (2026-11-28)
+
+`com.netease.yyvn` loaded and reached the main menu (after max_map_count=1048576 and the
+3 GB zram swap), then died with SIGSEGV right after Resume. The game's breakpad handler
+deadlocks and leaves no tombstone; stopping the process at its `NCCrashHandler` log line
+showed a Lua panic ("PANIC: unprotected error in call to Lua API") in the game's script
+module, the same on GLES and Vulkan (§26), with every heap pointer at `0xf69…`.
+
+Cause: arm64 defconfig's `CONFIG_ARM64_VA_BITS_52` (5-level page tables). The kernel
+places user mappings just under 2^48, above 2^47; the game's Lua rejects such pointers
+(LuaJIT-style 47-bit light userdata / tagged values) and panics. Stock's 4.19 kernel
+(`extract-ikconfig` on the stock boot.img) and GKI use `CONFIG_ARM64_VA_BITS_39`.
+gts7l.fragment now sets VA_BITS_39 (3 levels; user mappings near `0x7a…`). Build
+eng.caoanh.20261128.1007: Resume → loading → in the world (Hutuo River), on Vulkan.
+
+Not the cause, checked against stock: memory pressure (lmkd kills and zram use at the
+crash are normal), RLIMIT_AS (unlimited), commit (overcommit 1). The dalvik heap now
+matches stock's vendor build.prop (growth limit 512m instead of 192m).
