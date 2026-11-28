@@ -1,0 +1,131 @@
+From 6c9fb0af992c696cd197ca3eaf953ad9cc845830 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Sat, 28 Nov 2026 22:11:31 +0700
+Subject: [PATCH 314/315] drm/msm/adreno: put the BOs last in the devcoredump
+
+A devcoredump read that stops part way (the device frees the dump after
+five minutes, and every 4 KiB read re-renders the whole dump) lost the
+registers, the CP state and the debugbus: they came after hundreds of MB
+of BO contents. Print the BOs at the end on a6xx, so a cut dump still has
+everything crashdec needs to find the hang.
+
+caoanhhao used AI to code
+---
+ drivers/gpu/drm/msm/adreno/a6xx_gpu_state.c |  4 +-
+ drivers/gpu/drm/msm/adreno/adreno_gpu.c     | 51 ++++++++++++++-------
+ drivers/gpu/drm/msm/adreno/adreno_gpu.h     |  3 ++
+ 3 files changed, 41 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gpu_state.c b/drivers/gpu/drm/msm/adreno/a6xx_gpu_state.c
+index 26c17861c..00c56dc54 100644
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gpu_state.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu_state.c
+@@ -2036,7 +2036,7 @@ void a6xx_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 
+ 	drm_printf(p, "gpu-initialized: %d\n", a6xx_state->gpu_initialized);
+ 
+-	adreno_show(gpu, state, p);
++	adreno_show_nobos(gpu, state, p);
+ 
+ 	drm_puts(p, "gmu-log:\n");
+ 	if (a6xx_state->gmu_log) {
+@@ -2132,4 +2132,6 @@ void a6xx_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 
+ 	drm_puts(p, "debugbus:\n");
+ 	a6xx_show_debugbus(a6xx_state, p);
++
++	adreno_show_bos(state, p);
+ }
+diff --git a/drivers/gpu/drm/msm/adreno/adreno_gpu.c b/drivers/gpu/drm/msm/adreno/adreno_gpu.c
+index 66b00afdd..c31bfeb14 100644
+--- a/drivers/gpu/drm/msm/adreno/adreno_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.c
+@@ -972,7 +972,34 @@ void adreno_show_object(struct drm_printer *p, void **ptr, int len,
+ 	drm_puts(p, "\n");
+ }
+ 
+-void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
++void adreno_show_bos(struct msm_gpu_state *state, struct drm_printer *p)
++{
++	int i;
++
++	if (IS_ERR_OR_NULL(state))
++		return;
++
++	if (state->bos) {
++		drm_puts(p, "bos:\n");
++
++		for (i = 0; i < state->nr_bos; i++) {
++			drm_printf(p, "  - iova: 0x%016llx\n",
++				state->bos[i].iova);
++			drm_printf(p, "    size: %zd\n", state->bos[i].size);
++			drm_printf(p, "    flags: 0x%x\n", state->bos[i].flags);
++			drm_printf(p, "    name: %-32s\n", state->bos[i].name);
++
++			adreno_show_object(p, &state->bos[i].data,
++				state->bos[i].size, &state->bos[i].encoded);
++		}
++	}
++}
++
++/*
++ * Everything but the BOs: they can be hundreds of MB, and a devcoredump read
++ * that times out part way should still have the registers.
++ */
++void adreno_show_nobos(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 		struct drm_printer *p)
+ {
+ 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+@@ -1037,21 +1064,6 @@ void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 			state->ring[i].data_size, &state->ring[i].encoded);
+ 	}
+ 
+-	if (state->bos) {
+-		drm_puts(p, "bos:\n");
+-
+-		for (i = 0; i < state->nr_bos; i++) {
+-			drm_printf(p, "  - iova: 0x%016llx\n",
+-				state->bos[i].iova);
+-			drm_printf(p, "    size: %zd\n", state->bos[i].size);
+-			drm_printf(p, "    flags: 0x%x\n", state->bos[i].flags);
+-			drm_printf(p, "    name: %-32s\n", state->bos[i].name);
+-
+-			adreno_show_object(p, &state->bos[i].data,
+-				state->bos[i].size, &state->bos[i].encoded);
+-		}
+-	}
+-
+ 	if (state->nr_registers) {
+ 		drm_puts(p, "registers:\n");
+ 
+@@ -1062,6 +1074,13 @@ void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 		}
+ 	}
+ }
++
++void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
++		struct drm_printer *p)
++{
++	adreno_show_nobos(gpu, state, p);
++	adreno_show_bos(state, p);
++}
+ #endif
+ 
+ /* Dump common gpu status and scratch registers on any hang, to make
+diff --git a/drivers/gpu/drm/msm/adreno/adreno_gpu.h b/drivers/gpu/drm/msm/adreno/adreno_gpu.h
+index 114a40f79..9b4250fdb 100644
+--- a/drivers/gpu/drm/msm/adreno/adreno_gpu.h
++++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.h
+@@ -625,6 +625,9 @@ bool adreno_idle(struct msm_gpu *gpu, struct msm_ringbuffer *ring);
+ #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
+ void adreno_show(struct msm_gpu *gpu, struct msm_gpu_state *state,
+ 		struct drm_printer *p);
++void adreno_show_nobos(struct msm_gpu *gpu, struct msm_gpu_state *state,
++		struct drm_printer *p);
++void adreno_show_bos(struct msm_gpu_state *state, struct drm_printer *p);
+ #endif
+ void adreno_dump_info(struct msm_gpu *gpu);
+ void adreno_dump(struct msm_gpu *gpu);
+-- 
+2.56.1
+

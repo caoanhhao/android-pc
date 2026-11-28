@@ -2052,3 +2052,62 @@ Still open:
 
 The debug aids stay in the kernel: patches 0310-0312, the lockup detectors, pseudo-NMI, and
 pstore ftrace per CPU.
+
+## 29. GPU hang after ~15 min of Where Winds Meet: a false hang interrupt (2026-11-28)
+
+With the §28 flags the game played, then lost its Vulkan device after ~15 min (2026-11-28
+21:53, uptime 2338 s; evidence in `out/gts7l/wwm-crash-2154/`):
+
+```
+adreno 3d00000.gpu: [drm:a6xx_irq] *ERROR* gpu fault ring 0 fence 13497 status 00E59485
+    rb 0919/0919 ib1 0000000115706000/02c1 ib2 000000013365E000/016e
+recover_worker: hangcheck recover! offending task: Thread-15134 (com.netease.yyvn)
+```
+
+`vkQueueSubmit` returned `VK_ERROR_DEVICE_LOST` and the engine asserted (SIGTRAP). The tablet
+did not reset. About 2 s before, the UI stalled (InputDispatcher ~2 s per event).
+
+What the dump shows:
+- The message comes from `a6xx_fault_detect_irq`, the RBBM *interface hang* interrupt, not
+  from the 500 ms hangcheck timer, and not from an SMMU fault (none logged).
+- `RBBM_STATUS` 0x00E59485: CP, PC_DCALL, VFD, VPC, SP, HLSQ, RB and LRZ busy; TPL1, UCHE,
+  VBIF and CCU idle. A draw was in the shader pipeline; nothing was waiting on memory.
+- The ring (crashdec, see below): the hung submit is fence 78998 (`0x13497` = 78999 is the
+  last one queued, 78997 retired). Its IB1s: 0x119fb1000, 0x12b472000, 0x1038c9000,
+  0x115706000, ... `CP_IB2_BASE` 0x13365e000 (size 0x82e, 0x16e left) is the sysmem render
+  pass called from IB1 0x1038c9000; `CP_IB1_BASE` already points at the next IB1, which the
+  CP was prefetching (a compute hi-Z chain: depth Z24 1440x900 into four FP16 mips). So the
+  hang was a long draw of an ordinary render pass, not a broken command stream.
+- The dump has no registers, CP state or debugbus: it was cut at 96 MB, inside the BO list,
+  which msm printed before them. The BO holding IB2 is missing too.
+
+Cause: upstream msm programs `RBBM_INTERFACE_HANG_INT_CNTL` with `(1 << 30) | 0x1fffff` for
+a650 (16-cycle units: ~57 ms at 587 MHz, longer per draw at lower clocks). kgsl uses
+0xcfffff for a650, raised from 0x3fffff because older a6xx report a false hang interrupt on
+long running payloads; msm uses 0xcfffff only for a612 and a7xx. Turnip in sysmem mode without
+UBWC makes each heavy draw longer than with GMEM, and the msm handler treats the interrupt as a
+hang: it kills the submit and the game gets `DEVICE_LOST`. Not a Turnip bug and not one of the
+flags as such; the flags only make the draws long enough to cross the short threshold.
+
+Fix (kernel #58, `out/gts7l/images-hang`: images-clean with a new boot.img):
+- patch 0315: a650 gets 0xcfffff, as kgsl. A real hang is still caught, by the same interrupt
+  or by the hangcheck timer.
+- patch 0314: the devcoredump prints the BOs last, so a dump cut short still carries the
+  registers, CP state and debugbus.
+
+The Turnip flags stay `sysmem,nolrz,noubwc` (the §28 reset).
+
+Result on kernel #58 with those flags: 30 min in the world (22:25-22:55, quest auto-path
+through the burning forest plus camera pans, then the user's own play): no GPU fault, no
+hangcheck, no reset; the user confirmed it plays fine.
+
+The audio routes are not in this image (images-clean predates branch
+`claude/gts7l-fix-audio-8566a2`): after each boot set them by hand, as in
+docs/gts7l-hal/audio.md.
+
+Decoding a msm devcoredump on the host: build crashdec from `aosp/external/mesa3d`
+(`meson setup <dir> -Dgallium-drivers= -Dvulkan-drivers= -Dtools=freedreno -Dplatforms=
+-Dllvm=disabled ...; ninja src/freedreno/decode/crashdec`, meson from a venv). Kernel 7.3
+prints `revision: 650 (06050002)`; crashdec wants `650 (6.5.0.2)`, so fix that line first.
+Read the dump on the tablet with one `cat .../devcd*/data > file`: the device drops it after
+five minutes.

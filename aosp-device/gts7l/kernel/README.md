@@ -45,6 +45,8 @@ Ours start at `0094`:
 | 0311 | DTS: one pstore ftrace zone per CPU, so a CPU stalled on the bus keeps its last calls |
 | 0312 | lib: build the MMIO access hooks traceable, so pstore's function trace keeps each CPU's last register access |
 | 0313 | DTS: reserve the memory the firmware keeps (XBL/AOP from 0x80603000, Samsung sec_debug, ss_plog, HDM, KASLR, TIMA, RKP); as System RAM it hung a CPU or reset the SoC under memory pressure |
+| 0314 | msm/adreno: print the BOs last in the devcoredump, so a dump cut short still has the registers, CP state and debugbus (docs/gts7l.md §29) |
+| 0315 | msm/a6xx: a650 hang detection threshold 0xcfffff, as kgsl; 0x1fffff killed Where Winds Meet's long draws as a false GPU hang (docs/gts7l.md §29) |
 | 0280 | ath11k: stamp beacons and probe responses with the boot time, so nl80211 reports `NL80211_BSS_LAST_SEEN_BOOTTIME` and Android rejoins an AP that restarted (docs/gts7l.md §23) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with
