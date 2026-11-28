@@ -21,8 +21,15 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_vendor.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/languages_full.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/updatable_apex.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
-# TODO(S7): dalvik heap for 6 GB RAM / xhdpi once the first boot shows the memory budget.
-$(call inherit-product, frameworks/native/build/tablet-10in-xhdpi-2048-dalvik-heap.mk)
+# Dalvik heap: stock's values (SM-T875 vendor build.prop); growth limit 512m, not the
+# 192m of tablet-10in-xhdpi-2048-dalvik-heap.mk.
+PRODUCT_VENDOR_PROPERTIES += \
+    dalvik.vm.heapstartsize=8m \
+    dalvik.vm.heapgrowthlimit=512m \
+    dalvik.vm.heapsize=512m \
+    dalvik.vm.heaptargetutilization=0.75 \
+    dalvik.vm.heapminfree=2m \
+    dalvik.vm.heapmaxfree=8m
 
 # Rust HALs: only hal.mk of each HAL in hals.list. hal-pc.mk holds the PC product's
 # Cuttlefish switches and PC-only files, so it is never read here.
