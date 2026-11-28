@@ -43,6 +43,8 @@ Ours start at `0094`:
 | 0220-0221 | Fuel gauge: DTS wires the MAX77705 FG alert interrupt; max17042 takes an optional platform IRQ (defers on `-EPROBE_DEFER`) and reports `cycle_count` in whole cycles (docs/gts7l-hal/power.md) |
 | 0310 | rpmh: on a request timeout, log the DRV's IRQ/TCS state, which CPU takes its interrupt, and all-CPU backtraces (the tablet resets under sustained load after `Error sending AMC RPMH requests (-110)`) |
 | 0311 | DTS: one pstore ftrace zone per CPU, so a CPU stalled on the bus keeps its last calls |
+| 0312 | lib: build the MMIO access hooks traceable, so pstore's function trace keeps each CPU's last register access |
+| 0313 | DTS: reserve the memory the firmware keeps (XBL/AOP from 0x80603000, Samsung sec_debug, ss_plog, HDM, KASLR, TIMA, RKP); as System RAM it hung a CPU or reset the SoC under memory pressure |
 | 0280 | ath11k: stamp beacons and probe responses with the boot time, so nl80211 reports `NL80211_BSS_LAST_SEEN_BOOTTIME` and Android rejoins an AP that restarted (docs/gts7l.md §23) |
 
 To change a patch: edit in `gts7l-kernel/` on branch `gts7l`, commit, and export with

@@ -1,0 +1,29 @@
+From a825c302e5f26f86cb64515b391e45607939019d Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Sat, 28 Nov 2026 14:10:39 +0700
+Subject: [PATCH] lib: let the function tracer see the MMIO access hooks
+
+lib/ is built without the ftrace flags, so log_read_mmio() and friends
+never reach a function tracer. Build trace_readwrite.o with them: with
+the rwmmio events on, pstore's function trace then keeps each CPU's last
+register access and its caller, which names the access a CPU stalled on.
+---
+ lib/Makefile | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/lib/Makefile b/lib/Makefile
+index dfab95832..0f1e98fbc 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -136,6 +136,8 @@ lib-y += logic_pio.o
+ lib-$(CONFIG_INDIRECT_IOMEM) += logic_iomem.o
+ 
+ obj-$(CONFIG_TRACE_MMIO_ACCESS) += trace_readwrite.o
++# Function-traceable, so the function tracer (and pstore's) sees every register access
++CFLAGS_trace_readwrite.o += $(CC_FLAGS_FTRACE)
+ 
+ obj-$(CONFIG_GENERIC_HWEIGHT) += hweight.o
+ 
+-- 
+2.56.1
+

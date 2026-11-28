@@ -330,6 +330,9 @@ CONFIG_FTRACE=y
 CONFIG_FUNCTION_TRACER=y
 CONFIG_DYNAMIC_FTRACE=y
 CONFIG_PSTORE_FTRACE=y
+# readl/writel call log_*_mmio while the rwmmio events are on: with those in the pstore
+# filter, each CPU's last register access (and its caller) is kept.
+CONFIG_TRACE_MMIO_ACCESS=y
 # Samsung's bootloader passes its own command line; ours is built in and forced, as on
 # gts7xl. androidboot.hardware matches the product's init.gts7l.rc / ueventd.gts7l.rc.
 # Dropped from gts7xl's: panel_samsung_s6tuum3.prefer_120hz (the S7+ AMOLED panel driver).
