@@ -319,11 +319,22 @@ CONFIG_SOFTLOCKUP_DETECTOR=y
 CONFIG_HARDLOCKUP_DETECTOR=y
 CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
 CONFIG_DETECT_HUNG_TASK=y
+# Pseudo-NMIs (irqchip.gicv3_pseudo_nmi=1 on the command line), so a CPU stuck with
+# interrupts masked still answers the backtrace request; the buddy detector stays in use.
+CONFIG_ARM64_PSEUDO_NMI=y
+CONFIG_HARDLOCKUP_DETECTOR_PREFER_BUDDY=y
+# Function trace into pstore (off until /sys/kernel/debug/pstore/record_ftrace is set,
+# limited by set_ftrace_filter): the last calls of a CPU stalled on the bus, which answers
+# no NMI.
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_DYNAMIC_FTRACE=y
+CONFIG_PSTORE_FTRACE=y
 # Samsung's bootloader passes its own command line; ours is built in and forced, as on
 # gts7xl. androidboot.hardware matches the product's init.gts7l.rc / ueventd.gts7l.rc.
 # Dropped from gts7xl's: panel_samsung_s6tuum3.prefer_120hz (the S7+ AMOLED panel driver).
 # TODO(S1/S6): the LCD panel driver's parameters once the panel is known.
-CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_bypass=0 panic=30 fw_devlink.sync_state=timeout firmware_class.path=/vendor/firmware androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.usbcontroller=a600000.usb androidboot.init_fatal_reboot_target=recovery printk.devkmsg=on msm.r8q_zap_dyn=1 msm.r8q_zap_secvid=0 deferred_probe_timeout=30 logo.nologo watchdog_thresh=5 softlockup_all_cpu_backtrace=1 hardlockup_all_cpu_backtrace=1"
+CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_bypass=0 panic=30 fw_devlink.sync_state=timeout firmware_class.path=/vendor/firmware androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.usbcontroller=a600000.usb androidboot.init_fatal_reboot_target=recovery printk.devkmsg=on msm.r8q_zap_dyn=1 msm.r8q_zap_secvid=0 deferred_probe_timeout=30 logo.nologo watchdog_thresh=5 softlockup_all_cpu_backtrace=1 hardlockup_all_cpu_backtrace=1 irqchip.gicv3_pseudo_nmi=1"
 # Wi-Fi country: let the framework's country code (ro.boot.wificountrycode=VN, sent by
 # wpa_supplicant's driver_cmd as an nl80211 user hint) reach ath11k's firmware. Without
 # these, ath11k_reg_notifier drops user hints ("Country Setting is not allowed") and the
