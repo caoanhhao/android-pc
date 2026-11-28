@@ -79,6 +79,11 @@ PRODUCT_VENDOR_PROPERTIES += \
     debug.hwui.renderer=skiagl \
     ro.hardware.egl=mesa \
     ro.hardware.vulkan=freedreno
+# Turnip renders straight to system memory, without LRZ or UBWC: with GMEM binning, LRZ and
+# UBWC on, Where Winds Meet stopped a CPU core and the SoC reset while loading (docs/gts7l.md
+# §26). Costs GPU speed in every Vulkan app; not yet narrowed down to one of the three.
+PRODUCT_VENDOR_PROPERTIES += \
+    debug.mesa.tu.debug=sysmem,nolrz,noubwc
 # Mesa exposes GL_ANDROID_extension_pack_es31a on the a650, as stock declares: Play hides
 # apps that require opengles.aep (Genshin Impact) without it.
 PRODUCT_COPY_FILES += \
