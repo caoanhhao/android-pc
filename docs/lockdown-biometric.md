@@ -9,8 +9,9 @@ in lockdown, and **right after Android starts**, without the PIN first ("Fingerp
 after boot" below). Everything else lockdown does stays. The fingerprint here is AOSP's virtual
 fingerprint HAL (`com.android.hardware.biometrics.fingerprint.virtual`, an under-display sensor
 configured by the `persist.vendor.fingerprint.virtual.*` properties in Waydroid's
-`waydroid.cfg`); it reports itself as `STRONG`. `aosp_gts7l` (the Galaxy Tab S7) has the same
-setup until 2026-11-27 ("gts7l" below); it now has no fingerprint at all.
+`waydroid.cfg`); it reports itself as `STRONG`. `aosp_gts7l` (the Galaxy Tab S7) had the same
+setup until 2026-11-27 ("gts7l" below); it now uses its real power-key sensor through our Rust
+HAL (`hals/fingerprint`, docs/gts7l.md §25), which the PC product leaves out.
 
 ## What changes
 
