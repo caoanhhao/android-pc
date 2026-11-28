@@ -1,5 +1,36 @@
 # gts7l audio HAL check
 
+## Update 2026-11-28: silent speakers on the merged build
+
+Build `eng.caoanh.20261128.1007` (gts7l with this fix merged) had no sound. The card was
+there (`/dev/snd/controlC0` from second 6 of boot, the HAL started at second 9), but
+`dumpsys android.hardware.audio.core.IModule/default` showed `output: null Playback device`,
+and `PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1` was Off. The HAL log:
+
+```
+W ...: card 0 device 0 (Galaxy Tab S7+: MultiMedia1 (*), Analog): cannot probe Playback: /dev/snd/pcmC0D0p: Invalid argument (os error 22); using a null device
+W ...: card 0 device 1 (Galaxy Tab S7+: MultiMedia2 (*), Analog): cannot probe Capture: /dev/snd/pcmC0D1c: Invalid argument (os error 22); using a null device
+```
+
+An ASoC DPCM front end with no back end routed to it fails to open with EINVAL, and the HAL
+wrote the setup file's routes only to cards whose PCMs it had probed, i.e. never. The
+tinyplay tests of 2026-11-25 set the routes by hand first, so they did not see it.
+
+Fix (`config.rs`): the setup is written to the primary card before its PCMs are probed.
+Workaround on the running build, checked: set the two routes with tinymix and restart the
+HAL; it then found `card 0 device 0` / `device 1`, wrote every setup line, AudioTrack played
+through it (`Frames written` 849920, speaker device, no ERROR) and the user heard the tone;
+`AudioCheck rec1 2` recorded from the built-in mic through the HAL (`frames=96000 in 2.05s
+nonzero=95534 rms=91.9 peak=1790`, the room with the user at the tablet):
+
+```
+adb root
+adb shell 'tinymix -D 0 "PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1" 1; tinymix -D 0 "MultiMedia2 Mixer VA_CODEC_DMA_TX_0" 1; stop vendor.audio-hal; start vendor.audio-hal'
+```
+
+The mixer state does not survive a reboot, so the workaround is needed after each boot until
+an image with the fix is flashed.
+
 ## Update 2026-11-25: speakers and microphone (branch `claude/gts7l-fix-audio-8566a2`)
 
 The sections after this one are the first check (build `eng.caoanh.20261124.1208`), kept as

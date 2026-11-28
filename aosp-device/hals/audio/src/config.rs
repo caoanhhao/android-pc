@@ -259,21 +259,26 @@ impl Hardware {
             info!("found {pcm}");
         }
         let primary = cards::Primary::select_preferred(&pcms, preferred_devices());
+        // The routes go in before the PCMs are probed: on a SoC card (ASoC DPCM) a front
+        // end with no back end routed to it fails to open with EINVAL, and the path would
+        // fall back to a null device.
+        let mut cards: Vec<u32> = [&primary.playback, &primary.capture]
+            .into_iter()
+            .flatten()
+            .map(|info| info.card)
+            .collect();
+        cards.dedup();
+        for &card in &cards {
+            if !setup.is_empty() {
+                ctl::apply_setup(card, &setup);
+            }
+        }
         let hardware = Self {
             output: Endpoint::probe(primary.playback.as_ref(), Direction::Playback),
             input: Endpoint::probe(primary.capture.as_ref(), Direction::Capture),
         };
-        let mut cards: Vec<u32> = [&hardware.output.pcm, &hardware.input.pcm]
-            .into_iter()
-            .flatten()
-            .map(|address| address.card)
-            .collect();
-        cards.dedup();
         for card in cards {
             ctl::unmute(card);
-            if !setup.is_empty() {
-                ctl::apply_setup(card, &setup);
-            }
         }
         hardware
     }
