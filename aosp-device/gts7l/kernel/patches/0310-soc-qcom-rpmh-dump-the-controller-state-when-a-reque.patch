@@ -1,5 +1,5 @@
 From d1a2f3856bcadcffbfff57b0d38dfc794db713bd Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao2@gmail.com>
 Date: Sat, 28 Nov 2026 10:26:56 +0700
 Subject: [PATCH] soc: qcom: rpmh: dump the controller state when a request
  times out

@@ -1,5 +1,5 @@
 From 6dd42b9424eff8df027ad945f15af724f117faeb Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao2@gmail.com>
 Date: Sat, 28 Nov 2026 14:45:08 +0700
 Subject: [PATCH] arm64: dts: qcom: gts7l: reserve the memory the firmware
  keeps

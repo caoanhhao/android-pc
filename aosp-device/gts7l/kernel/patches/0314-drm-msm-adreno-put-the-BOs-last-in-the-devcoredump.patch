@@ -1,5 +1,5 @@
 From 6c9fb0af992c696cd197ca3eaf953ad9cc845830 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao2@gmail.com>
 Date: Sat, 28 Nov 2026 22:11:31 +0700
 Subject: [PATCH 314/315] drm/msm/adreno: put the BOs last in the devcoredump
 

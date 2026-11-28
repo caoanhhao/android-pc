@@ -1,5 +1,5 @@
 From 3b261fa7dde1b707f817b96fe54d5fc81b4c70d3 Mon Sep 17 00:00:00 2001
-From: caoanhhao <dev@skyperry.com>
+From: caoanhhao <caoanhhao2@gmail.com>
 Date: Sat, 28 Nov 2026 22:11:39 +0700
 Subject: [PATCH 315/315] drm/msm/a6xx: raise the a650 hang detection threshold
 

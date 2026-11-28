@@ -29,7 +29,7 @@ index 000000000..374d421a4
 +title: Goodix fingerprint sensor driven by TrustZone
 +
 +maintainers:
-+  - caoanhhao <dev@skyperry.com>
++  - caoanhhao <caoanhhao2@gmail.com>
 +
 +description:
 +  A Goodix fingerprint sensor on an SPI bus that belongs to the secure world,
