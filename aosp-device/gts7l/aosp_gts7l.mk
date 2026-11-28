@@ -271,6 +271,14 @@ PRODUCT_COPY_FILES += \
 PRODUCT_PACKAGES += microg.xml
 PRODUCT_COPY_FILES += \
     $(GTS7L_DEVICE_DIR)/microg_device_profile.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/microg_device_profile.xml
+# microG logs the account's OAuth tokens at debug level (getAuthToken: ya29..., auth=...,
+# Token=aas_et/...). liblog drops a tag's messages below its log.tag level before they reach
+# logd, so these tags keep info and up only and no token lands in logcat.
+PRODUCT_PRODUCT_PROPERTIES += \
+    log.tag.GmsAuthenticator=I \
+    log.tag.GmsAuthManager=I \
+    log.tag.GmsAuthManagerSvc=I \
+    log.tag.GmsHttpFormClient=I
 
 # The 11" 2560x1600 panel. TODO(T5): density and orientation from the first boot (the
 # panel may scan out in portrait, docs/gts7l.md §6/T5).
