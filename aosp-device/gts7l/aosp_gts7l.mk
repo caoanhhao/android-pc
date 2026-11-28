@@ -21,8 +21,15 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_vendor.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/languages_full.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/updatable_apex.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
-# TODO(S7): dalvik heap for 6 GB RAM / xhdpi once the first boot shows the memory budget.
-$(call inherit-product, frameworks/native/build/tablet-10in-xhdpi-2048-dalvik-heap.mk)
+# Dalvik heap: stock's values (SM-T875 vendor build.prop); growth limit 512m, not the
+# 192m of tablet-10in-xhdpi-2048-dalvik-heap.mk.
+PRODUCT_VENDOR_PROPERTIES += \
+    dalvik.vm.heapstartsize=8m \
+    dalvik.vm.heapgrowthlimit=512m \
+    dalvik.vm.heapsize=512m \
+    dalvik.vm.heaptargetutilization=0.75 \
+    dalvik.vm.heapminfree=2m \
+    dalvik.vm.heapmaxfree=8m
 
 # Rust HALs: only hal.mk of each HAL in hals.list. hal-pc.mk holds the PC product's
 # Cuttlefish switches and PC-only files, so it is never read here.
@@ -79,6 +86,11 @@ PRODUCT_VENDOR_PROPERTIES += \
     debug.hwui.renderer=skiagl \
     ro.hardware.egl=mesa \
     ro.hardware.vulkan=freedreno
+# Turnip renders straight to system memory, without LRZ or UBWC: with GMEM binning, LRZ and
+# UBWC on, Where Winds Meet stopped a CPU core and the SoC reset while loading (docs/gts7l.md
+# §28). Costs GPU speed in every Vulkan app; not yet narrowed down to one of the three.
+PRODUCT_VENDOR_PROPERTIES += \
+    debug.mesa.tu.debug=sysmem,nolrz,noubwc
 # Mesa exposes GL_ANDROID_extension_pack_es31a on the a650, as stock declares: Play hides
 # apps that require opengles.aep (Genshin Impact) without it.
 PRODUCT_COPY_FILES += \
@@ -271,6 +283,14 @@ PRODUCT_COPY_FILES += \
 PRODUCT_PACKAGES += microg.xml
 PRODUCT_COPY_FILES += \
     $(GTS7L_DEVICE_DIR)/microg_device_profile.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/microg_device_profile.xml
+# microG logs the account's OAuth tokens at debug level (getAuthToken: ya29..., auth=...,
+# Token=aas_et/...). liblog drops a tag's messages below its log.tag level before they reach
+# logd, so these tags keep info and up only and no token lands in logcat.
+PRODUCT_PRODUCT_PROPERTIES += \
+    log.tag.GmsAuthenticator=I \
+    log.tag.GmsAuthManager=I \
+    log.tag.GmsAuthManagerSvc=I \
+    log.tag.GmsHttpFormClient=I
 
 # The 11" 2560x1600 panel. TODO(T5): density and orientation from the first boot (the
 # panel may scan out in portrait, docs/gts7l.md §6/T5).

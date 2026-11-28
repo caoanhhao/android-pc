@@ -312,11 +312,37 @@ CONFIG_PHY_QCOM_QMP_UFS=y
 
 # 3. gts7l
 CONFIG_LOCALVERSION="-gts7l"
+# 39-bit user address space (3-level page tables), as stock's 4.19 kernel and GKI. arm64
+# defconfig's 52-bit VA puts every user mapping near 0xffff_xxxx_xxxx, above 2^47: engines
+# that tag or NaN-box pointers in the upper bits (Where Winds Meet's) then crash.
+CONFIG_ARM64_VA_BITS_39=y
+# CONFIG_ARM64_VA_BITS_52 is not set
+# Lockup detectors (the buddy hard-lockup detector: no pseudo-NMI here). Without them a CPU
+# stuck with interrupts off leaves nothing in pstore before the tablet resets; with them a
+# hard lockup panics after watchdog_thresh (5 s on the command line) and dumps every CPU.
+CONFIG_SOFTLOCKUP_DETECTOR=y
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y
+# Pseudo-NMIs (irqchip.gicv3_pseudo_nmi=1 on the command line), so a CPU stuck with
+# interrupts masked still answers the backtrace request; the buddy detector stays in use.
+CONFIG_ARM64_PSEUDO_NMI=y
+CONFIG_HARDLOCKUP_DETECTOR_PREFER_BUDDY=y
+# Function trace into pstore (off until /sys/kernel/debug/pstore/record_ftrace is set,
+# limited by set_ftrace_filter): the last calls of a CPU stalled on the bus, which answers
+# no NMI.
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_DYNAMIC_FTRACE=y
+CONFIG_PSTORE_FTRACE=y
+# readl/writel call log_*_mmio while the rwmmio events are on: with those in the pstore
+# filter, each CPU's last register access (and its caller) is kept.
+CONFIG_TRACE_MMIO_ACCESS=y
 # Samsung's bootloader passes its own command line; ours is built in and forced, as on
 # gts7xl. androidboot.hardware matches the product's init.gts7l.rc / ueventd.gts7l.rc.
 # Dropped from gts7xl's: panel_samsung_s6tuum3.prefer_120hz (the S7+ AMOLED panel driver).
 # TODO(S1/S6): the LCD panel driver's parameters once the panel is known.
-CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_bypass=0 panic=30 fw_devlink.sync_state=timeout firmware_class.path=/vendor/firmware androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.usbcontroller=a600000.usb androidboot.init_fatal_reboot_target=recovery printk.devkmsg=on msm.r8q_zap_dyn=1 msm.r8q_zap_secvid=0 deferred_probe_timeout=30 logo.nologo"
+CONFIG_CMDLINE="pm8941_pwrkey.report_wake_press=1 console=null arm-smmu.disable_bypass=0 panic=30 fw_devlink.sync_state=timeout firmware_class.path=/vendor/firmware androidboot.hardware=gts7l androidboot.boot_devices=soc@0/1d84000.ufshc androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.usbcontroller=a600000.usb androidboot.init_fatal_reboot_target=recovery printk.devkmsg=on msm.r8q_zap_dyn=1 msm.r8q_zap_secvid=0 deferred_probe_timeout=30 logo.nologo watchdog_thresh=5 softlockup_all_cpu_backtrace=1 hardlockup_all_cpu_backtrace=1 irqchip.gicv3_pseudo_nmi=1"
 # Wi-Fi country: let the framework's country code (ro.boot.wificountrycode=VN, sent by
 # wpa_supplicant's driver_cmd as an nl80211 user hint) reach ath11k's firmware. Without
 # these, ath11k_reg_notifier drops user hints ("Country Setting is not allowed") and the

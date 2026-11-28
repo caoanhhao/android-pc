@@ -1945,3 +1945,110 @@ Build `eng.caoanh.20261127.2229` (flashed with `--keep-data`, enrolled fingers k
 - Lock screen: SystemUI's keyguard authentication matched finger 1 (score 50) and unlocked.
 - Earlier on `eng.caoanh.20261127.1953`: Settings enroll in a full-screen window (slots 1 and
   2); a Firefox `BiometricPrompt` matched finger 1 (score 53).
+
+## 26. Where Winds Meet: the SIGSEGV after Resume is not a GPU crash (2026-11-28)
+
+`com.netease.yyvn` (VN build 1.16.6.65751) logs in, reaches the main menu and dies with
+SIGSEGV a few seconds after Resume, at "Loading Data... 4%". The game's breakpad handler
+swallows the signal (no tombstone), so `tools/gts7l-wwm-catch.sh` freezes the process on the
+handler's log line and saves the rt_sigframe from the alternate signal stack.
+
+Three crashes caught (two on GLES, one on Vulkan), all the same:
+
+- `pc = 0`, `lr` = offset `0x1b1cc8` of an anonymous 6.7 MB `r-xp` mapping: the game's own
+  script runtime, loaded from memory (Lua 5.1, curl, mbedTLS, protobuf, the NetEase
+  `AntiCheatSDKv2`, `hexm/client/...` script names). The code at `lr` is a syscall stub
+  (`mov x8, #64` = `write`, then `blr` through a pointer that is NULL), called with
+  `x0 = 2`, `x1` = `"PANIC: unprotected error in call to Lua API ("`, `x2 = 45`.
+- The frame chain is libc `fputs` → that module's panic handler → a deep Lua VM call chain.
+  So a Lua error is raised outside any `pcall` in the game's scripts (the stack holds
+  `@hexm/client/entities/local/player_avatar_members/school_gameplay/...` while the world
+  loads); Lua's panic handler then tries to print it to stderr, and the module's `write`
+  wrapper calls a NULL function pointer. The error text itself was not found in the heap
+  regions the stack points to (it may not be a string).
+- dmesg has no msm/Adreno fault, hangcheck, IOMMU fault or GMU error at any crash.
+- Same `pc`/`lr` offset with GLES (freedreno gallium, `last_graphics_api.tag` = `es3`) and
+  with Vulkan (Turnip, `vlk`). On Vulkan the process had 886 `renderD128` mappings and 8247
+  mappings in all (on GLES ~7.5k and ~73k): the BO mappings are the GLES driver's and the map
+  count is not the limit.
+
+Renderer switch: like on the PC (docs/waydroid-nvidia.md), the game takes Vulkan only when
+`/sdcard/Android/data/com.netease.yyvn/files/LocalData/vulkan.tag` (empty, owned by the app)
+exists; without it, it runs GLES and never loads `vulkan.freedreno.so`. With the tag, Turnip
+loads, "Preparing shaders" runs to completion and the menu renders; the crash after Resume is
+unchanged. The tag was created on the tablet on 2026-11-28 (delete it to go back to GLES).
+
+During the first Vulkan shader preparation the tablet rebooted once: the last console log
+(pstore) ends with `rpmh_write_batch` `-110` (AMC request timeout from cpufreq's interconnect
+vote, `sugov:7`) after ath11k firmware-stat timeouts, CPU at ~80 °C, then the watchdog reset.
+No GPU message before it. The second shader run passed. Not followed up here.
+
+Conclusion: the crash is in the game's own Lua scripts, not in Mesa/Turnip/freedreno or the
+msm kernel driver; no GPU-side fix applies. What the script fails on is the next question
+(a missing Java/SDK result, device or account data, or memory; see the RAM investigation).
+
+Outcome (2026-11-28, same day): the Lua error came from the address space, not from the GPU.
+Our kernel had arm64 defconfig's `VA_BITS=52`, so the game's heap sat at `0xf69...`, above
+2^47; LuaJIT on arm64 refuses light userdata above 47 bits. With a `CONFIG_ARM64_VA_BITS_39`
+kernel (stock is 39 bits too; build `1007`, the wwm-crash-ram session's change) and
+`vulkan.tag` present, the game gets into the world (HUD, chat, quests) and Turnip renders it.
+
+## 27. Where Winds Meet: 39-bit user address space (2026-11-28)
+
+`com.netease.yyvn` loaded and reached the main menu (after max_map_count=1048576 and the
+3 GB zram swap), then died with SIGSEGV right after Resume. The game's breakpad handler
+deadlocks and leaves no tombstone; stopping the process at its `NCCrashHandler` log line
+showed a Lua panic ("PANIC: unprotected error in call to Lua API") in the game's script
+module, the same on GLES and Vulkan (§26), with every heap pointer at `0xf69…`.
+
+Cause: arm64 defconfig's `CONFIG_ARM64_VA_BITS_52` (5-level page tables). The kernel
+places user mappings just under 2^48, above 2^47; the game's Lua rejects such pointers
+(LuaJIT-style 47-bit light userdata / tagged values) and panics. Stock's 4.19 kernel
+(`extract-ikconfig` on the stock boot.img) and GKI use `CONFIG_ARM64_VA_BITS_39`.
+gts7l.fragment now sets VA_BITS_39 (3 levels; user mappings near `0x7a…`). Build
+eng.caoanh.20261128.1007: Resume → loading → in the world (Hutuo River), on Vulkan.
+
+Not the cause, checked against stock: memory pressure (lmkd kills and zram use at the
+crash are normal), RLIMIT_AS (unlimited), commit (overcommit 1). The dalvik heap now
+matches stock's vendor build.prop (growth limit 512m instead of 192m).
+
+## 28. Reset under a heavy Vulkan game (2026-11-28)
+
+Where Winds Meet (`com.netease.yyvn`, Vulkan on Turnip) reset the tablet within seconds to
+minutes, mostly while loading. The same tablet runs the game on stock.
+
+What a reset looks like:
+- one CPU core stops dead, mostly CPU0, also CPU2, 5 and 7;
+- no register access is pending (`CONFIG_TRACE_MMIO_ACCESS` in the pstore ftrace) and the core
+  does not answer a pseudo-NMI;
+- then either a Linux hard-lockup panic or a silent SoC-requested reset (PMIC PON: PS_HOLD warm
+  reset, no UVLO/OCP bits).
+
+Ruled out, each with a run that still reset:
+- power and thermal: CPU/GPU clock caps, pinned clocks, the performance governor, VBAT ≥ 3.76 V,
+  resets at 65-85 °C;
+- the deep cpuidle state;
+- GPU runtime PM, the iris video decoder, the TZ drivers;
+- the firmware memory carveouts: they are reserved anyway now (patch 0313);
+- LLCC/DDR ECC: EDAC_QCOM saw nothing;
+- WC vs cached-coherent GPU buffers; the GPU SMMU without `dma-coherent`;
+- THP and CONTPTE (kernel built with `TRANSPARENT_HUGEPAGE=n`);
+- Turnip `syncdraw,flushall`.
+
+Synthetic loads survived 10 min: memcpy on 8 cores, futex/CAS lock contention with LSE and
+LL/SC atomics. Only the game triggered it.
+
+**Workaround:** `debug.mesa.tu.debug=sysmem,nolrz,noubwc`, set as a vendor property in
+`aosp_gts7l.mk`. With it the game got through startup loading, "Loading Data" and play. Each of
+those three steps had reset every run before. It turns off GMEM binning, LRZ and UBWC in Turnip
+and costs GPU speed.
+
+Result on kernel #54 (`images-clean`: the committed branch, 39-bit VA, the patches above) with
+this property: Where Winds Meet plays at high graphics settings (user-confirmed, 2026-11-28).
+
+Still open:
+- which of the three flags matters, and why a GPU-side setting stops a CPU core;
+- the kernel UBWC setup (UBWC 4.0, highest bank bit 16, LPDDR5) matches stock's SDE values.
+
+The debug aids stay in the kernel: patches 0310-0312, the lockup detectors, pseudo-NMI, and
+pstore ftrace per CPU.
