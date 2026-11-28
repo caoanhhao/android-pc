@@ -1,0 +1,32 @@
+From 7537671084e15f623cb995331839a1b738dd6ab7 Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Sat, 28 Nov 2026 12:45:35 +0700
+Subject: [PATCH] arm64: dts: qcom: gts7l: per-CPU ramoops ftrace zones
+
+pstore's function trace is one ring shared by all CPUs. When one CPU
+hard-locks on a stalled bus access, the others keep tracing until the
+lockup panic and overwrite its last calls. Split the zone per CPU
+(RAMOOPS_FLAG_FTRACE_PER_CPU).
+---
+ arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index b6438e392..6f7d99c80 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -1849,3 +1849,11 @@ irq-pins {
+ 		};
+ 	};
+ };
++
++/*
++ * One ftrace zone per CPU: a CPU that stops (a hard lockup on a stalled bus access) keeps
++ * its last calls instead of having them overwritten by the CPUs that still run.
++ */
++&{/reserved-memory/ramoops@9fa00000} {
++	flags = <0x1>;
++};
+-- 
+2.56.1
+

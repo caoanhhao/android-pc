@@ -2011,3 +2011,44 @@ eng.caoanh.20261128.1007: Resume → loading → in the world (Hutuo River), on 
 Not the cause, checked against stock: memory pressure (lmkd kills and zram use at the
 crash are normal), RLIMIT_AS (unlimited), commit (overcommit 1). The dalvik heap now
 matches stock's vendor build.prop (growth limit 512m instead of 192m).
+
+## 28. Reset under a heavy Vulkan game (2026-11-28)
+
+Where Winds Meet (`com.netease.yyvn`, Vulkan on Turnip) reset the tablet within seconds to
+minutes, mostly while loading. The same tablet runs the game on stock.
+
+What a reset looks like:
+- one CPU core stops dead, mostly CPU0, also CPU2, 5 and 7;
+- no register access is pending (`CONFIG_TRACE_MMIO_ACCESS` in the pstore ftrace) and the core
+  does not answer a pseudo-NMI;
+- then either a Linux hard-lockup panic or a silent SoC-requested reset (PMIC PON: PS_HOLD warm
+  reset, no UVLO/OCP bits).
+
+Ruled out, each with a run that still reset:
+- power and thermal: CPU/GPU clock caps, pinned clocks, the performance governor, VBAT ≥ 3.76 V,
+  resets at 65-85 °C;
+- the deep cpuidle state;
+- GPU runtime PM, the iris video decoder, the TZ drivers;
+- the firmware memory carveouts: they are reserved anyway now (patch 0313);
+- LLCC/DDR ECC: EDAC_QCOM saw nothing;
+- WC vs cached-coherent GPU buffers; the GPU SMMU without `dma-coherent`;
+- THP and CONTPTE (kernel built with `TRANSPARENT_HUGEPAGE=n`);
+- Turnip `syncdraw,flushall`.
+
+Synthetic loads survived 10 min: memcpy on 8 cores, futex/CAS lock contention with LSE and
+LL/SC atomics. Only the game triggered it.
+
+**Workaround:** `debug.mesa.tu.debug=sysmem,nolrz,noubwc`, set as a vendor property in
+`aosp_gts7l.mk`. With it the game got through startup loading, "Loading Data" and play. Each of
+those three steps had reset every run before. It turns off GMEM binning, LRZ and UBWC in Turnip
+and costs GPU speed.
+
+Result on kernel #54 (`images-clean`: the committed branch, 39-bit VA, the patches above) with
+this property: Where Winds Meet plays at high graphics settings (user-confirmed, 2026-11-28).
+
+Still open:
+- which of the three flags matters, and why a GPU-side setting stops a CPU core;
+- the kernel UBWC setup (UBWC 4.0, highest bank bit 16, LPDDR5) matches stock's SDE values.
+
+The debug aids stay in the kernel: patches 0310-0312, the lockup detectors, pseudo-NMI, and
+pstore ftrace per CPU.

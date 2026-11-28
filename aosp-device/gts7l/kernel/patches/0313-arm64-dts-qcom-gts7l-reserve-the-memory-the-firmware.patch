@@ -1,0 +1,82 @@
+From 6dd42b9424eff8df027ad945f15af724f117faeb Mon Sep 17 00:00:00 2001
+From: caoanhhao <dev@skyperry.com>
+Date: Sat, 28 Nov 2026 14:45:08 +0700
+Subject: [PATCH] arm64: dts: qcom: gts7l: reserve the memory the firmware
+ keeps
+
+The gts7l stub took sm8250.dtsi's reserved map, where XBL/AOP data sits
+at 0x80700000. On this firmware it starts at 0x80603000 (stock base DTB,
+as on the Xiaomi elish), and Samsung's board overlay also keeps
+sec_debug, ss_plog, HDM, KASLR, TIMA and RKP regions. All of it was
+System RAM. Under memory pressure (a game loading) a page from there
+went to an allocation and a CPU hung on its first access to it, with no
+register access pending and no answer to an NMI, or the SoC reset with
+no pstore record.
+
+Reserve the stock regions.
+---
+ .../boot/dts/qcom/sm8250-samsung-gts7l.dts    | 48 +++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+index 6f7d99c80..2eaf3e95d 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-samsung-gts7l.dts
+@@ -252,6 +252,54 @@ wifi@0 {
+ 	};
+ };
+ 
++/*
++ * Memory the gts7l firmware keeps for itself, from the stock base DTB (kona v2.1) and the
++ * board's dtbo (fragment@65). Mainline's map leaves all of it to Linux as System RAM, and a
++ * page there handed to an allocation hangs or resets the SoC under memory pressure:
++ * - XBL/AOP data starts at 0x80603000 here, not at mainline's 0x80700000
++ * - Samsung's sec_debug, ss_plog, HDM, KASLR, TIMA (TrustZone) and RKP regions
++ */
++/delete-node/ &xbl_aop_mem;
++
++/ {
++	reserved-memory {
++		xbl_aop_mem: memory@80603000 {
++			reg = <0x0 0x80603000 0x0 0x25d000>;
++			no-map;
++		};
++
++		sec_debug_mem: memory@9f000000 {
++			reg = <0x0 0x9f000000 0x0 0x800000>;
++			no-map;
++		};
++
++		ss_plog_mem: memory@9f800000 {
++			reg = <0x0 0x9f800000 0x0 0x200000>;
++			no-map;
++		};
++
++		hdm_mem: memory@9fb00000 {
++			reg = <0x0 0x9fb00000 0x0 0x1000>;
++			no-map;
++		};
++
++		kaslr_mem: memory@a0001000 {
++			reg = <0x0 0xa0001000 0x0 0x1000>;
++			no-map;
++		};
++
++		tima_mem: memory@b0100000 {
++			reg = <0x0 0xb0100000 0x0 0x100000>;
++			no-map;
++		};
++
++		rkp_mem: memory@b0200000 {
++			reg = <0x0 0xb0200000 0x0 0x200000>;
++			no-map;
++		};
++	};
++};
++
+ /* Samsung moves these carveouts; values are from the stock device tree */
+ &removed_mem {
+ 	reg = <0x0 0x80b00000 0x0 0x7900000>;
+-- 
+2.56.1
+
