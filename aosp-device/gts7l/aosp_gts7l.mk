@@ -225,9 +225,15 @@ PRODUCT_COPY_FILES += \
 
 # Bluetooth profiles (docs/gts7l.md §20). The Bluetooth app starts only the profiles whose
 # bluetooth.profile.*.enabled is set; without HID Host, keyboards and mice paired but never
-# connected. Only what works without a Bluetooth audio HAL.
+# connected; without A2DP source, AVRCP target and HFP AG a headset connected, found no
+# audio profile and dropped the link again (docs/gts7l-hal/audio.md §6). The audio goes
+# through the default AIDL audio HAL's IBluetoothAudioProviderFactory with software
+# encoding (ro.bluetooth.a2dp_offload.supported is unset: no offload path on mainline).
 PRODUCT_PRODUCT_PROPERTIES += \
+    bluetooth.profile.a2dp.source.enabled=true \
+    bluetooth.profile.avrcp.target.enabled=true \
     bluetooth.profile.gatt.enabled=true \
+    bluetooth.profile.hfp.ag.enabled=true \
     bluetooth.profile.hid.host.enabled=true
 
 # Hardware the framework may rely on. The rear camera has autofocus and a flash, as stock

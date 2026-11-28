@@ -1041,6 +1041,8 @@ only the profiles whose `bluetooth.profile.*.enabled` property is set, and the p
 none (Cuttlefish and goldfish set them in their own product props). `aosp_gts7l.mk` now sets
 `bluetooth.profile.gatt.enabled` and `bluetooth.profile.hid.host.enabled` (product
 properties); profiles that need a Bluetooth audio HAL (A2DP, HFP, LE audio) stay off.
+Update 2026-11-26: A2DP source, AVRCP target and HFP AG are on too; without them a headset
+connected and dropped the link again (docs/gts7l-hal/audio.md §6). LE audio stays off.
 
 Devices bonded while HID Host was off have no HID connection yet: tap them once in
 Settings → Connected devices (Settings itself must be restarted if it was running when the
