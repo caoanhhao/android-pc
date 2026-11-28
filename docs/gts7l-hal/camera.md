@@ -299,9 +299,10 @@ Checked on the tablet without flashing: the new HAL bind-mounted over
 zygote reads the profiles at boot). The app opened, showed the rear preview upright, and the
 shutter saved `Pictures/IMG_20261126_203532.jpg`, 2064x1548, the room in focus.
 
-## Not tested yet (needs the full image)
+## On the full image
 
-These need the next full build flashed:
+2026-11-26: on the full image the user took photos with the Camera app (user report).
+Not yet checked one by one:
 
 - `dumpsys media.camera` lists 3 cameras (`device@1.1/pc/0..2`), facing back/front/back.
 - A still through the framework (`am start -a android.media.action.IMAGE_CAPTURE` or the

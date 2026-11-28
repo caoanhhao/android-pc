@@ -31,6 +31,39 @@ adb shell 'tinymix -D 0 "PRIMARY_TDM_RX_0 Audio Mixer MultiMedia1" 1; tinymix -D
 The mixer state does not survive a reboot, so the workaround is needed after each boot until
 an image with the fix is flashed.
 
+## Update 2026-11-26: silent speakers on the merged build
+
+On the merged build `eng.caoanh.20261126.2024` the user heard nothing from the speakers. The
+card was there, but the HAL served null devices:
+
+```
+W android.hardware.audio.service.pc: main::config: card 0 device 0 (Galaxy Tab S7+: MultiMedia1 (*), Analog): cannot probe Playback: /dev/snd/pcmC0D0p: Invalid argument (os error 22); using a null device
+W android.hardware.audio.service.pc: main::config: card 0 device 1 (Galaxy Tab S7+: MultiMedia2 (*), Analog): cannot probe Capture: /dev/snd/pcmC0D1c: Invalid argument (os error 22); using a null device
+```
+
+Even `cat /dev/snd/pcmC0D0p` failed with `EINVAL`. A DPCM front end refuses to open while no
+back end is routed to it (`soc-pcm.c`: "no backend DAIs enabled", printed only once per boot),
+and the HAL applied `audio_mixer_setup.conf` only to the cards it had probed successfully, so
+the routes stayed off. The 2026-11-25 tests had set the routes with tinymix first.
+
+Fix (`config.rs`, `Hardware::discover`): write the setup to the primary card before probing
+its PCMs. Checked on the running build by setting the same routes with tinymix and restarting
+`vendor.audio-hal` (no flash):
+
+```
+I main::config: Playback: card 0 device 0 (Galaxy Tab S7+: MultiMedia1 (*), Analog) Capabilities { formats: [S16Le], channels: [1, 2], rates: [8000, ..., 48000] }
+I main::config: Capture: card 0 device 1 (Galaxy Tab S7+: MultiMedia2 (*), Analog) ...
+$ AudioCheck play 6            -> end head=288000 written=288000 underruns=1
+  dumpsys media.audio_flinger  -> Output devices: 0x2 (AUDIO_DEVICE_OUT_SPEAKER), Frames written: 235520
+  host webcam mic              -> 1 kHz at amplitude 89 (0.2 with the tablet silent)
+$ AudioCheck rec1 3            -> frames=144000 in 3.07s nonzero=143100 rms=121.9 peak=4887
+```
+
+The user heard the speakers on the tablet in this state (2026-11-26).
+
+Also: the logcat buffers are 256 KiB, so the HAL's start-up lines are gone within a minute of
+boot; read them with `logcat -G 16M` and a HAL restart.
+
 ## Update 2026-11-25: speakers and microphone (branch `claude/gts7l-fix-audio-8566a2`)
 
 The sections after this one are the first check (build `eng.caoanh.20261124.1208`), kept as
@@ -42,7 +75,7 @@ the record of what failed. What changed since:
 | Speakers (4x CS35L41, Primary TDM RX 0) | **Works** with tinyplay | DAPM on during playback (`FL ASPRX1`, `FL PCM Source`, `FL Main AMP`, `FL SPK` On on all four amps); the host's webcam microphone (UGREEN, next to the tablet) recorded the 1 kHz tone at amplitude 740 against 0.2 with the tablet silent |
 | Built-in mic (VA macro DMIC, MultiMedia2) | **Works** with tinycap | real non-zero samples: quiet room rms 4-6 on DMIC0-3; with the speakers playing 1 kHz, DMIC0-3 each capture it (amplitude ~90 at 0 dB, 1841 at +26 dB `VA_DEC0 Volume`); with `VA DMIC MUX0 = ZERO` the capture returns no data |
 | Mic through MultiMedia1 | Fails | rms ~5 and no trace of the tone while it plays: use MultiMedia2 |
-| Rust HAL (`hals/audio`) on gts7l | **Built, not run on the tablet** | the build of this branch compiles it; the user's rule of 2026-11-25 (one flash after every branch is merged) means AudioTrack/AudioRecord through the HAL are still to be tested |
+| Rust HAL (`hals/audio`) on gts7l | **Works after the 2026-11-26 fix** | AudioTrack and AudioRecord through the HAL, see the update above |
 
 ### What was wrong
 
@@ -353,9 +386,68 @@ instantiates effects and processes audio in the playback path.
 ## 6. Bluetooth module
 
 `IModule/bluetooth` is registered and its ports are in the policy (§2); Bluetooth is on
-(`dumpsys bluetooth_manager`: `State: ON`, `A2dpOffloadEnabled: false`, A2DP
-`Connected count: 0`). No headset or speaker was paired, so no Bluetooth stream was opened.
-Partial: needs a manual test (below).
+(`dumpsys bluetooth_manager`: `State: ON`, `A2dpOffloadEnabled: false`).
+
+### Update 2026-11-26: headset connected, dropped, no sound
+
+**Symptom.** A Bluetooth headset (EDIFIER X2s, bonded over BR/EDR, class 0x2404 headset)
+connected, disconnected again after a few seconds, over and over, and never played sound.
+
+**Cause.** The Bluetooth app starts only the profiles whose `bluetooth.profile.*.enabled`
+property is set, and `aosp_gts7l.mk` set only `gatt` and `hid.host` (docs/gts7l.md §20,
+written before the audio HAL existed). On build `eng.caoanh.20261126.2024`:
+
+```
+Profile: GattService
+Profile: HearingAidService
+Profile: HidHostService
+A2DP Source State: Disabled
+AVRCP Target Service not started
+```
+
+With no A2DP source, AVRCP target or HFP AG there was no SDP record and no profile for the
+headset to connect: the ACL link came up, the headset found nothing to talk to and dropped
+it. Nothing was wrong below the stack: the audio HAL's `IBluetoothAudioProviderFactory`
+(AOSP's default AIDL audio service, `com.android.hardware.audio`) was registered, the
+controller and UART were fine (the HID mouse and keyboard work over the same link).
+
+**Fix.** `aosp_gts7l.mk` also sets `bluetooth.profile.a2dp.source.enabled`,
+`bluetooth.profile.avrcp.target.enabled` and `bluetooth.profile.hfp.ag.enabled` (product
+properties, as Cuttlefish's phone and goldfish do). A2DP stays on software encoding:
+`ro.bluetooth.a2dp_offload.supported` is unset, so the stack opens the provider's
+`A2DP_SOFTWARE_ENCODING_DATAPATH` session (encoding in the Bluetooth app, PCM from the audio
+HAL over an FMQ). LE audio profiles stay off (untested on the QCA6390).
+
+**Proof without flashing** (the properties are not read-only, the app reads them when the
+adapter starts):
+
+```
+adb shell 'setprop bluetooth.profile.a2dp.source.enabled true
+  setprop bluetooth.profile.avrcp.target.enabled true
+  setprop bluetooth.profile.hfp.ag.enabled true
+  cmd bluetooth_manager disable; cmd bluetooth_manager wait-for-state:STATE_OFF
+  am force-stop com.android.bluetooth
+  cmd bluetooth_manager enable; cmd bluetooth_manager wait-for-state:STATE_ON'
+```
+
+- `A2dpService`, `AvrcpTargetService`, `HeadsetService` start; `A2DP Source State: Enabled`.
+- Connecting the headset from Settings: A2DP and HEADSET `STATE_CONNECTED` (one A2DP
+  connect/connect collision retried at once), `active_a2dp_devices` and
+  `active_hfp_devices` set, codec SBC 44.1 kHz 16-bit stereo (the headset offers no
+  optional codec), still connected a minute later with no new state change.
+- Audio policy opens the `bluetooth` module's `a2dp output` on `BT A2DP Out`; the HAL logs
+  `updateSourceMetadata: session_type=A2DP_SOFTWARE_ENCODING_DATAPATH ... state=STARTED`.
+- `AudioCheck play 10` (§3): the track is routed to `bt_a2dp` "EDIFIER X2s", the playback
+  head advances at 48 kHz for 10 s (`end head=480000 written=480000`), underruns 1 (start).
+
+The user heard the 1 kHz tone in the headset (2026-11-26, runtime setprop on build
+`eng.caoanh.20261126.2024`). Not proven yet: HFP voice: SCO goes over HCI (the HAL passes SCO
+packets, `hals/bluetooth/src/hci.rs`), untested on the QCA6390.
+
+SELinux: the FMQ memfd is labelled `tmpfs`, so `hal_audio_default` and `bluetooth` log
+`read write map` denials on `tmpfs:file`. The tablet boots with
+`androidboot.selinux=permissive`, so they do not block anything today; an enforcing build
+needs them looked at.
 
 ## Follow-ups (not done: check only)
 
@@ -384,4 +476,10 @@ Sau khi phiên chính gộp mọi nhánh và flash một lần (nhánh này khô
    tiếng to/nhỏ theo nút.
 3. **Mic.** Chạy `AudioCheck rec1 3` rồi nói to gần tablet trong 3 giây; gửi dòng
    `frames=... rms=...` (rms phải lớn hơn rõ rệt so với khi im lặng, khoảng vài chục trở lên).
-4. **Bluetooth (A2DP)**: như bước 2 của lần kiểm tra trước (ghép tai nghe, `AudioCheck play 10`).
+4. **Tai nghe Bluetooth (A2DP)** (§6): bật tai nghe EDIFIER X2s, kết nối trong Settings →
+   Connected devices, rồi chạy
+   ```
+   adb -s R52R504WFTK shell CLASSPATH=/data/local/tmp/audiocheck.dex app_process /system/bin AudioCheck play 10
+   ```
+   Mong đợi: tai nghe không tự ngắt, nghe tiếng bíp 1 kHz đều trong 10 giây ở cả hai bên, loa
+   tablet im lặng. Sau đó mở YouTube/nhạc và nghe thử vài phút; ghi lại nếu bị ngắt/rè/giật.
