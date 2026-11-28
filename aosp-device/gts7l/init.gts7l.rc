@@ -25,6 +25,12 @@ on post-fs-data
     mkdir /data/vendor/wifi/hostapd/sockets 0770 wifi wifi
 
 on boot
+    # Scudo serves allocations its primary regions cannot hold with one mapping plus guard pages
+    # each. Where Winds Meet keeps ~800 MB of 32 KiB blocks and hit the default limit of 65530
+    # mappings (malloc and Mesa's mmap failed, the game aborted while loading).
+    write /proc/sys/vm/max_map_count 1048576
+    # Stock swaps to zram eagerly (init.gts7l.rc, SSWAP).
+    write /proc/sys/vm/swappiness 130
     # schedutil on every cpufreq policy (Kryo 585: cpu0-3 A55, cpu4-6 A77, cpu7 A77 prime).
     write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor schedutil
     write /sys/devices/system/cpu/cpufreq/policy4/scaling_governor schedutil
@@ -54,3 +60,6 @@ service vendor.bluetooth-gts7l /vendor/bin/hw/android.hardware.bluetooth-service
     user bluetooth
     group bluetooth net_admin net_bt_admin
     task_profiles HighPerformance
+
+on property:sys.boot_completed=1
+    swapon_all /vendor/etc/fstab.gts7l
