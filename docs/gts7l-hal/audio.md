@@ -1,5 +1,38 @@
 # gts7l audio HAL check
 
+## Update 2026-11-26: silent speakers on the merged build
+
+On the merged build `eng.caoanh.20261126.2024` the user heard nothing from the speakers. The
+card was there, but the HAL served null devices:
+
+```
+W android.hardware.audio.service.pc: main::config: card 0 device 0 (Galaxy Tab S7+: MultiMedia1 (*), Analog): cannot probe Playback: /dev/snd/pcmC0D0p: Invalid argument (os error 22); using a null device
+W android.hardware.audio.service.pc: main::config: card 0 device 1 (Galaxy Tab S7+: MultiMedia2 (*), Analog): cannot probe Capture: /dev/snd/pcmC0D1c: Invalid argument (os error 22); using a null device
+```
+
+Even `cat /dev/snd/pcmC0D0p` failed with `EINVAL`. A DPCM front end refuses to open while no
+back end is routed to it (`soc-pcm.c`: "no backend DAIs enabled", printed only once per boot),
+and the HAL applied `audio_mixer_setup.conf` only to the cards it had probed successfully, so
+the routes stayed off. The 2026-11-25 tests had set the routes with tinymix first.
+
+Fix (`config.rs`, `Hardware::discover`): write the setup to the primary card before probing
+its PCMs. Checked on the running build by setting the same routes with tinymix and restarting
+`vendor.audio-hal` (no flash):
+
+```
+I main::config: Playback: card 0 device 0 (Galaxy Tab S7+: MultiMedia1 (*), Analog) Capabilities { formats: [S16Le], channels: [1, 2], rates: [8000, ..., 48000] }
+I main::config: Capture: card 0 device 1 (Galaxy Tab S7+: MultiMedia2 (*), Analog) ...
+$ AudioCheck play 6            -> end head=288000 written=288000 underruns=1
+  dumpsys media.audio_flinger  -> Output devices: 0x2 (AUDIO_DEVICE_OUT_SPEAKER), Frames written: 235520
+  host webcam mic              -> 1 kHz at amplitude 89 (0.2 with the tablet silent)
+$ AudioCheck rec1 3            -> frames=144000 in 3.07s nonzero=143100 rms=121.9 peak=4887
+```
+
+The user heard the speakers on the tablet in this state (2026-11-26).
+
+Also: the logcat buffers are 256 KiB, so the HAL's start-up lines are gone within a minute of
+boot; read them with `logcat -G 16M` and a HAL restart.
+
 ## Update 2026-11-25: speakers and microphone (branch `claude/gts7l-fix-audio-8566a2`)
 
 The sections after this one are the first check (build `eng.caoanh.20261124.1208`), kept as
@@ -11,7 +44,7 @@ the record of what failed. What changed since:
 | Speakers (4x CS35L41, Primary TDM RX 0) | **Works** with tinyplay | DAPM on during playback (`FL ASPRX1`, `FL PCM Source`, `FL Main AMP`, `FL SPK` On on all four amps); the host's webcam microphone (UGREEN, next to the tablet) recorded the 1 kHz tone at amplitude 740 against 0.2 with the tablet silent |
 | Built-in mic (VA macro DMIC, MultiMedia2) | **Works** with tinycap | real non-zero samples: quiet room rms 4-6 on DMIC0-3; with the speakers playing 1 kHz, DMIC0-3 each capture it (amplitude ~90 at 0 dB, 1841 at +26 dB `VA_DEC0 Volume`); with `VA DMIC MUX0 = ZERO` the capture returns no data |
 | Mic through MultiMedia1 | Fails | rms ~5 and no trace of the tone while it plays: use MultiMedia2 |
-| Rust HAL (`hals/audio`) on gts7l | **Built, not run on the tablet** | the build of this branch compiles it; the user's rule of 2026-11-25 (one flash after every branch is merged) means AudioTrack/AudioRecord through the HAL are still to be tested |
+| Rust HAL (`hals/audio`) on gts7l | **Works after the 2026-11-26 fix** | AudioTrack and AudioRecord through the HAL, see the update above |
 
 ### What was wrong
 
